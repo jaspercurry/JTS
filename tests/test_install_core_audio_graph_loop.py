@@ -1551,7 +1551,7 @@ install_audio_slice_and_dropins
         source = web_source if unit == "jasper-web" else unit
         for extension in ("service", "socket"):
             assert (tmp_path / f"{unit}.{extension}").read_bytes() == (
-                ROOT / "deploy" / f"{source}.{extension}"
+                ROOT / "deploy" / "systemd" / f"{source}.{extension}"
             ).read_bytes()
     for relative in ("jts-audio.slice", "ssh.service.d/oom-protection.conf",
                      "nginx.service.d/jts-recovery.conf"):

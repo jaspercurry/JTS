@@ -382,7 +382,7 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
 #
 # `systemctl show` bodies below are the states MEASURED on lab Pi jts4
 # (systemd 257 / Debian Trixie) by the PR #2216 adversarial gate, driving
-# transient units that mirror deploy/jasper-correction-web.{service,socket} —
+# transient units that mirror deploy/systemd/jasper-correction-web.{service,socket} —
 # not hand-written states chosen to match an assumption, which is precisely
 # how the first revision of this check shipped blind to its own failure mode.
 
@@ -438,7 +438,7 @@ def test_absent_wizard_unit_is_ok(monkeypatch, unit):
     """A wizard the profile does not install is not a finding.
 
     A streambox installs no jasper-chat-web, and takes its jasper-web pair
-    from deploy/jasper-web-streambox.* under the jasper-web name.
+    from deploy/systemd/jasper-web-streambox.* under the jasper-web name.
     """
     monkeypatch.setattr(
         _evidence, "read_unit_states", _socket_states({unit: _NOT_INSTALLED}),
@@ -528,13 +528,13 @@ def test_swept_units_match_the_installers_wizard_family():
 
 
 def test_every_shipped_wizard_socket_is_swept():
-    """And a wizard socket shipped in deploy/ cannot skip the sweep either.
+    """And a wizard socket shipped in deploy/systemd/ cannot skip the sweep either.
 
-    Named exemption: deploy/jasper-web-streambox.socket is installed AS
-    jasper-web.socket (install_streambox_web_unit_files), so it has no runtime
+    Named exemption: deploy/systemd/jasper-web-streambox.socket is installed AS
+    jasper-web.socket (install_web_unit_files), so it has no runtime
     unit name of its own and is covered by the jasper-web entry.
     """
-    shipped = {p.stem for p in (ROOT / "deploy").glob("jasper-*.socket")}
+    shipped = {p.stem for p in (ROOT / "deploy" / "systemd").glob("jasper-*.socket")}
 
     assert shipped - {"jasper-web-streambox"} == set(doctor_web.WIZARD_UNITS)
 

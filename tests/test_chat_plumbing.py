@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_chat_web_is_socket_nginx_and_entrypoint_wired():
-    socket_unit = (ROOT / "deploy" / "jasper-chat-web.socket").read_text()
-    service_unit = (ROOT / "deploy" / "jasper-chat-web.service").read_text()
+    socket_unit = (ROOT / "deploy" / "systemd" / "jasper-chat-web.socket").read_text()
+    service_unit = (ROOT / "deploy" / "systemd" / "jasper-chat-web.service").read_text()
     nginx = nginx_site.conf_text("full")
     pyproject = (ROOT / "pyproject.toml").read_text()
     install_units = (

@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
     ids=["sound", "weather"],
 )
 def test_wizard_is_socket_and_nginx_wired(port, location, env_var, make_server_symbol):
-    socket_unit = (ROOT / "deploy" / "jasper-web.socket").read_text()
+    socket_unit = (ROOT / "deploy" / "systemd" / "jasper-web.socket").read_text()
     nginx = nginx_site.conf_text("full")
     web_main = (ROOT / "jasper" / "web" / "__main__.py").read_text()
 
@@ -41,7 +41,7 @@ def test_wizard_is_socket_and_nginx_wired(port, location, env_var, make_server_s
 
 def test_sound_wizard_landing_page_and_read_write_paths():
     landing = (ROOT / "deploy" / "index.html").read_text()
-    service = (ROOT / "deploy" / "jasper-web.service").read_text()
+    service = (ROOT / "deploy" / "systemd" / "jasper-web.service").read_text()
 
     assert "/sound/" in landing
     # The /sound/ EQ editor writes CamillaDSP configs, so jasper-web's

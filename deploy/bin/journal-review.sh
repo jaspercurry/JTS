@@ -12,10 +12,10 @@
 # new-failure-mode detector), OOM/watchdog fingerprints, and repeated-
 # message fingerprints.
 #
-# Usage:
-#   sudo bash scripts/journal-review.sh                    # last 7 days, text
-#   sudo bash scripts/journal-review.sh --since '24 hours ago'
-#   sudo bash scripts/journal-review.sh --json             # machine-readable
+# Usage (install.sh puts it at /usr/local/sbin/jasper-journal-review):
+#   sudo jasper-journal-review                    # last 7 days, text
+#   sudo jasper-journal-review --since '24 hours ago'
+#   sudo jasper-journal-review --json             # machine-readable
 #
 # Contract (informational, never a gate):
 #   - READ-ONLY. No config write, no restart, no systemctl mutation.
@@ -32,7 +32,7 @@
 #     full-journal scan, never the whole window materialized to disk.
 #     Pure journalctl + awk/sort/grep; no python, no model loading.
 #
-# Reuses fetch-pi-logs.sh's `write_log_noise_summary()` awk fingerprinter
+# Reuses scripts/fetch-pi-logs.sh's `write_log_noise_summary()` awk fingerprinter
 # and its previous-boot OOM/watchdog greps rather than re-implementing
 # them (AGENTS.md anti-duplication rule); keep the two in sync.
 

@@ -280,7 +280,7 @@ install_web_unit_files() {
         fi
         for extension in service socket; do
             install -m 0644 \
-                "${REPO_DIR}/deploy/${source_unit}.${extension}" \
+                "${REPO_DIR}/deploy/systemd/${source_unit}.${extension}" \
                 "${SYSTEMD_DIR}/${unit}.${extension}"
         done
     done
@@ -288,7 +288,7 @@ install_web_unit_files() {
 
 # Renderer/DSP + assistant wizard ports. Forbidden = the WAKE_DETECTION
 # wizards, which a Zero-2-W-class board never runs. Kept in step with
-# deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
+# deploy/systemd/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
 # tests/test_web_main_imports.py.
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
@@ -363,7 +363,7 @@ install_resilience_identity_unit_files() {
         "0644 deploy/systemd/jasper-usb-hcd-recover.service ${SYSTEMD_DIR}/jasper-usb-hcd-recover.service" \
         "0644 deploy/systemd/jasper-journal-review.service ${SYSTEMD_DIR}/jasper-journal-review.service" \
         "0644 deploy/systemd/jasper-journal-review.timer ${SYSTEMD_DIR}/jasper-journal-review.timer" \
-        "0755 scripts/journal-review.sh /usr/local/sbin/jasper-journal-review"
+        "0755 deploy/bin/journal-review.sh /usr/local/sbin/jasper-journal-review"
 }
 
 # USB host-controller recovery: a long-lived kernel-log follow that re-binds a

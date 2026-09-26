@@ -164,7 +164,7 @@ From a unit or a route to its Python module: `systemctl cat <unit>` shows
 the `ExecStart=`; a `python -m jasper.web` one runs `jasper/web/__main__.py`,
 whose `WIZARD_SPECS` maps each wizard's port (the nginx `proxy_pass`
 target) to its handler module. A named binary (e.g. `jasper-chat-web`, one of the
-standalone `deploy/jasper-*-web.service` units) resolves via its
+standalone `deploy/systemd/jasper-*-web.service` units) resolves via its
 `[project.scripts]` entry in `pyproject.toml` to a `module:function`.
 
 ---

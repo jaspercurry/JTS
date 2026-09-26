@@ -376,8 +376,8 @@ def check_camillagui_loopback() -> CheckResult:
 # and `<name>.socket` derive from each entry). Canonical membership is the
 # installer's WIZARD_UNITS array (deploy/lib/install/systemd-units.sh);
 # tests/test_doctor_web.py pins this tuple set-equal to it and to the shipped
-# deploy/*.socket files. One name covers both profiles — a streambox installs
-# its own web units under the same jasper-web names — so no profile branch.
+# deploy/systemd/jasper-*.socket files. One name covers both profiles (a
+# streambox installs its web units under the same names), so no profile branch.
 WIZARD_UNITS = (
     "jasper-web",
     "jasper-bluetooth-web",
