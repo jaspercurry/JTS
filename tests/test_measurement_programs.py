@@ -113,7 +113,6 @@ def test_program_table_projections(site):
     ("rear", "seat", 3, 3, 3),
     ("rear", "pair_mark", 1, 1, 2),
     ("bass", "axis", 1, 1, 1),
-    ("close", "spot", 1, 1, 1),
 ])
 def test_shipped_rows(
     program_id: str, size: str, poses: int, moves: int, captures: int
@@ -233,7 +232,7 @@ def test_express_geometry() -> None:
     assert {p.elevation_deg for p in row.poses} == {0, -10, 10}
     assert [
         p.repeats for p in row.poses if (p.azimuth_deg, p.elevation_deg) == (0, 0)
-    ] == [mp.ANCHOR_REPEATS]
+    ] == [mp.program("baseline", "full").poses[0].repeats]
 
 
 @pytest.mark.parametrize("program_id,size", [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")])
@@ -253,7 +252,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
     assert choices == (
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
-        ("bass", "quick"), ("branches", "express"), ("close", "spot"),
+        ("bass", "quick"), ("branches", "express"),
         ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
         ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
         ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
@@ -319,7 +318,7 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
             7,
         ),
         # Two seat poses share the (0, 0) bearing and are two different places.
-        ((_seat(0.0, 0.0, 0.0), _seat(mp.SEAT_OFFSET_M, 0.0, 0.0, 2)), 2, 3),
+        ((_seat(0.0, 0.0, 0.0), _seat(0.30, 0.0, 0.0, 2)), 2, 3),
     ],
 )
 def test_counts_split_moves_from_captures(
@@ -344,7 +343,7 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
         (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
     ]
     assert [p.seat_offset_m for p in express.poses] == [
-        (0.0, 0.0, 0.0), (mp.SEAT_OFFSET_M, 0.0, 0.0), (0.0, mp.SEAT_OFFSET_M, 0.0),
+        (0.0, 0.0, 0.0), (0.30, 0.0, 0.0), (0.0, 0.30, 0.0),
     ]
     assert {p.seat_offset_m for p in express.poses} <= {
         p.seat_offset_m for p in cube.poses
@@ -364,25 +363,24 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
     ]
 
 
-def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
-    pose, = mp.program("close", "spot").poses
-
-    assert pose.kind == mp.POSE_KIND_CLOSE
-    assert pose.distance_m == mp.CLOSE_DISTANCE_M
-    assert pose.seat_offset_m is None
+@pytest.mark.parametrize("banked", ["close/spot", "close/custom"])
+def test_a_retired_row_is_not_runnable_but_its_banked_rounds_read(banked: str) -> None:
+    """A retired id leaves the registry, and a round banked under it still reads (ADR-0366 §6)."""
+    with pytest.raises(mp.UnknownProgramError):
+        mp.program(*banked.split("/"))
+    assert mp.run_purposes(banked) == (mp.run_purpose(banked),) == (mp.PURPOSE_REFERENCE,)
 
 
 def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
     assert {
         program_id: mp.program(program_id).size
-        for program_id in ("baseline", "tournament", "branches", "seat", "room", "close", "rear")
+        for program_id in ("baseline", "tournament", "branches", "seat", "room", "rear")
     } == {
         "baseline": "express",
         "tournament": "express",
         "branches": "express",
         "seat": "cloud",
         "room": "seat",
-        "close": "spot",
         "rear": "express",
     }
 

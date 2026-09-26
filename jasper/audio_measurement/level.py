@@ -34,6 +34,11 @@ class LevelReading:
         return self.floor_db is not None and self.level_db - self.floor_db >= TRUSTED_OVER_FLOOR_DB
 
 
+def level_at_1m_db(level_db: float, distance_m: float) -> float:
+    """A far-field reading at ``distance_m`` stated at 1 m by the 1/r law (ADR-0366 §4)."""
+    return level_db + 20.0 * math.log10(distance_m)
+
+
 def _period_mean_squares(samples: np.ndarray, sample_rate: int, band_hz: tuple[float, float]) -> np.ndarray:
     x = np.asarray(samples, dtype=np.float64)
     count = x.size // PERIOD_FRAMES

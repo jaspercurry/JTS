@@ -523,7 +523,8 @@ def _capture_response(
         }) from exc
 
 
-# Published close-reference refusal names also serve the shared selector.
+# Published names the shared selector raises; the close-reference view that
+# named them retired (ADR-0366 §5).
 REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND = "close_reference_unreadable_round"
 REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
