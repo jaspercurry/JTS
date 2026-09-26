@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.env_load import parse_bool_value
+from jasper.mics.profile_ids import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC
 
 
 # ---------------------------------------------------------------------
@@ -155,7 +156,6 @@ class RuntimeProfile:
 
     @property
     def recommended_profile(self) -> str:
-        from jasper.audio_profile_state import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC  # lazy: audio_profile_state imports this module
         return PROFILE_XVF_CHIP_AEC if self.present else PROFILE_DIRECT_MIC
 
     def as_dict(self) -> dict[str, Any]:
