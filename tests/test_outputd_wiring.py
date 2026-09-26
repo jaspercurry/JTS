@@ -21,7 +21,7 @@ from jasper.tts_routing import (
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
 )
-from tests.install_surface import installer_text
+from tests.install_surface import INSTALL_LIB_DIR, installer_text
 from tests.reconcile_fixtures import fake_systemctl
 from tests.test_audio_hardware_reconcile import _dual_apple_cards
 
@@ -862,9 +862,7 @@ def test_install_alsa_refreshes_asound_renderer_before_rendering():
     to is the support-file install's, pinned by the destination-set harness in
     tests/test_install_core_audio_graph_loop.py."""
     install_sh = installer_text()
-    start = install_sh.index("install_alsa() {")
-    end = install_sh.index("\nwrite_build_manifest() {", start)
-    install_alsa = install_sh[start:end]
+    install_alsa = _bash_function(INSTALL_LIB_DIR / "alsa.sh", "install_alsa")
     source_template_install = install_alsa.index("asoundrc.jasper.source")
     render_call = install_alsa.index("jasper_asound_render_template")
     assert 'source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"' in install_sh
@@ -1038,14 +1036,14 @@ def _run_ensure_outputd_camilla_statefile(
     workdir.mkdir()
     _systemctl, systemctl_log = fake_systemctl(workdir)
     graph_log = workdir / "graph.log"
-    step = _bash_function(REPO / "deploy" / "install.sh", "ensure_outputd_camilla_statefile")
+    step = _bash_function(INSTALL_LIB_DIR / "dsp-runtime.sh", "ensure_outputd_camilla_statefile")
     result = subprocess.run(
         [
             "/bin/bash",
             "-c",
             "set -uo pipefail\n"
             f'CAMILLA_CONF="{workdir}/camilladsp"\n'
-            f"{_bash_function(REPO / 'deploy/install.sh', 'run_captured_command')}\n"
+            f"{_bash_function(INSTALL_LIB_DIR / 'dsp-runtime.sh', 'run_captured_command')}\n"
             "install_run_bounded() {\n"
             "  shift 2\n"
             f'  printf "%s\\n" "$*" >> "{graph_log}"\n'

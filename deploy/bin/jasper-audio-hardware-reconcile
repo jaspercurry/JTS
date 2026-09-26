@@ -183,9 +183,10 @@ EOF
 
 # What --print-env answers with when the pass could not be reached AT ALL.
 # install.sh evals this output and reads every key under `set -u`
-# (deploy/install.sh:893), so empty stdout aborts an install instead of
-# degrading it; the shell reconciler this replaced answered exactly these
-# values with rc 0. Pinned equal to the no-DAC row of the --print-env golden.
+# (select_audio_hardware_roles in deploy/lib/install/alsa.sh), so empty stdout
+# aborts an install instead of degrading it; the shell reconciler this replaced
+# answered exactly these values with rc 0. Pinned equal to the no-DAC row of
+# the --print-env golden.
 print_env_defaults() {
     cat <<'EOF'
 DONGLE_CARD=A

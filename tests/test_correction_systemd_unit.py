@@ -12,7 +12,7 @@ from .test_install_state_group_write import _extract as _extract_bash_function
 
 ROOT = Path(__file__).resolve().parent.parent
 UNIT_PATH = ROOT / "deploy" / "systemd" / "jasper-correction-web.service"
-INSTALL_SH = ROOT / "deploy" / "install.sh"
+DSP_RUNTIME_SH = ROOT / "deploy" / "lib" / "install" / "dsp-runtime.sh"
 
 
 def test_measurement_view_routes_to_correction_web_on_http_and_https():
@@ -59,7 +59,7 @@ def test_correction_location_allows_large_capture_upload():
 
 
 def test_install_sh_creates_correction_state_dirs():
-    body = INSTALL_SH.read_text()
+    body = DSP_RUNTIME_SH.read_text()
     assert "install -d -m 2770 -g jasper \\" in body
     for path in [
         "/var/lib/jasper/correction",
@@ -80,13 +80,13 @@ def test_install_sh_creates_correction_state_dirs():
 
 
 def test_install_sh_active_speaker_dirs_match_heal_allowlist():
-    """A prose pointer between install.sh and heal_shared_state_modes
+    """A prose pointer between install_camilladsp and heal_shared_state_modes
     doesn't fail CI: reuses the two existing extraction helpers (this
-    module's own install.sh function-body slice, and
+    module's own install_camilladsp body slice, and
     test_install_state_group_write._extract for the heal's bash source) so a
     path added to one list and not the other reds here instead of silently
     reviving the fresh-install lockout bug."""
-    install_body = INSTALL_SH.read_text()
+    install_body = DSP_RUNTIME_SH.read_text()
     func_start = install_body.index("install_camilladsp()")
     func_end = install_body.index("\n}\n", func_start)
     install_paths = set(re.findall(

@@ -13,7 +13,7 @@ import pytest
 from jasper import audio_quality
 
 SCRIPT = Path(__file__).resolve().parent.parent / "deploy/bin/jasper-render-asound-conf"
-INSTALL = Path(__file__).resolve().parent.parent / "deploy/install.sh"
+ALSA_LIB = Path(__file__).resolve().parent.parent / "deploy/lib/install/alsa.sh"
 
 
 def test_default_requested_converter_is_medium(tmp_path):
@@ -50,7 +50,7 @@ def test_default_active_asound_paths_share_installed_symlink_contract(
 ):
     monkeypatch.delenv("JASPER_ASOUND_CONF", raising=False)
     script = SCRIPT.read_text()
-    install = INSTALL.read_text()
+    install = ALSA_LIB.read_text()
 
     assert audio_quality._asound_path() == Path("/etc/asound.conf")
     assert (
