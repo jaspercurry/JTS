@@ -28,10 +28,12 @@ recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
     delete the open session, write its sidecar, build its ``/api/status``
     snapshot, and recover it (and corpus test mode) at startup from the
     crash-recovery markers.
+  - :mod:`jasper.wake_corpus.clip_recording` — start, stop and publish one
+    clip, with the duration and mute safety stops and the stop retry.
   - :mod:`jasper.wake_corpus.recording_backend` — ``RecordingBackend``:
-    the state those modules share under one lock, clip recording, and the
-    lifecycle. Owns a background asyncio loop driven from sync HTTP
-    handler threads.
+    the state those modules share under one lock, and the lifecycle: a
+    background asyncio loop driven from sync HTTP handler threads, the
+    lifecycle transactions, and shutdown.
 
 Nothing is re-exported at the package root on purpose: the modules import
 NumPy (and lazily ``jasper.mic_capture``), so importers reach for the

@@ -34,6 +34,7 @@ from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.wake_corpus import (
     active_session,
     clip_capture,
+    clip_recording,
     recording_backend,
     runtime_probe,
 )
@@ -121,7 +122,7 @@ def _allow_capture_plan_conformance(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     # Clip start and the status snapshot each run the conformance check.
-    for module in (active_session, recording_backend):
+    for module in (active_session, clip_recording):
         monkeypatch.setattr(module, "validate_active_capture_plan", conformant)
 
 
