@@ -305,12 +305,12 @@ _ON_EVERY_PROFILE = (
     "peering_template",
     "state_modes",
     "retired",
+    "control_polkit",
     "systemd_units",
     "wifi_guardian",
     "memory_resilience",
     "cgroup_memory",
     "journald",
-    "control_polkit",
     "web_polkit",
     "web_writable_dirs",
     "correction_tls",
@@ -339,6 +339,8 @@ _REQUIRED_ORDER = (
     ("state_modes", "systemd_units"),
     # `systemctl disable --now` is never part of a unit-staging transaction.
     ("retired", "systemd_units"),
+    # The unit install's coupling pass calls the broker; a polkit denial has no root fallback.
+    ("control_polkit", "systemd_units"),
     # Above service_users each compartment re-assert is a silent no-op (its
     # opening `getent group ... || return 0`); above the tier's python step
     # the ownership half still runs but there is no seeded jasper.env to
@@ -663,7 +665,6 @@ def test_streambox_install_and_runtime_cover_the_accessory_bridge():
 
     runtime = _installer_function_body("start_streambox_runtime_units")
     assert "jasper-input.service" in runtime
-    assert "jasper-accessory-reconcile --reason install" in runtime
     assert "_start_core_graph_units" in runtime
     assert "systemctl enable --now jasper-accessory-reconcile.path" in (
         _installer_function_body("_start_core_graph_units")
@@ -674,20 +675,11 @@ def test_streambox_keeps_coupling_auto_for_usb_direct_capture():
     """Fan-in coupling is data-plane ownership, not a voice-brain feature.
 
     Streambox supports USB Audio Input through the same direct fan-in lane, so
-    full->streambox conversion must preserve coupling-auto and its runtime path
-    must enable it before source-intent reapply.
+    full->streambox conversion must preserve coupling-auto.
     """
     text = installer_text()
     parking = text.split("park_streambox_brain_units() {", 1)[1].split("\n}", 1)[0]
     assert "jasper-fanin-coupling-auto.service" not in parking
-    streambox_runtime = text.split("start_streambox_runtime_units() {", 1)[1].split(
-        "\n}", 1
-    )[0]
-    coupling_idx = streambox_runtime.index(
-        "systemctl enable jasper-fanin-coupling-auto.service"
-    )
-    reapply_idx = streambox_runtime.index("reapply_source_intent")
-    assert coupling_idx < reapply_idx
 
 
 # ---------- Zero-2-W default + low-memory cargo build (preserved) --------

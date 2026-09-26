@@ -1569,13 +1569,13 @@ INSTALL_STEPS=(
     # daemons that read /var/lib/jasper as group `jasper`.
     "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
     "retired|both|retire_leftovers|retire the units and files earlier releases left behind"
+    "control_polkit|both|install_jasper_control_polkit|install the jasper-control polkit rules"
     "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
     "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
     "wifi_guardian|both|migrate_wifi_guardian|seed the WiFi guardian recovery stash"
     "memory_resilience|both|migrate_memory_resilience|apply the sysctl, MGLRU and zram memory resilience"
     "cgroup_memory|both|migrate_cgroup_memory_enabled|add the memory cgroup/PSI kernel args"
     "journald|both|install_journald_persistent_storage|enable persistent journald storage"
-    "control_polkit|both|install_jasper_control_polkit|install the jasper-control polkit rules"
     "web_polkit|both|install_jasper_web_polkit|install the jasper-web NetworkManager polkit rules"
     "web_writable_dirs|both|widen_jasper_web_writable_dirs|widen /etc/bluetooth and the camilladsp configs for jasper-web"
     # provision_correction_tls first: the cert files must exist before nginx -t.

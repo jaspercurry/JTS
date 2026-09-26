@@ -144,8 +144,6 @@ def test_install_builds_installs_and_enables_outputd():
     assert restart_block.index("require_outputd_ready") < restart_block.index(
         "reconcile_sound_dsp_state"
     )
-    full = install_sh.split("install_systemd_units() {", 1)[1].split("\n}", 1)[0]
-    assert full.index("_start_core_graph_units") < full.index("reconcile_aec_state")
 
 
 def test_install_reloads_audio_udev_rules_without_synthetic_hotplug():
