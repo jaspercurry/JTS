@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2 import composition
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 from jasper.active_speaker.session_volume_plan import SessionVolumePlan, SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
 from jasper.audio_measurement.wired_capture import (
     CODE_CAPTURE_GAIN_UNVERIFIED, WiredCaptureError, WiredCaptureGainUnverified, WiredRecording, WiredSplCeilingExceeded,

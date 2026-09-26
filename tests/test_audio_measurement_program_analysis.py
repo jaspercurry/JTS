@@ -54,7 +54,7 @@ from jasper.audio_measurement.alignment import (
     gcc_phat,
 )
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,

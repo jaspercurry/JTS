@@ -102,7 +102,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     segment_stimulus,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.audio_measurement.program_analysis import locate as locate_mod

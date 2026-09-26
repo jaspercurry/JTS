@@ -60,7 +60,7 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
     PlaybackInterrupted,
     PlaybackOutcome,
 )
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.active_speaker.crossover_v2.session import (
     UNPROVEN_LEVEL,
     MeasureOutcome,

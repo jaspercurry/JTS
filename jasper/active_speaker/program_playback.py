@@ -18,7 +18,7 @@ from typing import Awaitable, Callable
 
 from jasper.audio_measurement.correction_lane import correction_play_device
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.audio_measurement.playback import (
+from jasper.audio_measurement.admission.playback import (
     PlaybackResult,
     play_verified_wav,
     verified_wav_source,

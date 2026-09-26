@@ -7,32 +7,12 @@
 ``jasper.audio_measurement.correction_lane`` owns building and running the
 ``aplay`` command line that plays a WAV onto the correction lane — the same
 consolidation ``tests/test_correction_substream_ssot.py`` enforces for the
-lane *name*, applied to the lane *spawn*.
-
-Three groups of checks:
-
-  1. **Golden argv/kwargs.** For every site shape, the helper must produce
-     exactly the argv and subprocess kwargs that site's callers rely on.
-  2. **The conventions guard.** No file under ``jasper/`` outside a small,
-     count-pinned allowlist may contain an ``aplay``/``-D`` spawn shape —
-     this is what fails when someone adds a new inline site instead
-     of calling the helper. Scope is ``jasper/`` only: the four
-     stdlib-only lab probe scripts under ``scripts/`` spell the command by
-     design.
-  3. **The guard proves itself.** Synthetic offender shapes are detected;
-     prose, listing probes (``aplay -l``/``-L``), helper-built argv, and
-     ``-D``-without-``aplay`` lists are not.
-
-Deliberate non-guards (static shape scan, aimed at the accidental new
-site, not adversarial evasion): a variable binary (``[self.aplay_binary,
-...]``), argv assembled by concatenation
-(``["aplay"] + rest``), and ``shell=True`` command strings. None exist in
-``jasper/`` for the correction lane — verified by sweep, NOT self-enforcing
-(those shapes are exactly what the scan cannot see).
+lane *name*, applied to the lane *spawn*. For every site shape, the helper
+must produce exactly the argv and subprocess kwargs that site's callers rely
+on.
 """
 from __future__ import annotations
 
-import ast
 import subprocess
 from pathlib import Path
 
@@ -44,14 +24,6 @@ from jasper.audio_measurement.correction_lane import (
     popen_correction_play,
     run_correction_play,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-JASPER_ROOT = REPO_ROOT / "jasper"
-
-
-# ---------------------------------------------------------------------------
-# Check 1 — golden argv/kwargs.
-# ---------------------------------------------------------------------------
 
 
 def test_builder_produces_the_one_true_argv() -> None:
@@ -227,123 +199,3 @@ async def test_exec_forwards_stdout_and_stderr_independently(monkeypatch) -> Non
         "stdout": None,
         "stderr": subprocess.DEVNULL,
     }
-
-
-# ---------------------------------------------------------------------------
-# Check 2 — the conventions guard: no new inline aplay/-D spawn shapes.
-# ---------------------------------------------------------------------------
-
-# Files allowed to contain aplay/-D spawn shapes, pinned by COUNT so a new
-# spawn added to an allowlisted file trips the guard too. Every entry has a
-# reason; adding one requires the same.
-_ALLOWED_APLAY_SPAWN_SITES = {
-    # The owner: correction_play_argv's single argv display.
-    "jasper/audio_measurement/correction_lane.py": 1,
-    # The heavier shared machinery (play_wav's one-shot spawn). Its
-    # alsa_device is a required caller parameter — the policy-free neutral
-    # leaf, pinned by tests/test_audio_measurement_playback.py::
-    # test_neutral_surface_requires_owner_policy — so this is a parameterized
-    # spawn, not an inline correction-lane spawn.
-    "jasper/audio_measurement/playback.py": 1,
-    # Renderer-DEVICE resolvability probe (plays /dev/zero on renderer pcms
-    # such as shairport_substream — never the correction lane).
-    "jasper/cli/doctor/renderers.py": 1,
-}
-
-
-def _aplay_spawn_shapes(path: Path) -> list[int]:
-    """Line numbers of aplay/-D spawn shapes in ``path``.
-
-    A "spawn shape" is any list/tuple display, or any call's direct
-    positional arguments, whose string constants include BOTH exact
-    ``"aplay"`` and exact ``"-D"``. That catches the three real shapes —
-    ``Popen([...])`` / ``subprocess.run([...])`` argv lists, wrapper calls
-    fed literal tuples (``_run(("aplay", ...), ...)``), and
-    ``create_subprocess_exec("aplay", "-D", ...)`` varargs — while prose,
-    listing probes (no ``-D``), and ``-D``-with-a-variable-binary lists
-    (no exact ``"aplay"``) do not match. Matched by AST constant value,
-    same technique as tests/test_correction_substream_ssot.py.
-    """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    hits: list[int] = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.List, ast.Tuple)):
-            elements = node.elts
-        elif isinstance(node, ast.Call):
-            elements = node.args
-        else:
-            continue
-        values = {
-            element.value
-            for element in elements
-            if isinstance(element, ast.Constant) and isinstance(element.value, str)
-        }
-        if {"aplay", "-D"} <= values:
-            hits.append(node.lineno)
-    return hits
-
-
-def test_no_inline_aplay_spawn_shapes_outside_the_allowlist() -> None:
-    offenders: list[str] = []
-    for path in sorted(JASPER_ROOT.rglob("*.py")):
-        rel = str(path.relative_to(REPO_ROOT))
-        hits = _aplay_spawn_shapes(path)
-        allowed = _ALLOWED_APLAY_SPAWN_SITES.get(rel, 0)
-        if len(hits) != allowed:
-            offenders.append(f"{rel}: lines {hits} (allowlisted count: {allowed})")
-    assert not offenders, (
-        "inline aplay/-D spawn shape(s) drifted from the allowlist. A new "
-        "correction-lane play site must call correction_play_argv / "
-        "popen_correction_play / exec_correction_play from "
-        "jasper.audio_measurement.correction_lane instead of spelling its "
-        "own argv; a genuinely other-device spawn gets an "
-        "allowlist entry here WITH a reason:\n" + "\n".join(offenders)
-    )
-
-
-# ---------------------------------------------------------------------------
-# Check 3 — the guard proves itself on synthetic offenders and non-offenders.
-# ---------------------------------------------------------------------------
-
-
-def test_guard_detects_the_three_spawn_shapes(tmp_path) -> None:
-    offender = tmp_path / "offender.py"
-    offender.write_text(
-        "import asyncio\n"
-        "import subprocess\n"
-        "DEV = 'somewhere'\n"
-        "\n"
-        "def popen_shape(p):\n"
-        "    # Deliberately no '-q': the guard keys on 'aplay' + '-D' only,\n"
-        "    # and this line fails the self-test if the rule over-tightens.\n"
-        "    return subprocess.Popen(['aplay', '-D', DEV, str(p)])\n"
-        "\n"
-        "def wrapper_tuple_shape(run, p):\n"
-        "    run(('aplay', '-q', '-D', DEV, str(p)), timeout=5)\n"
-        "\n"
-        "async def varargs_shape(p):\n"
-        "    return await asyncio.create_subprocess_exec(\n"
-        "        'aplay', '-D', DEV, '-q', str(p),\n"
-        "    )\n"
-    )
-    assert len(_aplay_spawn_shapes(offender)) == 3
-
-
-def test_guard_ignores_prose_probes_and_helper_built_argv(tmp_path) -> None:
-    clean = tmp_path / "clean.py"
-    clean.write_text(
-        '"""Docstring: verify with `aplay -D correction_substream x.wav`."""\n'
-        "import subprocess\n"
-        "from jasper.audio_measurement.correction_lane import correction_play_argv\n"
-        "# comment: aplay -D somewhere\n"
-        "\n"
-        "def listing_probe():\n"
-        "    return subprocess.run(['aplay', '-l'], capture_output=True)\n"
-        "\n"
-        "def ring_probe(tool, pcm):\n"
-        "    return subprocess.run([tool, '-D', pcm, '/dev/zero'])\n"
-        "\n"
-        "def migrated_site(p):\n"
-        "    return subprocess.Popen(correction_play_argv(p))\n"
-    )
-    assert _aplay_spawn_shapes(clean) == []

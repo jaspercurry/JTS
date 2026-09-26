@@ -32,7 +32,7 @@ from typing import Any, Mapping, Sequence
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.sweep import (
     SweepMeta,
     phase_closing_duration_s,

@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 
 from jasper.log_event import log_event
 from jasper.volume_latch import fader_matches

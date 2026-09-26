@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import await_restore_task_resilient
-from jasper.audio_measurement.playback import (
+from jasper.audio_measurement.admission.playback import (
     PlaybackError, PlaybackObservation, WavPlaybackCancelled,
     WavPlaybackCancelledBeforeSpawn,
 )

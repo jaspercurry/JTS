@@ -43,7 +43,7 @@ from jasper.audio_measurement.bundles import (
     record_artifact,
     write_json_artifact,
 )
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission.excitation_artifacts import (
     ensure_directory_mode,
     AdmissionArtifactError,
     AdmissionAuthority,

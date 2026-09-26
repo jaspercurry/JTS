@@ -32,7 +32,8 @@ from typing import Any, AsyncIterator, Literal
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+# Fixed, not __name__: operators grep the journal by this name.
+logger = logging.getLogger("jasper.audio_measurement.playback")
 
 
 class PlaybackFailureCode(str, Enum):

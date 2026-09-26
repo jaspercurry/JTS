@@ -19,7 +19,7 @@ from typing import Any
 from jasper.atomic_io import fsync_directory
 from jasper.log_event import log_event
 
-from .evidence_identity import ArtifactIdentity
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 
 ADMISSION_ARTIFACT_CONTRACT_VERSION = 1
 ADMISSION_AUTHORITY_KIND = "jts_excitation_admission_authority"
@@ -42,7 +42,8 @@ def ensure_directory_mode(path: "str | os.PathLike[str]") -> None:
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-logger = logging.getLogger(__name__)
+# Fixed, not __name__: operators grep the journal by this name.
+logger = logging.getLogger("jasper.audio_measurement.excitation_artifacts")
 
 
 class AdmissionArtifactErrorCode(StrEnum):

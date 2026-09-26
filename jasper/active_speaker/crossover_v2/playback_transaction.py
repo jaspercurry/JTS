@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .measure_spec import MeasureSpec

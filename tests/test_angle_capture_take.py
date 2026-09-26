@@ -39,7 +39,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from tests.crossover_v2_fixtures import _preset
 

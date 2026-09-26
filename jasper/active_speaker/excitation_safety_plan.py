@@ -23,7 +23,7 @@ from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
 )
-from jasper.audio_measurement.excitation_admission import (
+from jasper.audio_measurement.admission.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
     FrequencyBand,

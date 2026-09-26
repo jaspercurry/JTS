@@ -52,7 +52,7 @@ from jasper.audio_measurement.program_analysis import (
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from tests._log_events import event_fields, event_records
 
