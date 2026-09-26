@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
-from jasper.speaker_layout import LOWEST_DRIVER_ROLE_BY_MAIN_MODE
+from jasper.speaker_layout import LOWEST_DRIVER_ROLE_BY_MAIN_MODE, cardioid_cabinet_channels
 
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
@@ -172,6 +172,17 @@ def _main_layout(groups: Iterable[SpeakerGroup]) -> str:
     if not kinds:
         return "unconfigured"
     return "unknown"
+
+
+def rear_cabinet_channels(contract: OutputContract) -> tuple[int, int, int] | None:
+    """``(front woofer, rear woofer, tweeter)`` of the one mono cabinet a rear
+    calibration document describes, from the SAVED topology rather than a preset."""
+    roleful = [
+        (item.role, item.output_variant, item.physical_output_index)
+        for item in contract.roleful_assignments
+        if item.physical_output_index is not None
+    ]
+    return cardioid_cabinet_channels(roleful) if len(roleful) == 3 else None
 
 
 def classify_output_contract(topology: OutputTopology) -> OutputContract:

@@ -35,6 +35,7 @@ from jasper.active_speaker.measurement_programs import programs_for_topology
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -53,9 +54,9 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 @pytest.mark.parametrize("layout,rear,digest", [
     ("mono", False, "f9eb9995a76e6c7ec130260a125a5ae32c14e760887b49e1f41726533cdfefe9"),
-    ("mono", True, "c54d1cc692946a6f561432f4ae7677fabc4ca14ce172ba1f70cf11e32ba2d286"),
+    ("mono", True, "4d24a930f22dc46b7b6770dcf0f78a9fe7ee0dd566d060e56933b820c5e6f9b8"),
     ("stereo", False, "fb6c75acb3efa8ded17ccb957184b4bd554793870b84615108e42b67f0bc19dc"),
-    ("stereo", True, "402cbeb5f1b081d53ec26388cf5e836b6d6b199ea05e6960656ab4f5672309ee"),
+    ("stereo", True, "579802f848e1bf561633b2de1af5764b1b843d4c844a389dc8e04fdc568850f5"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -614,3 +615,6 @@ def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
     assert cli.main(["contract", "--section", "room"]) == 0
     room_contract = json.loads(capsys.readouterr().out)
     assert {"schema", "bounds"} <= set(rear) & set(room_contract)
+    # The starting document the rear door admits as written: untuned and muted.
+    seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
+    assert (seed["rear_muted"], seed["valid_band_hz"]) == (True, None)

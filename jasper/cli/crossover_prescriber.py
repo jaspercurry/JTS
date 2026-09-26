@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
-from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
+from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.atomic_io import atomic_write_json
@@ -50,26 +50,6 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
 REASON_UNWRITABLE = "output_unwritable"
-
-
-def _cmd_rear_calibration(args: argparse.Namespace) -> int:
-    try:
-        if args.seed:
-            if args.sample_rate is None:
-                raise ValueError("--sample-rate is required; use the installed DSP rate")
-            return answered(read_rear_calibration(diagnostic_seed(args.sample_rate)))
-        document = read_rear_calibration(json.loads(read_source_bytes(args.document)), sample_rate=args.sample_rate)
-        answer = {"calibration": document, "adopted": False,
-                  "requires_electrical_fitting": document["case"] == "acoustic_targets"}
-        routing = (args.channels, args.front, args.rear, args.tweeter)
-        if any(value is not None for value in routing):
-            if any(value is None for value in routing):
-                raise ValueError("stage compilation requires --channels, --front, --rear and --tweeter")
-            answer["stage"] = compile_rear_stage(document, channel_count=args.channels,
-                front_channel=args.front, rear_channel=args.rear, tweeter_channel=args.tweeter)
-        return answered(answer)
-    except (OSError, ValueError, TypeError) as exc:
-        return failed(EXIT_REFUSED, "rear_calibration_invalid", str(exc))
 
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
@@ -104,9 +84,11 @@ def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[Bank
 
 def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> dict[str, Any]:
     kind = preview_kind(document)
-    base, evidence, capture_id = None, None, None
+    base, evidence, capture_id, cabinet = None, None, None, None
     try:
-        if kind != "rear_calibration":
+        if kind == "rear_calibration":
+            cabinet = rear_cabinet_channels(classify_output_contract(load_output_topology()))
+        else:
             base, _ = _document_base(document, Path(args.root) if args.root else None)
             evidence = _document_evidence(args, document)
         if kind == "emitted_graph" and args.round:
@@ -115,7 +97,7 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
         section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
     return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                         base=base, evidence=evidence, capture_id=capture_id)
+                                         base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
@@ -642,14 +624,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    rear = sub.add_parser("rear-calibration", help="inspect acoustic targets or compile an editable rear DSP stage; never applies")
-    source = rear.add_mutually_exclusive_group(required=True)
-    source.add_argument("--document", metavar="FILE")
-    source.add_argument("--seed", action="store_true", help="print an explicitly untuned, muted starting document")
-    rear.add_argument("--sample-rate", type=int, metavar="HZ")
-    for name in ("channels", "front", "rear", "tweeter"):
-        rear.add_argument("--" + name, type=int, help="explicit physical channel count / zero-based assignment for stage compilation")
-    rear.set_defaults(func=_cmd_rear_calibration)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
     contract.add_argument("--round", metavar="DIR")
     add_set_argument(contract)
@@ -665,7 +639,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
-            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
+            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
             command.add_argument("--out", metavar="FILE", help="write the full preview here and answer with its summary; "

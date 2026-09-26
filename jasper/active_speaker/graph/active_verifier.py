@@ -22,7 +22,6 @@ from jasper.speaker_layout import (
     SUB_CROSSOVER_HZ_LO,
     SUB_CROSSOVER_ORDER,
     WAY_COUNT_BY_MAIN_MODE,
-    cardioid_cabinet_channels,
     measurement_target_id,
 )
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
@@ -70,6 +69,7 @@ from ..output_contract import (
     OutputAssignment,
     OutputContract,
     mains_lowest_driver_indexes as _mains_lowest_driver_indexes,
+    rear_cabinet_channels,
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
@@ -256,22 +256,6 @@ def _post_split_filter_names(
     return tuple(out)
 
 
-def _rear_cabinet_channels(contract: OutputContract) -> tuple[int, int, int] | None:
-    """``(front woofer, rear woofer, tweeter)`` of the one mono cabinet a rear
-    calibration document describes, re-derived from the SAVED topology rather
-    than from the emitter's preset."""
-    roleful = [
-        item for item in contract.roleful_assignments
-        if item.physical_output_index is not None
-    ]
-    if len(roleful) != 3:
-        return None
-    return cardioid_cabinet_channels(
-        (item.role, item.output_variant, int(item.physical_output_index))
-        for item in roleful
-    )
-
-
 def _rear_stage_evidence(
     payload: dict[str, Any],
     *,
@@ -291,7 +275,7 @@ def _rear_stage_evidence(
     """
     if not document:
         return {}, (), None
-    channels = _rear_cabinet_channels(contract)
+    channels = rear_cabinet_channels(contract)
     if channels is None:
         return {}, (), "saved_topology_not_cardioid"
     required = _required_roleful_indexes(contract)
