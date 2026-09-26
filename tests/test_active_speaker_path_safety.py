@@ -256,7 +256,16 @@ def test_write_path_safety_evidence_persists_probe_payload(tmp_path: Path) -> No
     assert path.read_text(encoding="utf-8").startswith("{\n")
 
 
-_UNUSABLE_EVIDENCE_BYTES = {"unparseable": b"{not json", "not_utf8": b"\xff", "invalid": b"{}"}
+_UNUSABLE_EVIDENCE_BYTES = {
+    "unparseable": b"{not json",
+    "not_utf8": b"\xff",
+    "invalid": b"{}",
+    "source_not_a_string": json.dumps({
+        "artifact_schema_version": 1,
+        "kind": PATH_SAFETY_EVIDENCE_KIND,
+        "evidence_source": [HARDWARE_PROBE_EVIDENCE_SOURCE],
+    }).encode(),
+}
 _EVIDENCE_BLOCKER_CODES = {
     "path_safety_evidence_missing",
     "path_safety_evidence_unreadable",
@@ -273,6 +282,7 @@ _EVIDENCE_BLOCKER_CODES = {
         ("unparseable", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
         ("not_utf8", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
         ("invalid", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
+        ("source_not_a_string", "invalid", "evidence_invalid", "path_safety_evidence_invalid"),
         ("valid", "pass", "ready", None),
     ],
 )

@@ -886,7 +886,7 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
     evidence_source = raw.get("evidence_source")
     if evidence_source is None:
         raise ActiveSpeakerConfigError("path safety evidence source is required")
-    if evidence_source not in SUPPORTED_EVIDENCE_SOURCES:
+    if not isinstance(evidence_source, str) or evidence_source not in SUPPORTED_EVIDENCE_SOURCES:
         raise ActiveSpeakerConfigError("unsupported path safety evidence source")
     paths = raw.get("paths")
     if not isinstance(paths, dict):
