@@ -15,6 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
+from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
 
@@ -130,8 +131,6 @@ _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if r
                                 (REGIME_SUMMED,)) for name in PURPOSES}
 # A reference take may also be one driver near its cone (ADR-0360).
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
-#: Farthest a reference near-field pose sits from the dust cap (ADR-0360).
-NEAR_FIELD_MAX_DISTANCE_M = 0.1
 #: The size of a run whose poses are its own, not a bundled layout's.
 CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
@@ -215,8 +214,7 @@ def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind
     if bool(driver) != (purpose == PURPOSE_REFERENCE and regime == REGIME_NEAR_FIELD):
         raise ValueError(f"a pose names its driver exactly when it is a {PURPOSE_REFERENCE} "
                          f"{REGIME_NEAR_FIELD} pose")
-    if driver and not (kind == POSE_KIND_CLOSE and distance_m is not None
-                       and distance_m <= NEAR_FIELD_MAX_DISTANCE_M):
+    if driver and not (kind == POSE_KIND_CLOSE and at_driver_near_field(driver, distance_m)):
         raise ValueError(f"a driver's pose is a close pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m")
     return driver
 
@@ -249,14 +247,15 @@ def run_purposes(run_program: str) -> tuple[str, ...]:
     return (row.purpose, *row.co_purposes)
 
 
-def gate_exemption(purpose: str | None, *, driver: str = "") -> str | None:
+def gate_exemption(purpose: str | None, *, driver: str = "", distance_m: float | None = None) -> str | None:
     """Why a take is read ungated: a room, bass or rear take measures the
-    room; a pose at one driver is too close for the room to matter (ADR-0360)."""
+    room; a pose within the near-field distance of one driver reads the room
+    about 40 dB down (ADR-0366)."""
     from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
     if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR):
         return SEAT_EXEMPT
-    return NEAR_FIELD_EXEMPT if driver else None
+    return NEAR_FIELD_EXEMPT if at_driver_near_field(driver, distance_m) else None
 
 
 def validated_pose(

@@ -37,7 +37,6 @@ from jasper.active_speaker.branch_chain import (
     confirmed_protection_sections,
     crossover_response_complex,
     crossover_response_db,
-    far_field_ceiling_hz,
     headroom_charge_db,
     radiating_band_hz,
     recommended_distance,
@@ -51,6 +50,7 @@ from jasper.active_speaker.graph.active_verifier import (
     _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
 )
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
+from jasper.audio_measurement.piston import far_field_ceiling_hz
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
 from tests.test_rear_output_foundation import _rear_document
 

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
-from jasper.active_speaker.branch_chain import beaming_onset_hz
+from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     resolve_driver_measurement_band_hz,

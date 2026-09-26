@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from itertools import combinations
 from types import MappingProxyType
 from typing import Any
@@ -28,11 +29,14 @@ import numpy as np
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
+from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
 from jasper.speaker_layout import measurement_target_parts
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
+from ..measurement_programs import gate_exemption
 
-#: Where the distance step is read: above a port, below cone breakup (#5684).
+#: Where the distance step is read: above a port, below cone breakup (#5684),
+#: and never above the driver's trusted band (ADR-0366).
 STEP_BAND_HZ = (35.0, 400.0)
 #: The piston runs 0.15-0.3 dB short of jts3's measured 15 -> 30 mm step (#5684).
 STEP_TOLERANCE_DB = 0.4
@@ -106,19 +110,24 @@ def nearfield_view(
     step_levels: list[float | None] = []
     raw_rows: list[tuple[np.ndarray, np.ndarray] | None] = []
     placed: dict[str, dict[float, list[int]]] = {}
+    bands: dict[str, TrustedBand] = {}
     for take in takes:
         if not (take.get("selected") and (take.get("pose") or {}).get("driver") and take.get("curve")):
             continue
         freqs, sweeps = _sweeps(take["curve"])
         swept = take["curve"]["band_hz"]
-        step = _within(freqs, sweeps, STEP_BAND_HZ, swept)
+        driver, distance_m = take["pose"]["driver"], float(take["pose"]["distance_m"])
+        trusted = bands.setdefault(driver, trusted_band(
+            distance_m=distance_m, driver=driver, room=None,
+            gated=gate_exemption(take.get("purpose"), driver=driver, distance_m=distance_m) is None,
+            diameters_mm=(radiating_diameter_mm_by_role.get(measurement_target_parts(driver)[0]),)))
+        step = _within(freqs, sweeps, (STEP_BAND_HZ[0], min(STEP_BAND_HZ[1], trusted.high_hz or math.inf)), swept)
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
         path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
         # The first sweep can catch an amplifier still waking (#5684).
         raw_rows.append(None if path_db is None else
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
-        row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
-               "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
+        row = {"take_id": take["take_id"], "driver": driver, "distance_mm": round(distance_m * 1000.0, 1),
                "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
                          if (band := _band(freqs, sweeps, edges, swept)) is not None]}
@@ -154,8 +163,8 @@ def nearfield_view(
             steps.append({"near_mm": near_mm, "far_mm": far_mm, "step_db": measured, "piston_db": piston,
                           "verdict": "not_evaluated" if piston is None else
                           "pass" if abs(measured - piston) <= STEP_TOLERANCE_DB else "fail"})
-        drivers.append({"driver": driver, "radiating_diameter_mm": diameter, "placements": placements,
-                        "steps": steps})
+        drivers.append({"driver": driver, "radiating_diameter_mm": diameter, "trusted_band": asdict(bands[driver]),
+                        "placements": placements, "steps": steps})
     return {
         "parameters": {"ladder": "near_field", "trusted_snr_db": DRIVER.snr_warn_db,
                        "step_band_hz": list(STEP_BAND_HZ), "step_tolerance_db": STEP_TOLERANCE_DB},

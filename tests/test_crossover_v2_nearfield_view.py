@@ -62,9 +62,22 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
     woofer, rear = view["drivers"]
     assert (woofer["driver"], rear["driver"]) == ("woofer", "woofer:rear")
     assert tuple(driver["steps"][0]["verdict"] for driver in (woofer, rear)) == verdicts
+    assert {(driver["trusted_band"]["high_source"], driver["trusted_band"]["undeclared"]) for driver in (woofer, rear)} == {
+        ("near_field_limit", ()) if diameters else (None, ("driver_size_undeclared",))}
     reseat = woofer["placements"][0]
     assert reseat["take_ids"] == ["w15", "w15again"]
     assert reseat["reseat_spread_db"][2] == pytest.approx(0.3, abs=0.05)
+
+
+def test_a_drivers_distance_step_stops_at_its_trusted_band():
+    """A 305 mm cone's ka reaches 1 at 358 Hz, under the step band's 400 Hz top,
+    so a level change between them moves only a smaller cone's step (ADR-0366)."""
+    far = _take("w30", "woofer", 30, 90.0 + STEP, seed=1)
+    for sweep in (far["curve"], *far["curve"]["repeat_curves"]):
+        sweep["magnitude_db"] = [db + 6.0 * (360.0 < hz < 400.0) for hz, db in zip(FREQS, sweep["magnitude_db"])]
+    steps = [nv.nearfield_view([_take("w15", "woofer", 15, 90.0), far], radiating_diameter_mm_by_role={"woofer": mm})
+             ["drivers"][0]["steps"][0]["step_db"] for mm in (305.0, 114.0)]
+    assert steps[0] == pytest.approx(STEP, abs=0.05) and steps[1] > STEP + 0.3
 
 
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():

@@ -26,7 +26,7 @@ from jasper.active_speaker.crossover_v2 import prescription_document as pd, pres
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
-from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
 from jasper.cli import round as round_cli
 
 
@@ -413,9 +413,19 @@ def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(size, poses) -> None
     assert [(pose.azimuth_deg, pose.repeats) for pose in row.poses] == poses
 
 
-def test_rear_gate_exemption_matches_room() -> None:
-    """A rear comparison reads below the gate's trusted floor, same as room (issue #5330)."""
-    assert mp.gate_exemption(mp.PURPOSE_REAR) == mp.gate_exemption(mp.PURPOSE_ROOM) == SEAT_EXEMPT
+@pytest.mark.parametrize("purpose,driver,distance_m,reason", [
+    (mp.PURPOSE_REAR, "", None, SEAT_EXEMPT),
+    (mp.PURPOSE_ROOM, "", None, SEAT_EXEMPT),
+    (mp.PURPOSE_REFERENCE, "woofer:rear", 0.015, NEAR_FIELD_EXEMPT),
+    (mp.PURPOSE_REFERENCE, "woofer", mp.NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
+    (mp.PURPOSE_REFERENCE, "woofer", 0.5, None),
+    (mp.PURPOSE_REFERENCE, "", 0.03, None),
+])
+def test_a_take_reads_ungated_for_the_room_or_within_one_drivers_near_field(purpose, driver, distance_m, reason) -> None:
+    """A rear comparison reads below the gate's trusted floor, same as room
+    (issue #5330); a pose at one driver reads ungated only within the
+    near-field distance, so a far-field one-driver take is gated (ADR-0366)."""
+    assert mp.gate_exemption(purpose, driver=driver, distance_m=distance_m) == reason
 
 
 @pytest.mark.parametrize("purpose,regime,supported", [

@@ -19,7 +19,7 @@ import math
 
 import pytest
 
-from jasper.active_speaker.branch_chain import BEAMING_KA, beaming_onset_hz
+from jasper.audio_measurement.piston import BEAMING_KA, beaming_onset_hz
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
