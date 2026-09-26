@@ -182,9 +182,8 @@ class _ControlVerb(NamedTuple):
     bad_arity: str | None
 
 
-# The control socket's vocabulary, one entry per verb; the clients that send
-# them spell the words in jasper/platform/wire.py. Spelled as literals here
-# because tests/test_platform_wire.py greps this file for each verb it emits.
+# See jasper/platform/wire.py for sender verbs; tests/test_platform_wire.py
+# checks them against the _CONTROL_VERBS keys.
 _CONTROL_VERBS: dict[str, _ControlVerb] = {
     "STATUS": _ControlVerb(0, "_control_status", None),
     "AUTO": _ControlVerb(0, "auto_select", None),
