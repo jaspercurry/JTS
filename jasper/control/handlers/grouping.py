@@ -204,13 +204,6 @@ class _GroupingReconcilerKickCoalescer:
         self._last_kick_at: float | None = None
         self._trailing_handle: Any | None = None
 
-    def reset_for_tests(self) -> None:
-        with self._lock:
-            if self._trailing_handle is not None:
-                self._trailing_handle.cancel()
-            self._trailing_handle = None
-            self._last_kick_at = None
-
     def kick(self) -> None:
         """Kick now if the cooldown is clear, else arm one trailing kick."""
         reason: str | None = None
@@ -284,9 +277,6 @@ _grouping_reconciler_kick_coalescer = _GroupingReconcilerKickCoalescer(
     launch=_launch_grouping_reconciler_kick,
 )
 
-
-def _reset_grouping_reconciler_kick_coalescer_for_tests() -> None:
-    _grouping_reconciler_kick_coalescer.reset_for_tests()
 
 
 def _kick_grouping_reconciler() -> None:

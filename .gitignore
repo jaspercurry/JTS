@@ -1,9 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-# No trailing slash — agent worktrees symlink the main checkout's
-# .venv in (no .venv of their own), and a trailing slash only matches
-# a directory, not a symlink of the same name (bit for real, PR #2740).
+# No trailing slash: match both a directory and a worktree's venv symlink.
 .venv
 # Slash kept: this repo's venv is .venv; no `venv` symlink has been seen.
 venv/

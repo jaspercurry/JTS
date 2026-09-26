@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared fixtures for the ``test_control_server*`` modules.
-
-One HTTP server fixture per stubbed collaborator, the fake volume
-coordinator, and the urllib request helpers. The two autouse fixtures
-isolate household-secret and output-topology state; every consuming
-module imports both.
-"""
+"""Shared control-server fixtures."""
 
 from __future__ import annotations
 
@@ -387,5 +381,9 @@ def _grouping_test_setup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
-    srv_mod._reset_grouping_reconciler_kick_coalescer_for_tests()
+    coalescer = srv_mod._grouping_reconciler_kick_coalescer
+    with coalescer._lock:
+        if coalescer._trailing_handle is not None:
+            coalescer._trailing_handle.cancel()
+        coalescer._trailing_handle = coalescer._last_kick_at = None
     return env, popens

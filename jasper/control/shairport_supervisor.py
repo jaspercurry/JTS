@@ -8,7 +8,7 @@ of the JTS resilience ladder.
 shairport-sync's AP2 control plane occasionally wedges: the process
 stays alive, mDNS still advertises, MPRIS still answers, but new
 AirPlay SETUPs hang after `accept()`. `Restart=always` is blind to
-this; the only existing fix is the manual `scripts/airplay-reset.sh`.
+this; an external liveness probe must detect it.
 
 This supervisor talks RTSP `OPTIONS *` to localhost:7000 on a
 cadence. After a confidence threshold of consecutive failures, gated
