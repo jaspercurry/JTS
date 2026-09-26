@@ -27,7 +27,6 @@ from jasper.audio_profile_state import (
     WAKE_LEG_DEFAULTS,
     normalize_audio_input_profile,
     resolve_profile_wake_legs,
-    parse_env_bool,
     profile_env_updates,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
@@ -36,7 +35,7 @@ from jasper.aec import bridge_engines, bridge_telemetry
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
-from jasper.env_load import parse_env_file
+from jasper.env_load import parse_bool_value, parse_env_file
 from jasper.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
@@ -2581,8 +2580,8 @@ def test_reconciler_normalizes_hand_edited_legs(tmp_path: Path, value: str) -> N
     result = _run_reconcile(tmp_path)
     assert result.returncode == 0, result.stderr
     values = parse_env_file(str(tmp_path / "jasper.env"))
-    assert values["JASPER_MIC_DEVICE_RAW"] == (_RAW_PORT if parse_env_bool(value, True) or value == "" else "")
-    assert values["JASPER_MIC_DEVICE_DTLN"] == (_DTLN_PORT if parse_env_bool(value) else "")
+    assert values["JASPER_MIC_DEVICE_RAW"] == (_RAW_PORT if parse_bool_value(value, True) or value == "" else "")
+    assert values["JASPER_MIC_DEVICE_DTLN"] == (_DTLN_PORT if parse_bool_value(value, False) else "")
 
 
 def test_chip_aec_test_alias_reaches_the_testing_profile(tmp_path: Path) -> None:

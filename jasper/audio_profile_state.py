@@ -28,6 +28,7 @@ from .chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
 from .aec.bridge_engines import DTLN_ENABLED_ENV
+from .env_load import parse_bool_value
 from .mics import xvf3800
 from .mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
@@ -123,17 +124,6 @@ class MicProbe:
     probe_error: str | None = None
 
 
-def parse_env_bool(raw: str, default: bool = False) -> bool:
-    """Normalize the boolean vocabulary used by systemd env files."""
-
-    value = raw.strip().strip("'\"").lower()
-    if value in ("1", "true", "on", "yes", "y", "enabled", "enable"):
-        return True
-    if value in ("0", "false", "off", "no", "n", "disabled", "disable", ""):
-        return False
-    return default
-
-
 def intent_from_env(values: Mapping[str, str]) -> AecIntent:
     """Read every `WAKE_LEG_DEFAULTS` boolean from an aec_mode.env mapping.
 
@@ -145,7 +135,7 @@ def intent_from_env(values: Mapping[str, str]) -> AecIntent:
 
     legs = {
         name: default if values.get(key) is None
-        else parse_env_bool(values[key], default)
+        else parse_bool_value(values[key], default)
         for name, key, default in WAKE_LEG_DEFAULTS
     }
     return AecIntent(
@@ -422,7 +412,7 @@ def runtime_env_from_mapping(
             "chip_aec_150",
             process_env=process_env,
         ),
-        chip_enabled=parse_env_bool(
+        chip_enabled=parse_bool_value(
             env_value(env, CHIP_AEC_ENABLED_ENV, "0", process_env=process_env),
             default=False,
         ),
@@ -438,7 +428,7 @@ def runtime_env_from_mapping(
             "",
             process_env=process_env,
         ),
-        dtln_enabled=parse_env_bool(
+        dtln_enabled=parse_bool_value(
             env_value(env, DTLN_ENABLED_ENV, "0", process_env=process_env),
             default=False,
         ),

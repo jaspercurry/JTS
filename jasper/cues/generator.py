@@ -39,8 +39,10 @@ import os
 import time
 import wave
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Callable, Collection, Protocol
 
+from ..atomic_io import atomic_write_bytes
 from ..voice.earcons import LISTENING_CHIRP_RECIPE, render_recipe
 from .registry import CueDef
 
@@ -103,17 +105,7 @@ def render_template(cue: CueDef, hostname: str) -> str:
 def cue_hash(
     cue: CueDef, hostname: str, voice: str, model: str = GEMINI_TTS_MODEL,
 ) -> str:
-    """Short content-addressable cache key. Encoded into the cached
-    filename so a mismatch on any input naturally invalidates the
-    cache (the manager looks for the new filename, doesn't find it,
-    regenerates)."""
-    text = render_template(cue, hostname)
-    payload = (
-        f"v={GENERATOR_VERSION}|model={model}|voice={voice}"
-        f"|rate={WAV_RATE}|sw={WAV_SAMPLE_WIDTH}"
-        f"|ch={WAV_CHANNELS}|text={text}"
-    )
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
+    return dynamic_text_hash(render_template(cue, hostname), voice, model)
 
 
 def cue_filename(
@@ -148,18 +140,13 @@ def backend_model(backend: object | None) -> str:
 
 
 def _write_wav_atomic(path: str, pcm_24k_bytes: bytes) -> None:
-    """Write a 16-bit mono PCM 24kHz WAV file atomically (write
-    `.tmp` first, then rename). Standard WAV (not raw PCM) so cached
-    files are playable with `aplay` / `afplay` for debugging — those
-    tools read the rate from the WAV header and produce correct
-    playback regardless of the speaker's TtsPlayout configuration."""
-    tmp = path + ".tmp"
-    with wave.open(tmp, "wb") as f:
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as f:
         f.setnchannels(WAV_CHANNELS)
         f.setsampwidth(WAV_SAMPLE_WIDTH)
         f.setframerate(WAV_RATE)
         f.writeframes(pcm_24k_bytes)
-    os.replace(tmp, path)
+    atomic_write_bytes(path, buffer.getvalue(), mode=None, group_from_parent=False)
 
 
 # --- Generator interface ---
