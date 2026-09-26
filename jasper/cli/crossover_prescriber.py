@@ -584,6 +584,7 @@ def status_document(
         layers=layers, candidate_fingerprint=identity.get("candidate"),
         summary="applied layers: " + (", ".join(name for name, applied in layers.items() if applied) or "none"),
         reference_volume_db=seat_level_db, leveled_db_spl=level.get("leveled_db_spl"),
+        anchor_graph_mismatch=level.get("anchor_graph_mismatch"), anchor_pose_mismatch=level.get("anchor_pose_mismatch"),
     )
     return {
         "speaker": {
