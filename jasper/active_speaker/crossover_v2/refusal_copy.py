@@ -12,6 +12,7 @@ from typing import Any, Iterable, Literal, Mapping
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
+from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
 
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -477,6 +478,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},
+    ),
+    CODE_CAPTURE_GAIN_UNVERIFIED: ReasonSpec(
+        CODE_CAPTURE_GAIN_UNVERIFIED, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not set the measurement microphone's input level to full, so it cannot check the sound level. "
+        "Reconnect the microphone, then measure again.",
+        next_action={"id": "connect_mic", "label": "Reconnect the measurement microphone", "href": "/sound/speaker/crossover/"},
     ),
     "measurement_mic_unidentified": ReasonSpec(
         "measurement_mic_unidentified", TEMPLATE_HARD_STOP, 0, "", "Select a known measurement microphone.",

@@ -63,11 +63,13 @@ from jasper.audio_measurement.frame_ledger import (
 )
 from jasper.audio_measurement.wired_capture import (
     CAPTURE_RING_PERIODS,
+    CODE_CAPTURE_GAIN_UNVERIFIED,
     CODE_WIRED_MIC_MISSING,
     MAX_CONSECUTIVE_READ_FAILURES,
     SPL_BATCH_S,
     WiredCaptureAnswer,
     WiredCaptureError,
+    WiredCaptureGainUnverified,
     WiredMicDevice,
     WiredMicMissing,
     WiredRecorder,
@@ -638,15 +640,121 @@ def test_open_failure_raises_wired_capture_error():
         recorder.start()
 
 
+#: Like pyalsaaudio's, it derives from ``Exception``, not ``OSError``.
+_ALSAAudioError = type("ALSAAudioError", (Exception,), {})
+
+
+class _Umik2Mixer:
+    """The UMIK-2's simple controls as pyalsaaudio reads them on jts3: ``Mic``,0 stereo and
+    ``Mic``,1 mono, capture volume 0..50 (-50..0 dB) with a capture switch, beside a
+    read-only clock flag. A write the card refuses still shows on the writing handle,
+    whose cache keeps the asked value, as ALSA's does."""
+
+    def __init__(self, level=50, on=True, *, takes_writes=True, capture=True, reachable=True):
+        self.state = {("Mic", 0): ([level] * 2, [on] * 2), ("Mic", 1): ([level], [on])} if capture else {}
+        self.takes_writes, self.reachable = takes_writes, reachable
+
+    def mixers(self, *, device):
+        assert device == "hw:CARD=UMIK2"
+        if not self.reachable:
+            raise _ALSAAudioError("No such file or directory [hw:CARD=UMIK2]")
+        return [name for name, _index in self.state] + ["miniDSP Internal Clock Validity"]
+
+    def Mixer(self, *, control, id, device):
+        assert device == "hw:CARD=UMIK2"
+        return _Umik2MixerHandle(self, (control, id))
+
+
+class _Umik2MixerHandle:
+    def __init__(self, card, key):
+        self.card, self.key = card, key
+        volumes, switches = card.state.get(key, ([], []))
+        self.volumes, self.switches = list(volumes), list(switches)
+
+    def volumecap(self):
+        return ["Capture Volume"] if self.volumes else []
+
+    def switchcap(self):
+        return ["Capture Mute"] if self.switches else ["Mute"]
+
+    def getrange(self, *, pcmtype, units):
+        return [0, 50]
+
+    def getvolume(self, *, pcmtype, units):
+        return list(self.volumes) if units == "raw" else [(value - 50) * 100 for value in self.volumes]
+
+    def setvolume(self, volume, *, pcmtype, units):
+        self.volumes = [volume] * len(self.volumes)
+        self._write()
+
+    def getrec(self):
+        return [int(on) for on in self.switches]
+
+    def setrec(self, capture):
+        self.switches = [bool(capture)] * len(self.switches)
+        self._write()
+
+    def _write(self):
+        if self.card.takes_writes:
+            self.card.state[self.key] = (list(self.volumes), list(self.switches))
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def fake_alsaaudio(monkeypatch):
-    """pyalsaaudio as far as the capture path touches it; like the real one, its error
-    derives from ``Exception``, not ``OSError``."""
+    """pyalsaaudio as far as the capture path touches it, with a UMIK-2 at full scale on
+    the mixer."""
     alsaaudio = ModuleType("alsaaudio")
     alsaaudio.PCM_CAPTURE, alsaaudio.PCM_NORMAL, alsaaudio.PCM_FORMAT_S32_LE = "capture", "normal", "s32"
-    alsaaudio.ALSAAudioError = type("ALSAAudioError", (Exception,), {})
+    alsaaudio.VOLUME_UNITS_RAW, alsaaudio.VOLUME_UNITS_DB = "raw", "db"
+    alsaaudio.ALSAAudioError = _ALSAAudioError
+    card = _Umik2Mixer()
+    alsaaudio.mixers, alsaaudio.Mixer = card.mixers, card.Mixer
     monkeypatch.setitem(sys.modules, "alsaaudio", alsaaudio)
     return alsaaudio
+
+
+def _mic_read_back(value, switch):
+    return [
+        {"control": "Mic", "index": 0, "value": [value] * 2, "max": 50, "db": [value - 50.0] * 2, "switch": [switch] * 2},
+        {"control": "Mic", "index": 1, "value": [value], "max": 50, "db": [value - 50.0], "switch": [switch]},
+    ]
+
+
+@pytest.mark.parametrize("found, verified, controls", [
+    ({}, True, _mic_read_back(50, True)),
+    ({"level": 40, "on": False}, True, _mic_read_back(50, True)),
+    ({"level": 40, "on": False, "takes_writes": False}, False, _mic_read_back(40, False)),
+    ({"capture": False}, False, []),
+    ({"reachable": False}, False, []),
+], ids=["at_full_scale", "raised", "write_refused", "no_capture_volume", "no_mixer"])
+def test_a_capture_opens_at_full_scale_gain_or_the_spl_stop_refuses(fake_alsaaudio, found, verified, controls):
+    """The Sens Factor holds only at full-scale capture gain (#4865). Each open sets it, reads
+    it back and records it; a capture the SPL stop watches refuses by code when the read-back
+    falls short or finds nothing to verify, and an unwatched capture still records what it read."""
+    card = _Umik2Mixer(**found)
+    fake_alsaaudio.mixers, fake_alsaaudio.Mixer = card.mixers, card.Mixer
+    opened = []
+    fake_alsaaudio.PCM = lambda **kwargs: opened.append(kwargs) or FakePcm([])
+
+    relative = make_wired_recorder(_umik2(), sample_rate_hz=RATE, max_capture_s=1.0)
+    relative.start()
+    recording = relative.finish(tail_s=0)
+    assert recording.capture_gain == {"verified": verified, "controls": controls}
+    assert mint_wired_answer(recording, device=_umik2()).device["capture_gain"] == recording.capture_gain
+
+    watched = make_wired_recorder(_umik2(), sample_rate_hz=RATE, max_capture_s=1.0)
+    watched.spl_monitor = WiredSplMonitor(_Sensitivity(), 85.0, 0)
+    if verified:
+        watched.start()
+        watched.abort()
+    else:
+        with pytest.raises(WiredCaptureGainUnverified) as caught:
+            watched.start()
+        assert caught.value.code == CODE_CAPTURE_GAIN_UNVERIFIED
+    assert len(opened) == (2 if verified else 1)  # a refused capture never opens its PCM
 
 
 def test_the_capture_opens_a_deep_alsa_ring(fake_alsaaudio):
