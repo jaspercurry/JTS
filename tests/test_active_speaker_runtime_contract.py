@@ -26,7 +26,6 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
@@ -41,7 +40,6 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.output_contract import (
-    ACTIVE_DRIVER_DOMAIN_SOURCE,
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
     CONTRACT_ACTIVE_STEREO_2WAY,
@@ -84,7 +82,7 @@ from tests._camilla_readback_double import (
     camilla_default_filled,
 )
 from tests._log_events import event_fields, event_records
-from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
+from tests.active_speaker_fixtures import driver_domain_graph, mono_output_topology, passive_stereo_output_topology
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.output_topology_store import (
     read_topology_fingerprint_stamp,
@@ -298,7 +296,7 @@ def _driver_domain_yaml(
     bass_extension=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
-    return emit_active_speaker_driver_domain_config(
+    return driver_domain_graph(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
         program_channel=channel,
@@ -3637,18 +3635,6 @@ def test_driver_domain_baseline_allowed(layout: str, way: int, channel: str) -> 
     assert graph.allowed, graph.issues
     assert graph.classification == GRAPH_DRIVER_DOMAIN_BASELINE
     assert graph.details["driver_domain_candidate"] is True
-
-
-def test_driver_domain_source_marker_matches_verifier() -> None:
-    # The cross-module routing contract: the emitter's `# Source:` header must be
-    # the exact string the verifier independently names, or the driver-domain arm
-    # never fires (the round-trip above IS the live pin; this asserts it directly
-    # so a rename fails loudly here too).
-    text = _driver_domain_yaml("mono", 2)
-    source_line = next(
-        line for line in text.splitlines() if line.startswith("# Source:")
-    )
-    assert source_line.split("# Source:")[1].strip() == ACTIVE_DRIVER_DOMAIN_SOURCE
 
 
 def test_driver_domain_pair_trim_is_allowed_and_non_positive() -> None:

@@ -40,10 +40,6 @@ from .document import (
 )
 from .emit_baseline import emit_active_speaker_baseline_config as emit_active_speaker_baseline_config
 from .emit_commissioning import emit_active_speaker_commissioning_config as emit_active_speaker_commissioning_config
-from .emit_driver_domain import (
-    DRIVER_DOMAIN_PROGRAM_CHANNELS as DRIVER_DOMAIN_PROGRAM_CHANNELS,
-    emit_active_speaker_driver_domain_config as emit_active_speaker_driver_domain_config,
-)
 from .emit_parked import (
     ACTIVE_PARKED_SOURCE as ACTIVE_PARKED_SOURCE,
     PARKED_CONFIG_NAME as PARKED_CONFIG_NAME,
@@ -135,7 +131,6 @@ from .pipeline import (
     _driver_filter_chain as _driver_filter_chain,
     _emit_baseline_pipeline as _emit_baseline_pipeline,
     _emit_commissioning_pipeline as _emit_commissioning_pipeline,
-    _emit_driver_domain_pipeline as _emit_driver_domain_pipeline,
     _emit_pipeline as _emit_pipeline,
     _emit_role_routed_mixer as _emit_role_routed_mixer,
     _emit_split_mixer as _emit_split_mixer,

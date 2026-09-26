@@ -35,6 +35,7 @@ from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
 from jasper.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
+from tests.active_speaker_fixtures import driver_domain_graph
 from tests.systemd_unit_helpers import values_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
@@ -625,9 +626,7 @@ def _active_graph_env(
 def _active_leader_graph_env(
     tmp_path: Path, *, channels: int = 2, write_crossover_statefile: bool = True
 ) -> dict[str, str]:
-    """Stage camilla#1 program bake + camilla#2 endpoint graph for the gate."""
     from jasper.active_speaker import (
-        emit_active_speaker_driver_domain_config,
         emit_active_speaker_program_bake_config,
     )
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
@@ -643,7 +642,7 @@ def _active_leader_graph_env(
     )
     crossover_config = tmp_path / "grouping_active_leader_crossover.yml"
     crossover_config.write_text(
-        emit_active_speaker_driver_domain_config(
+        driver_domain_graph(
             preset,
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             program_channel="mono",

@@ -59,7 +59,6 @@ from jasper.active_speaker.camilla_yaml import (
     _assert_tweeter_crossover_honours_declared_floor,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
@@ -799,29 +798,12 @@ def test_baseline_emit_invents_no_floor_where_the_operator_declared_none() -> No
     assert "freq: 2000.0000" in text
 
 
-@pytest.mark.parametrize("emitter", ["baseline", "driver_domain"])
-def test_both_household_emitters_share_the_declared_floor_gate(emitter: str) -> None:
-    """Every graph that carries household program inherits the bound.
-
-    Mirrors ``test_both_emitters_share_correction_safety_gate`` in
-    tests/test_active_speaker_driver_domain.py: a bonded leader's driver domain
-    runs the same protective chain on the same drivers as the solo baseline, so
-    a gate one honours and the other does not is a hole with a hardware trigger
-    (bond the speaker, and the refused graph applies).
-    """
-
+def test_baseline_emitter_uses_the_declared_floor_gate() -> None:
     topology = mono_output_topology()
     preset = _below_floor_preset(topology)
 
     with pytest.raises(ActiveSpeakerConfigError):
-        if emitter == "baseline":
-            emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
-        else:
-            emit_active_speaker_driver_domain_config(
-                preset,
-                playback_device=ACTIVE_PCM,
-                program_channel="left",
-            )
+        emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
 
 
 def test_the_gate_refuses_a_declared_floor_with_no_readable_crossover_corner(

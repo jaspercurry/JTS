@@ -59,9 +59,7 @@ def emit_active_speaker_program_bake_config(
     the snapserver pipe so the followers receive a corrected stereo wire. The
     **driver** half (Layer A) lives in camilla#2 and is deliberately absent.
 
-    A separate emit that bypasses the graph carrier, like the follower's
-    :func:`emit_active_speaker_driver_domain_config`. The program assembly is
-    :func:`jasper.sound.camilla_yaml.emit_sound_config`'s, reused verbatim with a
+    The program assembly reuses :func:`jasper.sound.camilla_yaml.emit_sound_config` with a
     ``File``/pipe sink, so the baked correction is byte-for-byte the program
     graph the speaker already ships; only the ``# Source:`` marker differs.
 
