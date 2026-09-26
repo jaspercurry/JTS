@@ -986,7 +986,7 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
     }
 
 
-# status -> (load_gate, issue code). Each refuses the load under its own code (#5708).
+# Never share a gate or code between statuses; see #5708.
 _EVIDENCE_BLOCKERS = {
     "missing": ("evidence_missing", "path_safety_evidence_missing"),
     "unreadable": ("evidence_unreadable", "path_safety_evidence_unreadable"),
@@ -1013,15 +1013,14 @@ def read_path_safety_evidence(
         else:
             return {**report, "provided": True, "path": str(path)}, raw
     load_gate, code = _EVIDENCE_BLOCKERS[status]
-    blocker = {
+    return {
         "provided": path is not None,
         **({} if path is None else {"path": str(path)}),
         "status": status,
         "ok_to_load_active_config": False,
         "load_gate": load_gate,
         "issues": [_issue("blocker", code, detail)],
-    }
-    return blocker, None
+    }, None
 
 
 def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
