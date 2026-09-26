@@ -48,7 +48,7 @@ USBSINK_READINESS_UNIT = ROOT / "deploy/systemd/jasper-usbsink.service"
 TIER_A = {
     "jasper-voice": ROOT / "deploy/systemd/jasper-voice.service",
     "jasper-control": ROOT / "deploy/systemd/jasper-control.service",
-    "jasper-web": ROOT / "deploy/jasper-web.service",
+    "jasper-web": ROOT / "deploy/systemd/jasper-web.service",
     "jasper-mux": ROOT / "deploy/systemd/jasper-mux.service",
     "jasper-input": ROOT / "deploy/systemd/jasper-input.service",
 }
@@ -736,7 +736,7 @@ def test_streambox_spotify_uses_intsecrets_compartment():
     int_dir = "/var/lib/jasper-intsecrets"
     old_spotify = "/var/lib/jasper/spotify_credentials.env"
 
-    streambox = ROOT / "deploy/jasper-web-streambox.service"
+    streambox = ROOT / "deploy/systemd/jasper-web-streambox.service"
     directives = list(_directives(streambox))
     envfiles = " ".join(v for k, v in directives if k == "EnvironmentFile")
     rwpaths = " ".join(v for k, v in directives if k == "ReadWritePaths")
@@ -764,7 +764,7 @@ def test_streambox_web_unit_sources_every_env_its_wizards_write():
         return {v.lstrip("-") for k, v in _directives(path) if k == "EnvironmentFile"}
 
     full = envfiles(TIER_A["jasper-web"])
-    streambox = envfiles(ROOT / "deploy/jasper-web-streambox.service")
+    streambox = envfiles(ROOT / "deploy/systemd/jasper-web-streambox.service")
 
     assert full - STREAMBOX_EXEMPT_ENVFILES <= streambox, (
         "streambox jasper-web is missing env files the full unit sources: "
@@ -778,7 +778,7 @@ def test_streambox_web_unit_sources_every_env_its_wizards_write():
     # needs the same write grant the full unit carries.
     rw = " ".join(
         v
-        for k, v in _directives(ROOT / "deploy/jasper-web-streambox.service")
+        for k, v in _directives(ROOT / "deploy/systemd/jasper-web-streambox.service")
         if k == "ReadWritePaths"
     )
     assert "/var/lib/jasper-secrets" in rw
@@ -791,10 +791,10 @@ def test_streambox_web_unit_stays_root_until_validated():
     a one-line `User=`/`Group=` edit here once validated. Guard against an
     accidental half-drop (a User= without the validation) by pinning the
     deferral — when it's deliberately dropped, this test is updated in the same PR."""
-    streambox = ROOT / "deploy/jasper-web-streambox.service"
+    streambox = ROOT / "deploy/systemd/jasper-web-streambox.service"
     assert streambox.is_file(), f"missing {streambox}"
     assert not any(k == "User" for k, _ in _directives(streambox)), (
-        "deploy/jasper-web-streambox.service gained User= — the streambox web "
+        "deploy/systemd/jasper-web-streambox.service gained User= — the streambox web "
         "drop needs streambox-hardware validation first."
     )
 
@@ -1199,7 +1199,7 @@ _SHARED_STATE_WRITERS = {
     "jasper-mux": TIER_A["jasper-mux"],
     "jasper-control": TIER_A["jasper-control"],
     "jasper-web": TIER_A["jasper-web"],
-    "jasper-web-streambox": ROOT / "deploy/jasper-web-streambox.service",
+    "jasper-web-streambox": ROOT / "deploy/systemd/jasper-web-streambox.service",
 }
 
 

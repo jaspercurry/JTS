@@ -11,7 +11,7 @@ from . import nginx_site
 from .test_install_state_group_write import _extract as _extract_bash_function
 
 ROOT = Path(__file__).resolve().parent.parent
-UNIT_PATH = ROOT / "deploy" / "jasper-correction-web.service"
+UNIT_PATH = ROOT / "deploy" / "systemd" / "jasper-correction-web.service"
 INSTALL_SH = ROOT / "deploy" / "install.sh"
 
 

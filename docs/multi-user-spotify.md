@@ -453,7 +453,7 @@ jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch
 jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware)
 deploy/nginx/jts-routes-common.conf   /spotify/ + /assistant/voice/ proxy
-deploy/jasper-web.service             systemd unit for jasper-web
+deploy/systemd/jasper-web.service     systemd unit for jasper-web
 ```
 
 Last verified: 2026-07-12 (OAuth pending-flow ownership and successful-link

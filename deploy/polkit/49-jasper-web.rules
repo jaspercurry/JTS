@@ -7,7 +7,7 @@
 //
 // jasper-web is the setup-wizard HTTP server (the /wifi/ page in particular).
 // Once it drops from root to the `jasper-web` system user
-// (deploy/jasper-web.service), every NetworkManager write it performs is
+// (deploy/systemd/jasper-web.service), every NetworkManager write it performs is
 // mediated by polkit instead of being a uid-0 bypass. nmcli talks to
 // NetworkManager over D-Bus, and NM gates the privileged operations behind
 // these polkit actions. Their implicit defaults DENY a sessionless system

@@ -396,10 +396,10 @@ def main() -> int:
 
     install_env_canonical_target_provider()
 
-    # Port assignments mirror deploy/nginx/*.conf and deploy/jasper-web*.socket
+    # Port assignments mirror deploy/nginx/*.conf and deploy/systemd/jasper-web*.socket
     # (no per-wizard CLI). The registry above is the local source of truth
     # for this host: adding a wizard should add one WizardSpec, one
-    # factory, and one ListenStream in deploy/jasper-web.socket.
+    # factory, and one ListenStream in deploy/systemd/jasper-web.socket.
     #
     # With socket activation, we still bind these *logically* via the
     # .socket unit's ListenStream= directives; the per-port match below

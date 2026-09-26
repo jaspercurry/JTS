@@ -141,9 +141,9 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     DaemonReadSpec(
         unit="jasper-web",
         # The full (non-root) unit. The streambox variant
-        # (deploy/jasper-web-streambox.service) runs as root and self-skips at
+        # (deploy/systemd/jasper-web-streambox.service) runs as root and self-skips at
         # runtime; the drift test pins against this non-root unit.
-        unit_file="deploy/jasper-web.service",
+        unit_file="deploy/systemd/jasper-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(
@@ -173,7 +173,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-chat-web",
-        unit_file="deploy/jasper-chat-web.service",
+        unit_file="deploy/systemd/jasper-chat-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(),
@@ -186,7 +186,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-correction-web",
-        unit_file="deploy/jasper-correction-web.service",
+        unit_file="deploy/systemd/jasper-correction-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=("audio", "jts-ring"),
@@ -198,7 +198,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-bluetooth-web",
-        unit_file="deploy/jasper-bluetooth-web.service",
+        unit_file="deploy/systemd/jasper-bluetooth-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=("bluetooth",),
@@ -210,7 +210,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-system-web",
-        unit_file="deploy/jasper-system-web.service",
+        unit_file="deploy/systemd/jasper-system-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(),
