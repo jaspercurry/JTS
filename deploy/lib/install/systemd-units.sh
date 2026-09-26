@@ -33,7 +33,8 @@ OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
 # lock; a runtime mask cannot, because the unit's /etc fragment outranks /run.
 FANIN_COUPLING_ENTRY_LOCK="/run/jasper-fanin-coupling.lock"
 FANIN_COUPLING_FENCE_DROPIN="/run/systemd/system/jasper-fanin-coupling-auto.service.d/jts-install-window.conf"
-# jasper-fanin-coupling-auto's TimeoutStartSec=767 plus the kill grace.
+# jasper-fanin-coupling-auto's TimeoutStartSec=767 plus the 5 s client margin
+# jasper/source_intent_units.py also allows it.
 FANIN_COUPLING_PASS_BOUND_SEC=772
 # 1 while descriptor 8 holds the entry lock. A fixed number because macOS bash
 # 3.2 runs these tests without `{var}>` (see jasper-env-file.sh); main()'s step
