@@ -16,11 +16,13 @@ instance, though two sessions in two threads share nothing but their seams.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Mapping
 
 from jasper.audio_measurement.playback import PlaybackObservation
 
+from jasper.log_event import log_event
 from jasper.volume_latch import fader_matches
 from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
@@ -43,6 +45,8 @@ __all__ = [
     "StimulusOutcome",
     "TuningSession",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 async def _attach_cleanup_failure(
@@ -471,7 +475,10 @@ class TuningSession:
         prompt: str,
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
-        """Prove this take's graph and level, then play and bank one stimulus."""
+        """Prove this take's graph and level, then play and bank one stimulus.
+
+        Every exit logs one ``active_speaker.stimulus_measured``.
+        """
         self.seams.graph.select_scope(
             spec.graph_scope, spec.candidate_id, branch_channels_for(spec),
         )
@@ -481,37 +488,44 @@ class TuningSession:
             level_trims_for(spec, self.level_match_trims_db),
         )
         proven_level_db = await self._proven_level()
-        interruption = None
+        record_id, incident, error = "", "", None
+        interruption: PlaybackInterrupted | None = None
         try:
-            outcome: PlaybackOutcome = await self.seams.play.run(
-                spec=spec,
-                position_deg=bearing,
-                prompt=prompt,
-                level_db=self.measurement_level_db,
-                stimulus_dbfs=stimulus_dbfs,
-            )
-        except (PlaybackInterrupted, StimulusCaptureStopped) as exc:
-            if isinstance(exc, StimulusCaptureStopped) or not exc.wav_path:
-                raise
-            interruption = exc
-            outcome = PlaybackOutcome(
-                STAGE_RESTORE, wav_path=exc.wav_path, playback=exc.playback,
-            )
-        record_id = ""
-        incident = outcome.incident
-        if outcome.played:
-            if proven_level_db is None:
+            try:
+                outcome: PlaybackOutcome = await self.seams.play.run(
+                    spec=spec,
+                    position_deg=bearing,
+                    prompt=prompt,
+                    level_db=self.measurement_level_db,
+                    stimulus_dbfs=stimulus_dbfs,
+                )
+            except (PlaybackInterrupted, StimulusCaptureStopped) as exc:
+                if isinstance(exc, StimulusCaptureStopped) or not exc.wav_path:
+                    raise
+                interruption = exc
+                outcome = PlaybackOutcome(
+                    STAGE_RESTORE, wav_path=exc.wav_path, playback=exc.playback,
+                )
+            incident = outcome.incident
+            if outcome.played and proven_level_db is None:
                 incident = incident or UNPROVEN_LEVEL
-            else:
-                async def _bank() -> str:
-                    written = await self.seams.records.bank(self._record(
-                        spec, bearing, prompt, stimulus_dbfs, outcome,
-                        proven_level_db, self.allocate_take_id(),
+            elif outcome.played and proven_level_db is not None:
+                try:
+                    record_id = await resilient_restore(self._bank(
+                        spec, bearing, prompt, stimulus_dbfs, outcome, proven_level_db,
                     ))
-                    self._banked.append(written)
-                    return written
-
-                record_id = await resilient_restore(_bank())
+                except Exception as bank_failure:  # noqa: BLE001 - the stop outranks it, see _attach_first
+                    if interruption is None:
+                        raise
+                    _attach_first(interruption, bank_failure)
+        except BaseException as exc:
+            error = type(exc).__name__
+            raise
+        finally:
+            log_event(logger, "active_speaker.stimulus_measured", phase=spec.program_phase,
+                      scope=spec.graph_scope, position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
+                      path=record_id or None, incident=incident or None,
+                      interrupted=interruption is not None, error=error)
         if interruption is not None:
             raise interruption
         return StimulusOutcome(
@@ -519,6 +533,21 @@ class TuningSession:
             level_db=proven_level_db, record_id=record_id, incident=incident,
             playback=outcome.playback, detail=outcome.detail, evidence=outcome.evidence,
         )
+
+    async def _bank(
+        self,
+        spec: MeasureSpec,
+        bearing: int | None,
+        prompt: str,
+        stimulus_dbfs: float | None,
+        outcome: PlaybackOutcome,
+        level_db: float,
+    ) -> str:
+        written = await self.seams.records.bank(self._record(
+            spec, bearing, prompt, stimulus_dbfs, outcome, level_db, self.allocate_take_id(),
+        ))
+        self._banked.append(written)
+        return written
 
     async def _proven_level(self) -> float | None:
         """This stimulus's fader level, or ``None`` when it is not proven.
