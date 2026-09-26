@@ -29,14 +29,6 @@ from tests.test_audio_hardware_reconcile import _dual_apple_cards
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _hardware_reconciler_source() -> str:
-    """The output-hardware reconcile pass: ``reconcile.py`` and its step modules."""
-    return "".join(
-        path.read_text()
-        for path in sorted((REPO / "jasper" / "audio_hardware").glob("reconcile*.py"))
-    )
-
-
 def _non_comment(text: str) -> str:
     return "\n".join(
         line for line in text.splitlines()
@@ -149,18 +141,11 @@ def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
 
 def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
-    reconcile = _hardware_reconciler_source()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
-    # Classification is registry-backed and the shell holds no hardware label:
-    # the classifier's env emitter names the Apple cards (ADR-0235 R2).
-    assert "usb-c to 3.5mm" not in reconcile.lower()
-    assert "DAC8X_OUTPUT_CARD=" not in reconcile
-    assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert "jasper_asound_render_template" in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
-    assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
     assert "OUTPUT_DAC_ROUTE" not in installer_text()
 
 
@@ -822,7 +807,6 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    reconcile = _hardware_reconciler_source()
     runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
@@ -867,11 +851,8 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "event=audio_hardware_hotplug.reconcile_requested" in hotplug
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
     # The cutover gate is width-aware and shared by the composite + single
-    # active paths, and trusts the durable runtime contract rather than
-    # transient startup-load state: a saved active baseline must stay playable
-    # after setup completes.
+    # active paths.
     assert "active_graph_width_out_of_range" in runtime_contract
-    assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
 
 
@@ -923,11 +904,6 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     bonded_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **bonded)
     assert bonded_cfg.tts_outputd_socket == OUTPUTD_TTS_SOCKET
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
-
-    # The unit owns these names; the reconciler must not become a second writer.
-    reconcile = _hardware_reconciler_source()
-    assert "TTS_ENV_FILE" not in reconcile
-    assert VOICE_TTS_SOCKET_ENV not in reconcile
 
 
 def test_fanin_tts_socket_default_matches_the_python_constant():

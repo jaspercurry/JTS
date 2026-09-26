@@ -228,16 +228,6 @@ class Pass:
         read that as "changed" and restart jasper-outputd onto the old
         lane/PCM/format. A write that did not happen fails the pass instead.
         """
-        changed = self.try_set_env_file_var(path, actions)
-        if changed is None:
-            raise _Abort(1)
-        return changed
-
-    def try_set_env_file_var(
-        self, path: str, actions: Sequence[EnvAction]
-    ) -> bool | None:
-        """The same write, reported rather than fatal: ``None`` when it did not
-        land, so a caller can keep its journal line honest."""
         try:
             # An emptied file is published as ZERO BYTES, never unlinked: that
             # is what the bash `jasper_env_file_unset` this replaced did, and
@@ -248,12 +238,12 @@ class Pass:
                 mode=ENV_FILE_MODE,
                 dir_mode=ENV_DIR_MODE,
             )
-            return changed
         except OSError:
             self.log(
                 "env_write_failed", file=path, key=",".join(k for k, _ in actions)
             )
-            return None
+            raise _Abort(1) from None
+        return changed
 
     @property
     def outputd_env_target(self) -> str:

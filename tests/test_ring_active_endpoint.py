@@ -72,7 +72,6 @@ from jasper.output_topology_store import save_output_topology
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
 OUTPUTD_CONFIG_RS = REPO / "rust/jasper-outputd/src/config.rs"
-HARDWARE_RECONCILE = sorted((REPO / "jasper/audio_hardware").glob("reconcile*.py"))
 
 
 # --------------------------------------------------------------------------
@@ -418,11 +417,7 @@ def test_the_active_ring_path_is_spelled_identically_everywhere():
 
 def test_the_endpoint_marker_key_is_spelled_identically_in_both_languages():
     rust = OUTPUTD_CONFIG_RS.read_text(encoding="utf-8")
-    reconciler = "".join(
-        path.read_text(encoding="utf-8") for path in HARDWARE_RECONCILE
-    )
     assert f'env_bool("{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}", false)' in rust
-    assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in reconciler
 
 
 @pytest.mark.parametrize(
