@@ -6,11 +6,10 @@
 #
 # Targets:
 #   make test    — build + run the host core unit test (NO ALSA; any host).
-#   make bench   — build the SHM ring writer bench (NO ALSA; any host).
 #   make plugin  — build the ALSA ioplug .so (Pi/Linux ONLY; needs alsa-lib).
 #   make clean
 #
-# The host-safe targets (test, bench) never link libasound, so they build on
+# The host-safe target (test) never links libasound, so it builds on
 # macOS + Linux. `plugin` needs alsa-lib; deploy/lib/install/ring-platform.sh
 # runs `make plugin` on the Pi and installs the .so itself.
 
@@ -28,17 +27,17 @@ LDFLAGS ?=
 # Host tests need a writable, portable owned root to exercise successful and
 # failed torn-file reclamation without assuming Linux /dev/shm exists. The
 # test-only build reads its per-process root from JTS_RING_TEST_OWNED_DIR;
-# product and bench/plugin builds compile out that override entirely.
+# the plugin build compiles out that override entirely.
 TEST_CPPFLAGS ?= -DJTS_RING_TESTING
 
 PLUGIN_SO := libasound_module_pcm_jts_ring.so
 
 CORE := jts_ring_shm.c
 
-.PHONY: all test bench plugin clean
+.PHONY: all test plugin clean
 
-# Default: the host-safe targets only (so `make` on a dev laptop just works).
-all: test bench
+# Default: the host-safe target only (so `make` on a dev laptop just works).
+all: test
 
 # --- Host-safe (no ALSA) ---
 
@@ -47,16 +46,6 @@ test_ring_core: test_ring_core.c $(CORE) jts_ring_shm.h
 
 test: test_ring_core
 	./test_ring_core
-
-ring_writer_bench: ring_writer_bench.c $(CORE) jts_ring_shm.h
-	$(CC) $(CFLAGS) -o $@ ring_writer_bench.c $(CORE) -lm
-
-ring_reader_bench: ring_reader_bench.c $(CORE) jts_ring_shm.h
-	$(CC) $(CFLAGS) -o $@ ring_reader_bench.c $(CORE)
-
-# Both benches: writer feeds the ring (Ring B smoke / interop), reader drains it
-# (Ring A smoke / interop). Host-safe (no ALSA).
-bench: ring_writer_bench ring_reader_bench
 
 # --- Pi-only (needs alsa-lib) ---
 
@@ -70,4 +59,4 @@ plugin: pcm_jts_ring.c $(CORE) jts_ring_shm.h
 	$(CC) $(CFLAGS) -DPIC -shared -o $(PLUGIN_SO) pcm_jts_ring.c $(CORE) -lasound $(LDFLAGS)
 
 clean:
-	rm -f test_ring_core ring_writer_bench ring_reader_bench $(PLUGIN_SO)
+	rm -f test_ring_core $(PLUGIN_SO)
