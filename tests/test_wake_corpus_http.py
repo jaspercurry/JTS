@@ -17,7 +17,7 @@ import pytest
 from jasper import aec_sweep
 from jasper.cli import wake_enroll
 from jasper.env_file import read_env_file
-from jasper.wake_corpus import bridge_session, recording_backend, runtime_probe
+from jasper.wake_corpus import active_session, bridge_session, runtime_probe
 from jasper.web import wake_corpus_setup
 from jasper.web._common import CSRF_COOKIE_NAME
 
@@ -293,7 +293,7 @@ def test_api_session_load_round_trip(
         conn.close()
     # Backend's active session swapped
     assert backend.session_id() == first_id
-    marker = tmp_path / "out" / "metadata" / recording_backend.ACTIVE_SESSION_MARKER
+    marker = tmp_path / "out" / "metadata" / active_session.ACTIVE_SESSION_MARKER
     assert json.loads(marker.read_text())["session_id"] == first_id
 
 
