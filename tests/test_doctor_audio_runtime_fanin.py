@@ -25,10 +25,27 @@ from ._doctor_audio_runtime_fixtures import (
 # ---- shairport-sync.conf output_device check ---------------------------
 
 
-def _patch_asound_conf(monkeypatch, conf_text: str, tmp_path: Path):
+def _patch_asound_conf(
+    monkeypatch,
+    conf_text: str,
+    tmp_path: Path,
+    *,
+    stale_topology_env: bool = False,
+):
     target = tmp_path / "asound.conf"
     target.write_text(conf_text)
+    stale = tmp_path / "audio_topology.env"
+    if stale_topology_env:
+        stale.write_text("JASPER_AUDIO_TOPOLOGY=dmix\n")
+    real_path_cls = Path
+
+    def fake_path(arg):
+        if arg == "/var/lib/jasper/audio_topology.env":
+            return stale
+        return real_path_cls(arg)
+
     monkeypatch.setattr(audio_runtime_fanin, "ASOUND_CONF_PATH", target)
+    monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -333,6 +350,18 @@ def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path
     r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_LEGACY_RENDERER_BLOCK
+
+
+def test_fanin_asound_wiring_warns_on_stale_topology_env(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND,
+        tmp_path,
+        stale_topology_env=True,
+    )
+    r = audio_runtime_fanin.check_fanin_asound_wiring()
+    assert r.status == "warn"
+    assert r.reason == audio_runtime_fanin.REASON_ASOUND_STALE_TOPOLOGY_STATE
 
 
 # ---------------------------------------------------------------------------
