@@ -17,11 +17,11 @@ import pytest
 
 from jasper.assistant_volume import EffectiveVolumeContext
 from jasper.platform import wire
+from jasper.mux import _CONTROL_VERBS
 
 REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 TTS_PROTOCOL_RS = REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
-MUX_PY = REPO / "jasper" / "mux.py"
 VOICE_CONTROL_SOCKET_PY = REPO / "jasper" / "voice" / "control_socket.py"
 
 _CONTEXT = EffectiveVolumeContext(
@@ -130,12 +130,12 @@ def test_unmuted_volume_context_carries_the_zero_token():
         ),
         TTS_PROTOCOL_RS,
     ),
-    (wire.STATUS, MUX_PY),
-    (wire.MUX_AUTO, MUX_PY),
-    (wire.mux_select("x"), MUX_PY),
-    (wire.mux_preempt("x"), MUX_PY),
-    (wire.mux_test_select("l", "o"), MUX_PY),
-    (wire.mux_test_release("o"), MUX_PY),
+    (wire.STATUS, _CONTROL_VERBS),
+    (wire.MUX_AUTO, _CONTROL_VERBS),
+    (wire.mux_select("x"), _CONTROL_VERBS),
+    (wire.mux_preempt("x"), _CONTROL_VERBS),
+    (wire.mux_test_select("l", "o"), _CONTROL_VERBS),
+    (wire.mux_test_release("o"), _CONTROL_VERBS),
     (wire.STATUS, VOICE_CONTROL_SOCKET_PY),
     (wire.voice_start(), VOICE_CONTROL_SOCKET_PY),
     (wire.voice_start("airplay"), VOICE_CONTROL_SOCKET_PY),
@@ -147,12 +147,10 @@ def test_unmuted_volume_context_carries_the_zero_token():
     (wire.VOICE_MEASURE_RESUME, VOICE_CONTROL_SOCKET_PY),
 ])
 def test_every_verb_is_still_handled_by_its_reader(command, reader):
-    """The reader for each socket still dispatches on the verb we emit.
-
-    Verb-level, not argument-level: an argument-order change is pinned by the
-    byte test above, but a verb the reader dropped is only visible here.
-    """
     verb = command.split(" ", 1)[0]
+    if reader is _CONTROL_VERBS:
+        assert verb in reader
+        return
     # The reader spells a bare verb `"VERB"` and an argument-taking one
     # `"VERB `; requiring that boundary keeps AUDIO from being satisfied by
     # AUDIO32's arm.
