@@ -337,9 +337,7 @@ _REQUIRED_ORDER = (
     # directories with `install -g jasper`, so the group must exist first.
     ("service_users", "alsa"),
     ("state_modes", "systemd_units"),
-    # `systemctl disable --now` is never part of a unit-staging transaction, and
-    # the retired /sources/ socket holds the port the jasper-web bundle enable
-    # is about to claim.
+    # `systemctl disable --now` is never part of a unit-staging transaction.
     ("retired", "systemd_units"),
     # Above service_users each compartment re-assert is a silent no-op (its
     # opening `getent group ... || return 0`); above the tier's python step
