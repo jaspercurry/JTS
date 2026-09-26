@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Composition replay: score tapes prove transitions, not speech recognition."""
+"""Offline input, endpoint and provider-output replay."""
 from __future__ import annotations
 
 import asyncio
@@ -185,7 +185,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
             audio, closes = _input_events(provider)
             assert closes - before_closes == int(scenario != "no_speech")
             uploaded = audio[len(before_audio):]
-            admitted = {"quiet": 14, "pause": 23, "manual": 20, "no_speech": 16}[scenario] * repeats
+            admitted = {"quiet": 13, "pause": 22, "manual": 20, "no_speech": 16}[scenario] * repeats
             assert [int(np.median(np.frombuffer(pcm, dtype=np.int16))) for pcm in uploaded] == (
                 [101, 102] + list(range(201, 201 + admitted))
             )

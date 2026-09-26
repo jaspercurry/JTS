@@ -23,7 +23,6 @@ def _frame(tag):
 
 
 def _stub_turn(**members) -> SimpleNamespace:
-    """A turn stub plus the `LiveTurn` members the daemon reads on every frame."""
     return SimpleNamespace(continuous_input=False, discard_input=lambda: None, **members)
 
 
@@ -150,7 +149,7 @@ async def test_endpoint_is_independent_of_acquire_split(split):
     assert wl._turns.user_speech_seen
     assert wl._turns.input_ended
     assert wl._turns.turn.end_input.await_count == 1
-    assert wl._turns.turn.send_audio.await_count == 14
+    assert wl._turns.turn.send_audio.await_count == 13
 
 
 @pytest.mark.parametrize("armed", [False, True])

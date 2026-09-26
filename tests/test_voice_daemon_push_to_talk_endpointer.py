@@ -2,26 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""On a push-to-talk turn the button owns end-of-input — not local Silero.
-
-Press calls ``manual_session_start``; release calls ``manual_session_end``,
-which sets ``_input_ended`` and calls ``end_input()``. That is the exact
-operation the Silero end-of-utterance detector performs, so running Silero
-on the same turn makes it a *second writer of the same fact* — and the
-faster of the two wins. Before this bypass, a user holding the button
-through a 0.8 s thinking pause had their input closed underneath them, and
-a user who held the button for 5 s before speaking had the turn ended
-outright.
-
-Each guard below is written as a mutation: the same inputs are replayed
-with the guard's condition flipped, and the pre-fix behaviour is asserted
-to come back. If a branch is ever deleted, these fail.
-"""
+"""The button ends manual input; the silence clock ends wake input."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -1041,3 +1028,19 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
 
     assert wl._vad is None
     assert wl._turns.manual_endpoint_this_turn is True
+
+
+@pytest.mark.parametrize("capture_timestamp", [False, True])
+async def test_silence_window_includes_the_first_silent_frame(monkeypatch, capture_timestamp):
+    wl = _session_loop(manual=False)
+    wl._turns.started_at_loop = 100.0
+    wl._turns.user_speech_seen = True
+    now = 100.08
+    monkeypatch.setattr("jasper.voice_daemon.time", SimpleNamespace(monotonic=lambda: now))
+
+    for frame_end, expected_closes in ((100.08, 0), (100.799, 0), (100.801, 1)):
+        now = frame_end + (5.0 if capture_timestamp else 0.0)
+        await wl._handle_session_frame(
+            silent_frame(), captured_at=frame_end if capture_timestamp else None,
+        )
+        assert wl._turns.turn.end_input_calls == expected_closes
