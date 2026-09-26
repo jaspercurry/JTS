@@ -681,7 +681,7 @@ CAPTURE_RATE = 48_000
 
 CAPTURE_AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
 
-_PROGRAM_PHASES = ("cloud_verify", "verify")
+_PHASE, _DECOY_PHASE = "cloud_verify", "verify"
 _DECLARED_STIMULUS_PHASE = "verify"
 
 
@@ -689,8 +689,6 @@ def bank_capture_round(
     root: Path,
     irs: Sequence[np.ndarray],
     *,
-    program: np.ndarray | None = None,
-    phase: str = "cloud_verify",
     capture_ids: Sequence[str] | None = None,
     positions_deg: Sequence[float] | None = None,
     vertical_deg: float = 0.0,
@@ -705,21 +703,13 @@ def bank_capture_round(
     programs.mkdir(parents=True)
     summed.mkdir(parents=True)
 
-    played = (
-        synchronized_swept_sine(duration_approx_s=1.0, sample_rate=CAPTURE_RATE)[0]
-        if program is None
-        else np.asarray(program, dtype=np.float64)
-    )
+    played, _ = synchronized_swept_sine(duration_approx_s=1.0, sample_rate=CAPTURE_RATE)
     decoy, _ = synchronized_swept_sine(
         f1=30.0, duration_approx_s=1.0, sample_rate=CAPTURE_RATE
     )
-    played_path = programs / f"{phase}_program.wav"
+    played_path = programs / f"{_PHASE}_program.wav"
     write_sweep_wav(played_path, played, CAPTURE_RATE)
-    write_sweep_wav(
-        programs / f"{next(p for p in _PROGRAM_PHASES if p != phase)}_program.wav",
-        decoy,
-        CAPTURE_RATE,
-    )
+    write_sweep_wav(programs / f"{_DECOY_PHASE}_program.wav", decoy, CAPTURE_RATE)
     played_sha = hashlib.sha256(played_path.read_bytes()).hexdigest()
 
     for index, ir in enumerate(irs):
@@ -728,7 +718,7 @@ def bank_capture_round(
         )
         capture = 0.5 * capture / float(np.max(np.abs(capture)))
         capture_id = (
-            f"{phase}_{index:02d}" if capture_ids is None else capture_ids[index]
+            f"{_PHASE}_{index:02d}" if capture_ids is None else capture_ids[index]
         )
         stem = f"summed_{capture_id}"
         write_sweep_wav(
@@ -736,7 +726,7 @@ def bank_capture_round(
         )
         doc: dict[str, Any] = {
             "position_id": capture_id,
-            "phase": phase,
+            "phase": _PHASE,
             "wav_path": f"summed/{stem}.wav",
             "position_deg": (
                 CAPTURE_AZIMUTHS_DEG[index % len(CAPTURE_AZIMUTHS_DEG)]

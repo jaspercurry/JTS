@@ -5,9 +5,9 @@
 """How a feature is read off a magnitude curve — the optics every reader shares.
 
 It sits below :mod:`.feature_classifier` and :mod:`.gate_sweep` so both read
-a feature the same way and the import graph stays acyclic (#2662 G1). Every constant here is a frame
-choice, so :func:`~.gate_sweep.frame_descriptor` publishes them beside
-every result.
+a feature the same way and the import graph stays acyclic (#2662 G1). Every
+constant here is a frame choice, so :func:`~.gate_sweep.frame_descriptor`
+publishes them beside every result.
 """
 
 from __future__ import annotations
