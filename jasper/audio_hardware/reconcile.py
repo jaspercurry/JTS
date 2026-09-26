@@ -42,6 +42,7 @@ from typing import Any
 
 from jasper.atomic_io import EnvKeyAction as EnvAction, locked_upsert_env_file
 from jasper.audio_hardware import reconcile_env_files as env_files
+from jasper.audio_hardware import reconcile_outputd_lane as outputd_lane
 from jasper.audio_hardware import reconcile_units as units
 from jasper.audio_hardware.config_txt import boot_config_path
 from jasper.audio_hardware.i2s_hat import i2s_hat_intent_path
@@ -56,7 +57,6 @@ from jasper.audio_hardware.reconcile_common import (
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
 from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
-from jasper.env_file import read_env_file
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
@@ -76,13 +76,6 @@ from jasper.shell_env import render_shell_assignments
 logger = logging.getLogger(__name__)
 
 EVENT = "audio_hardware_reconcile"
-
-# The ACTIVE RING's playback PCM — the ONE legal active endpoint. This module
-# never CHOOSES it; the active-lane decision reports which endpoint the live
-# graph targets, and this literal is only how the answer is recognized. Mirrors
-# jasper.fanin_coupling.RING_ACTIVE_PLAYBACK_DEVICE and the conf.d block name;
-# pinned equal by tests/test_ring_active_endpoint.py.
-RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
 _SIGNAL_EXITS = {signal.SIGTERM: (143, "TERM"), signal.SIGHUP: (129, "HUP"),
                  signal.SIGINT: (130, "INT")}
@@ -477,95 +470,6 @@ class Pass:
             return False, decision.reason
         return True, (str(decision.width), decision.endpoint_device or "")
 
-    def active_lane_channels_for_dac(self, dac_id: str) -> tuple[int | None, bool]:
-        """A recognized single DAC's active-lane channel CAP, and whether the
-        registry ITSELF answered "this DAC declares no active lane".
-
-        THREE-VALUED: ``(n, False)`` the cap, ``(None, True)`` the registry's
-        own "no active lane", and ``(None, False)`` no answer at all — the probe
-        itself failed. The last two need different remedies, so they must not
-        collapse."""
-        if not dac_id:
-            return None, False
-        try:
-            # lazy: patch target — the tests replace it on the source
-            # module, which only a per-call import sees.
-            from jasper.audio_hardware.dac import (
-                active_outputd_lane_channels_for,
-                is_known_profile_id,
-            )
-
-            width = active_outputd_lane_channels_for(dac_id)
-            known = is_known_profile_id(dac_id)
-        # noqa reason: three-valued by design — a probe that failed for any reason
-        # answers "no answer", which the caller reports as the transient it is.
-        except Exception:  # noqa: BLE001
-            self.mark_degraded()
-            return None, False
-        if width:
-            return int(width), False
-        return None, bool(known)
-
-    def final_edge_format_for_dac(self, dac_id: str) -> tuple[str, str]:
-        """A recognized DAC's declared final-edge ALSA format AND its outputd
-        sink kind, from ONE profile lookup (ADR-0235 R1).
-
-        BOTH or NEITHER: outputd's ``env_str`` defaults only on an UNSET key,
-        so an empty JASPER_OUTPUTD_SINK fails its config parse and parks it at
-        exit 78. Resolved BY ID off whichever profile the caller armed, never
-        through a composite's children — outputd's paired composite sink has no
-        packed-24 child write path, which is why the dual-Apple composite
-        declares S16_LE though both its children declare S24_3LE.
-        """
-        if not dac_id:
-            return "", ""
-        try:
-            # lazy: patch target — the tests replace it on the source
-            # module, which only a per-call import sees.
-            from jasper.audio_hardware.dac import by_id, final_edge_format_for
-
-            fmt = final_edge_format_for(dac_id)
-            profile = by_id(dac_id)
-        # noqa reason: any failure preserves the previous edge format; writing a
-        # guess would silently narrow a wide DAC edge.
-        except Exception:  # noqa: BLE001
-            self.mark_degraded()
-            return "", ""
-        if fmt and profile is not None:
-            return fmt, profile.outputd_sink
-        return "", ""
-
-    def dac_format_actions_for_recognized(
-        self, dac_id: str
-    ) -> tuple[list[EnvAction], str]:
-        """A recognized DAC's declared edge format AND sink as env actions, plus
-        the format the file will state — or NO actions when the registry probe
-        is unavailable, since one lookup answers both and they degrade together.
-
-        Empty is a MEANINGFUL value on the format key (outputd reads it as
-        S16_LE), so writing it on a lost probe would silently NARROW a wide
-        edge with no error anywhere. Preserving the previous value is the loud
-        option: on a same-pass id change the stale value parks outputd at exit
-        78 rather than converting audio wrongly.
-        """
-        dac_format, dac_sink = self.final_edge_format_for_dac(dac_id)
-        if not dac_format:
-            preserved = read_env_file(self.outputd_env_target).get(
-                "JASPER_OUTPUTD_DAC_FORMAT", ""
-            )
-            self.log(
-                "dac_format_skip",
-                reason="registry_probe_unavailable",
-                dac_id=dac_id,
-                preserved=preserved or "absent",
-                outputd_env=self.outputd_env_file,
-            )
-            return [], preserved
-        return [
-            ("JASPER_OUTPUTD_DAC_FORMAT", dac_format),
-            ("JASPER_OUTPUTD_SINK", dac_sink),
-        ], dac_format
-
     # -- role policy --------------------------------------------------------
 
     def apply_observed_single_policy(self) -> None:
@@ -637,230 +541,6 @@ class Pass:
             dac_b_pcm=_log_token(self.dual_apple_dac_b_pcm),
             active_endpoint=self.dual_apple_active_endpoint_device or "none",
         )
-
-    # -- outputd runtime env ------------------------------------------------
-
-    def set_outputd_active_lane_pair(self, lane: str, endpoint_device: str) -> bool:
-        """THE SINGLE WRITER of the active-lane PAIR.
-
-        JASPER_OUTPUTD_ACTIVE_LANE and JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT are
-        ONE FACT with two consumers: outputd bails at startup on the incoherent
-        pair (marker set, lane clear), because that can only mean this writer
-        is broken. So every path that states one states the other, here, from
-        one decision. Positive equality against the named device, never "not
-        the ALSA lane": an unrecognized endpoint must resolve to NO marker,
-        which a negative test would invert into a spurious arm. Returns whether
-        either key changed.
-        """
-        ring_endpoint = (
-            "1"
-            if lane == "1" and endpoint_device == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-            else ""
-        )
-        return self.set_env_file_var(
-            self.outputd_env_target,
-            [
-                ("JASPER_OUTPUTD_ACTIVE_LANE", lane),
-                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", ring_endpoint),
-            ],
-        )
-
-    def apply_audio_runtime_env(self) -> bool:
-        target = self.outputd_env_target
-        # The CONTENT lane's width is a function of the fan-in coupling, never
-        # of the DAC, so unlike the edge format it is emitted once ahead of the
-        # per-hardware branches and is always definitive. An empty answer means
-        # leave the key alone rather than write a guess — a fallback here would
-        # be a second spelling of DEFAULT_PLAYBACK_FORMAT.
-        try:
-            # lazy: patch target — the tests replace it on the source
-            # module, which only a per-call import sees.
-            from jasper.fanin_coupling import content_lane_format_for_coupling
-
-            content_format = content_lane_format_for_coupling()
-        # noqa reason: any failure leaves the key alone rather than narrowing the
-        # content lane; the pass is marked degraded below.
-        except Exception:  # noqa: BLE001
-            content_format = ""
-        prelude: list[EnvAction] = []
-        if content_format:
-            prelude.append(("JASPER_OUTPUTD_CONTENT_FORMAT", content_format))
-        else:
-            self.mark_degraded()
-            self.log(
-                "content_format_skip",
-                reason="coupling_probe_unavailable",
-                outputd_env=self.outputd_env_file,
-            )
-        changed = self.set_env_file_var(target, prelude)
-        composite = self.observed.kind == "composite"
-        if composite and self.output_dac_recognized:
-            changed = self._apply_composite_runtime_env(content_format) or changed
-        elif self.output_dac_recognized:
-            changed = self._apply_single_runtime_env(content_format) or changed
-        else:
-            changed = self._apply_parked_runtime_env(content_format) or changed
-        return changed
-
-    def _apply_composite_runtime_env(self, content_format: str) -> bool:
-        target = self.outputd_env_target
-        self.outputd_active_mode = False
-        self.outputd_active_channels = ""
-        actions: list[EnvAction] = [
-            ("JASPER_OUTPUTD_BACKEND", "alsa"),
-            ("JASPER_OUTPUTD_DAC_PCM", self.output_dac_id),
-            ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", self.dual_apple_dac_a_pcm),
-            ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", self.dual_apple_dac_b_pcm),
-        ]
-        format_actions, dac_format = self.dac_format_actions_for_recognized(
-            self.output_dac_id
-        )
-        actions += format_actions
-        # Composite width is fixed at 4 (two stereo children); clear the
-        # single-sink width knob so a stale value cannot reach outputd, which
-        # rejects != 4 on this sink.
-        actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""))
-        changed = self.set_env_file_var(target, actions)
-        # Deliberately narrower than the single-DAC branch: an ALOOP composite
-        # keeps its unconditional clear. `active_lane` is inert on a composite
-        # at runtime, so writing =1 there would change no behaviour but WOULD
-        # churn outputd.env and /state on boxes this has no business touching.
-        dual_apple_endpoint = self.dual_apple_active_endpoint_device
-        if dual_apple_endpoint == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
-            changed = self.set_outputd_active_lane_pair("1", dual_apple_endpoint) or changed
-        else:
-            changed = self.set_outputd_active_lane_pair("", "") or changed
-        self.log(
-            "runtime_env",
-            mode="dual_apple",
-            content_format=content_format or "unset",
-            dac_format=dac_format or "unset",
-            outputd_env=self.outputd_env_file,
-            changed=int(changed),
-        )
-        return changed
-
-    def _apply_single_runtime_env(self, content_format: str) -> bool:
-        """A coherent single DAC runs the active lane ONLY when it declares one
-        AND a legal active-speaker graph whose playback width fits within that
-        cap is the live CamillaDSP config. We DRIVE WHAT WE USE: the gate
-        returns the config's ACTUAL width W, emitted as
-        JASPER_OUTPUTD_ACTIVE_CHANNELS so outputd opens the DAC at the first width the driver accepts at or above W and pads the rest with silence (`/state` `dac.channels` reports it).
-        Fail-closed: without a confirmed in-cap active graph the DAC stays
-        ordinary stereo."""
-        target = self.outputd_env_target
-        changed = False
-        active_mode = False
-        active_channels = ""
-        active_endpoint_device = ""
-        graph_status = ""
-        active_lane_cap, declares_no_lane = self.active_lane_channels_for_dac(
-            self.output_dac_id
-        )
-        # Three outcomes, three remedies. All resolve passive (fail-closed);
-        # they differ only in what an operator reading the journal should do.
-        if declares_no_lane:
-            # The registry answered: this DAC declares no active outputd lane,
-            # so the width gate never ran. Fixed only by choosing a different
-            # layout at /sound/speaker/. Same literal as that save-guard's
-            # refusal reason.
-            graph_status = "dac_no_active_lane"
-        elif active_lane_cap is not None:
-            ok, payload = self.active_graph_status(active_lane_cap)
-            if ok:
-                active_mode = True
-                active_channels, active_endpoint_device = payload
-            else:
-                graph_status = payload
-        else:
-            # No answer at all on a RECOGNIZED DAC: the lane-cap probe itself
-            # failed. Transient — the next pass converges — so this must NOT be
-            # reported as the permanent dac_no_active_lane.
-            graph_status = "lane_probe_failed"
-        actions: list[EnvAction] = [
-            ("JASPER_OUTPUTD_BACKEND", "alsa"),
-            ("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
-            ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", ""),
-            ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", ""),
-        ]
-        format_actions, dac_format = self.dac_format_actions_for_recognized(
-            self.output_dac_id
-        )
-        actions += format_actions
-        if active_mode:
-            self.outputd_active_mode = True
-            self.outputd_active_channels = active_channels
-            actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", active_channels))
-            changed = self.set_env_file_var(target, actions)
-            # An active 2-way speaker is ALSO 2-channel, so outputd's bare
-            # content_channels==2 check would wrongly permit its post-crossover
-            # TTS mixer / content bridge here. Mark the lane explicitly so
-            # those stereo-only features fail closed (full-range-to-tweeter
-            # safety). The endpoint travels with it, from the same decision.
-            changed = (
-                self.set_outputd_active_lane_pair("1", active_endpoint_device)
-                or changed
-            )
-            self.log(
-                "runtime_env",
-                mode="single_alsa_active",
-                active_channels=active_channels,
-                active_lane_cap=active_lane_cap,
-                active_endpoint=active_endpoint_device or "unset",
-                content_format=content_format or "unset",
-                dac_format=dac_format or "unset",
-                outputd_env=self.outputd_env_file,
-                changed=int(changed),
-            )
-            return changed
-        self.outputd_active_mode = False
-        self.outputd_active_channels = ""
-        # Clear the width knob so outputd defaults to stereo, and the lane PAIR
-        # so a stale =1 cannot keep the stereo-only features fenced off on an
-        # ordinary passive DAC.
-        actions.append(("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""))
-        changed = self.set_env_file_var(target, actions)
-        changed = self.set_outputd_active_lane_pair("", "") or changed
-        self.log(
-            "runtime_env",
-            mode="single_alsa",
-            content_format=content_format or "unset",
-            dac_format=dac_format or "unset",
-            outputd_env=self.outputd_env_file,
-            changed=int(changed),
-            active_graph=graph_status or "none",
-        )
-        return changed
-
-    def _apply_parked_runtime_env(self, content_format: str) -> bool:
-        self.outputd_active_mode = False
-        self.outputd_active_channels = ""
-        changed = self.set_env_file_var(
-            self.outputd_env_target,
-            [
-                ("JASPER_OUTPUTD_BACKEND", "fake"),
-                ("JASPER_OUTPUTD_SINK", "single_alsa"),
-                ("JASPER_OUTPUTD_DAC_PCM", "outputd_dac"),
-                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", ""),
-                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", ""),
-                # Unrecognized/parked: no profile to query, so clear rather than
-                # query. Explicit empty, not omitted: this reconciler-owned file
-                # always states a definitive value for every conditional key, so
-                # a hot-swap to an unrecognized card cannot leave a stale format.
-                ("JASPER_OUTPUTD_DAC_FORMAT", ""),
-                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", ""),
-            ],
-        )
-        changed = self.set_outputd_active_lane_pair("", "") or changed
-        self.log(
-            "runtime_env",
-            mode="parked",
-            content_format=content_format or "unset",
-            dac_format="unset",
-            outputd_env=self.outputd_env_file,
-            changed=int(changed),
-        )
-        return changed
 
     # -- rendered artifacts -------------------------------------------------
 
@@ -1178,7 +858,7 @@ class Pass:
             ],
         ):
             env_changed = dac_env_changed = 1
-        if self.apply_audio_runtime_env():
+        if outputd_lane.apply_audio_runtime_env(self):
             outputd_env_changed = 1
         # A route change also counts toward env_changed so the outputd/audio
         # restart still fires when appropriate.
@@ -1230,7 +910,7 @@ class Pass:
             runtime_converge_failed = 1
         else:
             env_files.stage_outputd_env(self)
-            self.apply_audio_runtime_env()
+            outputd_lane.apply_audio_runtime_env(self)
             if env_files.commit_outputd_env_stage(self):
                 env_changed = 1
                 outputd_committed = 1

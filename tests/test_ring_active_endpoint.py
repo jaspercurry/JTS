@@ -32,6 +32,7 @@ from .transport_camilla_fixtures import (
 )
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
+from jasper.audio_hardware import reconcile_outputd_lane
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -397,7 +398,7 @@ def test_the_active_device_name_is_spelled_identically_everywhere():
     assert ring_conf.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
     assert OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE == RING_ACTIVE_PLAYBACK_DEVICE
     assert (
-        audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        reconcile_outputd_lane.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
         == RING_ACTIVE_PLAYBACK_DEVICE
     )
     # The Rust side names the PATH, not the PCM (it never resolves ALSA names).
@@ -633,11 +634,11 @@ def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
         lambda cap: (False, "active_graph_missing") if endpoint is None
         else (True, ("2", endpoint)),
     )
-    assert run.apply_audio_runtime_env()
+    assert reconcile_outputd_lane.apply_audio_runtime_env(run)
     values = read_env_file(target)
     assert values["JASPER_OUTPUTD_ACTIVE_LANE"] == lane
     assert values[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
-    assert not run.apply_audio_runtime_env()
+    assert not reconcile_outputd_lane.apply_audio_runtime_env(run)
 
 
 # --------------------------------------------------------------------------
