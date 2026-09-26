@@ -58,7 +58,7 @@ from .mic_env import (
     DEFAULT_ACCESSORY_MIC_ENV_FILE,
     render_manual_mic_env,
 )
-from .registry import KNOWN_PROFILES, RemoteProfile, lookup_by_name
+from .registry import adapter_mic_profiles, lookup_by_name
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -169,18 +169,6 @@ class AccessoryMicPlan:
 
 def _is_truthy(value) -> bool:
     return bool(variant_value(value))
-
-
-def adapter_mic_profiles() -> tuple[RemoteProfile, ...]:
-    """Profiles that can publish a manual mic source through an adapter."""
-
-    return tuple(
-        profile for profile in KNOWN_PROFILES
-        if profile.mic.status == "adapter"
-        and profile.mic.capture_profile_id
-        and profile.mic.device
-        and profile.mic.adapter_host_service
-    )
 
 
 def adapter_mic_hosts() -> tuple[str, ...]:

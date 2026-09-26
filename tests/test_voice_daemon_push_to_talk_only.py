@@ -21,7 +21,7 @@ from tests._wake_loop import wake_loop_for_tests
     ],
 )
 def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
-    for_tests_kwargs, expected_only,
+    monkeypatch, for_tests_kwargs, expected_only,
 ):
     """`WakeLoop.session_status()` is what `/state` and jasper-control
     clients read push-to-talk mode from — pin it against a real
@@ -30,16 +30,25 @@ def test_session_status_surfaces_the_ptt_keys_from_a_real_loop(
 
     Both derivations matter: zero wake legs plus a manual mic source is
     push-to-talk-only; a wake leg plus the same manual mic source is not,
-    even though both resolve the same source.
+    even though both resolve the same source. Either way the armed remote
+    reports its adapter's readiness, read fresh.
     """
+    from jasper.accessories import status as accessory_status
     from tests._manual_mics import remote_mic
+
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": {}},
+    )
 
     wl = wake_loop_for_tests(manual_mics=[remote_mic()], **for_tests_kwargs)
 
     status = wl.session_status()
 
     assert status["push_to_talk_only"] is expected_only
-    assert status["manual_mic_sources"] == ["wiim_remote_2"]
+    assert status["push_to_talk"] == {
+        "wiim_remote_2": {"armed": True, "ready": False, "not_ready": "adapter_down"},
+    }
     # No session has opened yet, so nothing is active regardless of mode.
     assert status["active_manual_mic_source"] is None
 

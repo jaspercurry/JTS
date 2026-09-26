@@ -109,6 +109,7 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "wake_legs",
     "wake_legs_dead",
     "push_to_talk_only",
+    "push_to_talk",
     "tool_packs",
     "silent_responses_session",
     "turns_pre_response_capped",
@@ -128,7 +129,6 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "state",
     "input_ended",
     "assistant_output",
-    "manual_mic_sources",
     "active_manual_mic_source",
     "cues",
 })

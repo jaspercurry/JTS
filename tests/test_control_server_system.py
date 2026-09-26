@@ -1045,12 +1045,17 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
+    readiness = {
+        "wiim_remote_2": {"armed": True, "ready": False, "not_ready": "disconnected"},
+    }
+
     async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
         return {
             "state": "WAKE", "input_ended": False, "spend_allowed": True,
             "connection_paused": False, "mic_muted": False,
             "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": [], "push_to_talk_only": True,
+            "push_to_talk": readiness,
         }
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
 
@@ -1058,6 +1063,7 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     assert status == 200
     assert body["voice"]["reachable"] is True
     assert body["voice"]["push_to_talk_only"] is True
+    assert body["voice"]["push_to_talk"] == readiness
 
 
 class FakeCamillaMetrics:
