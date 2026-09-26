@@ -40,17 +40,22 @@ def trusted_band(
     *, distance_m: float | None, driver: str, gated: bool,
     diameters_mm: Sequence[float | None], room: DeclaredGeometry | None,
 ) -> TrustedBand:
-    """``distance_m`` is the pose's distance from its reference, ``None`` for a
-    pose that states none from the speaker (a seat); ``driver`` is the one
-    driver the pose names, if any; ``diameters_mm`` holds each played driver's
-    declared diameter, ``None`` where none is declared."""
+    """``distance_m`` is the microphone's effective distance from the pose's
+    reference; the caller resolves it, so a bearing pose at the mark passes the
+    mark distance. ``None`` means a seat, which states no distance from the
+    speaker and is never close enough for the far-field ceiling to bind.
+    ``driver`` is the one driver the pose names, if any; ``diameters_mm`` holds
+    each played driver's declared diameter, ``None`` where none is declared."""
     undeclared: list[str] = []
     low = high = None
     high_source = None
     if gated:
+        search_s = SEARCH_T_MAX_MS / 1000.0
         if room is None:
             undeclared.append(ROOM_UNDECLARED)
-        low = f_trusted_floor_hz(room.first_bounce_s(distance_m) if room is not None else SEARCH_T_MAX_MS / 1000.0)
+        # The gate stops at the search bound whatever the room allows; the cap
+        # goes when the gate follows the declared room (#3665 item 10).
+        low = f_trusted_floor_hz(search_s if room is None else min(room.first_bounce_s(distance_m), search_s))
     if distance_m is not None:
         sizes = [size for size in diameters_mm if size is not None]
         if not sizes or len(sizes) < len(diameters_mm):

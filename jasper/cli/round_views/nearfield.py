@@ -17,6 +17,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_NO_NEAR_FIELD_TAKES
+from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 from jasper.speaker_layout import declared_radiating_diameters_mm
 
@@ -49,8 +50,10 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take.get("selected") and (take.get("pose") or {}).get("driver")]
     graphs = {take["take_id"]: graph for take in takes if (graph := _played_graph(inputs, take)) is not None}
+    room = (stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_declared_geometry, inputs.declared_geometry_path)
+            if inputs.declared_geometry_path else None)
     document = nearfield_view(takes, radiating_diameter_mm_by_role=declared_radiating_diameters_mm(draft),
-                              played_graphs=graphs)
+                              room=room, played_graphs=graphs)
     if not document["takes"]:
         return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])
     spec = ARTIFACT_BY_VIEW[args.command]
