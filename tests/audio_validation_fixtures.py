@@ -88,14 +88,12 @@ def _outputd_sample(
     reference_sequence: int,
     dac_frames_written: int = 48_000,
     dac_xruns: int = 0,
-    content_xruns: int = 0,
     clipped_samples: int = 0,
     progress_age_ms: int = 20,
 ) -> dict:
     sample = dict(_active_chip_inputs()["outputd_status"])
     sample.update(
         {
-            "content": {"xrun_count": content_xruns},
             "dac": {
                 "pcm": "outputd_dac",
                 "sample_rate": 48000,

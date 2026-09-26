@@ -764,7 +764,6 @@ def _outputd_reference_health_check(
     sequence_delta = _counter_delta(before, after, "mix", "reference_sequence")
     dac_frames_delta = _counter_delta(before, after, "dac", "frames_written")
     dac_xrun_delta = _counter_delta(before, after, "dac", "xrun_count")
-    content_xrun_delta = _counter_delta(before, after, "content", "xrun_count")
     clipped_delta = _counter_delta(before, after, "mix", "clipped_samples")
     progress_age_ms = _nested_int(after, "watchdog", "last_progress_age_ms")
     observed = {
@@ -775,11 +774,10 @@ def _outputd_reference_health_check(
         "reference_sequence_delta": sequence_delta,
         "dac_frames_written_delta": dac_frames_delta,
         "dac_xrun_delta": dac_xrun_delta,
-        "content_xrun_delta": content_xrun_delta,
         "clipped_samples_delta": clipped_delta,
         "last_progress_age_ms": progress_age_ms,
     }
-    if (dac_xrun_delta or 0) > 0 or (content_xrun_delta or 0) > 0:
+    if (dac_xrun_delta or 0) > 0:
         return _check(
             "fail",
             summary="outputd reported xruns during the validation window.",

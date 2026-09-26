@@ -12,7 +12,7 @@ use jasper_daemon::json::{
 use std::sync::atomic::Ordering;
 
 impl OutputdState {
-    pub(super) fn content_json(&self, buf: &mut String, uptime_ms: u64, content_xrun_count: u64) {
+    pub(super) fn content_json(&self, buf: &mut String) {
         buf.push_str(r#""content":{"#);
         // The resolved bridge mode IS the source — same string as
         // `content_bridge.mode` below, not a re-derived guess from
@@ -67,21 +67,6 @@ impl OutputdState {
             buf,
             "eagain_count",
             self.content_eagain_count.load(Ordering::Relaxed),
-        );
-        buf.push(',');
-        push_kv_u64(buf, "xrun_count", content_xrun_count);
-        buf.push(',');
-        push_kv_u64_opt(
-            buf,
-            "last_xrun_age_ms",
-            event_age_ms(uptime_ms, self.last_content_xrun_ms.load(Ordering::Relaxed)),
-        );
-        buf.push(',');
-        push_kv_f64(
-            buf,
-            "xrun_rate_per_hour",
-            rate_per_hour(content_xrun_count, uptime_ms),
-            3,
         );
         // Ring B honesty contract (latency/ring-proto-shm): under the shm_ring
         // content source, outputd reads the post-DSP program from an n-slot SHM

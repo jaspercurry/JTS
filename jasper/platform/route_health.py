@@ -22,7 +22,6 @@ _IGNORED_DELTA_LEAF_KEYS = frozenset({"captured_at_monotonic_ns", "uptime_second
 # serializers by tests/test_usbsink_impulse_tap_contract.py.
 # The USB latency harness's set.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
-    ("outputd", "content", "xrun_count"),  # never incremented (#5721)
     ("outputd", "dac", "xrun_count"),
 )
 KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (

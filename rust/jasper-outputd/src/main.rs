@@ -857,7 +857,6 @@ fn fake_counters(frames_written: u64) -> IoCounters {
         content_partial_period_count: 0,
         content_eagain_count: 0,
         dac_frames_written: frames_written,
-        content_xrun_count: 0,
         dac_xrun_count: 0,
     }
 }
