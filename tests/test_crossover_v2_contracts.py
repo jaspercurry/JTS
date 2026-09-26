@@ -16,7 +16,7 @@ import dataclasses
 
 import pytest
 
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2.contracts import CandidateFcDisagreementError, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import (
     CandidateAcousticContext,

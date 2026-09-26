@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.fanin_coupling import RING_A_CHANNELS
@@ -28,8 +28,7 @@ from ..camilla_names import (
 )
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .devices import _finite_float
 from .filters import (
     APPLIED_RESPONSE_FILTER_MODE,

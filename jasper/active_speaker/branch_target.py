@@ -13,10 +13,10 @@ from typing import Sequence
 import numpy as np
 
 from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
     crossover_response_db,
     radiating_band_hz,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 
 #: Octaves past the passband edge a branch may still place GAIN (#1968: ~1/2-1).
 STOPBAND_GAIN_MARGIN_OCTAVES: float = 0.5
