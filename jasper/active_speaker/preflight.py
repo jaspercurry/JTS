@@ -329,5 +329,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
         for index, (pose, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
-    price = walk_price(plan) if valid_shape else {}
+    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or facts.roles_bands for stop in plan.stops)
+    price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
     return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)

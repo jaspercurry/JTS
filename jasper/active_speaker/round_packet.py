@@ -169,6 +169,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                         and (not curve.get("role") or t.get("role") in (None, curve["role"]))), ({}, {}))
                     gates = gate_fields({"curve": {**(take.get("curve") or {}), **curve}})
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
+                                   "candidate_id": curve.get("candidate_id") or group.get("capture_basis", {}).get("candidate_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
                                    "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),
                                    **gates, "stats": series_stats(curve, plot, gates["trusted_floor_hz"])})

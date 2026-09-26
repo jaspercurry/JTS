@@ -21,7 +21,6 @@ poses and refusals, the session host tags indexes with a phase.
 from __future__ import annotations
 
 import math
-from collections import Counter
 from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
@@ -36,7 +35,7 @@ from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
+from .crossover_v2.capture_plan import room_sweep_band_hz
 from .crossover_v2.contracts import (
     REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
@@ -827,20 +826,16 @@ def request_for_program(
     )
 
 
-def walk_price(
-    request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int | float | None]:
-    """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
-    SESSION (base entries plus these captures), rounded UP to whole minutes.
-    ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
-    """
-    takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
+def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:
+    """Price the same capture schedule shown by the page, including preparation."""
+    from .plan_run import prepare_plan_captures  # lazy: plan_run imports this request model
+
+    captures = len(prepare_plan_captures(request, roles_bands=roles_bands))
     return {
         "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
         "captures": captures,
         "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + request.repeats - 1 + captures) / 60
+            wall_clock_ceiling_s(captures) / 60
         ),
         "stimulus_s": (
             None if request.template.sweep_s is None

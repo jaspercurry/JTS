@@ -605,9 +605,12 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
             assert len(take["bands"]) == len(saved["bands"]) > 0
             assert [band["fundamental_qualified"] for band in take["bands"]] == [
                 band["fundamental_qualified"] for band in saved["bands"]]
+    candidates = {group["set_id"]: group["candidate_id"] for group in packet["sets"]}
+    assert all(candidates.values())
     assert len(packet["series"]) == (14 if purpose == "room" else 1)
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"]
+        assert series["candidate_id"] == candidates[series["set_id"]]
         assert series["stats"]["flatness_rms_db"]["value"] < 0.5
         assert abs(series["stats"]["tilt_db_per_decade"]["value"]) < 0.5
         assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
@@ -619,6 +622,8 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
         assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
     assert f"Fingerprint: {packet['packet_fingerprint']}" in index
+    for series in packet["series"]:
+        assert any(f"candidate {series['candidate_id']}; set {series['set_id']}; take {series['take_id']}" in line for line in index)
     heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "gate ", "series ",
              "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]

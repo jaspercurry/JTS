@@ -1171,24 +1171,17 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 13, "ceiling_min": 56,
+         {"mic_moves": 5, "captures": 15, "ceiling_min": 54,
           "stimulus_s": None}),
         (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
-         {"mic_moves": 5, "captures": 16, "ceiling_min": 60,
+         {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
           "stimulus_s": None}),
     ],
     ids=["no-cycle", "two-candidates"],
 )
-def test_the_shipped_programs_resolve_exactly_as_before(
+def test_shipped_program_geometry_and_full_capture_price(
     candidates: tuple[str, ...], regime: str, phase: str, price: dict,
 ) -> None:
-    """The pose category is ADDITIVE: every bearing walk is what it always was.
-
-    Transcribed from a walk captured before poses had a kind -- copy, order,
-    repeats, advance policy, geometry and price -- so a categorized pose that
-    leaked into the bearing path fails here rather than in a household's
-    prompt. A bearing's geometry adds NO keys to the take record either.
-    """
     request = ac.request_for_program(
         mp.program("baseline", "express"), candidates=candidates,
     )
@@ -1212,8 +1205,8 @@ def test_the_shipped_programs_resolve_exactly_as_before(
     assert ac.walk_price(request) == price
 
 
-@pytest.mark.parametrize("repeats, ceiling_min", [(1, 32), (2, 36), (3, 40)])
-def test_walk_price_counts_every_entry_baseline_repeat(repeats, ceiling_min):
+@pytest.mark.parametrize("repeats, ceiling_min", [(1, 30), (2, 30), (3, 30)])
+def test_walk_price_omits_entry_baseline_for_close_program(repeats, ceiling_min):
     request = ac.request_for_program(mp.program("close", "spot"), repeats=repeats)
     assert ac.walk_price(request)["ceiling_min"] == ceiling_min
 
@@ -1283,12 +1276,6 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
     stimulus_s: float | None,
 ) -> None:
-    """``stimulus_s`` is derived from the program's own counts, the same rule
-    :func:`test_a_program_becomes_its_own_walk_in_table_order` pins for everything
-    else ``walk_price`` reports -- so this cannot drift from the table either.
-    ``None``, never ``0``, for a walk that picked no duration: the two are
-    different statements, and a reader printing ``0 s`` states the wrong one.
-    """
     program = mp.program(program_id, size)
     request = ac.request_for_program(
         program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN,
@@ -1297,11 +1284,10 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
             level_ladder_dbfs=level_ladder_dbfs,
         ),
     )
-    cycle = candidates or ("base",)
     price = ac.walk_price(request)
 
     assert price["mic_moves"] == program.mic_move_count
-    assert price["captures"] == program.capture_count * len(cycle)
+    assert price["captures"] == len(prepare_plan_captures(request))
     assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
 
 

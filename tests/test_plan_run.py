@@ -1444,7 +1444,7 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
-    assert facts["measurements"] == len(captures)
+    assert facts["measurements"] == len(captures) == ac.walk_price(request, roles_bands=context.roles_bands)["captures"]
     assert sum(facts["measurements_per_pose"]) == len(captures)
     assert facts["sweeps_per_pose"] == counts
     assert facts["timing_sweeps"] == timing
