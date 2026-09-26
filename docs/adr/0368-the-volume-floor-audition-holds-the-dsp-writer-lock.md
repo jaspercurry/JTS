@@ -32,12 +32,14 @@ save's coordinator.
 1. **The audition holds `CANONICAL_DSP_WRITER_LOCK_PATH` for its whole
    life,** admitted through `dsp_apply.dsp_writer_lock` like any writer (source
    `volume_floor_tone`, the writers' 10 s budget) before the fader moves. The
-   one restore funnel lets it go only once fader and mute are back: on a stop
-   (the page's pagehide stop included), on the runner's error or 10-minute
-   limit, and on a start that fails for any reason (an unreachable CamillaDSP
-   is a `RuntimeError` for the route) or is cancelled. A start stopped while
-   it waits never moves the fader, and a lock won after its start has left is
-   let go at once. The kernel drops it if jasper-web dies.
+   one restore funnel lets it go after it has put fader and mute back — and
+   after a restore that failed too, so a reconciler can repair what it left.
+   The funnel runs on a stop (the page's pagehide stop included, whatever the
+   runner's own stop does), on the runner's error or 10-minute limit, and on a
+   start that fails for any reason (an unreachable CamillaDSP is a
+   `RuntimeError` for the route) or is cancelled. A start stopped while it
+   waits never moves the fader, and a lock won after its start has left is let
+   go at once. The kernel drops it if jasper-web dies.
 2. **No lock, no tone.** A missing lock directory, a lock not won inside the
    budget, or a lock thread that dies first refuses the start before anything
    moves.
@@ -65,7 +67,8 @@ save's coordinator.
   volume reconcile defers to the tone.
 - A deferred floor lands on jasper-voice's next reconcile tick where that
   daemon runs. A streambox runs it only while an accessory mic is published;
-  without it the floor lands at the next volume change or floor save.
+  without it the floor lands at the next volume change or the next save that
+  changes the floor.
 - A page that vanishes without its pagehide stop keeps the lock, and every
   DSP writer refusing, until the tone's 10-minute limit.
 - While the tone plays the reconciler corrects it in neither direction: a

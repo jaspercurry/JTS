@@ -379,7 +379,8 @@ async def _reconcile_volume_curve_after_settings(
     Spotify/Bluetooth push-mode handoff. ``False`` when it stood down for a
     DSP writer or, before a louder write, a measurement; the floor then lands
     on jasper-voice's next reconcile tick where that daemon runs, and otherwise
-    at the next volume change or save (ADR-0368).
+    at the next volume change or the next save that changes the floor
+    (ADR-0368).
     """
     from jasper import librespot_state
     from jasper.renderer import RendererClient

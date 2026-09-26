@@ -4770,6 +4770,70 @@ async def test_a_floor_tone_interrupted_while_it_waits_never_plays(
     assert FakeVolumeFloorToneRunner.instances[0].started is False
 
 
+@pytest.mark.parametrize("runner_stop", ["returns", "raises"])
+async def test_a_stop_between_publishing_and_starting_the_runner_still_restores(
+    tmp_path: Path, monkeypatch, runner_stop: str,
+):
+    """A page's stop that lands after the session published its runner and
+    before the runner started — the real one, whose thread cannot be joined
+    yet — restores the fader and releases the lock whatever the runner's stop
+    does, and the next audition plays."""
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
+    held = _writer_lock_held(tmp_path)
+    fake = _WitnessCamilla(held)
+    _install_floor_tone_owner(fake)
+    session = _floor_tone_session(tmp_path)
+    stop_called = threading.Event()
+    stoppers: list[threading.Thread] = []
+    answers: list[str] = []
+
+    def page_stop() -> None:
+        try:
+            answers.append(asyncio.run(session.stop(
+                camilla_factory=lambda: fake, reason="pagehide",
+            ))["status"])
+        except RuntimeError as exc:
+            answers.append(type(exc).__name__)
+
+    class StoppedBeforeStart(volume_floor_tone._LoopingVolumeFloorTone):
+        def stop(self) -> None:
+            try:
+                super().stop()
+                if runner_stop == "raises":
+                    raise RuntimeError("the runner would not stop")
+            finally:
+                stop_called.set()
+
+        def start(self) -> None:
+            stoppers.append(threading.Thread(target=page_stop))
+            stoppers[0].start()
+            assert stop_called.wait(timeout=2.0)
+            super().start()
+
+    await session.start_or_update(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        runner_factory=StoppedBeforeStart,
+    )
+    await asyncio.to_thread(stoppers[0].join, 5.0)
+
+    assert answers == ["stopped" if runner_stop == "returns" else "RuntimeError"]
+    assert held() is False
+    assert fake.db == pytest.approx(-18.0)
+    assert fake.muted is True
+    assert all(fake.held_at_write)
+    payload = await asyncio.wait_for(session.start_or_update(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        runner_factory=FakeVolumeFloorToneRunner,
+    ), timeout=5.0)
+    assert payload["status"] == "started"
+    await session.stop(camilla_factory=lambda: fake, reason="stop")
+    assert held() is False
+
+
 @pytest.mark.parametrize("reconciler", ["voice_observer", "floor_save"])
 async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_after(
     tmp_path: Path, monkeypatch, reconciler: str,

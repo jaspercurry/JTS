@@ -93,6 +93,11 @@ CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
 MUTE_DB_EPSILON = 1e-6
+# The hold is read inside `_reconcile_write_lock`, which MEASURE_PAUSE's
+# `note_measurement_active` must take within the voice daemon's setup budget
+# (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`, 2.25 s);
+# the control client's 2 s default would spend nearly all of it.
+MEASUREMENT_HOLD_READ_TIMEOUT_S = 0.5
 
 
 class VolumeCoordinator:
@@ -1473,14 +1478,16 @@ class VolumeCoordinator:
                 )
                 if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
                     return
-                if self._defer_for_dsp_writer(reported=deferred):
-                    return
                 louder = not expected_mute and (
                     drift > RECONCILE_DRIFT_DB or current_mute is True
                 )
                 if louder and await self._defer_for_measurement_hold(
                     reported=deferred,
                 ):
+                    return
+                # Asked last, with no await before the write: a writer admitted
+                # while the hold was being read still holds the write off.
+                if self._defer_for_dsp_writer(reported=deferred):
                     return
                 try:
                     ok = await self._write_camilla_db_with_mute(
@@ -1563,14 +1570,22 @@ class VolumeCoordinator:
         held, which costs only a late raise; a quieter write never asks, so the
         safety correction stays live (ADR-0177, ADR-0368).
         """
-        hold = await asyncio.to_thread(read_measurement_hold)
+        hold = await asyncio.to_thread(
+            read_measurement_hold, timeout=MEASUREMENT_HOLD_READ_TIMEOUT_S,
+        )
         if hold is not None and not hold.get("active"):
             return False
-        return self._defer("measurement_hold", reported)
+        return self._defer(
+            "measurement_hold", reported,
+            hold="unreadable" if hold is None else "held",
+        )
 
-    def _defer(self, reason: str, reported: str | None) -> bool:
+    def _defer(self, reason: str, reported: str | None, **fields: str) -> bool:
         if reason != reported:
-            log_event(logger, "volume.reconcile_deferred", reason=reason)
+            log_event(
+                logger, "volume.reconcile_deferred",
+                fields={"reason": reason, **fields},
+            )
         self._reconcile_deferred = reason
         return True
 

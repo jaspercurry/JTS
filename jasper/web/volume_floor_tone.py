@@ -166,7 +166,9 @@ class _LoopingVolumeFloorTone:
     def stop(self) -> None:
         self._stop.set()
         self._terminate_current()
-        if threading.current_thread() is not self._thread:
+        # A thread not started yet has nothing to join, and the event keeps it
+        # from playing when it does start.
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=2.0)
 
     @property
@@ -615,13 +617,15 @@ class VolumeFloorToneSession:
             if runner is not None:
                 self._clear_active_locked()
                 self._generation += 1
-        if runner is not None:
-            runner.stop()
-        await self._restore_snapshot_locked(
-            camilla_factory=camilla_factory,
-            original_db=original_db,
-            original_mute=original_mute,
-        )
+        try:
+            if runner is not None:
+                runner.stop()
+        finally:
+            await self._restore_snapshot_locked(
+                camilla_factory=camilla_factory,
+                original_db=original_db,
+                original_mute=original_mute,
+            )
         status = "stopped" if runner is not None or starting else "idle"
         log_event(
             logger,

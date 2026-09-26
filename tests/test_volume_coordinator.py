@@ -14,6 +14,7 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -29,13 +30,14 @@ from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
+from jasper.atomic_io import advisory_file_lock
 from jasper.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_apply import camilla_graph_mutation
 from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
-from jasper.platform.control_client import ControlError
+from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_echo import ECHO_WINDOW_SEC
@@ -2841,11 +2843,43 @@ async def test_a_raise_waits_on_the_measurement_hold_and_a_lowering_never_does(
 
     assert cam.set_calls == ([pytest.approx(percent_to_db(70))] if writes else [])
     assert coord.reconcile_deferred is not writes
-    reasons = [
-        fields["reason"]
+    deferrals = [
+        (fields["reason"], fields["hold"])
         for fields in event_field_maps(caplog, "volume.reconcile_deferred")
     ]
-    assert reasons == ([] if writes else ["measurement_hold"])
+    assert deferrals == ([] if writes else [("measurement_hold", hold_state)])
+
+
+async def test_a_writer_admitted_while_the_hold_is_read_still_defers_the_raise(
+    tmp_path, monkeypatch, measurement_hold_served,
+):
+    """The writer lock is asked after the measurement hold, with nothing
+    between it and the write, so a graph swap or a tone admitted while the
+    hold is read still holds the raise off; the read itself gives up sooner
+    than the control client's default (ADR-0368)."""
+    expected_db = percent_to_db(70)
+    coord, cam, client = _owned_coord(tmp_path, db=expected_db)
+    await coord.set_listening_level(70)
+    client.db = expected_db - 25.0
+    writer = ExitStack()
+    timeouts: list[object] = []
+
+    def read_while_a_writer_is_admitted(**kwargs: object) -> dict:
+        timeouts.append(kwargs.get("timeout"))
+        writer.enter_context(advisory_file_lock(cam._graph_mutation_lock_path))
+        return measurement_hold_served.snapshot()
+
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement",
+        read_while_a_writer_is_admitted,
+    )
+    with writer:
+        await coord.maybe_reconcile_camilla()
+
+        assert client.db == pytest.approx(expected_db - 25.0)
+        assert coord.reconcile_deferred is True
+    (timeout,) = timeouts
+    assert isinstance(timeout, float) and timeout < DEFAULT_TIMEOUT
 
 
 async def test_a_refused_write_speaks_once_and_says_when_it_lands(
