@@ -65,7 +65,7 @@ class ViewArtifact(NamedTuple):
 ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "inventory": ViewArtifact("inventory.json", TAKES_SET, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.inventory", schema="jts_inventory/1"),
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
-    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--bass-reference-db", "<db>", "--out", "<render-dir>"), schema=DSP_REPLAY_SCHEMA),
+    "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--out", "<render-dir>"), schema=DSP_REPLAY_SCHEMA),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>"), schema=DSP_LEVELS_SCHEMA),
     "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/1"),
     "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,), schema="jts_entry_state_grade/1"),

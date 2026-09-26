@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The existing file renderer, with explicit Main and bass-reference values."""
+"""The existing file renderer, with an explicit Main value and a taper-era graph's bass reference."""
 
 from __future__ import annotations
 
@@ -44,7 +44,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("graph", type=Path)
     parser.add_argument("stimulus", type=Path)
     parser.add_argument("--main-db", type=float, required=True)
-    parser.add_argument("--bass-reference-db", type=float, required=True)
+    parser.add_argument("--bass-reference-db", type=float,
+                        help="the Aux1 level a graph from before ADR-0359 reads; other graphs need none")
     parser.add_argument("--out", type=Path, required=True, help="render directory; use pi-run-diagnostic.sh on the Pi")
     parser.add_argument("--bass-descriptor", type=Path, help="also render bass off and full boost from this descriptor (graphs with the ADR-0359 block)")
     parser.add_argument("--bass-channels", type=int, nargs="+", default=[], help="bass output indices; validated against the graph and descriptor")
