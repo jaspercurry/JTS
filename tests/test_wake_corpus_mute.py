@@ -97,7 +97,7 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     assert event_records(caplog, "wake_corpus.mute_stop")
     # The flag persists into the session metadata sidecar.
     # RecordingBackend.stop_recording appends to the in-memory clip list
-    # under the lock, then calls _save_metadata() OUTSIDE the lock on the
+    # under the lock, then writes the sidecar OUTSIDE the lock on the
     # same background thread — so the list_clips() poll above can observe
     # the new clip before the sidecar write lands. Poll the sidecar itself,
     # with the same deadline discipline as above, instead of assuming a

@@ -13,7 +13,7 @@ thin ``jasper.web.wake_corpus_setup`` HTTP adapter import the constants +
 functions they need from here.
 ``enter_corpus_test_mode`` / ``exit_corpus_test_mode`` couple to
 ``RecordingBackend`` only through the HTTP layer (enter/exit handlers) and
-through ``RecordingBackend._maybe_recover_stale_test_mode`` calling
+through ``active_session.maybe_recover_stale_test_mode`` calling
 ``exit_corpus_test_mode``.
 """
 from __future__ import annotations

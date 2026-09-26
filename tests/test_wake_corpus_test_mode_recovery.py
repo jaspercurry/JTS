@@ -11,7 +11,7 @@ indefinitely (the socket-activated web service idle-exits after 10 min),
 leaving the speaker permanently deaf — a violation of the project's
 "reasonable operator actions must self-recover" rule.
 
-These tests cover `RecordingBackend._maybe_recover_stale_test_mode()`,
+These tests cover `active_session.maybe_recover_stale_test_mode()`,
 the bounded self-heal that runs on backend startup (which the socket
 re-runs on the next /wake-corpus/ request after an idle exit):
 
@@ -32,13 +32,13 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import bridge_session, recording_backend
+from jasper.wake_corpus import active_session, bridge_session, recording_backend
 
 
 def _make_backend(out: Path) -> recording_backend.RecordingBackend:
     """An unstarted backend rooted in a tmp dir.
 
-    `_maybe_recover_stale_test_mode()` only reads markers + the in-memory
+    `maybe_recover_stale_test_mode()` only reads markers + the in-memory
     session/recording fields (both set in __init__), so it needs neither
     the asyncio loop nor real systemctl. Calling it directly isolates the
     recovery decision from thread + bridge-env machinery.
@@ -49,7 +49,7 @@ def _make_backend(out: Path) -> recording_backend.RecordingBackend:
 def _write_test_mode_marker(out: Path, *, age_sec: float) -> Path:
     md_dir = out / "metadata"
     md_dir.mkdir(parents=True, exist_ok=True)
-    marker = md_dir / recording_backend.TEST_MODE_MARKER
+    marker = md_dir / active_session.TEST_MODE_MARKER
     marker.write_text(json.dumps({"entered_at": "2026-06-09T00:00:00+00:00"}))
     mtime = time.time() - age_sec
     os.utime(marker, (mtime, mtime))
@@ -82,11 +82,11 @@ def test_stale_marker_recovers_voice_and_clears_marker(
     then remove the marker so it doesn't fire again."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
-    b._maybe_recover_stale_test_mode()
+    active_session.maybe_recover_stale_test_mode(b)
 
     assert recovery_calls["bridge_disable"] == ["disable"]
     assert recovery_calls["voice"] == ["start"]
@@ -100,11 +100,11 @@ def test_fresh_marker_is_left_alone(
     still open and working — recovery must not touch voice."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC - 30,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC - 30,
     )
 
     b = _make_backend(out)
-    b._maybe_recover_stale_test_mode()
+    active_session.maybe_recover_stale_test_mode(b)
 
     assert recovery_calls["voice"] == []
     assert recovery_calls["bridge_disable"] == []
@@ -119,7 +119,7 @@ def test_no_marker_is_a_no_op(
     (out / "metadata").mkdir(parents=True)
 
     b = _make_backend(out)
-    b._maybe_recover_stale_test_mode()
+    active_session.maybe_recover_stale_test_mode(b)
 
     assert recovery_calls["voice"] == []
     assert recovery_calls["bridge_disable"] == []
@@ -133,14 +133,14 @@ def test_active_session_blocks_teardown(
     under a live session, and the marker stays for a later attempt."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
-    # Simulate _maybe_load_recent_session() having reattached a session.
+    # Simulate maybe_load_recent_session() having reattached a session.
     b._session_id = "20260609T000000Z"
 
-    b._maybe_recover_stale_test_mode()
+    active_session.maybe_recover_stale_test_mode(b)
 
     assert recovery_calls["voice"] == []
     assert recovery_calls["bridge_disable"] == []
@@ -153,13 +153,13 @@ def test_recording_in_progress_blocks_teardown(
     """A recording in flight must never be interrupted by recovery."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
     b._current = object()  # sentinel: is_recording() == True
 
-    b._maybe_recover_stale_test_mode()
+    active_session.maybe_recover_stale_test_mode(b)
 
     assert recovery_calls["voice"] == []
     assert marker.exists()
@@ -172,7 +172,7 @@ def test_failed_restart_keeps_marker_for_retry(
     startup retries — and the failure must not crash the recorder."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC + 60,
     )
     monkeypatch.setattr(
         bridge_session, "disable_bridge_corpus_outputs", lambda: False,
@@ -184,7 +184,7 @@ def test_failed_restart_keeps_marker_for_retry(
     monkeypatch.setattr(bridge_session, "set_voice_daemon_state", boom)
 
     b = _make_backend(out)
-    b._maybe_recover_stale_test_mode()  # must not raise
+    active_session.maybe_recover_stale_test_mode(b)  # must not raise
 
     assert marker.exists()
 
@@ -196,7 +196,7 @@ def test_start_runs_recovery(
     service on the next request actually triggers it end-to-end."""
     out = tmp_path / "out"
     marker = _write_test_mode_marker(
-        out, age_sec=recording_backend.TEST_MODE_STALE_SEC + 60,
+        out, age_sec=active_session.TEST_MODE_STALE_SEC + 60,
     )
 
     b = _make_backend(out)
@@ -213,7 +213,7 @@ def test_enter_exit_marker_round_trip(tmp_path: Path) -> None:
     removes it. Clearing when absent is a graceful no-op."""
     out = tmp_path / "out"
     b = _make_backend(out)
-    marker = out / "metadata" / recording_backend.TEST_MODE_MARKER
+    marker = out / "metadata" / active_session.TEST_MODE_MARKER
 
     b.note_test_mode_entered()
     assert marker.is_file()

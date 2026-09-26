@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import capture_plan, recording_backend, session_store
+from jasper.wake_corpus import (
+    active_session,
+    capture_plan,
+    recording_backend,
+    session_store,
+)
 
 from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
@@ -332,7 +337,7 @@ def test_unload_session_clears_state_but_keeps_metadata(
     sid = backend.session_id()
     md_dir = tmp_path / "out" / "metadata"
     md_path = md_dir / f"enroll_jasper_{sid}.json"
-    marker = md_dir / recording_backend.ACTIVE_SESSION_MARKER
+    marker = md_dir / active_session.ACTIVE_SESSION_MARKER
     assert md_path.is_file()
     assert marker.is_file()
 
