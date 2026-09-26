@@ -46,7 +46,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, Cro
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import run_program
-from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -485,7 +484,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "arm"),
     ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "arm"),
     ({"alignment": "cleared"}, (), "speaker/mark", "human"),
-    ({"bass": "document"}, ("--mover", "human"), "bass/nearfield", "human"),
+    ({"bass": "document"}, ("--mover", "human"), "bass/seat", "human"),
     ({"room": "document"}, ("--mover", "arm"), "room/arm", "arm"),
     ({"room": "document"}, ("--layout", "seat_cloud"), "room/cloud", "human"),
     ({"driver": "document", "room": "document"}, (), "room/seat", "human"),
@@ -504,10 +503,10 @@ def test_trial_runs_the_program_its_document_states(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program.partition("/")[0], program)
+    expected = run_program(program.partition("/")[0], {"bass/seat": "seat_express"}.get(program, program))
     assert (plan.program, plan.mover, plan.candidates) == (program, mover, ("base", fingerprint))
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
-        (pose.place, candidate, "near_field" if program == "bass/nearfield" else "summed")
+        (pose.place, candidate, "summed")
         for pose in expected.poses for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
     if expected.levels is None:
@@ -536,12 +535,8 @@ def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candida
     assert plan.candidates == () and body["shape"] == "measure"
 
 
-@pytest.mark.parametrize("resolution,flags,near_field", [
-    ({"driver": "document"}, (), False),
-    ({"bass": "document"}, ("--mover", "human"), True),
-])
-def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys,
-                                               resolution, flags, near_field):
+@pytest.mark.parametrize("resolution,flags", [({"driver": "document"}, ()), ({"bass": "document"}, ("--mover", "human"))])
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags):
     fingerprint = bank_trial(resolution)
     silent = _opener()
     code, priced = _run(["trial", fingerprint, "--dry-run", *flags], silent, monkeypatch, capsys)
@@ -552,8 +547,7 @@ def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level,
     assert code == 0 and (priced.pop("program"), priced.pop("mover")) == (posted["program"], posted["mover"])
     assert {key: value for key, value in priced.items() if key not in ("verb", "dry_run")} == ran["schedule"]
     rungs = priced.get("levels", [priced])
-    assert rungs and all(rung["rung_admission"].get("predicted_spl_basis") == (
-        NEAR_FIELD_SPL_BASIS if near_field else None) for rung in rungs)
+    assert rungs and all(rung["rung_admission"].get("predicted_spl_basis") is None for rung in rungs)
 
 
 def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):
