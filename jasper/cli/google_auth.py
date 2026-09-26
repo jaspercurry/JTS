@@ -9,9 +9,8 @@ path. This CLI exists as a fallback for headless / scripted installs
 (mirroring ``jasper-spotify-auth``) — paste the auth URL into a browser
 on another device, sign in, paste the redirected URL back here.
 
-Run: ``jasper-google-auth <name>`` where ``<name>`` is the household-
-member label (``jasper``, ``brittany``). Idempotent — re-running
-overwrites the previous refresh token for that label.
+Run ``jasper-google-auth <name>`` with the household-member label.
+Re-running replaces that label's refresh token.
 """
 from __future__ import annotations
 
@@ -35,7 +34,7 @@ _AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     env_load.load_env_files()
     parser = argparse.ArgumentParser(
         prog="jasper-google-auth",
@@ -60,7 +59,7 @@ def main() -> None:
             "voice queries don't name a person."
         ),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not valid_account_name(args.name):
         print(
