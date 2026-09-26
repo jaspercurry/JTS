@@ -609,30 +609,7 @@ def _release_date_key(release: dict) -> str:
     return date_str
 
 
-def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = ""):
-    """Multi-account-aware Spotify tools.
-
-    `router` is a `jasper.spotify_router.Router`. When AirPlay is
-    streaming a track right now, the same title cross-reference
-    transport uses picks whose account this is — so "play Beyoncé"
-    while a guest is AirPlaying lands on the guest's account, not
-    the speaker owner's. When no AirPlay session is in flight (cold
-    start), we fall back to whichever account is currently is_playing,
-    then to the registry's default.
-
-    `setup_url` is woven into the no-account-configured error so a
-    fresh install can answer "play X" requests with a spoken pointer
-    to the OAuth setup page. The tools always register (so the LLM
-    can call them); when no usable client is available, each call
-    short-circuits to a user-facing error that's specific to WHY —
-    "needs setup" vs "session expired" — so the user knows whether to
-    OAuth fresh or just re-link an existing account.
-
-    The client-availability check happens per call (not at factory
-    time): `router.refresh_if_empty()` re-runs `build_clients` if the
-    router is currently empty, so re-linking via the web wizard
-    recovers the daemon without a manual restart."""
-
+def _make_spotify_play(router, renderer, librespot_name: str, setup_url: str):
     @tool(labels=("music", "spotify"), llm_description=SPOTIFY_PLAY_LLM_DESCRIPTION)
     async def spotify_play(
         query: str,
@@ -714,6 +691,11 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             "confirm": _play_confirm(resolved_kind, name, shuffle),
         }
 
+
+    return spotify_play
+
+
+def _make_spotify_play_latest_by_artist(router, renderer, librespot_name: str, setup_url: str):
     @tool(labels=("music", "spotify"))
     async def spotify_play_latest_by_artist(artist: str) -> dict:
         """Find a named artist's most recent release (single or album)
@@ -783,6 +765,11 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             "confirm": confirm,
         }
 
+
+    return spotify_play_latest_by_artist
+
+
+def _make_spotify_queue(router, renderer, librespot_name: str, setup_url: str):
     @tool(labels=("music", "spotify", "queue"))
     async def spotify_queue(query: str) -> dict:
         """Search Spotify for a track and add it to the playback
@@ -809,4 +796,14 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         await asyncio.to_thread(sp.add_to_queue, top["uri"], device_id=device_id)
         return {"ok": True, "queued": top.get("name", query), "account": account_name}
 
-    return [spotify_play, spotify_play_latest_by_artist, spotify_queue]
+
+    return spotify_queue
+
+
+def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = ""):
+    # Resolve clients per call so wizard relinks recover without a daemon restart.
+    return [
+        _make_spotify_play(router, renderer, librespot_name, setup_url),
+        _make_spotify_play_latest_by_artist(router, renderer, librespot_name, setup_url),
+        _make_spotify_queue(router, renderer, librespot_name, setup_url),
+    ]
