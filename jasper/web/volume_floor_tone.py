@@ -4,9 +4,10 @@
 
 """Held reference tone for the /sound/output/ volume-floor audition.
 
-Owns the tone's process, its COMMISSIONING claim on the main fader and the
-session that arbitrates them. The sound page's two routes drive that session
-directly, handing it their own CamillaDSP factory.
+Owns the tone's process, its COMMISSIONING claim on the main fader, the DSP
+writer lock that announces it to other processes, and the session that
+arbitrates them. The sound page's two routes drive that session directly,
+handing it their own CamillaDSP factory.
 """
 
 from __future__ import annotations
@@ -23,9 +24,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
+from jasper.atomic_io import advisory_file_lock_async
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
     popen_correction_play,
+)
+from jasper.camilla import CamillaUnavailable
+from jasper.dsp_apply import (
+    CANONICAL_DSP_WRITER_LOCK_PATH,
+    DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
 )
 from jasper.log_event import log_event
 from jasper.sound.settings import SoundSettings, load_sound_settings
@@ -250,6 +257,77 @@ class _LoopingVolumeFloorTone:
                 self._on_finish(self, finish_reason)
 
 
+class _WriterLockHold:
+    """The DSP writer flock, held for one audition on a thread of its own.
+
+    Each /sound request runs its own ``asyncio.run``, which closes the async
+    generators it started as it returns, so a hold entered in the start request
+    would end with it. No executor thread parks on the release either: the
+    interpreter joins those at exit. The kernel drops the flock if jasper-web
+    dies. See ADR-0368.
+
+    Pair every hold with :meth:`release`, whatever :meth:`take` did: the thread
+    can still win the lock after a cancelled take has left.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._held = False
+        self._refusal: BaseException | None = None
+        self._settled = threading.Event()
+        self._let_go = threading.Event()
+        self._thread = threading.Thread(
+            target=lambda: asyncio.run(self._hold()),
+            name="jts-volume-floor-lock",
+            daemon=True,
+        )
+
+    async def take(self) -> None:
+        """Hold the lock, or raise ``RuntimeError``: never play unannounced."""
+        if not self._path.parent.is_dir():
+            raise RuntimeError(
+                f"CamillaDSP's config directory {self._path.parent} is missing"
+            )
+        self._thread.start()
+        while not self._settled.is_set():
+            await asyncio.sleep(0.02)
+        if not self._held:
+            raise RuntimeError(
+                "another change to the speaker's sound is in progress; try the "
+                "tone again when it finishes"
+                if isinstance(self._refusal, TimeoutError)
+                else "the tone could not take the DSP writer lock"
+            ) from self._refusal
+
+    async def release(self) -> None:
+        """Let the lock go and wait until it is gone. Idempotent."""
+        self._let_go.set()
+        while self._thread.is_alive():
+            await asyncio.sleep(0.02)
+
+    async def _hold(self) -> None:
+        try:
+            async with advisory_file_lock_async(
+                self._path, timeout_sec=DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S,
+            ):
+                self._held = True
+                self._settled.set()
+                while not self._let_go.is_set():
+                    await asyncio.sleep(0.05)
+        except (OSError, ValueError) as exc:  # TimeoutError is an OSError
+            self._refusal = exc
+        finally:
+            self._settled.set()
+
+
+async def _unmute(camilla: Any) -> None:
+    """Unmute for the tone; an unreachable CamillaDSP fails like any start step."""
+    try:
+        await camilla.set_main_mute(False)
+    except CamillaUnavailable as exc:
+        raise RuntimeError("CamillaDSP is unavailable") from exc
+
+
 async def _claim_floor_level(
     household_db: float, floor_target_db: float,
 ) -> VolumeClaimHandle | None:
@@ -309,6 +387,10 @@ class VolumeFloorToneSession:
         # The COMMISSIONING claim this audition holds on the main fader. The
         # level it sits at moves with the slider, so the claim outlives it.
         self._claim: VolumeClaimHandle | None = None
+        # Held from before the fader moves until the restore funnel has put it
+        # back. Tests replace the path; there is no env/config override.
+        self._writer_lock_path = CANONICAL_DSP_WRITER_LOCK_PATH
+        self._writer_lock: _WriterLockHold | None = None
         self._original_db: float | None = None
         self._original_mute: bool | None = None
         self._floor_db: float | None = None
@@ -376,6 +458,7 @@ class VolumeFloorToneSession:
 
         if action == "start":
             original: tuple[float, bool] | None = None
+            hold = _WriterLockHold(self._writer_lock_path)
             try:
                 # Outside the op lock: a cold cache imports numpy/scipy and
                 # synthesizes the WAV, which must not block a concurrent
@@ -384,15 +467,19 @@ class VolumeFloorToneSession:
                     _volume_floor_tone_wav_path(),
                     on_finish=self._runner_finished,
                 )
+                # Outside the op lock too: a previous tone's restore, which
+                # needs it, is what releases the lock this may wait for.
+                await hold.take()
                 async with self._camilla_op():
                     camilla = camilla_factory()
                     original = await camilla.get_volume_and_mute(best_effort=True)
                     if original is None:
                         raise RuntimeError("CamillaDSP volume state is unavailable")
+                    self._writer_lock = hold
                     self._claim = await _claim_floor_level(
                         original[0], percent_to_db(1, floor_db=floor_db),
                     )
-                    await camilla.set_main_mute(False)
+                    await _unmute(camilla)
                     with self._lock:
                         cancelled = self._cancel_start
                         self._starting = False
@@ -427,17 +514,22 @@ class VolumeFloorToneSession:
                         original = None
                         raise
                     started_runner = runner
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, asyncio.CancelledError):
                 with self._lock:
                     self._starting = False
                     self._cancel_start = False
-                # The op lock was released with the block above, so retake it:
-                # this restore is a CamillaDSP write like any other.
-                await self._restore_snapshot_locked(
-                    camilla_factory=camilla_factory,
-                    original_db=None if original is None else original[0],
-                    original_mute=None if original is None else original[1],
-                )
+                try:
+                    # The op lock was released with the block above, so retake
+                    # it: this restore is a CamillaDSP write like any other.
+                    await self._restore_snapshot_locked(
+                        camilla_factory=camilla_factory,
+                        original_db=None if original is None else original[0],
+                        original_mute=None if original is None else original[1],
+                    )
+                finally:
+                    # A no-op after the funnel; before a snapshot, the only
+                    # release, and the one that lets go of a late win.
+                    await hold.release()
                 raise
         else:
             async with self._camilla_op():
@@ -454,7 +546,7 @@ class VolumeFloorToneSession:
                     self._claim = await owner.relevel(
                         self._claim, percent_to_db(1, floor_db=floor_db),
                     )
-                await camilla.set_main_mute(False)
+                await _unmute(camilla)
                 with self._lock:
                     if self._runner is runner and self._generation == generation:
                         self._floor_db = floor_db
@@ -618,19 +710,27 @@ class VolumeFloorToneSession:
         original_db: float,
         original_mute: bool,
     ) -> None:
-        camilla = camilla_factory()
         # The ONE restore funnel: every path out of an audition reaches here,
         # so releasing the claim here also covers the cancelled start, the
         # failed runner and the outer error path. The release lands on the
         # household level the start declared (``original_db``); the mute
         # ordering around it stays this session's, not the owner's.
         claim, self._claim = self._claim, None
-        if original_mute:
-            await camilla.set_main_mute(True, best_effort=True)
-            await _release_floor_level(claim, original_db)
-        else:
-            await _release_floor_level(claim, original_db)
-            await camilla.set_main_mute(False, best_effort=True)
+        hold, self._writer_lock = self._writer_lock, None
+        try:
+            camilla = camilla_factory()
+            if original_mute:
+                await camilla.set_main_mute(True, best_effort=True)
+                await _release_floor_level(claim, original_db)
+            else:
+                await _release_floor_level(claim, original_db)
+                await camilla.set_main_mute(False, best_effort=True)
+        finally:
+            # After the fader is back, so no reconciler sees the floor
+            # unannounced; and even after a failed restore, so one can
+            # repair it.
+            if hold is not None:
+                await hold.release()
 
     def _clear_active_locked(self) -> None:
         self._runner = None

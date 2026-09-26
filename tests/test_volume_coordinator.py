@@ -1817,13 +1817,10 @@ async def test_every_tick_refreshes_the_level_another_process_saved(tmp_path, so
         pytest.param(percent_to_db(70) - 0.3, 70, False, id="dead_band"),
         pytest.param(-18.0, 76, True, id="quiet_drift"),
         pytest.param(-8.0, 70, True, id="loud_drift"),
-        # Deep LOUD drift is unsafe in a way deep quiet is not.
         pytest.param(0.0, 0, True, id="deep_loud_drift"),
-        # The retained quiet carve-out: a fader claim held in ANOTHER process
-        # — jasper-web's volume-floor audition — parks camilla tens of dB
-        # below the household level with nothing this reconciler can ask
-        # (#3038).
-        pytest.param(percent_to_db(70) - 25.0, 70, False, id="deep_quiet_drift"),
+        # No depth is exempt: a quiet drift nobody announced at the writer
+        # lock is a stranded fader, not somebody's duck (ADR-0368).
+        pytest.param(percent_to_db(70) - 25.0, 70, True, id="deep_quiet_drift"),
     ],
 )
 async def test_which_drift_the_reconciler_corrects(
@@ -2746,12 +2743,8 @@ def _owned_coord(tmp_path, db: float):
 
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     """The reconciler writes by DECLARING the household level, so a duck held
-    in this process outranks it — no dB inference is involved, which is why
-    `RECONCILE_DUCK_SKIP_DB` is not what protects a cue's duck.
-
-    The duck is shallower than that threshold, so the carve-out cannot be
-    what spares it; releasing the claim lands the fader back on the household
-    level.
+    in this process outranks it — no dB inference is involved. Releasing the
+    claim lands the fader back on the household level.
     """
     expected_db = percent_to_db(70)
     coord, _, client = _owned_coord(tmp_path, db=expected_db)
@@ -2771,7 +2764,9 @@ async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     assert client.db == pytest.approx(expected_db)
 
 
-async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_path):
+async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
+    tmp_path, caplog,
+):
     """The swap's claim on the fader is the writer lock, not the duck's depth.
 
     The realistic shape: a household volume change lands during the bracket,
@@ -2779,8 +2774,10 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
     expects — the one direction it always corrects. Only the lock can hold
     that write back, and once the lock goes the very next tick corrects it,
     which is what makes the stand-down transient rather than a second
-    carve-out.
+    carve-out. The stand-down is one line per episode, not one per tick: the
+    volume-floor audition holds the lock for minutes (ADR-0368).
     """
+    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
     expected_db = percent_to_db(40)
     coord, cam, client = _owned_coord(tmp_path, db=expected_db)
     await coord.set_listening_level(40)
@@ -2789,56 +2786,13 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
     async with camilla_graph_mutation(
         source="test.swap", lock_path=cam._graph_mutation_lock_path,
     ):
-        await coord.maybe_reconcile_camilla()
+        for _ in range(3):
+            await coord.maybe_reconcile_camilla()
         assert client.db == pytest.approx(0.0)
 
     await coord.maybe_reconcile_camilla()
     assert client.db == pytest.approx(expected_db)
-
-
-async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
-    """The quiet carve-out is directional — it must never turn the
-    reconciler's loud-direction safety correction into a skip."""
-    expected_db = percent_to_db(40)
-    coord, _, client = _owned_coord(tmp_path, db=expected_db)
-    await coord.set_listening_level(40)
-
-    client.db = 0.0  # some other writer left camilla far too loud
-    await coord.maybe_reconcile_camilla()
-
-    assert client.db == pytest.approx(expected_db)
-
-
-async def test_deep_quiet_refusal_speaks_once_per_episode(tmp_path, caplog):
-    """The refusal is evaluated at the observer's 1 Hz for as long as the
-    unowned duck holds, so it is reported on the episode's edge — and a NEW
-    episode is a new line, not silence. Delete with the event.
-    """
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
-    expected_db = percent_to_db(70)
-    coord, cam, _ = _real_coord(
-        tmp_path, active={}, db=expected_db - 25.0, level=70,
-        mark_user_change=True,
-    )
-
-    for _ in range(3):
-        await coord.maybe_reconcile_camilla()
-    assert cam.set_calls == []
-    cam._db = expected_db  # the unowned writer let go
-    await coord.maybe_reconcile_camilla()
-    cam._db = expected_db - 25.0  # and a second episode opens
-    await coord.maybe_reconcile_camilla()
-    # A tick that returns before the drift comparison ends the episode too,
-    # so the duck still standing when the session hands camilla back is news.
-    coord.note_voice_session(True)
-    await coord.maybe_reconcile_camilla()
-    coord.note_voice_session(False)
-    await coord.maybe_reconcile_camilla()
-
-    skips = event_field_maps(
-        caplog, "volume.reconcile_skipped", reason="deep_quiet_unowned",
-    )
-    assert [fields["drift_db"] for fields in skips] == ["+25.00"] * 3
+    assert len(event_records(caplog, "volume.reconcile_deferred")) == 1
 
 
 async def test_a_refused_write_speaks_once_and_says_when_it_lands(
@@ -2895,8 +2849,7 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
     the canonical target — and it is never above it while either still holds.
 
     Replaying entry snapshots stranded it instead: whichever holder exited last
-    wrote back a value the other had already ducked, tens of dB quiet, in the
-    one band `maybe_reconcile_camilla` deliberately refuses to heal.
+    wrote back a value the other had already ducked, tens of dB quiet.
     """
     monkeypatch.setattr(camilla, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     canonical_db = percent_to_db(70)
