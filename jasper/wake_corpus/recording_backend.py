@@ -52,6 +52,7 @@ from .bridge_session import (
 )
 from .capture_plan import (
     CAPTURE_PLAN_STATE_SESSION,
+    PlanConformance,
     build_capture_plan,
     validate_active_capture_plan,
 )
@@ -1036,20 +1037,9 @@ class RecordingBackend:
 
         clip_id = str(uuid.uuid4())
         with self._lock:
-            if self._shutdown_started:
-                raise StateError("backend is shutting down")
-            if self._session_id is None or self._member is None:
-                raise StateError("call begin_session() first")
-            if self._current is not None or self._starting_clip_id is not None:
-                raise StateError("recording already in progress")
-            capture_plan = dict(self._capture_plan or {})
-            # Reserve the slot — concurrent calls now see this and
-            # refuse cleanly.
-            self._starting_clip_id = clip_id
-            # Per-session leg selection. Built under the lock so the
-            # session's clips all share one leg set.
-            active_legs = list(self._enabled_legs)
-            aec3_sweep_source = self._aec3_sweep_source
+            capture_plan, active_legs, aec3_sweep_source = (
+                self._reserve_start_locked(clip_id)
+            )
 
         conformance = validate_active_capture_plan(capture_plan)
         if not conformance.ok:
@@ -1084,29 +1074,57 @@ class RecordingBackend:
 
         start_ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         with self._lock:
-            self._current = task
-            self._current_clip_id = clip_id
-            self._current_meta = {
+            self._install_recording_locked(clip_id, task, {
                 "condition": condition,
                 "distance": distance,
                 "start_ts": start_ts,
-            }
-            self._current_plan_conformance = conformance.to_json()
-            self._starting_clip_id = None  # transitioned: starting → current
-            # Auto-stop timer — guards against a forgotten Stop click.
-            self._auto_stop_handle = self._loop.call_later(
-                self._max_duration_sec,
-                self._auto_stop_threadsafe,
-                (clip_id, task),
-            )
-            # Mid-recording mute watch — if the household flips the mic
-            # mute while a clip is rolling, stop within one poll.
-            self._mute_poll_handle = self._loop.call_later(
-                MUTE_POLL_INTERVAL_SEC,
-                self._mute_poll,
-                (clip_id, task),
-            )
+            }, conformance)
         return {"clip_id": clip_id, "start_ts": start_ts}
+
+    def _reserve_start_locked(
+        self, clip_id: str,
+    ) -> tuple[dict[str, Any], list[str], str]:
+        """Admit one clip start and hold its slot; return the session's
+        capture plan, leg set and AEC3 sweep source for its task."""
+        if self._shutdown_started:
+            raise StateError("backend is shutting down")
+        if self._session_id is None or self._member is None:
+            raise StateError("call begin_session() first")
+        if self._current is not None or self._starting_clip_id is not None:
+            raise StateError("recording already in progress")
+        capture_plan = dict(self._capture_plan or {})
+        # Reserve the slot — concurrent calls now see this and
+        # refuse cleanly.
+        self._starting_clip_id = clip_id
+        # Per-session leg selection. Built under the lock so the
+        # session's clips all share one leg set.
+        return capture_plan, list(self._enabled_legs), self._aec3_sweep_source
+
+    def _install_recording_locked(
+        self,
+        clip_id: str,
+        task: RecordingTask,
+        meta: dict[str, str],
+        conformance: PlanConformance,
+    ) -> None:
+        self._current = task
+        self._current_clip_id = clip_id
+        self._current_meta = meta
+        self._current_plan_conformance = conformance.to_json()
+        self._starting_clip_id = None  # transitioned: starting → current
+        # Auto-stop timer — guards against a forgotten Stop click.
+        self._auto_stop_handle = self._loop.call_later(
+            self._max_duration_sec,
+            self._auto_stop_threadsafe,
+            (clip_id, task),
+        )
+        # Mid-recording mute watch — if the household flips the mic
+        # mute while a clip is rolling, stop within one poll.
+        self._mute_poll_handle = self._loop.call_later(
+            MUTE_POLL_INTERVAL_SEC,
+            self._mute_poll,
+            (clip_id, task),
+        )
 
     def _mute_poll(self, generation: _StopGeneration) -> None:
         """Runs on the backend loop every MUTE_POLL_INTERVAL_SEC while a
@@ -1223,6 +1241,12 @@ class RecordingBackend:
 
     def _owns_pending_locked(self, generation: _StopGeneration) -> bool:
         return self._pending_stop_generation == generation
+
+    def _clear_current_locked(self) -> None:
+        self._current = None
+        self._current_clip_id = None
+        self._current_meta = None
+        self._current_plan_conformance = None
 
     def _quiesce_current_capture(
         self,
@@ -1448,38 +1472,7 @@ class RecordingBackend:
         mute_stopped: bool = False,
     ) -> ClipMetadata:
         with self._lock:
-            if self._current is None:
-                raise NoRecordingError("no recording in progress")
-            task = self._current
-            clip_id = self._current_clip_id
-            generation = (clip_id, task)
-            if self._owns_pending_locked(generation):
-                pending_auto, pending_mute = self._pending_stop or (False, False)
-                mute_stopped = mute_stopped or pending_mute
-                auto = (auto or pending_auto) and not mute_stopped
-            meta = self._current_meta
-            session_id = self._session_id
-            member = self._member
-            selected_legs = list(self._enabled_legs)
-            capture_plan = dict(self._capture_plan or {})
-            capture_plan_id = str(capture_plan.get("plan_id") or "")
-            capture_plan_conformance = dict(self._current_plan_conformance or {})
-            audio_context = dict(self._audio_context or {})
-            # Cancel the auto-stop timer if it hasn't fired yet.
-            if self._auto_stop_handle is not None and not auto:
-                self._auto_stop_handle.cancel()
-            self._auto_stop_handle = None
-            # The mute watch dies with the recording (cancelling an
-            # already-fired handle is a harmless no-op).
-            if self._mute_poll_handle is not None:
-                self._mute_poll_handle.cancel()
-            self._mute_poll_handle = None
-            # Clear state up-front so a second Stop click during the
-            # save isn't a confusing no-op.
-            self._current = None
-            self._current_clip_id = None
-            self._current_meta = None
-            self._current_plan_conformance = None
+            task, meta, fields = self._take_current_locked(auto, mute_stopped)
 
         # Long operations (await stop, write WAVs) happen OUTSIDE the
         # lock — other API calls can read state concurrently.
@@ -1496,12 +1489,91 @@ class RecordingBackend:
         with self._lock:
             seq = max((c.seq for c in self._clips), default=0) + 1
 
+        files = self._write_clip_wavs(
+            pcm_per_leg, fields["member"], fields["session_id"], seq,
+            meta["condition"],
+        )
+        clip = ClipMetadata(
+            **fields,
+            condition=meta["condition"],
+            distance=meta["distance"],
+            seq=seq,
+            start_ts=meta["start_ts"],
+            stop_ts=stop_ts,
+            duration_sec=duration_sec,
+            files=files,
+            deleted=False,
+            capture_health=capture_health,
+        )
+        with self._lock:
+            self._clips.append(clip)
+        self._save_metadata()
+        logger.info(
+            "clip saved: %s seq=%d condition=%s distance=%s dur=%.2fs%s%s",
+            clip.clip_id, seq, clip.condition, clip.distance,
+            duration_sec, " (auto-stopped)" if clip.auto_stopped else "",
+            " (mute-stopped)" if clip.mute_stopped else "",
+        )
+        return clip
+
+    def _take_current_locked(
+        self, auto: bool, mute_stopped: bool,
+    ) -> tuple[RecordingTask, dict[str, str] | None, dict[str, Any]]:
+        """Claim the in-flight clip for publication: its task, its start
+        meta and the ClipMetadata fields fixed at stop, labelled with any
+        pending safety stop this generation owns."""
+        if self._current is None:
+            raise NoRecordingError("no recording in progress")
+        task = self._current
+        clip_id = self._current_clip_id
+        generation = (clip_id, task)
+        if self._owns_pending_locked(generation):
+            pending_auto, pending_mute = self._pending_stop or (False, False)
+            mute_stopped = mute_stopped or pending_mute
+            auto = (auto or pending_auto) and not mute_stopped
+        meta = self._current_meta
+        capture_plan = dict(self._capture_plan or {})
+        fields = {
+            "clip_id": clip_id,
+            "member": self._member,
+            "session_id": self._session_id,
+            "auto_stopped": auto,
+            "mute_stopped": mute_stopped,
+            "selected_legs": list(self._enabled_legs),
+            "capture_plan": capture_plan,
+            "capture_plan_id": str(capture_plan.get("plan_id") or ""),
+            "capture_plan_conformance": dict(self._current_plan_conformance or {}),
+            "audio_context": dict(self._audio_context or {}),
+        }
+        # Cancel the auto-stop timer if it hasn't fired yet.
+        if self._auto_stop_handle is not None and not auto:
+            self._auto_stop_handle.cancel()
+        self._auto_stop_handle = None
+        # The mute watch dies with the recording (cancelling an
+        # already-fired handle is a harmless no-op).
+        if self._mute_poll_handle is not None:
+            self._mute_poll_handle.cancel()
+        self._mute_poll_handle = None
+        # Clear state up-front so a second Stop click during the
+        # save isn't a confusing no-op.
+        self._clear_current_locked()
+        return task, meta, fields
+
+    def _write_clip_wavs(
+        self,
+        pcm_per_leg: dict[str, bytes],
+        member: str,
+        session_id: str,
+        seq: int,
+        condition: str,
+    ) -> dict[str, str]:
+        """Write each leg that captured audio; return {leg: WAV path}."""
         files: dict[str, str] = {}
         # Condition → directory mapping. "nomusic" preserved for
         # backward compat with existing recordings + downstream tools
         # (extract-wake-corpus.py emits the same name). "ambient" gets
         # its own dir so training can slice on it explicitly.
-        condition_dir = CORPUS_DIR_BY_CONDITION[meta["condition"]]
+        condition_dir = CORPUS_DIR_BY_CONDITION[condition]
         for leg, pcm in pcm_per_leg.items():
             if not pcm:
                 continue
@@ -1510,38 +1582,7 @@ class RecordingBackend:
             full_path.parent.mkdir(parents=True, exist_ok=True)
             write_wav(full_path, pcm)
             files[leg] = str(full_path)
-
-        clip = ClipMetadata(
-            clip_id=clip_id,
-            member=member,
-            condition=meta["condition"],
-            distance=meta["distance"],
-            session_id=session_id,
-            seq=seq,
-            start_ts=meta["start_ts"],
-            stop_ts=stop_ts,
-            duration_sec=duration_sec,
-            files=files,
-            deleted=False,
-            auto_stopped=auto,
-            mute_stopped=mute_stopped,
-            selected_legs=selected_legs,
-            capture_plan=capture_plan,
-            capture_plan_id=capture_plan_id,
-            capture_plan_conformance=capture_plan_conformance,
-            audio_context=audio_context,
-            capture_health=capture_health,
-        )
-        with self._lock:
-            self._clips.append(clip)
-        self._save_metadata()
-        logger.info(
-            "clip saved: %s seq=%d condition=%s distance=%s dur=%.2fs%s%s",
-            clip_id, seq, meta["condition"], meta["distance"],
-            duration_sec, " (auto-stopped)" if auto else "",
-            " (mute-stopped)" if mute_stopped else "",
-        )
-        return clip
+        return files
 
     def delete_clip(self, clip_id: str) -> bool:
         """Hard-delete a clip's WAVs + mark it deleted in metadata.
