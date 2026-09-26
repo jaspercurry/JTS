@@ -52,6 +52,7 @@ REASON_UNITS_RESTARTED = "units_restarted"
 REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
 
 REASON_ACCESSORY_BRIDGE_RESTART_LOOP = "accessory_bridge_restart_loop"
+REASON_ACCESSORY_MIC_NOT_READY = "accessory_mic_not_ready"
 REASON_ACCESSORY_STATUS_UNAVAILABLE = "accessory_status_unavailable"
 REASON_ACCESSORY_BRIDGES_NOT_CONFIGURED = "accessory_bridges_not_configured"
 
@@ -253,6 +254,10 @@ def check_accessory_bridges() -> CheckResult:
     ``active`` while one bridge loops. ``last_error`` in the published
     status is set only while a bridge waits out its backoff, so it is the
     live "looping now" signal, not the cumulative ``restarts`` count.
+
+    An armed accessory mic also reports its adapter's readiness here. A
+    remote asleep is ``disconnected``, which is normal; under any other
+    not-ready code a hold cannot stream for as long as it lasts.
     """
     label = "accessory bridges"
     snap = accessory_status.snapshot()
@@ -281,8 +286,27 @@ def check_accessory_bridges() -> CheckResult:
             ),
             reason=REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
         )
+    links = {
+        source: accessory_status.mic_not_ready_reason(source, snap)
+        for source in evidence.mic_presence().accessory_sources
+    }
+    faults = sorted(
+        f"{source} ({why})" for source, why in links.items()
+        if why not in (None, accessory_status.MIC_NOT_READY_DISCONNECTED)
+    )
+    if faults:
+        return CheckResult(
+            label, "warn",
+            "armed push-to-talk mic not ready: " + ", ".join(faults),
+            reason=REASON_ACCESSORY_MIC_NOT_READY,
+        )
+    armed = "".join(
+        f"; {source} armed, " + ("ready" if why is None else f"not ready ({why})")
+        for source, why in sorted(links.items())
+    )
     return CheckResult(
-        label, "ok", f"{len(bridges)} accessory bridges running with no restart loop",
+        label, "ok",
+        f"{len(bridges)} accessory bridges running with no restart loop{armed}",
     )
 
 

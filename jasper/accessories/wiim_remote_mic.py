@@ -42,6 +42,7 @@ from .constants import (
     WIIM_REMOTE_2_NAME_RE,
     WIIM_REMOTE_2_SOURCE_ID,
 )
+from .status import MicLink
 
 logger = logging.getLogger(__name__)
 
@@ -125,19 +126,11 @@ class VoiceCharacteristicCandidate:
     descriptor_path: str | None
 
 
-def voice_characteristic_candidates(
+def _connected_remotes(
     managed_objects: Mapping[str, Mapping[str, Mapping[str, Any]]],
-    *,
-    name_regex: str = WIIM_REMOTE_2_NAME_RE,
-) -> list[VoiceCharacteristicCandidate]:
-    """Return connected WiiM HID report characteristics worth probing.
-
-    The HID service has multiple 0x2a4d Report characteristics. The voice
-    stream is the one whose Report Reference descriptor reads ``03 01``; when
-    BlueZ already has the descriptor value in ObjectManager state tests can
-    fully resolve it here, and at runtime ``_find_voice_characteristic`` reads
-    missing descriptor values over D-Bus.
-    """
+    name_regex: str,
+) -> set[str]:
+    """Device paths BlueZ reports connected whose name is this remote's."""
     pattern = re.compile(name_regex)
     devices: set[str] = set()
     for path, ifaces in managed_objects.items():
@@ -153,7 +146,23 @@ def voice_characteristic_candidates(
         )
         if pattern.search(name):
             devices.add(str(path))
+    return devices
 
+
+def voice_characteristic_candidates(
+    managed_objects: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    *,
+    name_regex: str = WIIM_REMOTE_2_NAME_RE,
+) -> list[VoiceCharacteristicCandidate]:
+    """Return connected WiiM HID report characteristics worth probing.
+
+    The HID service has multiple 0x2a4d Report characteristics. The voice
+    stream is the one whose Report Reference descriptor reads ``03 01``; when
+    BlueZ already has the descriptor value in ObjectManager state tests can
+    fully resolve it here, and at runtime ``_find_voice_characteristic`` reads
+    missing descriptor values over D-Bus.
+    """
+    devices = _connected_remotes(managed_objects, name_regex)
     candidates: list[VoiceCharacteristicCandidate] = []
     for path, ifaces in managed_objects.items():
         char_props = ifaces.get(BLUEZ_GATT_CHARACTERISTIC_IFACE)
@@ -506,8 +515,9 @@ class MicAdapterConfig:
     retry_sec: float = 2.0
 
 
-async def _run_subscription(config: MicAdapterConfig) -> None:
+async def _run_subscription(config: MicAdapterConfig, link: MicLink) -> None:
     with ExitStack() as cleanup:
+        cleanup.callback(link.update, subscribed=False)
         bus = MessageBus(bus_type=BusType.SYSTEM)
         # connect_bounded drops the bus itself when the connect fails, so the
         # stack takes it over only once there is a live connection to close.
@@ -522,11 +532,17 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
             BLUEZ_OBJECT_MANAGER_IFACE,
         )
         managed = await om.call_get_managed_objects()
-        candidate = await _find_voice_characteristic(
-            bus,
-            managed,
-            name_regex=config.device_name_regex,
-        )
+        try:
+            candidate = await _find_voice_characteristic(
+                bus,
+                managed,
+                name_regex=config.device_name_regex,
+            )
+        except DeviceNotReady:
+            link.update(connected=bool(
+                _connected_remotes(managed, config.device_name_regex),
+            ))
+            raise
         log_event(
             logger,
             "wiim_remote_mic.connected",
@@ -574,6 +590,7 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
         dev_props.on_properties_changed(on_device_properties)
 
         await char.call_start_notify()
+        link.update(connected=True, subscribed=True)
         try:
             log_event(
                 logger,
@@ -592,6 +609,8 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
                 await char.call_stop_notify()
             except (DBusError, OSError):
                 pass
+        # A dead bus says nothing about the remote itself.
+        link.update(connected=False if done.is_set() else None, subscribed=False)
         # A hold still in progress when the link drops never sees a gap, so
         # close it here or its rate is never reported — and that is precisely
         # the sample an operator chasing a slow-mic report wants.
@@ -607,12 +626,13 @@ async def _run_subscription(config: MicAdapterConfig) -> None:
         )
 
 
-async def run(config: MicAdapterConfig) -> None:
+async def run(config: MicAdapterConfig, link: MicLink) -> None:
     """Stream the remote's mic for as long as this task lives.
 
     Reconnect is owned here rather than left to the supervisor: a WiiM link
     drops on every idle timeout, which is ordinary rather than a fault, and
-    each reconnect must re-request the connection-event reservation.
+    each reconnect must re-request the connection-event reservation. While
+    the remote sleeps, each retry is the probe that notices it is back.
     """
     last_error_key: str | None = None
     last_error_logged_at = 0.0
@@ -628,7 +648,7 @@ async def run(config: MicAdapterConfig) -> None:
 
     while True:
         try:
-            await _run_subscription(config)
+            await _run_subscription(config, link)
             last_error_key = None
         except DeviceNotReady as exc:
             detail = str(exc)
@@ -651,6 +671,7 @@ async def run(config: MicAdapterConfig) -> None:
             TypeError,
             ValueError,
         ) as exc:
+            link.update(connected=None)
             detail = f"{type(exc).__name__}: {exc}"
             log_event(
                 logger,
