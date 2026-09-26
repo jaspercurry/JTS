@@ -207,6 +207,52 @@ cleanup_remote_capture() {
         || echo "WARN: could not remove remote capture directory $remote_dir" >&2
 }
 
+# aec_debug_record_capture REMOTE_DIR WARMUP_SEC CAPTURE_SEC VOICE CUE
+# Record the AEC bridge's mic_ch1/aec_output/ref WAVs into REMOTE_DIR on
+# PI_HOST: a runtime drop-in sets JASPER_AEC_DEBUG_RECORD_DIR (read by
+# jasper/cli/aec_bridge.py) and the bridge restarts into it. CUE prints after
+# WARMUP_SEC; the window then stays open CAPTURE_SEC. VOICE=stop holds
+# jasper-voice down so a wake cannot open a paid session or play TTS into the
+# capture; VOICE=keep leaves it alone. Refuses, touching nothing, when the
+# bridge is not active: the AEC reconciler stops it where it must not run.
+# The EXIT trap restores the bridge (and voice). SIGPIPE is ignored because
+# a dropped ssh session otherwise kills the shell inside that trap. The
+# program reaches ssh through printf, not a here-document: a here-document
+# into an external command can block forever on a loaded macOS host.
+aec_debug_record_capture() {
+    local program='set -euo pipefail
+trap "" PIPE
+out="$1" warmup="$2" duration="$3" voice="$4" cue="$5"
+dropin=/run/systemd/system/jasper-aec-bridge.service.d/debug-record.conf
+if ! systemctl is-active --quiet jasper-aec-bridge.service; then
+    echo "ERROR: jasper-aec-bridge.service is not active; start it first" >&2
+    exit 1
+fi
+mkdir -p "$out" "${dropin%/*}"
+chmod 0777 "$out"
+printf "[Service]\nEnvironment=JASPER_AEC_DEBUG_RECORD_DIR=%s\n" "$out" > "$dropin"
+cleanup() {
+    set +e
+    echo "Cleanup: restoring production state ..."
+    rm -f "$dropin"
+    rmdir "${dropin%/*}" 2>/dev/null
+    systemctl daemon-reload
+    systemctl restart jasper-aec-bridge.service
+    if [[ "$voice" == stop ]]; then systemctl start jasper-voice.service; fi
+}
+trap cleanup EXIT
+if [[ "$voice" == stop ]]; then systemctl stop jasper-voice.service; fi
+systemctl daemon-reload
+systemctl restart jasper-aec-bridge.service
+echo "Bridge in debug-record mode. Warmup ${warmup}s ..."
+sleep "$warmup"
+printf "\n  %s\n\n" "$cue"
+sleep "$duration"
+echo "Capture done."'
+    printf '%s\n' "$program" \
+        | ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "sudo bash -s $(quote_args "$@")"
+}
+
 # remote_env_file_set_cmd FILE KEY VALUE FILE_MODE DIR_MODE
 # Print the remote command that upserts KEY into FILE via the installed
 # jasper-env-file.sh lib (locked, atomic) — the one laptop-side Pi env-file

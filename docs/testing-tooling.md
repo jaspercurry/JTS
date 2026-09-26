@@ -429,17 +429,17 @@ Constraints worth knowing:
 Both use the AEC bridge's debug-record mode (`JASPER_AEC_DEBUG_RECORD_DIR`, see
 [`jasper/cli/aec_bridge.py`](../jasper/cli/aec_bridge.py) `_aec_loop` — three
 time-aligned WAVs: `mic_ch1` raw chip, `aec_output` post-AEC3, `ref` playback
-reference), apply the same systemd drop-in override, and stop `jasper-voice`
-during capture. Outputs are renamed `aec-off.wav` / `aec-on.wav` /
-`reference.wav`.
+reference) through one helper, `aec_debug_record_capture` in
+[`scripts/_lib.sh`](../scripts/_lib.sh), and stop `jasper-voice` during
+capture. Outputs are renamed `aec-off.wav` / `aec-on.wav` / `reference.wav`.
 
 | Tool | Methodology | Output | When |
 |---|---|---|---|
 | [`scripts/wake-rate-test.sh`](../scripts/wake-rate-test.sh) | Fixed track played from a phone; cross-correlation locates each utterance; per-utterance detection status | `logs/wake-rate/<session>/test-<N>/` | Reproducible cross-session A/B of bridge configs, AEC engines or wake models |
 | [`scripts/capture-reference-condition.sh`](../scripts/capture-reference-condition.sh) | Live speech, one capture per stylistic condition (whisper-quiet, music-yell, …) | `reference-conditions/<condition>/` | Personalized baseline covering real speech variation. User-private, gitignored |
 
-**They share the same orchestration mechanism.** A third "bridge capture"
-script almost certainly wants to be a flag on one of these two.
+A new bridge capture calls the same helper, as
+`scripts/verify-ref-no-silence-bug.sh` does.
 
 ---
 
