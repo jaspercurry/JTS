@@ -51,12 +51,16 @@ from ._refusal import (
 AUTHORITY_TIER = "advisory (`fetch`/`upload` write; `models`/`show` do not)"
 
 #: The model/serial pair names no lookup the vendor fetchers can make: an
-#: unregistered model key, or a serial with nothing in it.
+#: unregistered model key, a serial with nothing in it, or a miniDSP serial
+#: with no digits.
 REFUSE_LOOKUP_INVALID = "mic_calibration_lookup_invalid"
 #: The vendor answered, and holds no calibration for that serial.
 REFUSE_VENDOR_NOT_FOUND = "mic_calibration_vendor_not_found"
 #: The vendor lookup could not be completed at all.
 REFUSE_VENDOR_UNREACHABLE = "mic_calibration_vendor_unreachable"
+#: The vendor sends the lookup somewhere other than its own https host (a link
+#: or redirect to cleartext, a LAN, loopback or another host).
+REFUSE_VENDOR_LINK_OFF_HOST = "mic_calibration_vendor_link_off_host"
 #: No household microphone has been registered yet.
 REFUSE_NONE_REGISTERED = "mic_calibration_none_registered"
 #: A record exists, and names a calibration that is no longer on disk.
@@ -120,23 +124,20 @@ def _cmd_models(_args: argparse.Namespace) -> int:
 
 def _cmd_fetch(args: argparse.Namespace) -> int:
     from ._vendor_calibration import (  # lazy: numpy
+        CalibrationLinkRefused,
         CalibrationNotFoundError,
+        CalibrationTooLargeError,
         CalibrationUpstreamError,
         fetch_vendor_calibration,
+        lookup_invalid,
     )
 
     # The lookup arguments are judged HERE so the ValueError left below is the
     # vendor file failing to parse (store_calibration's, raised inside the
     # fetch) and not an argument this could have named itself.
-    if args.model not in SUPPORTED_MODELS:
-        return failed(
-            EXIT_REFUSED, REFUSE_LOOKUP_INVALID,
-            f"unsupported calibration model: {args.model}",
-        )
-    if not args.serial.strip():
-        return failed(
-            EXIT_REFUSED, REFUSE_LOOKUP_INVALID, "serial number is required",
-        )
+    problem = lookup_invalid(args.model, args.serial)
+    if problem:
+        return failed(EXIT_REFUSED, REFUSE_LOOKUP_INVALID, problem)
     try:
         record = fetch_vendor_calibration(
             model_key=args.model,
@@ -146,6 +147,10 @@ def _cmd_fetch(args: argparse.Namespace) -> int:
         )
     except CalibrationNotFoundError as exc:
         return failed(EXIT_REFUSED, REFUSE_VENDOR_NOT_FOUND, str(exc))
+    except CalibrationLinkRefused as exc:
+        return failed(EXIT_REFUSED, REFUSE_VENDOR_LINK_OFF_HOST, str(exc))
+    except CalibrationTooLargeError as exc:
+        return failed(EXIT_UNREADABLE, REASON_FILE_UNREADABLE, str(exc))
     except CalibrationUpstreamError as exc:
         return failed(EXIT_REFUSED, REFUSE_VENDOR_UNREACHABLE, str(exc))
     except ValueError as exc:
