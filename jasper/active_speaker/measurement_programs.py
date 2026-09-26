@@ -15,7 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
+from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
 
@@ -129,8 +129,8 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-# A reference take may also be one driver near its cone (ADR-0360).
-_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
+# A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
+_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The size of a run whose poses are its own, not a bundled layout's.
 CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
@@ -152,8 +152,8 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
-    """The drivers a near-field row may play here: every measured driver of a
-    mono speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
+    """The drivers a pose may play alone here: every measured driver of a mono
+    speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
     return tuple(sorted(
         measurement_target_id(target["role"], target.get("output_variant", "primary"))
         for target in active_driver_targets(topology)
@@ -204,18 +204,16 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     return resolved
 
 
-def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind: str,
-                          distance_m: float | None) -> str:
-    """The one driver a pose plays, a measurement target id (ADR-0360): a pose
-    names one exactly when it is a reference near-field pose, and then sits
-    close, within :data:`NEAR_FIELD_MAX_DISTANCE_M` of the dust cap."""
+def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> str:
+    """The one driver a pose plays alone, a measurement target id, at any kind
+    and distance (ADR-0366). Only a reference pose names one, until a tuning
+    reader admits a one-driver take, and one on any regime but summed must."""
     if not isinstance(driver, str):
         raise ValueError(f"a pose driver is a measurement target id, got {driver!r}")
-    if bool(driver) != (purpose == PURPOSE_REFERENCE and regime == REGIME_NEAR_FIELD):
-        raise ValueError(f"a pose names its driver exactly when it is a {PURPOSE_REFERENCE} "
-                         f"{REGIME_NEAR_FIELD} pose")
-    if driver and not (kind == POSE_KIND_CLOSE and at_driver_near_field(driver, distance_m)):
-        raise ValueError(f"a driver's pose is a close pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m")
+    if driver and purpose != PURPOSE_REFERENCE:
+        raise ValueError(f"only a {PURPOSE_REFERENCE} pose names its driver")
+    if not driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
+        raise ValueError(f"a {PURPOSE_REFERENCE} {regime} pose names the one driver it plays")
     return driver
 
 
@@ -376,8 +374,7 @@ class MeasurementProgram:
             validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
         for pose in self.poses:
-            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose,
-                                  kind=pose.kind, distance_m=pose.distance_m)
+            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")

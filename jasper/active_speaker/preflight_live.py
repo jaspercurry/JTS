@@ -27,7 +27,7 @@ from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate
-from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
+from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
 from .program_failure import read_output_volume
@@ -104,6 +104,7 @@ def read_preflight_facts(
             programs.append(program.program_id)
         return tuple(programs)
 
+    near_field = {stop.driver for stop in plan.stops if stop.regime == REGIME_NEAR_FIELD}
     return PreflightFacts(
         rig_clear_attested=rig_clear_attested, mover_available=mover_available,
         output_volume=read_output_volume(),
@@ -114,9 +115,10 @@ def read_preflight_facts(
         applied_bass_extension=applied_bass_extension,
         program_ids_for=program_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
-        # A driver is offered only when its near-field sweep holds the view's top band whole.
+        # A near-field pose's driver is offered only when its sweep holds the view's top band whole.
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
-                                  if context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
+                                  if driver not in near_field
+                                  or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
     )

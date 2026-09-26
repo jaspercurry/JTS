@@ -84,7 +84,7 @@ class PreflightFacts:
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
-    #: The drivers a near-field pose may play here; read only for a plan naming one.
+    #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
@@ -181,7 +181,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
         pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
-                 for capture in plan.stops if capture.regime == REGIME_BRANCHES}
+                 for capture in plan.stops if capture.regime == REGIME_BRANCHES and not capture.driver}
         if any(capture.purpose == PURPOSE_REAR for capture in plan.stops):
             pairs.add(branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, facts.roles_bands))
         missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
@@ -325,11 +325,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     schedule = tuple(
         ScheduledCapture(index + 1, pose.place,
                          candidate_identity(pose.candidate_id), repeat,
-                         ("candidate_branches" if pose.regime == REGIME_BRANCHES else
+                         ("candidate_branches" if pose.regime == REGIME_BRANCHES and not pose.driver else
                           scopes.get(pose.candidate_id) if pose.candidate_id else
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
         for index, (pose, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
-    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or facts.roles_bands for stop in plan.stops)
+    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.driver or facts.roles_bands
+                                    for stop in plan.stops)
     price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
     return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)

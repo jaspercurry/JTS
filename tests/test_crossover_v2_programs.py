@@ -714,11 +714,11 @@ def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
     assert solo_target(make()) == ids[0]
 
 
-def _near_field_rear(cap_dbfs: float) -> tuple[SessionExcitation, MeasureSpec]:
+def _near_field_rear(cap_dbfs: float, regime: str = "near_field") -> tuple[SessionExcitation, MeasureSpec]:
     band = FrequencyBand(20.0, 4000.0)
     return (SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": cap_dbfs}, -20.0, None,
                               {"woofer:rear": 8.0}, target_bands={"woofer:rear": band}),
-            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime="near_field"))
+            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime=regime))
 
 
 def _sweeps(program):
@@ -734,12 +734,16 @@ def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(ask
     assert played == pytest.approx(seat + played_db)
 
 
-@pytest.mark.parametrize("cap_dbfs,scope_gains_db", [(0.0, None), (-40.0, None), (0.0, {"woofer:rear": 0.09})])
-def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db):
+@pytest.mark.parametrize("cap_dbfs,scope_gains_db,regime,band_hz", [
+    (0.0, None, "near_field", (20.0, 2000.0)), (-40.0, None, "near_field", (20.0, 2000.0)),
+    (0.0, {"woofer:rear": 0.09}, "near_field", (20.0, 2000.0)), (0.0, None, "reference_axis", (150.0, 4000.0))])
+def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, regime, band_hz):
     """With no level asked, a driver pose plays its level probe: its take's band,
     bursts rising at most MAX_STEP_DB from well under the seat level to its take's
-    own ceiling, no two of one length (ADR-0365)."""
-    excitation, spec = _near_field_rear(cap_dbfs)
+    own ceiling, no two of one length (ADR-0365). A near-field take sweeps to
+    2 kHz; a far-field one sweeps MEASURE's band (#5696), both inside the
+    driver's own."""
+    excitation, spec = _near_field_rear(cap_dbfs, regime)
     spec = replace(spec, scope_gains_db=scope_gains_db)
     probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
     take = compose_target_program(excitation, spec, 100.0)
@@ -750,7 +754,7 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db):
     assert gains[-1] == pytest.approx(ceiling)
     assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
     assert len({s.n_samples for s in _sweeps(probe)}) == len(gains)
-    assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)}
+    assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)} == {band_hz}
 
 
 @pytest.mark.parametrize("rear,target", [

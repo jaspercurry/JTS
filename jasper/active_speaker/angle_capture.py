@@ -258,8 +258,7 @@ class AngleStop:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
             validated_branch_pair(self.branch_pair, self.regime)
-            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose,
-                                  kind=self.kind, distance_m=distance)
+            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:

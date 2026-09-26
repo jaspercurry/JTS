@@ -19,6 +19,7 @@ from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.candidate_parts import compose_candidate
@@ -27,6 +28,7 @@ from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
+from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
 from jasper.cli import round as round_cli
 
 
@@ -252,7 +254,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
     assert choices == (
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
-        ("bass", "quick"), ("branches", "express"),
+        ("bass", "quick"), ("branches", "express"), ("drivers", "cardioid"), ("drivers", "each"),
         ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
         ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
         ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
@@ -415,7 +417,7 @@ def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(size, poses) -> None
     (mp.PURPOSE_REAR, "", None, SEAT_EXEMPT),
     (mp.PURPOSE_ROOM, "", None, SEAT_EXEMPT),
     (mp.PURPOSE_REFERENCE, "woofer:rear", 0.015, NEAR_FIELD_EXEMPT),
-    (mp.PURPOSE_REFERENCE, "woofer", mp.NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
+    (mp.PURPOSE_REFERENCE, "woofer", NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
     (mp.PURPOSE_REFERENCE, "woofer", 0.5, None),
     (mp.PURPOSE_REFERENCE, "", 0.03, None),
 ])
@@ -454,19 +456,24 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
 @pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
 @pytest.mark.parametrize("purpose,regime,kind,distance_m,driver,accepted", [
     (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.1, "woofer", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.015, "woofer", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.5, "woofer:rear", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "tweeter", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_BRANCHES, mp.POSE_KIND_BEARING, None, "woofer", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.3, "", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "", False),
+    (mp.PURPOSE_SPEAKER, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "woofer", False),
     (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
 ])
-def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
+def test_only_a_reference_pose_names_its_driver_on_any_regime_kind_or_distance(
     door, refusal, purpose, regime, kind, distance_m, driver, accepted,
 ) -> None:
-    """Every door a pose enters through judges its driver the same way
-    (ADR-0360): a program row or layout, and a stop in a hand-written plan."""
+    """Every door a pose enters through judges its driver the same way: a
+    program row or layout, and a stop in a hand-written plan. A reference pose
+    names one at any regime, kind and distance, and must on a regime that plays
+    drivers; no tuning purpose names one yet (ADR-0366)."""
     if accepted:
         door(purpose, regime, kind, distance_m, driver)
     else:
@@ -484,6 +491,24 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
     else:
         with pytest.raises(CrossoverV2FlowError):
             ac.request_for_program(mp.program("nearfield"), candidates=candidates)
+
+
+@pytest.mark.parametrize("stops,expected", [
+    (mp.program("drivers", "cardioid"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)),
+                                         ("lateral", ("tweeter",))]),
+    ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
+      ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
+     [("check", ()), ("entry_baseline", ()), ("measure", ()), ("lateral", ("woofer",))]),
+], ids=["one-driver-row", "beside-a-two-driver-stop"])
+def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected) -> None:
+    """A stop naming its driver plays it alone in the far field on MEASURE's
+    sweep, with no CHECK or timing take for it; a stop that plays every driver
+    keeps both (#5696, ADR-0366)."""
+    request = (ac.request_for_program(stops) if isinstance(stops, mp.MeasurementProgram)
+               else ac.AngleCaptureRequest(stops=stops))
+    captures = prepare_plan_captures(request)
+    assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected
+    assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
 
 
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
