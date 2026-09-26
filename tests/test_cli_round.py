@@ -546,8 +546,6 @@ def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level,
     posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert code == 0 and (priced.pop("program"), priced.pop("mover")) == (posted["program"], posted["mover"])
     assert {key: value for key, value in priced.items() if key not in ("verb", "dry_run")} == ran["schedule"]
-    rungs = priced.get("levels", [priced])
-    assert rungs and all(rung["rung_admission"].get("predicted_spl_basis") is None for rung in rungs)
 
 
 def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):

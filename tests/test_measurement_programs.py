@@ -619,8 +619,8 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
 @pytest.mark.parametrize("layout,ceiling", [("bass_axis", 1100), ("seat_cloud", 1200), ("room_quick", 1100)])
 def test_run_uses_the_matching_purposes_stimulus(tmp_path, monkeypatch, layout, ceiling):
     config = _bundled_config()
-    config["stimuli"]["near"] = {"ceiling_hz": 1200}
-    next(row for row in config["programs"] if row["id"] == "bass" and row["size"] == "cloud")["stimulus"] = "near"
+    config["stimuli"]["cloud"] = {"ceiling_hz": 1200}
+    next(row for row in config["programs"] if row["id"] == "bass" and row["size"] == "cloud")["stimulus"] = "cloud"
     monkeypatch.setattr(mp, "_PROGRAMS", mp.load_programs(_write_config(tmp_path, config)))
     assert mp.run_program("bass", layout).stimulus == {"ceiling_hz": ceiling}
 
