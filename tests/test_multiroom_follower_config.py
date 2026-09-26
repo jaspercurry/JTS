@@ -19,6 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.test_active_speaker_driver_domain import driver_domain_graph
+
 from tests._log_events import event_field_maps
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.multiroom_reconcile_fixtures import _FakeCamilla
@@ -52,7 +54,6 @@ from jasper.active_speaker.crossover_preview import build_crossover_preview
 # this file).
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
-    emit_active_speaker_driver_domain_config,
 )
 from jasper.active_speaker.camilla_yaml import active_emit_devices
 from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE
@@ -868,9 +869,6 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 
 
 # --- follower clock-seam guard -----------------------------------------------
-# The active follower's ingress clock seam is safety-critical, but the
-# 2026-06-21 over-engineering pressure-test found it unpinned by any test.
-#
 # SNAPCLIENT IS THE SOLE TRACKER. It steers its own playback rate against the
 # server clock, and the grouping ring it writes reports a real
 # `snd_pcm_delay` (occupancy slots x period + the staged remainder), so the
@@ -905,7 +903,7 @@ _PLAYBACK_BRANCHES = ("hw:CARD=DAC8x,DEV=0", RING_ACTIVE_PLAYBACK_DEVICE)
 def _follower_driver_domain_devices(playback_device: str) -> dict:
     devices = active_emit_devices(playback_device)
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset("mono"))
-    text = emit_active_speaker_driver_domain_config(
+    text = driver_domain_graph(
         preset,
         playback_device=playback_device,
         program_channel="left",

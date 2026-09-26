@@ -36,6 +36,8 @@ import re
 from typing import Callable
 
 import pytest
+
+from tests.test_active_speaker_driver_domain import driver_domain_graph
 import yaml
 
 from jasper.active_speaker import (
@@ -43,7 +45,6 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
@@ -280,7 +281,7 @@ pipeline:
 def test_native_bass_preserves_static_graph_on_solo_and_driver_domain(driver_domain, classification):
     preset = _preset("stereo", 2)
     descriptor = _dynamic_bass_descriptor()
-    emitter = emit_active_speaker_driver_domain_config if driver_domain else emit_active_speaker_baseline_config
+    emitter = driver_domain_graph if driver_domain else emit_active_speaker_baseline_config
     kwargs = {"playback_device": ACTIVE_PCM, **({"program_channel": "left"} if driver_domain else {})}
     base = yaml.safe_load(emitter(preset, **kwargs))
     text = emitter(preset, bass_extension=descriptor, **kwargs)
@@ -327,12 +328,6 @@ def test_absent_bass_extension_preserves_ordinary_baseline_bytes(descriptor):
     assert emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, bass_extension=descriptor) == ordinary
 
 
-# --- the required cases, at the camilla_yaml emit gate (all FOUR emitters) ---- #
-#
-# Each emitter is monkeypatched at the SPECIFIC chain builder it uses so its own
-# gate call is exercised — deleting the gate from any one emitter would then ship
-# red. startup + commissioning build via _driver_filter_chain; baseline +
-# driver-domain build via _driver_baseline_filter_chain.
 
 _REFUSAL_CASES = [
     pytest.param(
@@ -356,7 +351,7 @@ _REFUSAL_CASES = [
     ),
     pytest.param(
         "_driver_baseline_filter_chain",
-        lambda p: emit_active_speaker_driver_domain_config(
+        lambda p: driver_domain_graph(
             p, playback_device=ACTIVE_PCM, program_channel="left"
         ),
         id="driver_domain",
@@ -432,7 +427,7 @@ def test_emit_gate_allows_protected_startup_and_commissioning() -> None:
 
 
 def test_emit_gate_allows_protected_driver_domain_follower() -> None:
-    yaml = emit_active_speaker_driver_domain_config(
+    yaml = driver_domain_graph(
         _preset("mono", 2),
         playback_device=ACTIVE_PCM,
         program_channel="left",
@@ -794,7 +789,7 @@ _VOLUME_LIMIT_EMITTERS = [
         id="baseline",
     ),
     pytest.param(
-        lambda **kw: emit_active_speaker_driver_domain_config(
+        lambda **kw: driver_domain_graph(
             _preset(), playback_device=ACTIVE_PCM, program_channel="left", **kw
         ),
         id="driver_domain",

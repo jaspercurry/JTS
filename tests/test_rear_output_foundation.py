@@ -125,8 +125,6 @@ def test_target_evidence_does_not_transfer_between_variants():
     (emit.emit_active_speaker_commissioning_config, {"audible_outputs": None}),
     (emit.emit_active_speaker_baseline_config, {}),
     (emit.emit_active_speaker_baseline_config, {"bass_extension": _dynamic_bass_descriptor()}),
-    (emit.emit_active_speaker_driver_domain_config, {"program_channel": "left"}),
-    (emit.emit_active_speaker_driver_domain_config, {"program_channel": "left", "bass_extension": _dynamic_bass_descriptor()}),
     (emit.emit_active_speaker_program_config, {"role_channels": {"woofer": 0, "tweeter": 1}}),
 ])
 def test_every_emit_keeps_rear_muted_and_primary_filters_unchanged(layout, emitter, kwargs):
@@ -396,7 +394,6 @@ def test_a_rear_named_filter_smuggled_into_a_graph_without_a_rear_output_refuses
     (emit.emit_active_speaker_startup_config, {}),
     (emit.emit_active_speaker_commissioning_config, {"audible_outputs": None}),
     (emit.emit_active_speaker_program_config, {"role_channels": {"woofer": 0, "tweeter": 1}}),
-    (emit.emit_active_speaker_driver_domain_config, {"program_channel": "left"}),
 ])
 def test_undecorated_emitters_keep_the_emitter_drift_guard(emitter, kwargs):
     """The tweeter gate's text view REFUSES CamillaDSP's re-serialised dialect

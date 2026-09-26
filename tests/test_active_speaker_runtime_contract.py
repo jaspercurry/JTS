@@ -14,6 +14,8 @@ import subprocess
 import sys
 
 import pytest
+
+from tests.test_active_speaker_driver_domain import driver_domain_graph
 import yaml
 
 from pathlib import Path
@@ -26,7 +28,6 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_bake_config,
 )
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
@@ -298,7 +299,7 @@ def _driver_domain_yaml(
     bass_extension=None,
 ) -> str:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
-    return emit_active_speaker_driver_domain_config(
+    return driver_domain_graph(
         ActiveSpeakerPreset.from_mapping(raw),
         playback_device=ACTIVE_PCM,
         program_channel=channel,
@@ -3640,10 +3641,6 @@ def test_driver_domain_baseline_allowed(layout: str, way: int, channel: str) -> 
 
 
 def test_driver_domain_source_marker_matches_verifier() -> None:
-    # The cross-module routing contract: the emitter's `# Source:` header must be
-    # the exact string the verifier independently names, or the driver-domain arm
-    # never fires (the round-trip above IS the live pin; this asserts it directly
-    # so a rename fails loudly here too).
     text = _driver_domain_yaml("mono", 2)
     source_line = next(
         line for line in text.splitlines() if line.startswith("# Source:")

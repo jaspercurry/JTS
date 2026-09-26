@@ -53,13 +53,14 @@ from typing import Any
 
 import pytest
 
+from tests.test_active_speaker_driver_domain import driver_domain_graph
+
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.camilla_yaml import (
     EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
     _assert_tweeter_crossover_honours_declared_floor,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_driver_domain_config,
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
@@ -801,15 +802,6 @@ def test_baseline_emit_invents_no_floor_where_the_operator_declared_none() -> No
 
 @pytest.mark.parametrize("emitter", ["baseline", "driver_domain"])
 def test_both_household_emitters_share_the_declared_floor_gate(emitter: str) -> None:
-    """Every graph that carries household program inherits the bound.
-
-    Mirrors ``test_both_emitters_share_correction_safety_gate`` in
-    tests/test_active_speaker_driver_domain.py: a bonded leader's driver domain
-    runs the same protective chain on the same drivers as the solo baseline, so
-    a gate one honours and the other does not is a hole with a hardware trigger
-    (bond the speaker, and the refused graph applies).
-    """
-
     topology = mono_output_topology()
     preset = _below_floor_preset(topology)
 
@@ -817,7 +809,7 @@ def test_both_household_emitters_share_the_declared_floor_gate(emitter: str) -> 
         if emitter == "baseline":
             emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
         else:
-            emit_active_speaker_driver_domain_config(
+            driver_domain_graph(
                 preset,
                 playback_device=ACTIVE_PCM,
                 program_channel="left",

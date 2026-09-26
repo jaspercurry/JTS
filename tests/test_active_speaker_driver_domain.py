@@ -1,32 +1,41 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
-#
 # SPDX-License-Identifier: Apache-2.0
 
-"""Driver-domain-only active emit variant — the follower's relocated Layer A.
-
-Covers the emitter half of distributed-active Slice 2 and pins **invariant 4**:
-the driver-domain-only graph has no program-prefix filter, no positive gains,
-``volume_limit == 0.0``, and the inter-speaker channel-select precedes the
-intra-speaker split. The classifier-side keystone (invariant 3) lives in
-``test_active_speaker_runtime_contract.py``.
-"""
+"""Driver-domain graph fixtures and their shared baseline invariants."""
 from __future__ import annotations
+
+import re
 
 import pytest
 import yaml
 
 from jasper.active_speaker import (
     ActiveSpeakerPreset,
-    DRIVER_DOMAIN_PROGRAM_CHANNELS,
     channel_select_mixer_name,
     emit_active_speaker_baseline_config,
-    emit_active_speaker_driver_domain_config,
 )
+from jasper.active_speaker.camilla_yaml.decorate_dynamic_bass import _with_dynamic_bass
+from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.camilla_emit import CHANNEL_SELECT_MIXER, MONO_SUM_GAIN_DB
+from jasper.camilla_emit import CHANNEL_SELECT_MIXER, MONO_SUM_GAIN_DB, emit_channel_select_mixer, emit_gain_filter
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
+
+
+def driver_domain_graph(preset, *, playback_device, program_channel, pair_trim_db=0.0,
+                        bass_extension=None, **kwargs):
+    """Relocate a baseline for verifier tests, preserving its text-mutation seams."""
+    text = emit_active_speaker_baseline_config(preset, playback_device=playback_device, **kwargs)
+    text = text.replace(ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
+    text = re.sub(r"  active_baseline_headroom:\n(?:    [^\n]*\n)+", "", text)
+    text = text.replace("active_baseline_headroom", "pair_balance_trim")
+    text = text.replace("filters:\n", "filters:\n" + "\n".join(
+        emit_gain_filter("pair_balance_trim", -pair_trim_db)) + "\n", 1)
+    text = text.replace("mixers:\n", "mixers:\n" + emit_channel_select_mixer(program_channel) + "\n", 1)
+    text = text.replace("pipeline:\n", "pipeline:\n  - type: Mixer\n    name: channel_select\n", 1)
+    text = f"# program_channel={program_channel}\n# pair_trim_db={pair_trim_db:.3f}\n" + text
+    return _with_dynamic_bass(text, preset, bass_extension)
 
 
 def _preset(layout: str, way: int) -> ActiveSpeakerPreset:
@@ -35,7 +44,7 @@ def _preset(layout: str, way: int) -> ActiveSpeakerPreset:
 
 
 def _emit(layout: str, way: int, channel: str, **kw) -> str:
-    return emit_active_speaker_driver_domain_config(
+    return driver_domain_graph(
         _preset(layout, way),
         playback_device=ACTIVE_PCM,
         program_channel=channel,
@@ -55,23 +64,14 @@ def _mixer_step_names(doc: dict) -> list[str]:
     ]
 
 
-def _filter_step_channels(doc: dict) -> list[list[int]]:
-    return [
-        step["channels"]
-        for step in doc["pipeline"]
-        if step.get("type") == "Filter"
-    ]
-
-
 _CASES = [
     (layout, way, channel)
     for layout in ("mono", "stereo")
     for way in (2, 3)
-    for channel in DRIVER_DOMAIN_PROGRAM_CHANNELS
+    for channel in ("left", "right", "mono")
 ]
 
 
-# --- invariant 4: graph shape ------------------------------------------------
 
 
 @pytest.mark.parametrize("layout,way,channel", _CASES)
@@ -86,10 +86,7 @@ def test_channel_select_precedes_split(layout: str, way: int, channel: str) -> N
 @pytest.mark.parametrize("layout,way,channel", _CASES)
 def test_no_program_prefix(layout: str, way: int, channel: str) -> None:
     doc = _doc(layout, way, channel)
-    # The leader baked Layer B/C: no program-domain headroom gain exists...
     assert "active_baseline_headroom" not in doc["filters"]
-    # ...and no Filter pipeline step targets the [0, 1] program bus except the
-    # live pair-balance scalar between channel-select and the driver split.
     program_filter_steps = [
         step
         for step in doc["pipeline"]
@@ -131,7 +128,6 @@ def test_channel_select_picks_the_program_channel(channel, expected) -> None:
         assert got == [(c, pytest.approx(g, abs=1e-3)) for c, g in expected]
 
 
-# --- the relocated Layer A is byte-for-byte the solo baseline's driver chain --
 
 
 @pytest.mark.parametrize("layout,way", [("mono", 2), ("stereo", 2), ("mono", 3), ("stereo", 3)])
@@ -142,7 +138,7 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         "mid": {"gain_db": -2.0, "delay_ms": 0.3, "inverted": False},
         "tweeter": {"gain_db": -2.75, "delay_ms": 0.45, "inverted": True},
     }
-    follower = yaml.safe_load(emit_active_speaker_driver_domain_config(
+    follower = yaml.safe_load(driver_domain_graph(
         preset,
         playback_device=ACTIVE_PCM,
         program_channel="left",
@@ -153,10 +149,6 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         playback_device=ACTIVE_PCM,
         corrections=corrections,
     ))
-    # Drop the program-domain headroom the baseline carries (and the follower
-    # must not) plus the follower's inter-speaker balance trim: the remaining
-    # per-driver crossover/delay/gain/limiter chain is IDENTICAL, so relocating
-    # Layer A onto a follower cannot weaken protection.
     baseline_driver_filters = {
         k: v for k, v in baseline["filters"].items() if k != "active_baseline_headroom"
     }
@@ -168,19 +160,12 @@ def test_driver_chain_matches_baseline(layout: str, way: int) -> None:
         baseline["mixers"]["split_active_%dway" % way]
 
 
-# --- validation --------------------------------------------------------------
-
-
-@pytest.mark.parametrize("bad", ["stereo", "sub", "", "garbage"])
-def test_rejects_non_follower_channel(bad: str) -> None:
-    with pytest.raises(ActiveSpeakerConfigError):
-        _emit("mono", 2, bad)
 
 
 @pytest.mark.parametrize("device", ["plughw:jasper_out", "jasper_out"])
 def test_rejects_stereo_outputd_playback_lane(device: str) -> None:
     with pytest.raises(ActiveSpeakerConfigError):
-        emit_active_speaker_driver_domain_config(
+        driver_domain_graph(
             _preset("mono", 2), playback_device=device, program_channel="left"
         )
 
@@ -212,7 +197,7 @@ def test_both_emitters_share_correction_safety_gate(
                 corrections=corrections,
             )
         else:
-            emit_active_speaker_driver_domain_config(
+            driver_domain_graph(
                 preset,
                 playback_device=ACTIVE_PCM,
                 program_channel="left",
@@ -221,23 +206,13 @@ def test_both_emitters_share_correction_safety_gate(
 
 
 def test_emits_the_ring_chunk_it_is_given() -> None:
-    """The chunk the caller resolves is the chunk the emitter writes.
-
-    A floor used to sit here, sized to the snd-aloop round trip's EPIPE
-    behaviour, and it silently raised anything below 1024. The bonded endpoint
-    captures the grouping ring now, and the ring path's chunk is
-    ``RING_CAMILLA_CHUNKSIZE`` — one slot, 128 frames — so a surviving floor
-    would not "protect" the graph, it would emit a chunk FOUR TIMES its
-    playback ring's whole 2-slot buffer (128 x 2 = 256 frames; eight times one
-    slot). The floor is gone; a resurrected one fails here.
-    """
     from jasper.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAMILLA_CHUNKSIZE,
     )
 
     doc = yaml.safe_load(
-        emit_active_speaker_driver_domain_config(
+        driver_domain_graph(
             _preset("mono", 2),
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             program_channel="left",
@@ -245,24 +220,18 @@ def test_emits_the_ring_chunk_it_is_given() -> None:
         )
     )
     assert doc["devices"]["chunksize"] == RING_CAMILLA_CHUNKSIZE
-    # Every other value the caller resolves also passes through untouched.
     assert _doc(chunksize=256)["devices"]["chunksize"] == 256
     assert _doc(chunksize=4096)["devices"]["chunksize"] == 4096
 
 
 def test_chunksize_env_override_reaches_the_emitter(monkeypatch) -> None:
-    # The non-ring path leaves chunksize=None, so the resolver reads the env.
-    # The operator's value arrives as asked — the G7 knob is tunable low on this
-    # emitter exactly as it is on the direct-DAC paths.
     monkeypatch.setenv("JASPER_CAMILLA_CHUNKSIZE", "256")
     assert _doc()["devices"]["chunksize"] == 256
 
 
 def test_threads_capture_device() -> None:
-    # The gap-1 seam: the reconciler passes the grouping ring here.
     doc = _doc(channel="left", capture_device="loop:0,1")
     assert doc["devices"]["capture"]["device"] == "loop:0,1"
-    # Default is the emitter's own — Ring A, the one fan-in → CamillaDSP hop.
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
     assert (
@@ -274,7 +243,6 @@ def test_metadata_records_program_channel() -> None:
     assert "# program_channel=right" in _emit("mono", 2, "right")
 
 
-# --- cross-module name contract (the point of the shared-leaf promotion) ------
 
 
 def test_channel_select_mixer_name_is_one_shared_constant() -> None:

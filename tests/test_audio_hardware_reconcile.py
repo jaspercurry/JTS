@@ -23,6 +23,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from tests.test_active_speaker_driver_domain import driver_domain_graph
 
 from jasper.audio_hardware import reconcile as reconcile_module
 from jasper.audio_hardware.dac import final_edge_format_for
@@ -625,9 +626,7 @@ def _active_graph_env(
 def _active_leader_graph_env(
     tmp_path: Path, *, channels: int = 2, write_crossover_statefile: bool = True
 ) -> dict[str, str]:
-    """Stage camilla#1 program bake + camilla#2 endpoint graph for the gate."""
     from jasper.active_speaker import (
-        emit_active_speaker_driver_domain_config,
         emit_active_speaker_program_bake_config,
     )
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
@@ -643,7 +642,7 @@ def _active_leader_graph_env(
     )
     crossover_config = tmp_path / "grouping_active_leader_crossover.yml"
     crossover_config.write_text(
-        emit_active_speaker_driver_domain_config(
+        driver_domain_graph(
             preset,
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             program_channel="mono",
