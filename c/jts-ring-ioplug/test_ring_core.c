@@ -6,9 +6,6 @@
 // Rust, so it builds and runs on any host (macOS/Linux) via the Makefile `test`
 // target; the reader half of the playback tests is inlined here for the same
 // reason rather than taken from the Rust crate.
-//
-// The cross-language C-writer -> Rust-reader interop is proven separately by
-// ring_writer_bench.c feeding jasper-outputd (on-Pi).
 
 #include "jts_ring_shm.h"
 
