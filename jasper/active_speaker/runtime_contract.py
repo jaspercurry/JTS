@@ -2049,7 +2049,8 @@ def safe_graph_for_current_topology(
     # That fall is legal, which is what makes it dangerous: the deploy stays
     # GREEN, the speaker goes SILENT, and it is sticky, because the next deploy
     # preserves the all-muted graph it just selected. Refuse instead, carrying
-    # the numbers, so a human is summoned to `baseline-reemit`.
+    # the numbers: the boot writer re-emits the baseline on this refusal, and a
+    # human is summoned to `baseline-reemit` only if that fails (#2847).
     #
     # Narrow on purpose: only the NUMERIC refusal fires it. A shape refusal is a
     # different defect with a different remedy, and every other reason a box
