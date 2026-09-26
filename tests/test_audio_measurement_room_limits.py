@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The room candidate's code-computed limits (ADR-0256, regime plan D5).
+"""The room candidate's code-computed limits (ADR-0256).
 
 Pins the four claims a room prescription is checked against: the spread only
 ever REDUCES cut depth, the correction returns to flat over the third-octave

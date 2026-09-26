@@ -11,17 +11,17 @@ evidence live in `captures/gate-research-20260727/` and
   artifact-vs-real-vs-source-fixed discriminator, group aggregation,
   anomaly policy, the 1/T validity model, frequency-dependent gating,
   session invariants. Adopted (with architect deltas) by
-  [`docs/gating-v2-plan.md`](../../gating-v2-plan.md) (issue #1790).
+  [`docs/historical/gating-v2-plan.md`](../../historical/gating-v2-plan.md) (issue #1790).
 - [`02-room-correction-competitive.md`](02-room-correction-competitive.md)
   — competitive room correction: the industry survey (Dirac /
   Audyssey / Trinnov / Lyngdorf / Anthem / Genelec / Neumann /
   Trueplay), bandwidth doctrine, the two-instrument attribution
   boundary, target ownership, LF boost policy, phase/FIR verdict,
   spatial protocol. Adopted (with architect deltas) by
-  [`docs/room-correction-regime-plan.md`](../../room-correction-regime-plan.md)
+  [`docs/historical/room-correction-regime-plan.md`](../../historical/room-correction-regime-plan.md)
   (issue #1791).
 
 These are point-in-time research artifacts: cited product behavior and
-forum evidence reflect early 2026 and are not maintained. The adopted
-decisions, as amended by their reviews, live in the two plan docs —
-read those for current doctrine.
+forum evidence reflect early 2026 and are not maintained. Both plans are
+archived ([ADR-0369](../../adr/0369-the-gating-v2-and-room-correction-regime-plans-are-archived.md)
+names where their live rules went).

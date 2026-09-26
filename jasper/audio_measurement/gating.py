@@ -40,7 +40,7 @@ failing candidate does not end the search. **This CHANGES gate decisions**, deli
 Schema version 2 (was 1): ``first_reflection_ms`` reports the reflection's envelope PEAK rather
 than its onset, and three fields were added — see :data:`GATING_SCHEMA_VERSION`. The vote did
 not bump the version: no persisted field's meaning changed, so a pre-vote and post-vote block
-are indistinguishable in a bundle (`docs/gating-v2-plan.md` D3's ``detector`` field owes that).
+are indistinguishable in a bundle.
 """
 
 from __future__ import annotations
