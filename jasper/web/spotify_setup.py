@@ -79,6 +79,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
 from ..env_load import SPOTIFY_CREDENTIALS_ENV_PATH
 from ..accounts import (
     ACCOUNT_NAME_PATTERN,
@@ -115,7 +116,6 @@ from ._common import (
     flash_error,
     form_guarded,
     restart_systemd_units,
-    restart_voice_daemon,
     send_html_response,
     send_json_response,
     send_see_other,

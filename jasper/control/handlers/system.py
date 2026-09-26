@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Any, Callable, Iterable
 
+from jasper.control.service_restart import RestartOutcome, restart_voice_daemon
 from ...audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
     apply_requested_converter,
@@ -694,24 +695,23 @@ class SystemRoutes(ControlHandlerMixin):
         restart_units: list[str] = []
         try_restart_units: list[str] = []
         if self.path == "/system/restart/voice":
-            if parked:
-                # The dumb-follower profile keeps voice disabled
-                # while paired — a dashboard restart would boot
-                # 240 MB of models that jasper-aec-reconcile
-                # re-parks. Refuse with the story, never silently.
-                self._send_json(
-                    {
-                        "error": "voice is parked while this speaker "
-                        "is in a stereo pair — the assistant "
-                        "runs on the pair leader"
-                    },
-                    status=409,
-                )
-                return
             units = [JASPER_VOICE_SERVICE]
-            restart_units = units
             action = "restart-voice"
-        elif self.path == "/system/restart/audio":
+            log_event(logger, "system.action", action=action, units=",".join(units), client=self.address_string())
+            outcome = restart_voice_daemon()
+            if outcome is RestartOutcome.REFUSED:
+                self._send_refused(error="The restart could not be scheduled.", code="system_restart_failed",
+                    action=action, units=units, failed_verb="restart", accepted_units=[], skipped_units=[],
+                    failed_units=units)
+            elif outcome is RestartOutcome.SKIPPED:
+                self._send_json({"error": "The assistant is not active on this speaker; no restart was sent.",
+                    "code": "voice_restart_skipped", "action": action, "restart": outcome.value,
+                    "units": units, "accepted_units": [], "skipped_units": units, "failed_units": []}, status=409)
+            else:
+                self._send_accepted(action=action, units=units, restart=outcome.value,
+                    accepted_units=units, skipped_units=[], failed_units=[])
+            return
+        if self.path == "/system/restart/audio":
             restart_units = list(CORE_AUDIO_RESTART_UNITS)
             try_restart_units = list(LOCAL_SOURCE_AUDIO_REFRESH_UNITS)
             if parked:

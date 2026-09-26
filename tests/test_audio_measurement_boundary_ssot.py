@@ -108,10 +108,6 @@ BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
             "jasper.web.correction_crossover_v2_grade",
             "jasper.web.correction_crossover_v2_status",
         }),
-        # `restart_voice_daemon` and its gates (no provider, bonded follower)
-        # live in web/_common (ADR-0350). Remove this row when
-        # `restart_voice_daemon` leaves `jasper/web/_common.py`.
-        "jasper/cli/settings.py": frozenset({"jasper.web._common"}),
     },
 }
 

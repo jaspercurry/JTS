@@ -83,6 +83,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
 from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..log_event import log_event
 from .. import wake_models
@@ -105,7 +106,6 @@ from ._common import (
     proxy_post,
     read_json_body,
     resolve_samples,
-    restart_voice_daemon,
     route_path,
     send_html_response,
     send_proxy_json,

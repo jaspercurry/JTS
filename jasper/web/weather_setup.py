@@ -28,6 +28,7 @@ import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from jasper.control.service_restart import restart_voice_daemon
 from .. import location_state
 from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
@@ -41,7 +42,6 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     form_guarded,
-    restart_voice_daemon,
     send_html_response,
     send_rejected_form,
     send_see_other,

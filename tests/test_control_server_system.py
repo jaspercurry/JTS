@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
+from jasper.service_units import JASPER_VOICE_SERVICE
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
@@ -1564,16 +1565,26 @@ def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, mo
     assert "audio_health" in body
 
 
-def test_system_restart_voice_409s_while_parked(monkeypatch, server_with_coordinator):
-    """The dashboard's restart-voice button must not boot the parked
-    daemon on a bonded follower — refuse with the pair story."""
-    import jasper.control.handlers.peering as srv_mod
+@pytest.mark.parametrize("provider,parked,broker_ok,expected", [
+    ("", False, True, "skipped"), ("openai", True, True, "skipped"),
+    ("openai", False, True, "ran"), ("openai", False, False, "refused"),
+])
+def test_system_voice_restart_uses_shared_gates(monkeypatch, server_with_coordinator, provider, parked, broker_ok, expected):
+    from jasper.control import service_restart
 
-    monkeypatch.setattr(srv_mod, "pair_follower_leader_addr", lambda: "jts.local")
-    base, _fake = server_with_coordinator
+    calls = []
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: provider)
+    monkeypatch.setattr(service_restart, "local_sources_allowed", lambda: (not parked, "bonded_follower" if parked else ""))
+    monkeypatch.setattr(service_restart, "manage_units", lambda *units, **kw: calls.append(units) or {"ok": broker_ok})
+    base, _ = server_with_coordinator
     status, body = _post(f"{base}/system/restart/voice", {})
-    assert status == 409
-    assert "parked" in body["error"]
+    assert status == {"refused": 502, "skipped": 409, "ran": 202}[expected]
+    assert calls == ([] if expected == "skipped" else [(JASPER_VOICE_SERVICE,)])
+    if expected == "refused":
+        assert body["code"] == "system_restart_failed"
+    else:
+        assert body["restart"] == expected
+        assert body["skipped_units"] == ([JASPER_VOICE_SERVICE] if expected == "skipped" else [])
 
 
 def test_system_restart_audio_uses_local_source_registry(
