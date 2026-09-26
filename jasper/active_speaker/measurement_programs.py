@@ -228,18 +228,22 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
-#: Program ids whose rows retired, and the purpose their banked rounds read as.
-#: Frozen: a banked id is never renamed or reused (ADR-0366 §6).
-RETIRED_PROGRAM_PURPOSES = MappingProxyType({"close": PURPOSE_REFERENCE})
+#: The ids a round may have banked under a row that has since retired, and the
+#: purpose each reads as. Frozen: a banked id is never renamed or reused (ADR-0366 §6).
+RETIRED_PROGRAM_PURPOSES = MappingProxyType({
+    "close/spot": PURPOSE_REFERENCE,
+    "close/custom": PURPOSE_REFERENCE,
+})
 
 
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
     a custom layout's ``nearfield/custom``, or a retired row's ``close/spot``)."""
-    name, _, size = str(run_program or "").partition("/")
+    banked = str(run_program or "")
+    name, _, size = banked.partition("/")
     if not name or name in PURPOSES:
         return name
-    return RETIRED_PROGRAM_PURPOSES.get(name) or program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    return RETIRED_PROGRAM_PURPOSES.get(banked) or program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
