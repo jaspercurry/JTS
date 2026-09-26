@@ -716,7 +716,8 @@ def locked_update_env_file(
         state.update(dict(updates))
         text = format_env_text(state, owner=owner)
         atomic_write_text(
-            fspath, text, mode=mode, group_from_parent=group_from_parent
+            fspath, text, mode=mode, group_from_parent=group_from_parent,
+            preserve_target_owner=True,
         )
         return dict(state)
 
@@ -770,7 +771,8 @@ def locked_transform_env_file(
             return None
         text = format_env_text(new_state, owner=owner)
         atomic_write_text(
-            fspath, text, mode=mode, group_from_parent=group_from_parent
+            fspath, text, mode=mode, group_from_parent=group_from_parent,
+            preserve_target_owner=True,
         )
         return dict(new_state)
 

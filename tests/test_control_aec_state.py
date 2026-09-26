@@ -302,26 +302,11 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             and not first_write_paused.is_set()
         )
 
-    def pausing_atomic_write(
-        path,
-        text,
-        *,
-        mode=0o644,
-        group_from_parent=True,
-        preserve_target_stat=False,
-        durable=False,
-    ):
+    def pausing_atomic_write(path, text, **kwargs):
         if should_pause(text):
             first_write_paused.set()
             assert release_first_write.wait(timeout=2)
-        return real_atomic_write(
-            path,
-            text,
-            mode=mode,
-            group_from_parent=group_from_parent,
-            preserve_target_stat=preserve_target_stat,
-            durable=durable,
-        )
+        return real_atomic_write(path, text, **kwargs)
 
     def write_raw_off():
         try:
@@ -368,26 +353,11 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
     release_model_write = threading.Event()
     errors: list[BaseException] = []
 
-    def pausing_atomic_write(
-        path,
-        text,
-        *,
-        mode=0o644,
-        group_from_parent=True,
-        preserve_target_stat=False,
-        durable=False,
-    ):
+    def pausing_atomic_write(path, text, **kwargs):
         if "JASPER_WAKE_MODEL=alexa" in text and not model_write_paused.is_set():
             model_write_paused.set()
             assert release_model_write.wait(timeout=2)
-        return real_atomic_write(
-            path,
-            text,
-            mode=mode,
-            group_from_parent=group_from_parent,
-            preserve_target_stat=preserve_target_stat,
-            durable=durable,
-        )
+        return real_atomic_write(path, text, **kwargs)
 
     def write_model():
         try:

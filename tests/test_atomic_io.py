@@ -205,6 +205,39 @@ def _write(writer, path):
     }[writer]()
 
 
+@pytest.mark.parametrize("writer", ["update", "transform"])
+@pytest.mark.parametrize("can_chown", [True, False])
+def test_env_writers_preserve_target_owner_when_permitted(
+    tmp_path, monkeypatch, writer, can_chown
+):
+    path = tmp_path / "wizard.env"
+    path.write_text("KEEP=yes\n")
+    path.chmod(0o600)
+    target = path.stat()
+    owner = (target.st_uid + 1, target.st_gid + 1)
+    real_stat = os.stat
+    chowns = []
+
+    def foreign_owner(p, *args, **kwargs):
+        st = real_stat(p, *args, **kwargs)
+        if st.st_ino == target.st_ino:
+            return os.stat_result(tuple(st)[:4] + owner + tuple(st)[6:])
+        return st
+
+    def chown(p, uid, gid):
+        chowns.append((real_stat(p).st_ino, uid, gid))
+        if not can_chown:
+            raise PermissionError(errno.EPERM, "chown denied")
+
+    monkeypatch.setattr(os, "stat", foreign_owner)
+    monkeypatch.setattr(os, "chown", chown)
+    _write(writer, path)
+
+    assert chowns == [(path.stat().st_ino, *owner)]
+    assert path.read_text() == "KEEP=yes\nJASPER_X=1\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
 @pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])
 def test_writers_publish_parent_group_by_default(
     tmp_path, monkeypatch, foreign_parent_gid, writer
