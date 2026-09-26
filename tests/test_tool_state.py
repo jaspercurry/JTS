@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper.tool_state — wizard-owned SSOT for tool UI state.
+"""jasper.tools.tool_state — wizard-owned SSOT for tool UI state.
 
 Fail-safe (missing/unreadable/malformed -> nothing disabled for configured
 runtime tools), parse, and deterministic round-trip. Mirrors the
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import stat
 
-from jasper.tool_state import (
+from jasper.tools.tool_state import (
     ToolState,
     read_tool_state,
     write_tool_state,

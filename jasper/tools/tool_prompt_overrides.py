@@ -15,7 +15,7 @@ import logging
 import os
 from pathlib import Path
 
-from .atomic_io import atomic_write_text
+from ..atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 

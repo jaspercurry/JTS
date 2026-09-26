@@ -18,7 +18,7 @@ Uses three BusTime endpoints:
    and lags real-world dispatch (per the BusTime wiki, OBA at MTA
    explicitly excludes real-time data). SIRI is the ground truth.
 
-The SIRI runtime client at `jasper/bus.py` hits the same endpoint
+The SIRI runtime client at `jasper/transit/bus.py` hits the same endpoint
 for live arrivals. Same key is shared per the BusTime wiki.
 
 The provider is stateless. The wizard supplies the credential at call
@@ -77,7 +77,7 @@ class _NycBus:
     env_keys = (
         "JASPER_MTA_BUSTIME_KEY",
         # Multi-stop list. Value is "id|label,id|label" — see
-        # `jasper.bus.parse_bus_stops` for the parser. Opposing-
+        # `jasper.transit.bus.parse_bus_stops` for the parser. Opposing-
         # direction stops at one intersection are saved as two
         # separate entries (they have distinct MTA stop IDs).
         "JASPER_BUS_STOPS",
@@ -331,7 +331,7 @@ class _NycBus:
         # Parse our own keys (mirrors Config.bus_*): empty key OR empty stops
         # disables the tool. Use the canonical parser so behaviour matches
         # Config exactly (labels can contain commas/spaces).
-        from ...bus import BusClient, parse_bus_stops  # lazy: keep wizard light
+        from ..bus import BusClient, parse_bus_stops  # lazy: keep wizard light
 
         stops = tuple(parse_bus_stops(env.get("JASPER_BUS_STOPS", "")))
         api_key = env.get("JASPER_MTA_BUSTIME_KEY", "")

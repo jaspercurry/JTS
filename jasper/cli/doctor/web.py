@@ -216,9 +216,9 @@ def check_tool_catalog() -> CheckResult:
     With no voice provider jasper-voice never writes the catalog, so that is
     a skip rather than a failure; with a provider set but no catalog on disk,
     warn — the wizard renders "not ready" and toggles do not take effect.
-    Reads the light view (jasper.tool_catalog_view), never the heavy
+    Reads the light view (jasper.tools.tool_catalog_view), never the heavy
     registry."""
-    from ...tool_catalog_view import summary
+    from ...tools.tool_catalog_view import summary
     from ...voice.provider_state import read_active_provider
 
     label = "tool catalog"

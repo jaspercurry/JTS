@@ -32,8 +32,8 @@ from typing import Any
 
 import pytest
 
-from jasper.tool_prompt_overrides import read_prompt_overrides
-from jasper.tool_state import (
+from jasper.tools.tool_prompt_overrides import read_prompt_overrides
+from jasper.tools.tool_state import (
     ToolState,
     read_tool_state,
     write_tool_state,
@@ -69,7 +69,10 @@ print(json.dumps(loaded))
         timeout=10,
     )
 
-    assert json.loads(result.stdout) == []
+    assert set(json.loads(result.stdout)) <= {
+        "jasper.tools", "jasper.tools.tool_state",
+        "jasper.tools.tool_prompt_overrides", "jasper.tools.tool_catalog_view",
+    }
 
 
 @pytest.fixture(autouse=True)

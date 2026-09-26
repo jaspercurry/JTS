@@ -57,7 +57,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "source": ("control", "jasper", "local_sources"),
     "source_intent": ("jasper", "local_sources"),
     "spotify": ("jasper", "voice", "web"),
-    "transit": ("jasper", "tools", "transit", "web"),
+    "transit": ("tools", "transit", "web"),
     "tts_flush": ("jasper", "voice"),
     "tts_write": ("jasper",),
     "turn": ("jasper", "voice"),

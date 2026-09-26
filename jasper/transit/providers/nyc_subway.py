@@ -9,7 +9,7 @@ module import. `find_stops_near` is an O(N) haversine sort — at this
 scale that's sub-millisecond on a Pi 5, so a spatial index would be
 premature complexity.
 
-The CSV is also consumed by `jasper.subway` for voice-direction
+The CSV is also consumed by `jasper.transit.subway` for voice-direction
 labelling. Same file, same schema, different columns of interest:
 this module needs lat/lon, that one needs north_label/south_label.
 """
@@ -107,7 +107,7 @@ class _NycSubway:
         station_id = env.get("JASPER_SUBWAY_STATION_ID", "")
         if not station_id:
             return None
-        from ...subway import SubwayClient  # lazy: keep the wizard light
+        from ..subway import SubwayClient  # lazy: keep the wizard light
 
         return SubwayClient(
             station_id, env.get("JASPER_SUBWAY_DEFAULT_DIRECTION", ""),

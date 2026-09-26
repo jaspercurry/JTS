@@ -568,7 +568,7 @@ def test_index_html_with_coords_shows_citibike_card(monkeypatch):
     """Citi Bike card renders alongside the subway and bus cards when
     coords are inside the bbox. Stub `fetch_feed` so the render
     doesn't make a real GBFS HTTP call."""
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
 
     info = {"data": {"stations": [
         {"station_id": "abc", "name": "9 Av & 41 St",
@@ -605,7 +605,7 @@ def test_index_html_with_coords_shows_citibike_card(monkeypatch):
 
 
 def test_index_html_with_coords_renders_ebike_only_checked_when_set(monkeypatch):
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: {"data": {"stations": []}},

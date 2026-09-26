@@ -555,12 +555,6 @@ class ToolRegistry:
             for t in self._visible_to(provider)
         ]
 
-    def to_manifest(self) -> list[dict[str, Any]]:
-        """All registered tools as manifest entries, in registration
-        order. Additive surface; does not affect dispatch or the
-        provider serializers."""
-        return [t.to_manifest_entry() for t in self.tools.values()]
-
     def apply_prompt_overrides(self, overrides: dict[str, str]) -> None:
         """Apply user-edited model-facing prompt overrides in-place.
 

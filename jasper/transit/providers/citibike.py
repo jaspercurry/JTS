@@ -5,7 +5,7 @@
 """Citi Bike transit provider — keyless, GBFS-backed.
 
 Implements `TransitProvider` for the wizard at `/assistant/transit/`. The
-GBFS fetcher and runtime client live in `jasper.citibike`; this
+GBFS fetcher and runtime client live in `jasper.transit.citibike`; this
 module is the thin wizard adapter that uses the same fetcher to
 present "nearest stations" with a live snapshot of capacity.
 
@@ -25,13 +25,6 @@ from collections.abc import Mapping
 
 from ...env_load import parse_bool_value
 from ..base import BoundingBox, Stop, haversine_miles
-
-# `jasper.citibike` imports `from .transit.base import TransitError`,
-# which triggers `transit/__init__.py`, which transitively loads this
-# provider module — re-entering `jasper.citibike` mid-init would hit a
-# partial module without the GBFS symbols. Lazy-import inside
-# `find_stops_near` breaks the cycle: by the time anything calls the
-# method, both modules have finished loading.
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +66,7 @@ class _CitiBike:
         credentials: dict[str, str] | None = None,
         count: int = 10,
     ) -> list[Stop]:
-        from ...citibike import (
+        from ..citibike import (
             INFO_TTL_SECONDS,
             STATION_INFO_URL,
             STATION_STATUS_URL,
@@ -134,7 +127,7 @@ class _CitiBike:
     def build_client(self, env: Mapping[str, str]) -> object | None:
         # Parse our own keys (mirrors Config.citibike_*): empty station list
         # disables the tool. Lazy import also avoids the cycle described above.
-        from ...citibike import CitiBikeClient, parse_saved_stations
+        from ..citibike import CitiBikeClient, parse_saved_stations
 
         stations = list(parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
         if not stations:

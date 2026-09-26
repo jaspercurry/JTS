@@ -14,11 +14,8 @@ from the FRESH disabled-set, so the page (and /state) reflect the user's
 choice immediately, decoupled from the restart. It also reports whether a
 restart is PENDING (the desired set differs from what voice baked).
 
-Why a separate module from jasper.tools.catalog: that one BUILDS the JSON by
-enumerating the full registry (heavy — imports every tool factory). This is
-the READ side — it imports only `json` + jasper.tool_state, so the
-socket-activated wizard and jasper-control can both use it without pulling in
-jasper.tools (the transit lazy-import lesson).
+The catalog builder imports every tool factory; this reader must stay light
+for the socket-activated wizard and doctor.
 """
 from __future__ import annotations
 
@@ -26,7 +23,7 @@ import json
 import logging
 from typing import Any
 
-from .env_load import TOOL_STATE_ENV_PATH
+from ..env_load import TOOL_STATE_ENV_PATH
 from .tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_PATH
 from .tool_prompt_overrides import read_prompt_overrides
 from .tool_state import ToolState, read_tool_state

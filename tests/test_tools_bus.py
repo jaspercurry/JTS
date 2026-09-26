@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from jasper.bus import BusArrival
+from jasper.transit.bus import BusArrival
 from jasper.tools import build_tool
 from jasper.tools.bus import make_bus_tools
 from jasper.transit.base import TransitError

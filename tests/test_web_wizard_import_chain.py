@@ -32,7 +32,7 @@ The combined settings host already keeps that page lazy
 numpy-free is a separate burn-down. Add ``numpy`` here once it lands.
 
 Deliberately OUT of scope: daemon-side top-level ``import httpx``
-(``jasper/mux.py``, ``jasper/subway.py``, ``jasper/weather.py``, …).
+(``jasper/mux.py``, ``jasper/transit/subway.py``, ``jasper/weather.py``, …).
 Those modules run inside long-lived daemons where httpx is a hard
 runtime dependency of the module's whole purpose — failing fast at
 daemon startup with a clean ImportError is correct, and lazifying them

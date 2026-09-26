@@ -144,7 +144,7 @@ def minimal_registry() -> ToolRegistry:
 
 
 def manifest_by_name(registry: ToolRegistry) -> dict[str, dict[str, Any]]:
-    return {entry["name"]: entry for entry in registry.to_manifest()}
+    return {name: tool.to_manifest_entry() for name, tool in registry.tools.items()}
 
 
 def catalog_tools_by_name(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:

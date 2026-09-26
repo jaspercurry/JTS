@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ..citibike import CitiBikeClient
+from ..transit.citibike import CitiBikeClient
 from ..log_event import log_event
 from ..transit.base import TransitError
 from . import tool

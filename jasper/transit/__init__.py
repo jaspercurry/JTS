@@ -62,8 +62,8 @@ plumbing. Each numbered item is one logical edit point:
      The tool's docstring is what the LLM reads — match the
      subway/bus docstring shape.
   6. Runtime client class: the `<Slug>Client` that item 5 wraps and
-     `build_client` constructs (mirror `jasper/subway.py`,
-     `jasper/bus.py`, `jasper/citibike.py`). Owns the live
+     `build_client` constructs (mirror `jasper/transit/subway.py`,
+     `jasper/transit/bus.py`, `jasper/transit/citibike.py`). Owns the live
      arrival/status fetch. If it holds a connection pool, give it an
      `aclose()` — the daemon closes every built transit client on
      shutdown, duck-typed, so a pool is reclaimed with no daemon edit.
@@ -89,7 +89,7 @@ from .base import (
     TransitProvider,
     haversine_miles,
 )
-from .providers import citibike, nyc_bus, nyc_subway
+from .providers import citibike as citibike_provider, nyc_bus, nyc_subway
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class CityPack:
 NYC_PACK = CityPack(
     id="nyc",
     label="New York City",
-    providers=(nyc_subway.PROVIDER, nyc_bus.PROVIDER, citibike.PROVIDER),
+    providers=(nyc_subway.PROVIDER, nyc_bus.PROVIDER, citibike_provider.PROVIDER),
 )
 
 # Add a new city as one more CityPack. Keep existing packs in place so the

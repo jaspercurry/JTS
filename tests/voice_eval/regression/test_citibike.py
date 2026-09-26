@@ -31,7 +31,7 @@ import os
 
 import pytest
 
-from jasper.citibike import parse_saved_stations
+from jasper.transit.citibike import parse_saved_stations
 from tests.voice_eval import oracles
 
 

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-import jasper.citibike as citibike_mod
+import jasper.transit.citibike as citibike_mod
 import jasper.home_assistant as ha_mod
 from jasper.cli import doctor
 from jasper.cli.doctor import renderers
