@@ -1544,6 +1544,11 @@ class VolumeCoordinator:
         self._reconcile_deferred = True
         return True
 
+    @property
+    def reconcile_deferred(self) -> bool:
+        """Whether the last reconcile tick stood down for a DSP writer."""
+        return self._reconcile_deferred
+
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
         (mux preempts in <1 s) but possible during transitions; pick

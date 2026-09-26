@@ -41,8 +41,12 @@ save's coordinator.
    the budget, refuses the start before anything moves.
 3. **`RECONCILE_DUCK_SKIP_DB` and `_deep_quiet_skip` are deleted.** Both
    reconciler clients stand down on ADR-0213's probe while the audition plays,
-   and a quiet drift nobody announced is corrected to the household level like
-   any other. The stand-down is logged once per episode, not once per tick.
+   and on an open measurement window: jasper-voice on `MEASURE_PAUSE`, the
+   settings save on jasper-control's hold — the copy of that window
+   jasper-voice adopts at startup — which it also counts as open when it
+   cannot read it. Any other quiet drift nobody announced is corrected to the
+   household level. The stand-down is logged once per episode, and `/settings`
+   answers `volume_reconciled: false` for it.
 
 ## Consequences
 
@@ -61,10 +65,8 @@ save's coordinator.
 - The reconciler now repairs what the carve-out stranded, to the household
   level and never above it: the 0 dB ceiling, the `set_volume_db` clamp and
   `devices.volume_limit` are untouched.
-- The settings save's coordinator does not see `MEASURE_PAUSE`: a `/sound`
-  settings save during a measurement whose fader sits 10 dB or more below the
-  household level now corrects it up, where the carve-out skipped it.
-  jasper-voice's own reconciler is still held off by the window.
+- A settings save made while jasper-control cannot be reached leaves the new
+  floor for jasper-voice's reconciler to land.
 - **Rejected:** a `MEASURE_PAUSE` window for the audition (attempt 2), for the
   wake deafness and the reach above; failing open without a lock directory
   (attempt 1), since with the carve-out gone an unannounced audition is

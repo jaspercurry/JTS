@@ -55,7 +55,8 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.biquad import PeqFilter
-from jasper.camilla import CamillaUnavailable
+from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.control import measurement_hold
 from jasper.dsp_apply import (
     DspApplyState,
     camilla_graph_mutation,
@@ -92,7 +93,8 @@ from jasper.sound.settings import (
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
 from jasper.volume_owner import VolumeOwner, install_volume_owner
-from jasper.volume_persistence import VolumePersistence
+from jasper.platform.control_client import ControlError
+from jasper.volume_persistence import VolumePersistence, configured_path
 from jasper.web import (
     _common,
     nav,
@@ -497,6 +499,27 @@ class _WitnessCamilla(FakeVolumeCamilla):
                 await asyncio.Event().wait()
             raise CamillaUnavailable("camilla restarting")
         return await super().set_main_mute(muted, best_effort=best_effort)
+
+
+def _household_fader(
+    tmp_path: Path, monkeypatch,
+) -> tuple[_MinimalCamillaClient, CamillaController, measurement_hold.MeasurementHold]:
+    """A camilla-master fader at the persisted 70%, behind a real controller
+    probing tmp_path's writer lock, with a real jasper-control hold served
+    where `read_measurement_hold` asks for it."""
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
+    monkeypatch.setattr(
+        "jasper.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
+    )
+    hold = measurement_hold.MeasurementHold()
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement", lambda **_: hold.snapshot(),
+    )
+    VolumePersistence(configured_path()).save_listening_level(
+        70, mark_user_change=True,
+    )
+    client = _MinimalCamillaClient(db=percent_to_db(70))
+    return client, _real_controller(client, tmp_path), hold
 
 
 
@@ -4727,37 +4750,31 @@ async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_afte
 ):
     """jasper-voice's 1 Hz observer and the fresh coordinator a Save of the floor
     runs both read the tone's floor as a deep quiet drift. Only the real lock
-    holds them off; the same drift with no lock (jasper-web died mid-tone) is
-    a stranded floor they walk back to the household level (ADR-0368)."""
+    holds them off, and each says it deferred; the same drift with no lock
+    (jasper-web died mid-tone) is a stranded floor they walk back to the
+    household level (ADR-0368)."""
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    state_path = str(tmp_path / "speaker_volume.json")
-    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", state_path)
-    monkeypatch.setattr(
-        "jasper.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
-    )
-    VolumePersistence(state_path).save_listening_level(70, mark_user_change=True)
-    household_db = percent_to_db(70)
-    client = _MinimalCamillaClient(db=household_db)
-    web = _real_controller(client, tmp_path)
+    client, web, _hold = _household_fader(tmp_path, monkeypatch)
+    household_db = client.db
     install_volume_owner(VolumeOwner(
         set_fader_db=lambda db: web.set_volume_db(db, best_effort=True),
         get_fader_db=lambda: web.get_volume_db(best_effort=True),
     ))
     voice = VolumeCoordinator(
         camilla=_real_controller(client, tmp_path),
-        persistence=VolumePersistence(state_path),
+        persistence=VolumePersistence(configured_path()),
         backend=_FakeBackend(selected="idle"),
     )
     voice.load_persisted_level()
 
-    async def reconcile() -> None:
+    async def reconcile() -> bool:
         if reconciler == "voice_observer":
             await voice.maybe_reconcile_camilla()
-        else:
-            await sound_profile_apply._reconcile_volume_curve_after_settings(
-                camilla_factory=lambda: web,
-            )
+            return not voice.reconcile_deferred
+        return await sound_profile_apply._reconcile_volume_curve_after_settings(
+            camilla_factory=lambda: web,
+        )
 
     FakeVolumeFloorToneRunner.instances.clear()
     session = _floor_tone_session(tmp_path)
@@ -4769,14 +4786,59 @@ async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_afte
     floor_db = client.db
     assert household_db - floor_db > 20.0
 
-    await reconcile()
+    assert await reconcile() is False
     assert client.db == pytest.approx(floor_db)
 
     await session.stop(camilla_factory=lambda: web, reason="stop")
     assert client.db == pytest.approx(household_db)
 
     client.db = floor_db
-    await reconcile()
+    assert await reconcile() is True
+    assert client.db == pytest.approx(household_db)
+
+
+@pytest.mark.parametrize("hold_read", ["held", "unreachable"])
+async def test_a_settings_save_writes_nothing_while_a_measurement_holds_the_fader(
+    tmp_path: Path, monkeypatch, hold_read: str,
+):
+    """jasper-control's hold is the window jasper-voice's reconciler stands down
+    on, and a /sound settings save reads that same hold: open, or unreadable,
+    it writes nothing and reports ``volume_reconciled: false``. Once the window
+    closes the same save lands the drift on the household target, never above
+    it (ADR-0368)."""
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    client, web, hold = _household_fader(tmp_path, monkeypatch)
+    household_db = client.db
+    client.db = measuring_db = household_db - 25.0
+
+    async def emit_refused(*_args: object, **_kwargs: object) -> None:
+        raise OSError("a measurement graph is loaded")
+
+    def control_refused(**_kwargs: object) -> dict:
+        raise ControlError("connection refused")
+
+    monkeypatch.setattr(sound_profile_apply, "_load_profile_config", emit_refused)
+
+    async def save() -> dict:
+        return await sound_profile_apply._apply_settings(
+            {"match_loudness": True},
+            profile_path=tmp_path / "sound_profile.json",
+            config_dir=tmp_path / "configs",
+            camilla_factory=lambda: web,
+        )
+
+    hold.acquire("correction-measurement")
+    with monkeypatch.context() as outage:
+        if hold_read == "unreachable":
+            outage.setattr(
+                "jasper.platform.control_client.get_measurement", control_refused,
+            )
+        assert (await save())["volume_reconciled"] is False
+    assert client.db == pytest.approx(measuring_db)
+
+    hold.release("correction-measurement")
+    assert (await save())["volume_reconciled"] is True
     assert client.db == pytest.approx(household_db)
 
 

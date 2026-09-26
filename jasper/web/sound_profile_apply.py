@@ -11,12 +11,14 @@ serialize behind one write lock.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
@@ -357,8 +359,7 @@ async def _apply_settings(
         payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
         payload["last_dsp_apply"] = apply_state.to_dict()
         payload["dsp_write_epoch"] = apply_state.op_id
-    if reconciled:
-        payload["volume_reconciled"] = True
+    payload["volume_reconciled"] = reconciled
     return payload
 
 
@@ -370,7 +371,9 @@ async def _reconcile_volume_curve_after_settings(
 
     ``maybe_reconcile_camilla`` only writes for camilla-master sources
     (idle/AirPlay/USB), so changing the floor cannot unguard a
-    Spotify/Bluetooth push-mode handoff.
+    Spotify/Bluetooth push-mode handoff. ``False`` when it stood down for a
+    measurement or a DSP writer; jasper-voice's reconciler lands the floor
+    once they end.
     """
     from jasper import librespot_state
     from jasper.renderer import RendererClient
@@ -378,6 +381,13 @@ async def _reconcile_volume_curve_after_settings(
     from jasper.volume_persistence import VolumePersistence
     from jasper.volume_persistence import configured_path as volume_state_path
 
+    # This coordinator never hears the MEASURE_PAUSE jasper-voice's reconciler
+    # stands down on; jasper-control's hold is the copy of that window
+    # jasper-voice adopts at startup. Unreadable counts as open: this path only
+    # lands the floor sooner (ADR-0368).
+    hold = await asyncio.to_thread(read_measurement_hold)
+    if hold is None or hold.get("active"):
+        return False
     coord = VolumeCoordinator(
         camilla=camilla_factory(),
         persistence=VolumePersistence(volume_state_path()),
@@ -387,7 +397,7 @@ async def _reconcile_volume_curve_after_settings(
     )
     coord.load_persisted_level()
     await coord.maybe_reconcile_camilla()
-    return True
+    return not coord.reconcile_deferred
 
 
 async def _audition_profile(
