@@ -55,6 +55,12 @@ pub struct ChipRefPacket {
     pub reference_sequence: u64,
 }
 
+impl ChipRefPacket {
+    fn frames(&self) -> u64 {
+        (self.samples.len() / (CHANNELS as usize)) as u64
+    }
+}
+
 #[derive(Debug)]
 pub struct ChipRefDownsampler {
     input_frames_per_output: u32,
@@ -308,8 +314,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
 
         match rx.recv_timeout(timing.poll) {
             Ok(packet) => {
-                let frames = (packet.samples.len() / (CHANNELS as usize)) as u64;
-                state.mark_chip_ref_dequeued(frames);
+                state.mark_chip_ref_dequeued(packet.frames());
                 write_chip_ref_tee(&mut tee, &packet.samples);
                 if let Some(opened) = pcm.as_ref() {
                     let mut report = PlaybackWriteReport::default();
@@ -377,7 +382,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
 /// every later packet and sit the reference that far behind the speaker (#5729).
 fn drop_stale_packets(rx: &Receiver<ChipRefPacket>, state: &OutputdState) {
     while let Ok(packet) = rx.try_recv() {
-        state.mark_chip_ref_dequeued((packet.samples.len() / (CHANNELS as usize)) as u64);
+        state.mark_chip_ref_dequeued(packet.frames());
         state.mark_chip_ref_dropped_unavailable();
     }
 }
