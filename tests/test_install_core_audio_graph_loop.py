@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from jasper import source_intent
+from jasper.fanin.coupling_reconcile import ENTRY_LOCK_PATH
 from jasper.local_sources.registry import local_source_audio_refresh_units
 from tests.install_surface import installer_shell_paths
 
@@ -379,6 +380,15 @@ def test_last_unit_failure_still_runs_daemon_reload(tmp_path):
     assert (tmp_path / "reload.log").exists()
 
 
+def _coupling_fence_paths(tmp_path: Path) -> str:
+    """The park's coupling entry lock and fence drop-in live under /run on a
+    speaker; point both into the sandbox."""
+    return (
+        f'FANIN_COUPLING_ENTRY_LOCK="{tmp_path}/coupling.lock"\n'
+        f'FANIN_COUPLING_FENCE_DROPIN="{tmp_path}/run/coupling-fence.conf"\n'
+    )
+
+
 def test_graph_park_retires_a_stale_record_before_stopping_active_outputd(tmp_path):
     park = tmp_path / "outputd.park"
     park.write_text("old\n")
@@ -397,6 +407,7 @@ REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path}/systemd"
 LOCAL_SBIN_DIR="{local_sbin}"
 source "{FRAGMENT}"
+{_coupling_fence_paths(tmp_path)}
 OUTPUTD_FAILURE_PARK_RECORD="{park}"
 JASPER_CORE_GRAPH_PARK_UNITS=(jasper-outputd.service)
 _record_parked_unit() {{ :; }}
@@ -489,6 +500,7 @@ mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
 {_stateful_systemctl(tmp_path)}
 source "{FRAGMENT}"
 source "{BUILD_SANDBOX}"
+{_coupling_fence_paths(tmp_path)}
 # install.sh's first unguarded restart-tail command, made to fail.
 ensure_outputd_camilla_statefile() {{ return 1; }}
 trap install_exit_cleanup EXIT
@@ -863,6 +875,137 @@ require_outputd_ready() {{
     )
     assert any("via=jasper-control.service" in call for call in after[cleared + 1:])
     assert any("via=jasper-outputd.service" in call for call in after[cleared + 1:])
+
+
+_COUPLING_AUTO = "jasper-fanin-coupling-auto.service"
+
+
+@pytest.mark.parametrize("abort", (False, True))
+@pytest.mark.parametrize(
+    "function",
+    ("start_streambox_runtime_units", "install_systemd_units"),
+)
+def test_the_graph_park_drains_the_coupling_pass_and_fences_new_ones(
+    tmp_path, function, abort
+):
+    """#5470: a coupling pass's broker restart of fan-in, accepted before the
+    install parked the graph, canceled the install's fan-in stop. The park now
+    waits the pass out on its entry lock, and refuses coupling-auto starts —
+    whose Wants= would restart the graph daemons — until the graph is back. An
+    install that dies inside the window restores the graph first and leaves no
+    fence behind."""
+    log = tmp_path / "calls.log"
+    down = tmp_path / "down"
+    loaded = tmp_path / "fence.loaded"
+    lock = tmp_path / "coupling.lock"
+    dropin = tmp_path / "run" / "coupling-fence.conf"
+    shims = f"""echo "entry lock: $FANIN_COUPLING_ENTRY_LOCK" >> "{log}"
+{_coupling_fence_paths(tmp_path)}
+mkdir -p "{down}"
+# systemd loads the drop-in on daemon-reload; a loaded RefuseManualStart=
+# refuses the whole start, so none of the oneshot's Wants= jobs exist.
+systemctl() {{
+  local verb="${{1:-}}" arg
+  local -a units=()
+  echo "systemctl $*" >> "{log}"
+  shift || true
+  for arg in ${{1+"$@"}}; do
+    case "$arg" in -*) ;; *) units+=("$arg") ;; esac
+  done
+  case "$verb" in
+    daemon-reload) rm -f "{loaded}"; [[ ! -e "{dropin}" ]] || : > "{loaded}" ;;
+    is-active) [[ ! -e "{down}/${{units[0]}}" ]] ;;
+    is-enabled) echo enabled ;;
+    stop) for arg in "${{units[@]}}"; do : > "{down}/$arg"; done ;;
+    start|restart)
+      for arg in "${{units[@]}}"; do
+        if [[ "$arg" == "{_COUPLING_AUTO}" ]]; then
+          if [[ -e "{loaded}" ]]; then echo "coupling-auto refused" >> "{log}"; return 1; fi
+          echo "coupling-auto admitted" >> "{log}"
+          rm -f "{down}"/jasper-fanin.service "{down}"/jasper-outputd.service "{down}"/jasper-camilla.service
+        fi
+        rm -f "{down}/$arg"
+      done ;;
+  esac
+}}
+install_run_bounded() {{ shift 2; "$@"; }}
+# The real reconciler kicks coupling-auto on every converged install pass.
+/usr/local/sbin/jasper-audio-hardware-reconcile() {{
+  systemctl start --no-block {_COUPLING_AUTO}
+  systemctl restart jasper-outputd.service
+}}
+require_outputd_ready() {{ systemctl restart jasper-outputd.service; }}
+ensure_outputd_camilla_statefile() {{ {"exit 3" if abort else ":"}; }}
+reconcile_sound_dsp_state() {{ :; }}
+remove_stale_jts_ring_data_files() {{ echo "rings unlinked" >> "{log}"; }}
+source "{BUILD_SANDBOX}"
+_build_sandbox_log() {{ :; }}
+# The trap's last step: by then the lock and the fence must both be gone.
+clear_install_in_progress() {{
+  flock -n "{lock}" true && echo "lock free" >> "{log}"
+  [[ -e "{dropin}" ]] || echo "no fence" >> "{log}"
+}}
+# The in-flight pass: it holds the entry lock while the broker restart of
+# fan-in it already had accepted is still to land.
+(
+  exec 9<>"{lock}"
+  flock 9
+  : > "{tmp_path}/pass.holding"
+  sleep 0.5
+  systemctl restart jasper-fanin.service
+  echo "pass done" >> "{log}"
+) &
+until [[ -e "{tmp_path}/pass.holding" ]]; do sleep 0.01; done
+trap install_exit_cleanup EXIT
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _profile_runtime_harness(
+                tmp_path,
+                function,
+                keep=(
+                    *_PARK_RECORD_CHAIN,
+                    "restart_core_camilla_after_dsp_reconcile",
+                    "fence_fanin_coupling",
+                    "release_fanin_coupling_fence",
+                ),
+                extra_shims=shims,
+                epilogue=f"systemctl start {_COUPLING_AUTO}\n",
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == (3 if abort else 0), result.stderr
+    calls = log.read_text().splitlines()
+    # The drain is only a drain on the lock the pass itself takes.
+    assert f"entry lock: {ENTRY_LOCK_PATH}" in calls
+    reloads = [i for i, call in enumerate(calls) if call == "systemctl daemon-reload"]
+    assert len(reloads) == 2, calls
+    raised, lifted = reloads
+    park = calls.index("systemctl stop jasper-fanin.service")
+    unlinked = calls.index("rings unlinked")
+    # Fence loaded, then the drain outlasts the pass's accepted restart, and
+    # only then does the park stop fan-in.
+    assert raised < calls.index("pass done") < park < unlinked
+    window = calls[park:lifted]
+    assert "coupling-auto refused" in window
+    assert "coupling-auto admitted" not in window
+    if abort:
+        # The trap restores the parked graph before it lifts the fence.
+        assert calls.index("systemctl start jasper-camilla.service") < lifted
+        parked = {c.split()[2] for c in calls[park:unlinked] if c.startswith("systemctl stop ")}
+        assert not parked & {p.name for p in down.iterdir()}
+    else:
+        restored = calls.index("systemctl restart jasper-camilla.service")
+        assert restored < lifted < calls.index("fn reapply_source_intent")
+        assert "coupling-auto admitted" in calls[lifted:]
+    assert calls[-2:] == ["lock free", "no fence"]
+    assert not dropin.exists() and not loaded.exists()
 
 
 @pytest.mark.parametrize(

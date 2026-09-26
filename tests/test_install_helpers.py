@@ -2840,6 +2840,8 @@ SYSTEMD_DIR="/etc/systemd/system"
 STATE_DIR="${JTS_FAKE_SYSTEMCTL_STATE}"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
+FANIN_COUPLING_ENTRY_LOCK="${JTS_FAKE_SYSTEMCTL_STATE}/coupling.lock"
+FANIN_COUPLING_FENCE_DROPIN="${JTS_FAKE_SYSTEMCTL_STATE}/run/coupling-fence.conf"
 build_swap_required() { return 0; }
 mark_trap() { printf 'SENTINEL\\n' >>"${JTS_FAKE_SYSTEMCTL_STATE}/calls"; }
 trap install_exit_cleanup EXIT

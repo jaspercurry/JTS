@@ -1605,8 +1605,9 @@ class Pass:
         if self.no_restart:
             result = "skipped_no_restart"
         else:
-            self.systemctl_call("--no-block", "start", COUPLING_AUTO_UNIT, quiet=True)
-            result = "started"
+            # Refused while an install owns the core-graph window (#5470).
+            rc = self.systemctl_call("--no-block", "start", COUPLING_AUTO_UNIT, quiet=True)
+            result = "started" if rc == 0 else "start_failed"
         self.log(
             "coupling_kick",
             result=result,

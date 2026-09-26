@@ -25,6 +25,22 @@ WIZARD_UNITS=(
 
 OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
 
+# The core-graph park owns its restart window against the fan-in coupling
+# reconciler (#5470). The pass holds this entry lock across the broker
+# restarts it is blocked on (jasper.fanin.coupling_reconcile.ENTRY_LOCK_PATH),
+# so taking it drains them. The drop-in refuses new manual starts of the
+# oneshot, whose Wants= start the graph daemons before its CLI reaches the
+# lock; a runtime mask cannot, because the unit's /etc fragment outranks /run.
+FANIN_COUPLING_ENTRY_LOCK="/run/jasper-fanin-coupling.lock"
+FANIN_COUPLING_FENCE_DROPIN="/run/systemd/system/jasper-fanin-coupling-auto.service.d/jts-install-window.conf"
+# jasper-fanin-coupling-auto's TimeoutStartSec=767 plus the 5 s client margin
+# jasper/source_intent_units.py also allows it.
+FANIN_COUPLING_PASS_BOUND_SEC=772
+# 1 while descriptor 8 holds the entry lock. A fixed number because macOS bash
+# 3.2 runs these tests without `{var}>` (see jasper-env-file.sh); main()'s step
+# rows own fd 3 and the env-file lock owns fd 9.
+_FANIN_COUPLING_LOCKED=0
+
 # Rows use "<mode> <source relative to REPO_DIR> <destination>".
 _install_file_rows() {
     local row mode src dst
@@ -726,6 +742,7 @@ park_audio_clients_for_core_graph_restart() {
     # Stop fan-in before outputd: losing its downstream pacer while Camilla
     # runs can trip fan-in's RLIMIT_RTTIME. Record before each stop so an
     # aborted install restores every holder before the rings are reused.
+    fence_fanin_coupling
     retire_stale_outputd_park_if_active
     local unit
     for unit in "${JASPER_CORE_GRAPH_RESTART_TARGETS[@]}" \
@@ -750,6 +767,42 @@ retire_stale_outputd_park_if_active() {
         echo "  ERROR: could not retire the jasper-outputd config-fault park" >&2
         return 1
     }
+}
+
+# Idempotent: the low-memory build park opens the window, and the core-graph
+# restart re-enters it.
+fence_fanin_coupling() {
+    [[ "${_FANIN_COUPLING_LOCKED}" == 0 ]] || return 0
+    # Removal condition: drop the drop-in once jasper-fanin-coupling-auto no
+    # longer Wants= the graph daemons; the entry lock alone then fences it.
+    install -d -m 0755 "${FANIN_COUPLING_FENCE_DROPIN%/*}"
+    printf '[Unit]\nRefuseManualStart=yes\n' >"${FANIN_COUPLING_FENCE_DROPIN}"
+    systemctl daemon-reload
+    exec 8<>"${FANIN_COUPLING_ENTRY_LOCK}"
+    chmod 0600 "${FANIN_COUPLING_ENTRY_LOCK}"
+    if ! flock -n 8; then
+        _build_sandbox_log "coupling_drain" \
+            "waiting up to ${FANIN_COUPLING_PASS_BOUND_SEC}s for the fan-in coupling pass"
+        flock -w "${FANIN_COUPLING_PASS_BOUND_SEC}" 8 || {
+            echo "  ERROR: a fan-in coupling pass still holds ${FANIN_COUPLING_ENTRY_LOCK}; keeping the audio graph" >&2
+            return 1
+        }
+    fi
+    _FANIN_COUPLING_LOCKED=1
+    # The pass's own contention report names the holder from this stamp.
+    printf '%s\n' "$$" >"${FANIN_COUPLING_ENTRY_LOCK}"
+}
+
+# The explicit unlock matters: install children inherit descriptor 8.
+release_fanin_coupling_fence() {
+    if [[ "${_FANIN_COUPLING_LOCKED}" == 1 ]]; then
+        flock -u 8
+        exec 8>&-
+        _FANIN_COUPLING_LOCKED=0
+    fi
+    [[ -e "${FANIN_COUPLING_FENCE_DROPIN}" ]] || return 0
+    rm -f "${FANIN_COUPLING_FENCE_DROPIN}"
+    systemctl daemon-reload
 }
 
 forget_core_graph_park_record() {
@@ -1269,6 +1322,7 @@ _start_core_graph_units() {
     reconcile_sound_dsp_state
     restart_core_camilla_after_dsp_reconcile
     restart_headphone_monitor_after_deploy
+    release_fanin_coupling_fence
 }
 
 start_streambox_runtime_units() {

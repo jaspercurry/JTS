@@ -1060,7 +1060,7 @@ reconcile_grouping_state() {
 
 resolve_fanin_coupling_default() {
     systemctl enable jasper-fanin-coupling-auto.service
-    install_run_bounded 772 -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
+    install_run_bounded "${FANIN_COUPLING_PASS_BOUND_SEC}" -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }

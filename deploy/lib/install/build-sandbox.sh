@@ -232,7 +232,8 @@ install_exit_cleanup() {
     #
     # Order: record the outcome first (nothing below can then lose it), restore
     # and drop a half-published source tree next, swapoff after (it pulls pages
-    # back in; the unpark can strand it), gate last.
+    # back in; the unpark can strand it), the coupling fence only once the
+    # unpark has restored the graph it guards (#5470), gate last.
     local rc=$?
     _call_if_defined record_install_outcome "${rc}"
     _call_if_defined remove_staged_install_tree
@@ -244,6 +245,7 @@ install_exit_cleanup() {
     # restored, summary emitted; bare -> exit 1, 1 of 6 restored, no summary.
     # Pinned by test_exit_trap_finishes_the_unpark_when_its_own_logging_fails.
     _call_if_defined unpark_recorded_units
+    _call_if_defined release_fanin_coupling_fence
     # Last: an aborted install must not lift the gate — and re-arm the
     # level-triggered accessory .path — while the graph is still down.
     _call_if_defined clear_install_in_progress
