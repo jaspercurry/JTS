@@ -324,14 +324,6 @@ install_jasper() {
             echo "==> jasper_aec3 source + env unchanged, skipping rebuild"
             echo "    (delete ${marker} to force)"
             needs_rebuild=0
-        elif [[ -f "${marker}" ]] \
-             && ! grep -q '^content-v1:' "${marker}" \
-             && jasper_aec3_import_probe; then
-            echo "==> jasper_aec3 legacy cache marker imported cleanly; adopting content fingerprint"
-            echo "    (delete ${marker} to force a rebuild)"
-            mkdir -p "$(dirname "${marker}")"
-            echo "${fingerprint}" > "${marker}"
-            needs_rebuild=0
         fi
 
         if [[ "${needs_rebuild}" == "1" ]]; then
