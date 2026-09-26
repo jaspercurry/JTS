@@ -139,6 +139,10 @@ def box(tmp_path, monkeypatch):
                             install=install, restore=restore)
     candidate = _candidate(preset=_rear_pair("mono")[0], bass_extension=BASS_EXTENSION,
                            rear_calibration=_rear_document())
+    state.candidate_fingerprint = candidate.fingerprint
+    state.pose = {"geometry": {"speaker_height_m": 1.0, "mic_height_m": 1.0, "distance_m": 2.0}, "arm_offset_deg": 12.5}
+    monkeypatch.setattr(seat_level, "read_pose", lambda **kw: dict(state.pose))
+    monkeypatch.setattr(seat_level, "TurntableMover", lambda **kw: SimpleNamespace(offset_deg=lambda: 12.5))
     context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={}, declared_sensitivities={"tweeter": 94.1},
         playback_device="fake", roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),
@@ -330,7 +334,11 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,
             'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
             'statistic': 'loudest_half_second_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
-        assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
+        record = json.loads(box.reference_path.read_text())
+        assert record['stimulus'] == provenance
+        assert record['pose'] == box.pose
+        assert record['graph'] == {'candidate_fingerprint': box.candidate_fingerprint,
+            'compiled_graph_sha256': hashlib.sha256(b'accepted graph').hexdigest()}
         assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
         ambient = json.loads(box.reference_path.read_text())['ambient_report']
         assert ambient == result['ambient_report']

@@ -22,6 +22,7 @@ from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
 from ._common import coerce_finite_float
+from .anchor_provenance import provenance_mismatches, read_graph, read_pose
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 
@@ -211,6 +212,8 @@ def seat_level_reference_status() -> dict[str, Any] | None:
     return None if record is None else {
         "seat_level_reference_volume_db": _reference_volume_db(record),
         "leveled_db_spl": record.get("measured_db_spl"),
+        "graph": record.get("graph"), "pose": record.get("pose"),
+        **provenance_mismatches(record, graph=read_graph(), pose=read_pose()),
     }
 
 
@@ -236,6 +239,8 @@ def write_seat_level_reference(
     sensitivity: dict[str, Any],
     max_main_volume_db: float,
     stimulus: StimulusProvenance | None = None,
+    graph: Mapping[str, Any] | None = None,
+    pose: Mapping[str, Any] | None = None,
     ambient_report: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -268,6 +273,8 @@ def write_seat_level_reference(
         "mic_sensitivity": dict(sensitivity),
         "max_main_volume_db": round(float(max_main_volume_db), 3),
         "stimulus": None if stimulus is None else stimulus.to_dict(),
+        "graph": dict(graph) if graph is not None else None,
+        "pose": dict(pose) if pose is not None else None,
         "ambient_report": None if ambient_report is None else dict(ambient_report),
     }
     atomic_write_json(path, payload, mode=0o640)
@@ -314,6 +321,8 @@ class ResolvedLevel:
 class AnchorFacts:
     record: Mapping[str, Any]
     sensitivity: MicSensitivity | None
+    graph: Mapping[str, Any] | None = None
+    pose: Mapping[str, Any] | None = None
 
 
 def resolve_anchor_level(
@@ -382,7 +391,10 @@ def resolve_anchor_level(
         reference_volume_db=reference_volume_db,
         mic_serial=sensitivity.serial, session_id=str(record["session_id"]),
         leveled_at=str(record["leveled_at"]), target_db_spl=target,
-    ), {"anchor_mic_serial": str(banked_serial) if banked_serial else None, "anchor_rebased_db": rebased - anchor}
+    ), {"anchor_mic_serial": str(banked_serial) if banked_serial else None, "anchor_rebased_db": rebased - anchor,
+        **provenance_mismatches(record,
+            graph=facts.graph if facts is not None else read_graph(compile_graph=True) if record.get("graph") else None,
+            pose=facts.pose if facts is not None else read_pose() if record.get("pose") else None)}
 
 
 def check_target_capture_dbfs(sensitivity: Any, anchor_db_spl: float) -> float:

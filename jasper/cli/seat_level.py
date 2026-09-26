@@ -22,6 +22,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.arm_walk import TurntableMover
+from jasper.active_speaker.anchor_provenance import graph_provenance, read_pose
 from jasper.active_speaker.auto_level import VOLUME_CONFIRM_TIMEOUT_S, START_FADER_DB, LevelResult, level_to
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -185,6 +187,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         profile, camilla_factory=lambda: cam, config_dir=DEFAULT_CAMILLA_CONFIG_DIR, candidate=candidate,
     )
 
+    pose = read_pose(arm_offset_deg=TurntableMover(timeout_s=5.0).offset_deg())
+
     async def _restore() -> None:
         nonlocal restored
         outcome = await plan.close(door, reason="seat_level_complete")
@@ -260,7 +264,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         assert reader is not None and reader.provenance is not None
         write_seat_level_reference(reference_volume_db=result.gain_db, measured_db_spl=result.leveled_db_spl,
             target=target, sensitivity=sensitivity.to_dict(), max_main_volume_db=ceiling_db,
-            stimulus=reader.provenance, ambient_report=result.ambient_report)
+            stimulus=reader.provenance, ambient_report=result.ambient_report,
+            graph=graph_provenance(candidate.fingerprint, graph.level_reference_yaml), pose=pose)
         detail = f"reference {result.gain_db:.2f} dB measured {result.leveled_db_spl:.1f} dB SPL"
     else:
         reason_spec = REASON_REGISTRY.get(str(result.reason))
