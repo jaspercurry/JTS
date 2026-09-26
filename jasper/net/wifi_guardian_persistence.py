@@ -145,7 +145,7 @@ def read_stash(path: str | os.PathLike) -> WifiStash | None:
     # Default to ``none`` when the key is absent. This matches NM's
     # treatment of open networks. nmcli detects the actual security
     # mode from the beacon at connect time, so the field is mostly
-    # advisory; we use it to decide whether to pass ``password ARG``.
+    # advisory; the guardian uses it to decide whether to feed nmcli a PSK.
     return WifiStash(ssid=ssid, psk=psk, key_mgmt=key_mgmt or "none")
 def write_stash(
     path: str | os.PathLike,

@@ -794,8 +794,8 @@ def _resolve_key_mgmt(profile_name: str) -> str:
       - ``none`` — open network OR the field is missing/empty
 
     Used to populate the guardian stash's ``key_mgmt`` field after a
-    successful connect so the boot-time recreate knows whether to pass
-    ``password ARG`` to nmcli. ``wpa-eap`` triggers the wizard to
+    successful connect so the boot-time recreate knows whether to feed
+    nmcli a PSK. ``wpa-eap`` triggers the wizard to
     skip the stash entirely (enterprise is out of scope)."""
     proc = _run_nmcli(
         ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt",

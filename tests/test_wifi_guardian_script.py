@@ -13,7 +13,7 @@ The fake nmcli responds based on the first non-flag argument:
   - `connection show --active`      -> active connection list
   - `connection show`               -> all profile names
   - `connection show <NAME>`        -> profile details (SSID lookup)
-  - `device wifi connect <SSID>`    -> connect attempt
+  - `device wifi connect <SSID>`    -> connect attempt (PSK on stdin under --ask)
   - `connection up <NAME>`          -> activate saved profile
   - `connection delete <NAME>`      -> profile cleanup
 
@@ -117,6 +117,7 @@ class _TransientSpawnRetryWarning(UserWarning):
 def _fake_nmcli(tmp_path: Path) -> tuple[Path, Path]:
     """Create a fake nmcli at tmp_path/nmcli that:
       - logs its full argv to tmp_path/nmcli.log
+      - under `--ask`, logs its stdin to tmp_path/nmcli.log.stdin
       - reads canned responses from env vars
       - returns the canned exit code
 
@@ -126,22 +127,7 @@ def _fake_nmcli(tmp_path: Path) -> tuple[Path, Path]:
     log = tmp_path / "nmcli.log"
     fake = tmp_path / "nmcli"
     fake.write_text(r"""#!/usr/bin/env bash
-# Record argv (with the password value scrubbed for PSK assertions).
-scrub=""
-prev=""
-for a in "$@"; do
-    if [[ "$prev" == "password" ]]; then
-        scrub+=" ***"
-    else
-        scrub+=" $a"
-    fi
-    prev="$a"
-done
-printf '%s\n' "${scrub# }" >> "$JASPER_NMCLI_LOG"
-
-# Also log the raw argv (with PSK) to a separate file so tests can
-# assert on what nmcli ACTUALLY received vs what we log publicly.
-printf '%s\n' "$*" >> "${JASPER_NMCLI_LOG}.raw"
+printf '%s\n' "$*" >> "$JASPER_NMCLI_LOG"
 
 # Walk argv recognizing:
 #  - flag-with-arg: -t -s --terse --show-secrets (no consume next)
@@ -173,11 +159,13 @@ for a in "$@"; do
     esac
 done
 
-# Whether --active appeared anywhere in argv (separate from positional
-# walking because nmcli accepts it positionally too).
+# Whether --active or --ask appeared anywhere in argv (separate from
+# positional walking because nmcli accepts --active positionally too).
 active_flag=0
+ask_flag=0
 for a in "$@"; do
     [[ "$a" == "--active" ]] && active_flag=1
+    [[ "$a" == "--ask" ]] && ask_flag=1
 done
 
 # Print canned stdout based on what's being asked.
@@ -196,7 +184,19 @@ case "$op $sub" in
         fi
         ;;
     "device wifi")
-        # `device wifi connect <SSID> [password X]`
+        # `[--ask] device wifi connect <SSID>`. Like nmcli, read the PSK
+        # prompt from stdin only under --ask. Echo it on stdout as a
+        # non-tty prompt might, and fail as nmcli does on a wrong PSK
+        # when it is not the network's JASPER_NMCLI_PSK.
+        if [[ "$ask_flag" == "1" ]]; then
+            cat >> "${JASPER_NMCLI_LOG}.stdin"
+            IFS= read -r psk < "${JASPER_NMCLI_LOG}.stdin"
+            printf 'Password: %s\n' "$psk"
+            if [[ "$psk" != "${JASPER_NMCLI_PSK:-$psk}" ]]; then
+                echo "Error: Connection activation failed: (7) Secrets were required, but not provided." >&2
+                exit 4
+            fi
+        fi
         if [[ -n "${JASPER_NMCLI_CONNECT_STDERR:-}" ]]; then
             printf '%s' "${JASPER_NMCLI_CONNECT_STDERR}" >&2
         fi
@@ -274,6 +274,7 @@ def _run_guardian(
                 check=False,
                 cwd=ROOT,
                 env=env,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 capture_output=True,
                 timeout=_SPAWN_TIMEOUT_S,
@@ -312,9 +313,9 @@ def _nmcli_log(p: Path) -> str:
     return p.read_text() if p.exists() else ""
 
 
-def _nmcli_raw_log(p: Path) -> str:
-    raw = p.with_name(p.name + ".raw")
-    return raw.read_text() if raw.exists() else ""
+def _nmcli_stdin(p: Path) -> str:
+    stdin = p.with_name(p.name + ".stdin")
+    return stdin.read_text() if stdin.exists() else ""
 
 
 # ----- Case 0: no stash -----
@@ -507,26 +508,30 @@ def test_guardian_activate_failure_exits_nonzero(tmp_path):
 
 
 def test_guardian_recreates_missing_profile(tmp_path):
-    """The 2026-05-23 incident path. Stash present, no active wifi,
-    no profile in the saved list → `nmcli dev wifi connect SSID
-    password PSK` to recreate."""
+    """Stash present, no active wifi, no profile in the saved list →
+    recreate with the wizard's form, `nmcli --wait 30 --ask device wifi
+    connect SSID`. Non-negotiable 3 (#5067): the PSK rides stdin, on no
+    argv and never in the journal."""
+    psk = "synthetic-guardian-psk"
     proc, log = _run_guardian(
         tmp_path,
-        _stash(ssid="Home", psk="myhomepsk", key_mgmt="wpa-psk"),
+        _stash(ssid="Home", psk=psk, key_mgmt="wpa-psk"),
         nmcli_env={
             "JASPER_NMCLI_ACTIVE": "",
             "JASPER_NMCLI_ALL_PROFILES": "",  # nothing saved
+            "JASPER_NMCLI_PSK": psk,
         },
     )
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_guardian.recreate_attempt" in proc.stderr
     assert "event=wifi_guardian.recreate_ok" in proc.stderr
-    # Raw log: did nmcli actually receive the PSK?
-    raw = _nmcli_raw_log(log)
-    assert "device wifi connect Home password myhomepsk" in raw
+    nm = _nmcli_log(log)
+    assert "--wait 30 --ask device wifi connect Home" in nm
+    assert _nmcli_stdin(log) == f"{psk}\n"
+    # The fake echoes the PSK on its stdout, as a non-tty prompt might.
+    assert psk not in nm + proc.stdout + proc.stderr
     # The freshly-recreated profile is hardened too (retry-forever), so the
     # incident-recovery path produces a profile as resilient as a wizard one.
-    nm = _nmcli_log(log)
     assert "connection modify Home" in nm
     assert "connection.autoconnect-retries 0" in nm
 
@@ -568,14 +573,14 @@ def test_guardian_hands_nmcli_the_written_psk_verbatim(tmp_path, psk):
     )
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_guardian.recreate_ok" in proc.stderr
-    assert f"device wifi connect Home password {psk}" in _nmcli_raw_log(log)
+    assert _nmcli_stdin(log) == f"{psk}\n"
+    assert psk not in _nmcli_log(log)
     assert not (tmp_path / "pwned.txt").exists()
 
 
 def test_guardian_recreates_open_network(tmp_path):
-    """Open networks (key_mgmt=none, empty PSK): connect without
-    `password ARG`. Passing an empty password to nmcli would itself
-    fail."""
+    """Open networks (key_mgmt=none, empty PSK) connect without `--ask`,
+    as the wizard does: there is no PSK to feed nmcli."""
     proc, log = _run_guardian(
         tmp_path,
         _stash(ssid="GuestWifi", psk="", key_mgmt="none"),
@@ -586,34 +591,31 @@ def test_guardian_recreates_open_network(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "event=wifi_guardian.recreate_ok" in proc.stderr
-    raw = _nmcli_raw_log(log)
-    assert "device wifi connect GuestWifi" in raw
-    assert "password" not in raw
+    nm = _nmcli_log(log)
+    assert "device wifi connect GuestWifi" in nm
+    assert "--ask" not in nm
 
 
-def test_guardian_recreate_failure_cleans_up_broken_profile(tmp_path):
-    """nmcli's `connect` creates the profile BEFORE attempting
-    activation. If activation fails, the profile sits in saved as a
-    broken entry. The guardian deletes it (mirrors `wifi_setup.connect_new`)
-    so we don't accumulate garbage on every boot retry."""
+def test_guardian_wrong_psk_fails_and_cleans_up_broken_profile(tmp_path):
+    """A wrong PSK on stdin fails the way the wizard's does: nmcli's exit
+    code, and the broken profile `connect` created BEFORE activating is
+    deleted (mirrors `wifi_setup.connect_new`), so boot retries don't
+    accumulate garbage."""
+    psk = "wrong-synthetic-psk"
     proc, log = _run_guardian(
         tmp_path,
-        _stash(ssid="Home"),
+        _stash(ssid="Home", psk=psk),
         nmcli_env={
             "JASPER_NMCLI_ACTIVE": "",
             "JASPER_NMCLI_ALL_PROFILES": "",
-            "JASPER_NMCLI_CONNECT_RC": "10",
-            "JASPER_NMCLI_CONNECT_STDERR": (
-                "Error: Connection activation failed: (7) Secrets were required, "
-                "but not provided.\n"
-            ),
+            "JASPER_NMCLI_PSK": "right-synthetic-psk",
         },
     )
-    assert proc.returncode == 10
+    assert proc.returncode == 4
     assert "event=wifi_guardian.recreate_fail" in proc.stderr
-    # Cleanup invoked.
     nm = _nmcli_log(log)
     assert "connection delete Home" in nm
+    assert psk not in nm + proc.stdout + proc.stderr
 
 
 # ----- WPA-Enterprise skip -----
@@ -658,7 +660,7 @@ def test_guardian_skips_enterprise(tmp_path):
 def test_guardian_logs_redact_psk(tmp_path, secret_psk):
     """The PSK must never appear in the structured log output —
     operators tail journals, screenshot pages, paste into bug reports."""
-    proc, log = _run_guardian(
+    proc, _ = _run_guardian(
         tmp_path,
         _stash(ssid="Home", psk=secret_psk, key_mgmt="wpa-psk"),
         nmcli_env={
@@ -671,13 +673,8 @@ def test_guardian_logs_redact_psk(tmp_path, secret_psk):
             ),
         },
     )
-    # Public-facing nmcli log has password scrubbed.
-    nm = _nmcli_log(log)
-    assert secret_psk not in nm
-    assert "password ***" in nm
-    # And critically: the guardian's own stderr (what lands in
-    # journalctl) has no PSK either — even though we re-emit the
-    # nmcli stderr on recreate_fail.
+    # The guardian's own stderr (what lands in journalctl) has no PSK,
+    # even though we re-emit the nmcli stderr on recreate_fail.
     assert secret_psk not in proc.stderr
     # The scrubbed `password ***` should show up in the err= field on
     # recreate_fail.
