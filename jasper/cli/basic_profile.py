@@ -37,27 +37,6 @@ ANSWER_LOST = "answer_lost"
 AUTHORITY_TIER = "advisory (`review` reads)"
 
 
-class _DoorUnreachable(Exception):
-    """The door's answer was lost. ``path`` is which round trip lost it."""
-
-    def __init__(self, path: str, detail: str) -> None:
-        super().__init__(f"{path}: {detail}")
-        self.path = path
-        self.detail = detail
-
-
-def _door(wizard: WizardClient, path: str) -> dict[str, Any]:
-    """One GET. The route's POST arm compiles and applies, so nothing here sends one."""
-    status, payload = wizard.get_json(path)
-    if status != 200 or not isinstance(payload, dict):
-        raise _DoorUnreachable(
-            path,
-            f"{f'HTTP {status}' if status else 'no response'}: "
-            f"{str(payload).strip()[:200]}",
-        )
-    return payload
-
-
 def _trims(corrections: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(corrections, Mapping):
         return {}
@@ -151,7 +130,11 @@ def _print_facts(summary: Mapping[str, Any]) -> None:
 
 
 def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
-    profile = _door(wizard, REVIEW_PATH)
+    # One GET: the route's POST arm compiles and applies, so nothing here sends one.
+    status, profile = wizard.get_json(REVIEW_PATH)
+    if status != 200 or not isinstance(profile, dict):
+        lost = f"{f'HTTP {status}' if status else 'no response'}: {str(profile).strip()[:200]}"
+        return failed(EXIT_UNREADABLE, ANSWER_LOST, {"path": REVIEW_PATH, "detail": lost})
     summary = _summary(profile)
     issues = _issues(profile)
     _say("basic profile candidate")
@@ -218,10 +201,7 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     """``opener`` is :class:`WizardClient`'s own transport seam, for tests."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
     wizard = WizardClient(host_header=args.hostname, base_url=args.base_url, opener=opener)
-    try:
-        return int(args.func(wizard, args))
-    except _DoorUnreachable as exc:
-        return failed(EXIT_UNREADABLE, ANSWER_LOST, {"path": exc.path, "detail": exc.detail})
+    return int(args.func(wizard, args))
 
 
 if __name__ == "__main__":  # pragma: no cover - console-script entry point
