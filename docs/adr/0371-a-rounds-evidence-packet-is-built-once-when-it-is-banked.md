@@ -33,7 +33,9 @@
 - **Consequences:**
   - The bank pays for the packet once, and a reader reads a file.
   - A later round banked beside it, or a re-run `room` view, cannot move a banked round's
-    fingerprint, and `status`, `contract` and `judge` agree on its contracts.
+    fingerprint, and `status`, `contract` and `judge` read the same room evidence.
+  - A stored packet records the contracts as the bank computed them. `contract` and `judge` serve
+    the contract code's current shape, so after a contract change the two can differ.
   - A round read without a stored packet fingerprints what it reads, as before.
   - A candidate composed while a rebuild had drifted from the stored value named a fingerprint no
     file kept. It matches nothing now, and it matched nothing after the next bank before.

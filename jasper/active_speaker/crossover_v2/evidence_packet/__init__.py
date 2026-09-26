@@ -7,10 +7,11 @@
 Grades nothing and writes nothing. Its one impurity is reading JSON files:
 the round's own, and views filed beside it — the classification and H2/H3
 views into :data:`DERIVED_VIEWS`, which the fingerprint skips, and the room
-view's ``room.json`` into ``contracts``, which it covers (ADR-0346's named
-exception). No clock, no network, no CamillaDSP handle, no session. It
-DERIVES exactly two things — :func:`_cross_seat_sigma_block`'s per-bin spread
-across seats, and :func:`_reflections_block`'s tau-to-path-length multiply.
+view into ``contracts``, which it covers (a banked round's contracts read
+the bank's copy, ADR-0371). No clock, no network, no CamillaDSP handle, no
+session. It DERIVES exactly two things — :func:`_cross_seat_sigma_block`'s
+per-bin spread across seats, and :func:`_reflections_block`'s
+tau-to-path-length multiply.
 
 Absence has two never-merged flavours: ``source_absent`` (the artifact was not
 handed to this builder) and ``field_null`` (it was, and the field is null).
