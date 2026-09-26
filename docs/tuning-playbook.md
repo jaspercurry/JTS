@@ -447,7 +447,7 @@ This is the hand loop of record for a cardioid box. Keep the cabinet at its wall
 1. At the mark, run `jasper-round run --program speaker --poses speaker/mark --wait`.
    Fit, trial and apply the speaker there, then bank the model:
    `jasper-round run --program rear --poses rear/pair_mark --wait`.
-2. Write the rear seed and preview variants from that pair round:
+2. Write the rear seed (`contract --section rear` carries one as `seed`) and preview variants from that pair round:
    `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
    Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
    `jasper-crossover-prescriber compose <doc> --round <pair-round>`.

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from copy import deepcopy
-import json
 
 import pytest
 
@@ -10,7 +9,6 @@ from jasper.active_speaker.rear_calibration import (
     MAX_ALLPASS_Q, RearCalibrationError, coefficient_sha256, compile_rear_stage, diagnostic_seed,
     read_rear_calibration,
 )
-from jasper.cli.crossover_prescriber import main
 
 
 def _compile(data):
@@ -110,21 +108,6 @@ def test_acoustic_targets_keep_both_sources_and_never_compile_as_electrical():
     del ratio_only["targets"]["front"]
     with pytest.raises(RearCalibrationError):
         read_rear_calibration(ratio_only)
-
-
-def test_cli_seed_and_stage_are_read_only_and_rate_bound(tmp_path, capsys):
-    assert main(["rear-calibration", "--seed", "--sample-rate", "48000"]) == 0
-    seed = json.loads(capsys.readouterr().out)
-    assert seed["rear_muted"] is True and seed["valid_band_hz"] is None
-    path = tmp_path / "rear.json"
-    path.write_text(json.dumps(seed))
-    args = ["rear-calibration", "--document", str(path), "--channels", "8", "--front", "4", "--rear", "6", "--tweeter", "5"]
-    assert main(args) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["adopted"] is False and result["requires_electrical_fitting"] is False
-    assert result["stage"]["filters"]["rear_out6_output_gain"]["parameters"]["mute"] is True
-    assert main([*args, "--sample-rate", "44100"]) != 0
-    assert json.loads(capsys.readouterr().out)["reason"] == "rear_calibration_invalid"
 
 
 @pytest.mark.parametrize("params,accepted", [

@@ -29,6 +29,7 @@ from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeake
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.json_fields import as_mapping, finite_float
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
 from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE, declared_radiating_diameters_mm
@@ -486,6 +487,8 @@ def _rear() -> dict[str, Any]:
         "case": "electrical_dsp",
         "mode": "branches",
         "schema": _rear_calibration_schema(),
+        # Untuned and muted, at the rate the door binds a rear section to, so it is admitted as written.
+        "seed": rear_calibration.diagnostic_seed(DEFAULT_SAMPLE_RATE),
         "bounds": {
             "freq_hz_upper_bound_rule": (
                 "every filter's freq must stay strictly below the document's own "

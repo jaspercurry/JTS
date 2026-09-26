@@ -276,14 +276,22 @@ def preview_kind(document: Mapping[str, Any]) -> str:
 def preview_prescription_document(
     document: Mapping[str, Any], *, round_dir: Path | None, base: BankedCandidate | None = None,
     evidence: PrescriptionEvidence | None = None, capture_id: str | None = None,
+    cabinet: tuple[int, int, int] | None = None,
 ) -> dict[str, Any]:
+    """``cabinet`` is the declared ``(front woofer, rear woofer, tweeter)``
+    outputs a rear preview compiles its stage at; without one it refuses."""
     kind = preview_kind(document)
     sections = document["sections"]
     payload: Any = document
     kwargs: dict[str, Any]
     preview_function: Callable[..., dict[str, Any]]
+    extra: dict[str, Any] = {}
     try:
         if kind == "rear_calibration":
+            if cabinet is None:
+                raise PrescriptionDocumentRefused(
+                    "rear_calibration_topology_unsupported", kind,
+                    "the declared layout has no cabinet of one front woofer, one rear woofer and one tweeter")
             if round_dir is None:
                 raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, "a rear preview needs --round <pair round>")
             preview_function = preview_rear_section
@@ -309,6 +317,12 @@ def preview_prescription_document(
                 preview_function = _preview_emitted_graph
                 kwargs = {"round_dir": round_dir, "base": base, "evidence": evidence, "capture_id": capture_id}
         preview = preview_function(payload, **kwargs)
+        if cabinet is not None and kind == "rear_calibration":
+            front, rear, tweeter = cabinet
+            validated = rear_calibration.read_rear_calibration(payload, sample_rate=DEFAULT_SAMPLE_RATE)
+            extra["compiled_stage"] = rear_calibration.compile_rear_stage(
+                validated, front_channel=front, rear_channel=rear, tweeter_channel=tweeter,
+                channel_count=max(cabinet) + 1) if validated["case"] == "electrical_dsp" else None
     except room.RoomPrescriptionRefused as exc:
         raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
     except rear_calibration.RearCalibrationError as exc:
@@ -319,7 +333,8 @@ def preview_prescription_document(
         raise
     except (KeyError, TypeError, ValueError) as exc:
         raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, str(exc)) from exc
-    return {"section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
+    return {"section": kind, "sections": sorted(sections), "preview": preview, **extra,
+            "adopted": False, "banked": False}
 
 
 def _refused_section(code: str) -> str | None:
