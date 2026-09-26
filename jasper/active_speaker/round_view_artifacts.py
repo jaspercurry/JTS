@@ -82,10 +82,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
     ), schema="jts_compare/1", per_take=True),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA),
-    # The batch spans one set per played candidate, so this view reads the
-    # round rather than a set.
+    # The banker writes this view; agents read it in packet["rear"].
     "rear": ViewArtifact(
-        "rear_view.json", purposes=(PURPOSE_REAR,),
+        "rear_view.json", ("--run", "<run-id>"), producer="jasper-round wait", purposes=(PURPOSE_REAR,),
         bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/1",
     ),
     "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,), builder="round_bookkeeping.bass", packet="bass", schema=BASS_VIEW_SCHEMA),
