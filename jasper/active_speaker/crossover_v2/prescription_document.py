@@ -24,7 +24,7 @@ from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
-from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
@@ -173,7 +173,10 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
-            branch_context=_branch_context(preset, driver_corrections(base.candidate)),
+            # A role with no crossover region (a one-way speaker's) still has a
+            # branch; ((), 0.0) is what the emitter's headroom charge assumes.
+            branch_context={**dict.fromkeys(required_driver_roles(preset.way_count), ((), 0.0)),
+                            **_branch_context(preset, driver_corrections(base.candidate))},
             room_peqs=room_peqs_from_correction(selected.get("room", base.candidate.room_correction) or {}, preset),
             classifications=packet_feature_classifications(packet),
             incumbent_filters=linearization_filters_by_role(base.candidate.linearization),

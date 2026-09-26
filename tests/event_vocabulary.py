@@ -19,8 +19,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "correction_bundle_manifest_entry_dropped",
     "correction_bundle_manifest_reset",
     "correction_calibration_lookup",
-    "correction_calibration_sign_migrated",
-    "correction_calibration_sign_migration",
 )
 
 # Top-level event prefixes emitted from more than one package, mapped to the
@@ -44,7 +42,6 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "ha": ("control", "jasper", "tools", "web"),
     "household_credential": ("control", "web"),
     "http": ("control", "web"),
-    "install_profile": ("control", "jasper"),
     "local_sources": ("local_sources",),
     "manual_mic": ("jasper", "voice"),
     "measurement": ("control", "voice"),

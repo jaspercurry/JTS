@@ -61,32 +61,31 @@ def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
     assert "synthetic failure" in payload["error"]
 
 
-def test_json_mode_endpoint_tier_does_not_require_voice_provider(
+def test_json_mode_streambox_tier_does_not_require_voice_provider(
     monkeypatch,
     capsys,
 ):
-    """Endpoint doctor must not build full voice Config before filtering.
+    """Streambox doctor must not build full voice Config before filtering.
 
-    A freshly imaged dumb endpoint has no JASPER_VOICE_PROVIDER by design;
-    it should still report endpoint health instead of failing at Config
-    construction.
+    A freshly imaged streambox has no JASPER_VOICE_PROVIDER by design; it
+    should still report its health instead of failing at Config construction.
     """
     monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
-    monkeypatch.setattr(_cli, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(_cli, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(
         Config,
         "from_env",
         staticmethod(
             lambda: (_ for _ in ()).throw(
-                AssertionError("endpoint doctor must not construct full Config")
+                AssertionError("streambox doctor must not construct full Config")
             )
         ),
     )
-    monkeypatch.setenv("JASPER_USAGE_DB", "/tmp/jasper-endpoint-usage.db")
+    monkeypatch.setenv("JASPER_USAGE_DB", "/tmp/jasper-streambox-usage.db")
 
     async def fake_run_async(cfg, **_scope):
-        assert cfg.usage_db == "/tmp/jasper-endpoint-usage.db"
-        return [doctor.CheckResult("endpoint smoke", "ok", "minimal cfg")]
+        assert cfg.usage_db == "/tmp/jasper-streambox-usage.db"
+        return [doctor.CheckResult("streambox smoke", "ok", "minimal cfg")]
 
     monkeypatch.setattr(_cli, "run_async", fake_run_async)
     monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--json"])
@@ -102,7 +101,7 @@ def test_json_mode_endpoint_tier_does_not_require_voice_provider(
     assert payload["fails"] == 0
     assert payload["speaker_silent"] is False
     assert [(r["name"], r["status"]) for r in payload["results"]] == [
-        ("endpoint smoke", "ok")
+        ("streambox smoke", "ok")
     ]
 
 
@@ -169,10 +168,9 @@ def test_check_result_redacts_a_credential_left_in_its_own_detail():
     assert "<redacted>" in result.detail
 
 
-def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
-    """A persisted/legacy 'endpoint' token normalizes to streambox, so the
-    doctor applies the streambox skip behaviour (wake/brain groups skipped,
-    local audio kept)."""
+def test_streambox_doctor_skips_the_wake_module_and_keeps_web(monkeypatch):
+    """The streambox skip behaviour: wake/brain groups skipped, the
+    management surface and unmoduled checks kept."""
     ran: list[str] = []
 
     def env_check():
@@ -187,7 +185,7 @@ def test_legacy_endpoint_token_doctor_behaves_as_streambox(monkeypatch):
         ran.append("web")
         return doctor.CheckResult("management surface", "ok", "ran")
 
-    monkeypatch.setattr(_harness, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(
         _harness,
         "registered_checks",

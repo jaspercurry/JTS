@@ -298,10 +298,8 @@ flags that case as a same-SHA redeploy so it never reads as one).
 
 There are exactly two install profiles, `full` and `streambox`. A fresh Pi
 Zero 2 W with no persisted marker resolves to `streambox`; everything else
-resolves to `full`. Both use the same repo and the same deploy path. The
-older `endpoint`/`satellite` tokens still parse and migrate to `streambox`
-on the next deploy. "Endpoint behaviour" is now purely the runtime multiroom
-**follower** role.
+resolves to `full`. Both use the same repo and the same deploy path.
+"Endpoint behaviour" is now purely the runtime multiroom **follower** role.
 
 ---
 

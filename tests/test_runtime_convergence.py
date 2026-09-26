@@ -473,9 +473,10 @@ def test_a_read_only_convergence_stamps_nothing(tmp_path: Path) -> None:
 @pytest.mark.parametrize("staged", [False, True])
 @pytest.mark.parametrize("case", [
     "heal", "heal_current", "read_only", "disabled", "missing", "bad_candidate", "unsafe_emit",
-    "publish_error", "reselect_refusal", "already_safe", "current_startup", "blocked",
+    "publish_error", "reselect_refusal", "already_safe", "current_startup", "regressed", "regressed_unproved",
 ])
 def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, staged):
+    regressed = case.startswith("regressed")
     topology = mono_output_topology()
     draft = standard_design_draft(topology)
     draft["manual_settings"] = {"drivers": [{
@@ -493,7 +494,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     candidate = replace(base, bass_extension={
         "low_boost_db": 4.0, "reference_level_db": -10.0,
         "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
-    } if case != "blocked" else {})
+    } if not regressed else {})
     banked = publish_authored_candidate(candidate, root=tmp_path / "bank")
     paths = _boot_convergence_paths(tmp_path)
     startup = tmp_path / "startup.yml"
@@ -508,7 +509,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     paths["applied_baseline_path"].write_text(json.dumps(applied))
     fresh = measurement_emit.compile_tuning_graph(declaration, candidate=candidate)
     old_payload = yaml.safe_load(fresh)
-    if case != "blocked":
+    if not regressed:
         # The saved graph carries ADR-0352's block: the Aux1 Loudness shelf where the boost biquad now plays.
         filters = old_payload["filters"]
         del filters["bass_ext_dynamic_boost"]
@@ -518,21 +519,19 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
             if step.get("names") == ["bass_ext_dynamic_boost"]:
                 step["names"] = ["bass_ext_dynamic_loudness"]
     old = "\n".join(line for line in fresh.splitlines() if line.startswith("#")) + "\n" + yaml.safe_dump(old_payload)
-    artifact.write_text(fresh if case in {"already_safe"} else old)
-    current = artifact if case == "heal_current" else tmp_path / "prior.yml"
+    artifact.write_text(_under_charged_boosted_baseline() if regressed else fresh if case == "already_safe" else old)
+    # A commissioned box boots its applied artifact itself.
+    current = artifact if case == "heal_current" or regressed else tmp_path / "prior.yml"
     current.write_text(artifact.read_text())
     if case in {"current_startup"}:
         current = startup
-    elif case == "blocked":
-        artifact.write_text(_under_charged_boosted_baseline())
-        current.write_text(artifact.read_text())
     paths["statefile_path"].write_text(f"config_path: {current}\nvolume: -18.0\nmute: false\n")
     if case == "missing":
         paths["applied_baseline_path"].unlink()
     elif case == "bad_candidate":
         banked.path.unlink()
-    elif case == "unsafe_emit":
-        monkeypatch.setattr(measurement_emit, "compile_tuning_graph", lambda *_a, **_kw: old)
+    elif case in {"unsafe_emit", "regressed_unproved"}:
+        monkeypatch.setattr(measurement_emit, "compile_tuning_graph", lambda *_a, **_kw: artifact.read_text())
     elif case == "publish_error":
         real_write = baseline_reemit.atomic_io.atomic_write_text
         def fail_artifact(path, *args, **kwargs):
@@ -559,11 +558,11 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         current_config_path=current, write_statefile=case != "read_only",
         consider_applied_baseline=case != "disabled", **paths,
     )
-    assert result.ok is (case != "blocked")
+    assert result.ok is (case != "regressed_unproved")
     assert len(calls) == (0 if case in {
-        "read_only", "disabled", "missing", "already_safe", "current_startup", "blocked",
+        "read_only", "disabled", "missing", "already_safe", "current_startup",
     } else 1)
-    if case in {"heal", "heal_current"}:
+    if case in {"heal", "heal_current", "regressed"}:
         assert result.decision.status == ("select_active_baseline" if case == "heal" else "preserve_current")
         assert result.decision.preferred_graph.allowed
         if case == "heal":
@@ -571,11 +570,11 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(artifact)
         healed = yaml.safe_load(artifact.read_text())
         assert healed["devices"]["volume_limit"] == 0.0
-        assert "bass_ext_dynamic_boost" in healed["filters"]
+        assert ("bass_ext_dynamic_boost" in healed["filters"]) is bool(candidate.bass_extension)
         assert not any(filter_["type"] == "Loudness" for filter_ in healed["filters"].values())
         assert yaml.safe_load(paths["statefile_path"].read_text())["volume"] == -18.0
-    elif case in {"already_safe", "current_startup", "blocked"}:
-        assert result.decision.status == ("blocked" if case == "blocked" else "preserve_current")
+    elif case in {"already_safe", "current_startup", "regressed_unproved"}:
+        assert result.decision.status == ("blocked" if regressed else "preserve_current")
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(current)
         assert artifact.read_bytes() == before[artifact]
     else:

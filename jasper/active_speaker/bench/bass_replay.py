@@ -19,7 +19,7 @@ from .replay import replay_graph, replay_levels
 
 
 def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
-                bass_reference_db: float, descriptor: Mapping, channels: tuple[int, ...],
+                bass_reference_db: float | None = None, descriptor: Mapping, channels: tuple[int, ...],
                 preset: ActiveSpeakerPreset | None = None) -> dict:
     settings = as_dynamic_bass_descriptor(descriptor)
     source = yaml.safe_load(graph.read_text())

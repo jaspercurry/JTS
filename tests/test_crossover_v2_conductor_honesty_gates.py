@@ -27,19 +27,14 @@ from tests.crossover_v2_fixtures import (
 )
 
 
-@pytest.mark.parametrize("charge,retries,last_reason,refused", [
-    ("operator", 1, None, None), ("speaker", 0, None, None),
-    ("operator", 1, "channel_map_mismatch", "channel_map_mismatch"),
-    ("speaker", 0, "channel_map_mismatch", "channel_map_mismatch"),
-    ("operator", 0, None, "retries_spent"),
+@pytest.mark.parametrize("charge,retries,refused", [
+    ("operator", 1, None), ("speaker", 0, None), ("operator", 0, "retries_spent"),
 ])
-def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, last_reason, refused):
+def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, refused):
     conductor = _conductor(FakeSeams())
     ledger = SlotAttempts(charge=charge, retries_per_pose=retries)
     conductor.authorize_begin(1, 1, executor_ledger=ledger)
     assert ledger.admitted == 1
-    if last_reason:
-        conductor._last_reason[conductor._slot_of_index(1)] = last_reason
     if refused:
         with pytest.raises(CaptureBeginRefused) as refusal:
             conductor.authorize_begin(1, 2, executor_ledger=ledger)
@@ -119,10 +114,6 @@ def test_check_agc_and_snr_and_channel_map_verdicts():
     verdict = _run_phase(c, 1, 1)
     assert verdict.fault == "channel_map_mismatch"
     assert REASON_REGISTRY[verdict.fault].template == "hard_stop"
-    # Hard stop: budget 0 ⇒ the very next begin is refused.
-    c._last_reason["check"] = verdict.fault
-    with pytest.raises(CaptureBeginRefused):
-        c.authorize_begin(1, 2)
 
 
 def test_check_low_pilot_snr_routes_to_snr_floor_not_agc():

@@ -67,7 +67,7 @@ EVENT_RING_SIZE = 20
 
 # Boot warmup: suppress transient audio-path event RECORDING for the
 # first DEFAULT_WARMUP_SEC after the sampler starts (~ jasper-control
-# start ~ boot). A reboot's content-xrun + AirPlay-resync settling would
+# start ~ boot). A reboot's AirPlay-resync settling would
 # otherwise flip the dashboard straight to "issue: recent audio-path
 # recovery event". Mirrors the cold_start gate in system_supervisor
 # (120 s) / shairport_supervisor (60 s). Sustained/real problems still

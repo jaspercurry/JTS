@@ -365,8 +365,7 @@ def _uploaded_calibrations_needing_sign_review() -> list[str]:
     convention.
 
     A calibration file states the microphone's RESPONSE and JTS negates it.
-    Vendor records are repaired on deploy (``migrate_stored_sign_conventions``);
-    an UPLOADED record carries the household's own declaration about a file JTS
+    An UPLOADED record carries the household's own declaration about a file JTS
     never saw, so it is surfaced for review and never flipped silently.
     """
     from jasper.audio_measurement import calibration

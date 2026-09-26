@@ -49,9 +49,9 @@ The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 
 `jasper-round run --program bass --dry-run` lists the session level and offsets −5, −10, and −15 dB without sound. Each level uses the banked ambient bands to check SNR over the bass target band. An explicit `--level-db L --dry-run` checks only that level.
 
-`jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at one pose under one hold, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
+`jasper-round run --program bass` (or `jasper-round trial <fp>` for a bass candidate) runs the admissible level ladder at each pose under one hold, finishing a pose before the next, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
 
-`bass/axis` pins the arm. By hand, add `--poses bass/nearfield --mover human` (microphone 3 cm from the woofer); `trial --mover human` picks it. Its admission still predicts SPL from the 1 m seat anchor and says so in `rung_admission.predicted_spl_basis`; the near-field microphone reads louder. The 85 dB SPL stop still watches every take.
+`bass/axis` pins the arm. By hand, add `--poses seat_express --mover human` (the three seat poses rear and room use); `trial --mover human` picks it. The 85 dB SPL stop still watches every take.
 
 ## Room
 

@@ -10,6 +10,7 @@ import contextlib
 import errno
 import gc
 import os
+from pathlib import Path
 import stat
 import threading
 import time
@@ -55,23 +56,33 @@ def test_atomic_write_bytes_publishes_exact_bytes_and_leaves_no_temp_file(
     assert not any(tmp_path.glob("*.tmp"))
 
 
-def test_mode_is_applied(tmp_path):
+@pytest.mark.parametrize("umask, mode, expected", [
+    (0o022, 0o600, 0o600), (0o022, None, 0o644),
+    (0o007, None, 0o660), (0o077, None, 0o600),
+])
+def test_mode_is_applied(tmp_path, umask, mode, expected):
     path = tmp_path / "secret.env"
-    atomic_write_text(path, "JASPER_X=1\n", mode=0o600)
-    assert (os.stat(path).st_mode & 0o777) == 0o600
+    previous = os.umask(umask)
+    try:
+        atomic_write_text(path, "JASPER_X=1\n", mode=mode)
+    finally:
+        os.umask(previous)
+    assert (os.stat(path).st_mode & 0o777) == expected
 
 
-def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path):
+@pytest.mark.parametrize("value, default, encoded", [(1, None, "1"), (Path("a/b"), str, '"a/b"')])
+def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path, value, default, encoded):
     path = tmp_path / "state.json"
 
     atomic_write_json(
         path,
-        {"z": 1, "a": {"ready": True}},
+        {"z": value, "a": {"ready": True}},
+        default=default,
         mode=0o640,
     )
 
     assert path.read_text(encoding="utf-8") == (
-        '{\n  "a": {\n    "ready": true\n  },\n  "z": 1\n}\n'
+        '{\n  "a": {\n    "ready": true\n  },\n  "z": ' + encoded + '\n}\n'
     )
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
 

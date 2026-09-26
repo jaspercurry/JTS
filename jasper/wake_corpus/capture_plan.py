@@ -24,7 +24,6 @@ from jasper.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,
-    parse_env_bool,
     runtime_env_from_mapping,
 )
 from jasper.aec.bridge_config import (
@@ -636,7 +635,7 @@ def _metadata_bool(value: Any) -> bool:
         return value
     if value is None:
         return False
-    return parse_env_bool(str(value), default=False)
+    return parse_bool_value(str(value), default=False)
 
 
 def _primary_on_leg_overlay(

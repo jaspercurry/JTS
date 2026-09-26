@@ -317,22 +317,6 @@ install_jasper() {
         local fingerprint
         fingerprint="$(jasper_aec3_source_fingerprint)"
 
-        # Upgrade migration: v2 used to be mandatory. Preserve that implicit
-        # preference as durable opt-in before a necessary v1 package rebuild
-        # can remove the old extension. The new root job will re-verify it
-        # against the current fingerprint; runtime uses v1 until that marker
-        # lands.
-        if [[ ! -f /var/lib/jasper/enhanced-aec-intent.json ]] \
-           && find "${INSTALL_DIR}/.venv/lib" -path \
-                '*/site-packages/jasper_aec3/_aec3_v2*.so' \
-                -type f -print -quit 2>/dev/null | grep -q .; then
-            "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
-from jasper.enhanced_aec import request_install
-request_install()
-PY
-            echo "  migrated existing enhanced AEC engine to durable opt-in intent"
-        fi
-
         local needs_rebuild=1
         if [[ -f "${marker}" ]] \
            && [[ "$(cat "${marker}")" == "${fingerprint}" ]] \

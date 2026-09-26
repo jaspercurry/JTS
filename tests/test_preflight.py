@@ -16,7 +16,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_programs import program, run_program
-from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
+from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
@@ -137,6 +137,8 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
     assert report.blocking is bool(unoffered)
     assert [(issue.code, issue.evidence["unoffered_drivers"]) for issue in report.issues] == (
         [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
+    if not unoffered:
+        assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
 
 
 @pytest.mark.parametrize("program_id,poses,banks", [

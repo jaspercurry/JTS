@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, overload
 
 from jasper.env_file import parse_env_mapping, read_env_file_text
 
@@ -140,24 +140,34 @@ class EnvFileState:
         return self.status == "loaded"
 
 
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
-_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+_TRUE_VALUES = frozenset({"1", "true", "yes", "y", "on", "enabled", "enable"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "n", "off", "disabled", "disable"})
 
 
-def parse_bool_value(value: str | None) -> bool | None:
-    """Parse one value in the shared env-bool vocabulary (case-insensitive,
-    surrounding blanks ignored).
+@overload
+def parse_bool_value(value: str | None, default: None = None) -> bool | None: ...
 
-    None when there is no answer: unset, blank, or a token outside the
-    vocabulary (a reconciler's literal ``unknown``). A caller with a default
-    applies it to None.
+
+@overload
+def parse_bool_value(value: str | None, default: bool) -> bool: ...
+
+
+def parse_bool_value(value: str | None, default: bool | None = None) -> bool | None:
+    """Parse the shared env vocabulary.
+
+    Without a default, blank or unknown means None. A boolean default enables
+    tolerant quote stripping; blank disables and missing/unknown use the default.
     """
-    token = (value or "").strip().lower()
+    if value is None:
+        return default
+    token = value.strip().lower()
+    if default is not None:
+        token = token.strip("'\"")
     if token in _TRUE_VALUES:
         return True
-    if token in _FALSE_VALUES:
+    if token in _FALSE_VALUES or (not token and default is not None):
         return False
-    return None
+    return default
 
 
 def bounded_env_float(
