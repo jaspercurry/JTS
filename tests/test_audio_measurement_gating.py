@@ -145,7 +145,7 @@ def test_gating_contract_constants_pinned():
     assert gating.LEDGER_PROMINENCE_DB == 6.0
     assert gating.LEDGER_PROMINENCE_LOOKBACK == 12
     assert gating.LEDGER_MAX_ENTRIES == 6
-    assert gating.CLASS_DUT_INTERNAL == "DUT_internal_ungateable"
+    assert gating.CLASS_UNRESOLVED_EARLY == "unresolved_early_ungateable"
     assert gating.CLASS_GATEABLE == "gateable"
 
 
@@ -729,42 +729,38 @@ def test_peak_refinement_is_bounded_to_the_certified_window():
 # --- the asymmetric-cost classification guard ------------------------------
 
 
-def test_a_sub_search_window_feature_is_classified_and_never_gates():
-    """The guard's whole promise, on the shape that motivated it.
-
-    jts3's horn carries a real ~291 us feature at -11.2 dB. It is NOT a room
-    reflection and gating there would set the window to 0.29 ms — a 3448 Hz
-    validity floor and an 8621 Hz trusted floor — destroying the entire
-    evidence band around the 2 kHz crossover the tuner depends on
-    (``captures/detector-certification-20260801`` §5). A miss merely
-    over-claims low-frequency validity; this would be catastrophic, so the
-    costs are deliberately not symmetric.
-    """
-    ir = _band_limited_ir(2500.0, 18000.0)
+@pytest.mark.parametrize("near_wall", [False, True], ids=["band_limited", "near_wall"])
+def test_a_sub_search_window_feature_is_classified_and_never_gates(near_wall):
+    """Early features cannot establish their physical source by timing alone."""
+    if near_wall:
+        # Source and mic 1 m apart, both 20 cm from a wall: image-source delay.
+        delay_ms = (np.hypot(1.0, 0.4) - 1.0) / 343.0 * 1000.0
+        ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, delay_ms, -6.0)
+    else:
+        ir = _band_limited_ir(2500.0, 18000.0)
     _gated, fragment = gating.gate_impulse_response(ir, SR)
 
     ledger = fragment["internal_reflection_ledger"]
-    internal = [e for e in ledger if e["classification"] == gating.CLASS_DUT_INTERNAL]
-    assert internal, "a wideband branch's early features must be enumerated"
-    for entry in internal:
+    early = [e for e in ledger if e["classification"] == gating.CLASS_UNRESOLVED_EARLY]
+    assert early, "early features must be enumerated"
+    if near_wall:
+        assert any(e["tau_us"] == pytest.approx(delay_ms * 1000, abs=1e6 / SR) for e in early)
+    for entry in early:
         assert entry["tau_us"] < gating.SEARCH_T_MIN_MS * 1000.0
         assert set(entry) == {"tau_us", "level_db", "prominence_db", "classification"}
 
-    # ... and NOTHING it recorded became a window bound.
     assert fragment["floor_source"] == gating.FLOOR_SEARCH_BOUND
     assert fragment["window_ms"] == pytest.approx(gating.SEARCH_T_MAX_MS, abs=0.05)
     assert fragment["first_reflection_ms"] is None
 
 
 def test_ledger_classifies_by_the_minimum_gate_boundary_exactly():
-    """``SEARCH_T_MIN_MS`` is the single boundary — a feature inside the
-    search span is ``gateable`` (the detector's own decision governs it),
-    one before it is loudspeaker-internal by construction."""
+    """The minimum gate boundary classifies timing, not physical origin."""
     ir = _band_limited_ir(2500.0, 18000.0, reflection_offset_ms=1.0)
     _gated, fragment = gating.gate_impulse_response(ir, SR)
     for entry in fragment["internal_reflection_ledger"]:
         expected = (
-            gating.CLASS_DUT_INTERNAL
+            gating.CLASS_UNRESOLVED_EARLY
             if entry["tau_us"] < gating.SEARCH_T_MIN_MS * 1000.0
             else gating.CLASS_GATEABLE
         )
@@ -911,20 +907,13 @@ def test_disabling_the_vote_recovers_the_pre_wo6_detector_exactly():
 
 
 def test_the_vote_cannot_resurrect_a_sub_minimum_gate_feature():
-    """The asymmetric-cost guard outranks the vote, both directions.
-
-    A DUT-internal feature before ``SEARCH_T_MIN_MS`` is un-gateable by
-    construction, and the vote is a REJECTION filter applied inside the
-    search span — it can never admit something the span excludes. Pinned
-    because "we added a second acceptance stage" is exactly the change that
-    could, if mis-wired, widen what gates.
-    """
+    """The prominence vote cannot admit a feature outside the search span."""
     ir = _band_limited_ir(2500.0, 18000.0)
     _gated, fragment = gating.gate_impulse_response(ir, SR)
     assert fragment["floor_source"] == gating.FLOOR_SEARCH_BOUND
     internal = [
         e for e in fragment["internal_reflection_ledger"]
-        if e["classification"] == gating.CLASS_DUT_INTERNAL
+        if e["classification"] == gating.CLASS_UNRESOLVED_EARLY
     ]
     assert internal, "the fixture must still carry sub-min-gate features"
     assert fragment["first_reflection_ms"] is None

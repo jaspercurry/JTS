@@ -183,11 +183,8 @@ class GateDisclosure:
     reflection_toa_ms: float | None
     delta_rms_db: float | None
     delta_band_hz: tuple[float, float] | None
-    #: Ledger entries classified
-    #: :data:`~jasper.audio_measurement.gating.CLASS_DUT_INTERNAL` ONLY -- an
-    #: unselected ``gateable`` candidate is not a loudspeaker-internal feature.
+    #: Unresolved early entries; the field name is retained for compatibility.
     internal_reflection_count: int
-    #: Every ledger entry, internal or not.
     ledger_count: int
     #: The room's floor in Hz
     #: (:func:`~jasper.audio_measurement.gating.f_entanglement_floor_hz`).
@@ -322,7 +319,9 @@ def build_gate_disclosure(
             else None
         ),
         internal_reflection_count=sum(
-            1 for e in entries if e.get("classification") == gating.CLASS_DUT_INTERNAL
+            1 for e in entries if e.get("classification") in (
+                gating.CLASS_UNRESOLVED_EARLY, "DUT_internal_ungateable",
+            )
         ),
         ledger_count=len(entries),
         entanglement_floor_hz=entanglement.hz,
@@ -415,18 +414,13 @@ def _entanglement_clause(d: GateDisclosure) -> str:
 
 
 def _ledger_clause(d: GateDisclosure) -> str:
-    """The asymmetric-cost guard's disclosure, when it caught something.
-
-    Counts ONLY the loudspeaker-internal classification; an unselected
-    ``gateable`` candidate is a different statement.
-    """
     n = d.internal_reflection_count
     if not n:
         return ""
     noun = "feature" if n == 1 else "features"
     return (
         f"; {n} early {noun} arriving before the search window opens, "
-        "classified as loudspeaker-internal and deliberately not gated"
+        "origin unresolved and deliberately not gated"
     )
 
 

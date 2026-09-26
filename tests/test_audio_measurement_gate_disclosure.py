@@ -164,15 +164,15 @@ def test_gated_anything_is_true_only_for_a_measured_reflection():
     assert ungateable.gated_anything is False
 
 
-def test_internal_reflection_count_excludes_gateable_ledger_entries():
-    """A ``gateable`` candidate the detector did not select is NOT a
-    loudspeaker-internal feature, and counting it as one would be the same
-    overstatement this contract exists to remove."""
+@pytest.mark.parametrize("classification", [
+    gating.CLASS_UNRESOLVED_EARLY, "DUT_internal_ungateable",
+])
+def test_internal_reflection_count_excludes_gateable_ledger_entries(classification):
     d = gate_disclosure.build_gate_disclosure({
         "floor_source": gating.FLOOR_SEARCH_BOUND,
         "internal_reflection_ledger": [
             {"tau_us": 291.7, "level_db": -11.2,
-             "classification": gating.CLASS_DUT_INTERNAL},
+             "classification": classification},
             {"tau_us": 645.8, "level_db": -19.8,
              "classification": gating.CLASS_GATEABLE},
         ],
@@ -471,22 +471,18 @@ def test_a_large_delta_gets_no_smallness_gloss_either_way():
 @pytest.mark.parametrize(
     ("classification", "expected", "unexpected"),
     [
-        # The asymmetric-cost guard is disclosed, not silent: a reader must
-        # be able to see that a real early feature was found and
-        # deliberately NOT gated (the jts3 horn's ~291 us feature).
         (
-            gating.CLASS_DUT_INTERNAL,
+            gating.CLASS_UNRESOLVED_EARLY,
             ("1 early feature arriving before the search window opens",
-             "deliberately not gated"),
-            (),
-        ),
-        # A gateable-only ledger is a different statement -- the guard
-        # stays silent about it.
-        (
-            gating.CLASS_GATEABLE,
-            (),
+             "origin unresolved", "deliberately not gated"),
             ("loudspeaker-internal",),
         ),
+        (
+            "DUT_internal_ungateable",
+            ("1 early feature", "origin unresolved", "deliberately not gated"),
+            ("loudspeaker-internal",),
+        ),
+        (gating.CLASS_GATEABLE, (), ("loudspeaker-internal",)),
     ],
 )
 def test_describe_gate_and_the_internal_reflection_ledger(classification, expected, unexpected):

@@ -117,11 +117,9 @@ REFLECTION_THRESHOLD_DB = 12.0
 # LOWER Q brings the early false detects back; HIGHER Q rejects real reflections, falling back
 # to the 7 ms ceiling and over-claiming low-frequency validity.
 REFLECTION_PROMINENCE_DB = 7.5
-# Search span after the direct peak, in ms. t_max must stay >= a domestic floor-bounce arrival
-# (~4-5 ms) so a present bounce is never truncated. t_min is ALSO the asymmetric-cost
-# classification boundary: a candidate below it is DUT-internal by construction (0.5 ms path
-# difference is 17 cm — horn/baffle scale, not room scale), goes into
-# ``internal_reflection_ledger``, and NEVER gates.
+# Search span after the direct peak, in ms. t_max covers domestic floor bounces (~4-5 ms).
+# Below t_min, gating destroys low-frequency resolution. Timing alone cannot attribute
+# these ungated features: nearby room boundaries can arrive this early too (issue #2103).
 SEARCH_T_MIN_MS = 0.5
 SEARCH_T_MAX_MS = 7.0
 # Moving-RMS smoothing window for the detection envelope.
@@ -154,7 +152,7 @@ LEDGER_PROMINENCE_DB = 6.0
 LEDGER_PROMINENCE_LOOKBACK = 12
 LEDGER_MAX_ENTRIES = 6
 #: Classified, never gated: below :data:`SEARCH_T_MIN_MS`.
-CLASS_DUT_INTERNAL = "DUT_internal_ungateable"
+CLASS_UNRESOLVED_EARLY = "unresolved_early_ungateable"
 #: Inside the search span — the detector's own decision governs it.
 CLASS_GATEABLE = "gateable"
 
@@ -315,11 +313,8 @@ def _classification_ledger(
 
     Every envelope local maximum in ``(peak, peak + LEDGER_SPAN_MS]`` clearing
     :data:`LEDGER_PROMINENCE_DB` above its own local minimum is listed, classified
-    :data:`CLASS_DUT_INTERNAL` below ``t_min_ms`` (structurally un-gateable — the loudspeaker,
-    not the room) or :data:`CLASS_GATEABLE` otherwise.
-
-    **A ledger entry never gates.** jts3's 271-292 us horn feature at -11.2 dB is real and
-    measured on every capture; gating there would destroy the 2 kHz crossover evidence band.
+    :data:`CLASS_UNRESOLVED_EARLY` below ``t_min_ms`` or :data:`CLASS_GATEABLE` otherwise.
+    Timing alone cannot identify a feature's physical source. A ledger entry never gates.
 
     Units: ``tau_us`` microseconds after the direct peak; ``level_db``/``prominence_db``
     decibels re the IR envelope's own maximum, not a calibrated probability. Strongest first,
@@ -350,7 +345,7 @@ def _classification_ledger(
             "level_db": round(float(e[i]), 2),
             "prominence_db": round(prominence, 2),
             "classification": (
-                CLASS_DUT_INTERNAL if tau_ms < t_min_ms else CLASS_GATEABLE
+                CLASS_UNRESOLVED_EARLY if tau_ms < t_min_ms else CLASS_GATEABLE
             ),
         })
     entries.sort(key=lambda r: r["level_db"], reverse=True)
