@@ -347,10 +347,6 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
 
 
 @pytest.mark.parametrize("change, code", [
-    ("no_round", "bass_evidence_unavailable"),
-    ("no_bass", "bass_evidence_unavailable"),
-    ("packet_round_mismatch", "bass_evidence_unavailable"),
-    ("no_round_id", "bass_evidence_unavailable"),
     ("missing_field", "bass_descriptor_malformed"),
     ({"unknown": 1}, "bass_descriptor_malformed"),
     ({**BASS_EXTENSION, "linkwitz_transform": None}, "bass_descriptor_malformed"),
@@ -358,27 +354,38 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
     ({"linkwitz_transform": True}, "bass_linkwitz_transform_invalid"),
 ])
-def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, round_bank, change, code):
+def test_bass_refusals_keep_the_evidence_pin_and_field_codes(base, evidence, bass_packet, change, code):
     section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
         del section["linkwitz_transform"]
-    elif change == "packet_round_mismatch":
-        (round_bank[0] / "packet.json").write_text(json.dumps({**bass_packet, "round_id": "wrong"}))
-        evidence = replace(evidence, sources=prescription_sources(round_inputs(round_bank[0])))
-    elif change == "no_round_id":
-        del bass_packet["round_id"]
-    elif change == "no_round":
-        evidence = None
-    elif change == "no_bass":
-        evidence = replace(evidence, sources={"bass_evidence": {"round_id": bass_packet["round_id"]}})
     with pytest.raises(PrescriptionDocumentRefused) as refused:
         judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     answer = refused.value.to_dict()
     assert (answer["section"], answer["code"]) == ("bass", code)
     assert code in BASS_PRESCRIPTION_REFUSAL_REASONS
     assert {"ok", "code", "section", "next_action", "error", "evidence"} <= answer.keys()
+
+
+@pytest.mark.parametrize("change", [None, "no_round", "no_bass", "packet_round_mismatch"])
+def test_a_bass_section_before_any_bass_round_discloses_every_band_unqualified(
+    base, evidence, bass_packet, round_bank, change,
+):
+    section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
+    if change == "no_round":
+        evidence = None
+    elif change == "no_bass":
+        evidence = replace(evidence, sources={**evidence.sources, "bass_evidence": {"round_id": bass_packet["round_id"]}})
+    elif change == "packet_round_mismatch":
+        (round_bank[0] / "packet.json").write_text(json.dumps({**bass_packet, "round_id": "wrong"}))
+        evidence = replace(evidence, sources=prescription_sources(round_inputs(round_bank[0])))
+    child = judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
+    receipt = child.analysis["evidence"]["prescriptions"]["bass"]
+    assert child.analysis["resolution"]["bass"] == "document"
+    assert receipt["evidence_status"] == ("evaluated" if change is None else "bass_evidence_unavailable")
+    assert receipt["unqualified_boost_bands_hz"] == ([] if change is None else [
+        [20.0, 30.0], [30.0, 40.0], [40.0, 50.0], [50.0, 63.0], [63.0, 80.0], [80.0, 100.0]])
 
 
 @pytest.mark.parametrize("echo", [None, "wrong", "round-1"])

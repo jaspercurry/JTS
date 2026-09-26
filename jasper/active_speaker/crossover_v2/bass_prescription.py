@@ -18,9 +18,7 @@ from jasper.bass_extension.dynamic import (
 from ._prescription_common import BlendPrescriptionRefused, _refuse
 
 BASS_EVIDENCE_UNAVAILABLE = "bass_evidence_unavailable"
-BASS_PRESCRIPTION_REFUSAL_REASONS = DYNAMIC_BASS_REFUSAL_REASONS | {
-    BASS_EVIDENCE_UNAVAILABLE,
-}
+BASS_PRESCRIPTION_REFUSAL_REASONS = DYNAMIC_BASS_REFUSAL_REASONS
 BassPrescriptionRefused = BlendPrescriptionRefused
 
 
@@ -39,7 +37,7 @@ def bass_evidence_status(evidence: Mapping[str, Any]) -> dict[str, Any]:
 @dataclass(frozen=True)
 class BassPrescription:
     descriptor: Mapping[str, Any]
-    round_id: str
+    round_id: str | None
     evidence_status: str
     unqualified_boost_bands_hz: list[list[float]]
     answers_round: bool | None = None
@@ -68,8 +66,6 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
         _refuse(exc.reason, str(exc), field=exc.field)
     round_id = evidence.get("round_id")
     status = bass_evidence_status(evidence)["evidence_status"]
-    if not round_id or status != "evaluated":
-        _refuse(BASS_EVIDENCE_UNAVAILABLE, "The round has no bass evidence.", round_id=round_id)
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"])
     upper = descriptor["detector_lowpass_hz"]
     bands = [(lo, hi) for lo, hi in BASS_BANDS_HZ if lo < upper and hi > lower]

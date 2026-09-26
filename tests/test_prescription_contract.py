@@ -282,7 +282,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
-        "bass_evidence_unavailable", "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
+        "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
         "bass_delta_highpass_hz_invalid", "bass_detector_lowpass_hz_invalid", "bass_compressor_threshold_dbfs_invalid",
         "bass_compressor_factor_invalid", "bass_compressor_attack_s_invalid", "bass_compressor_release_s_invalid",
         "bass_low_boost_db_invalid", "bass_reference_level_db_invalid",

@@ -251,7 +251,8 @@ corner reaches the owner limiter without making the boost give way. Go lower
 only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
 100 Hz).
 Unqualified boosted bands are disclosed on the document, and the room
-layer, fitted through bass, absorbs the residual tail.
+layer, fitted through bass, absorbs the residual tail. A bass section written
+before any bass round is admitted with every band it boosts unqualified.
 A tune stored before ADR-0359 (`low_boost_db`, `reference_level_db`) still
 loads and plays its full boost at every volume; a new document uses the form
 above.
