@@ -519,8 +519,9 @@ def stop_recording(
 
 def _stop_recording(
     backend: RecordingBackend,
-    auto: bool = False,
-    mute_stopped: bool = False,
+    *,
+    auto: bool,
+    mute_stopped: bool,
 ) -> ClipMetadata:
     with backend._lock:
         if backend._current is None:
