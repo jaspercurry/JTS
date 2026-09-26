@@ -455,7 +455,6 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
     "bass-fit-table": _ViewRun(
         _bass_run_argv, frozenset({"reference_band_hz"}),
         recorded=lambda p, a: all(table["reference_band_hz"] == p["reference_band_hz"] for table in a["tables"])),
-    "rear": "a banked rear batch is covered in test_round_views_rear_cli",
     "dsp-replay": "rendering needs the native DSP binary",
     "dsp-levels": _ViewRun(
         _dsp_levels_argv, frozenset({"window_s"}), frozenset(), lambda p, a: p["window_s"] == a["window_s"]),

@@ -81,11 +81,10 @@ def _short_id(candidate_id: Any) -> str:
     return str(candidate_id or "")[:12]
 
 
-def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
+def rear_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
     """Numbers-only lines for each banked ``rear`` comparison: the band, its
     reference and repeat spread, then one line per candidate naming its
-    changed control family, headroom cost and worst pooled regression.
-    ``jasper-round-views rear`` reads the same entries back."""
+    changed control family, headroom cost and worst pooled regression."""
     def number(value: float | None) -> str:
         return f"{value:.1f}" if value is not None else "null"
 
@@ -119,7 +118,6 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
                 f"headroom_change_db={number(candidate['headroom_change_db'])}; "
                 f"worst_regression={worst_repr}"
             )
-    lines.append(shlex.join([PROG, "rear", str(target)]))
     return lines
 
 
@@ -252,7 +250,7 @@ def packet_index(
     if bass_rows := bass_table_rows(packet.get("bass_table", {})):
         lines.append(bass_table_markdown(bass_rows))
     if rear_entries := packet.get("rear"):
-        lines.append("\n".join(rear_lines(rear_entries, target)))
+        lines.append("\n".join(rear_lines(rear_entries)))
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]
