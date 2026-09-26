@@ -73,7 +73,7 @@ every crate in the CI Rust job; `jasper-host-clock` alone gets `--all-features`.
 
 Every test is bounded at **300 s** (`timeout` / `timeout_method` in
 `[tool.pytest.ini_options]`, pinned by
-`tests/test_dependency_groups.py::test_hang_backstop_is_configured_and_uses_the_signal_method`).
+`tests/test_build_and_ci_contracts.py::test_hang_backstop_is_configured_and_uses_the_signal_method`).
 
 - **`timeout_method = "signal"` is load-bearing.** `thread` kills the whole
   pytest process and loses every later result; `signal` fails only the stuck
