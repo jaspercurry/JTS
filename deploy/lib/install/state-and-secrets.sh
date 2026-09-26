@@ -522,11 +522,8 @@ EOF
 # `jasper` group exists. Owner is left as-is (StateDirectory recursive-chown
 # may have set it to jasper-voice); cross-daemon reads rely on GROUP, not owner.
 #
-# Removal condition: this function itself never expires — the jasper_env
-# chgrp/chmod and the loop's chmod half below are permanent perm-healing
-# install.sh re-asserts every run (a box can carry a pre-fix 0600 file
-# indefinitely, e.g. restored from an old backup). Only the loop's chgrp
-# half has a real expiry; see the dated note beside that loop.
+# Removal condition: none — install.sh re-asserts these modes every run (a box
+# can carry a pre-fix 0600 file indefinitely, e.g. restored from an old backup).
 widen_control_secret_env_modes() {
     getent group jasper >/dev/null 2>&1 || return 0
 
@@ -580,7 +577,6 @@ widen_control_secret_env_modes() {
     # Those compartment migrations own their perms now. voice_provider.env stays
     # here (now keyless; control reads the provider name for /system/).
     # Lock entries: chmod, never unlink — a live holder may hold the flock.
-    # Drop this loop's chgrp — the 0640 file-class entries and the 0660 lock entries alike — once every box's JASPER_INSTALL_AT in /var/lib/jasper/build.txt is past 2026-09-05, the atomic_io group-publishing commits; the chmod halves stay, healing an older 0600 class.
     local entry f m path
     for entry in voice_provider.env:0640 control_token:0640 \
                  household_secret:0640 sound_profile.json:0640 \
@@ -594,7 +590,6 @@ widen_control_secret_env_modes() {
             continue
         fi
         if [[ -f "${path}" ]]; then
-            chgrp jasper "${path}" 2>/dev/null || true
             chmod "${m}" "${path}" 2>/dev/null || true
         fi
     done

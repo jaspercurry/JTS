@@ -122,8 +122,8 @@ def test_install_widens_secret_env_on_upgrade():
     assert "jasper_env" in mig and "chgrp jasper" in mig, (
         "widening must still chgrp /etc/jasper/jasper.env"
     )
-    assert "chgrp jasper" in mig and 'chmod "${m}"' in mig, (
-        "widening must chgrp jasper + chmod each entry to its own mode"
+    assert 'chmod "${m}"' in mig, (
+        "widening must chmod each entry to its own mode"
     )
     assert '[[ -L "${path}" ]]' in mig, (
         "widening must refuse symlinks in the group-writable state directory"

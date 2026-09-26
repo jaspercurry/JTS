@@ -11,9 +11,7 @@ normalization.
 
 The quirk that matters is the SIGN. A measurement mic's calibration file states
 the microphone's own *response*, so the correction is its negation; the
-per-vendor declaration is in ``SUPPORTED_MODELS``. Records written before
-2026-07-27 stored vendor files under the opposite claim, and
-``migrate_stored_sign_conventions`` repairs them in place on deploy.
+per-vendor declaration is in ``SUPPORTED_MODELS``.
 """
 from __future__ import annotations
 
@@ -913,157 +911,15 @@ def fetch_vendor_calibration(
     return record
 
 
-def _models_expecting_response() -> set[tuple[str, str]]:
-    """``(provider, model)`` pairs the registry declares to be response curves.
-
-    Keyed on the pair, not the provider alone: a provider can hold models that
-    disagree, and a provider-level key would silently drag a sibling along.
-    """
-    return {
-        (str(spec["provider"]), model_key)
-        for model_key, spec in SUPPORTED_MODELS.items()
-        if str(spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION) == "response"
-    }
-
-
 def configured_calibration_root() -> Path:
     """The calibration store this speaker actually uses.
 
     ``DEFAULT_CALIBRATION_DIR`` is only the default: the measurement daemon
-    resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``. A migration
-    that ignored the override would read an empty directory and report
-    ``scanned=0`` -- success-shaped, and wrong.
+    resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``, and a
+    reader that ignored the override would scan an empty directory.
     """
     return Path(
         os.environ.get(
             "JASPER_CORRECTION_CALIBRATION_DIR", str(DEFAULT_CALIBRATION_DIR),
         )
     )
-
-
-def migrate_stored_sign_conventions(
-    *, root: Path | None = None,
-) -> dict[str, int]:
-    """Repair vendor-fetched records stored under the wrong sign convention.
-
-    Until 2026-07-27 ``fetch_vendor_calibration`` stored every vendor file as
-    ``sign_convention="correction"``, so ``correction_db`` held the mic's
-    response un-negated and the pipeline added what it should have subtracted.
-    Run from ``install.sh`` on every deploy; idempotent.
-
-    * Keyed on the stored convention FIELD, never on the numbers: only a record
-      still claiming ``"correction"`` is touched, so a curve can never be
-      double-negated back to the bug.
-    * Vendor records only, keyed on ``(provider, model)``. A ``manual_upload``
-      record carries the household's OWN declaration and is not ours to
-      overrule.
-    * Re-derived from the retained raw file when its SHA-256 still matches the
-      record's ``file_sha256``; otherwise negated in place, which is the same
-      number. Re-fetching is impossible: only ``serial_hash`` is persisted.
-    * Phase is untouched -- it passes through unchanged under both conventions.
-
-    ONE direction only (``correction`` -> ``response``); a reversal needs its
-    own opposite-direction migration, not a re-run of this one. ``root``
-    defaults to :func:`configured_calibration_root`. Returns per-outcome counts
-    and never raises for one bad record.
-    """
-    root = configured_calibration_root() if root is None else root
-    vendor_models = _models_expecting_response()
-    counts = {
-        "scanned": 0,
-        "migrated_rederived": 0,
-        "migrated_negated": 0,
-        "already_response": 0,
-        "skipped_not_vendor": 0,
-        "unreadable": 0,
-        "write_failed": 0,
-    }
-    for path in sorted(root.glob("*/*/*.json")):
-        counts["scanned"] += 1
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            counts["unreadable"] += 1
-            continue
-        if not isinstance(data, dict):
-            counts["unreadable"] += 1
-            continue
-        provider = str(data.get("provider") or "")
-        model = str(data.get("model") or "")
-        if (provider, model) not in vendor_models:
-            counts["skipped_not_vendor"] += 1
-            continue
-        # Absent reads as "correction": that is what every reader of a
-        # legacy record already resolves it to (CalibrationRecord.from_dict).
-        stored = str(data.get("sign_convention") or "correction")
-        if stored != "correction":
-            counts["already_response"] += 1
-            continue
-
-        raw_text: str | None = None
-        try:
-            candidate = path.with_suffix(".txt").read_text()
-        except OSError:
-            candidate = None
-        if candidate is not None and _sha256_text(candidate) == str(
-            data.get("file_sha256") or ""
-        ):
-            raw_text = candidate
-
-        try:
-            if raw_text is not None:
-                curve = parse_calibration_text(
-                    raw_text, sign_convention="response",
-                )
-                method = "rederived"
-            else:
-                stored_curve = CalibrationCurve.from_dict(data.get("curve"))
-                curve = CalibrationCurve(
-                    freqs_hz=list(stored_curve.freqs_hz),
-                    correction_db=[-db for db in stored_curve.correction_db],
-                )
-                method = "negated"
-        except (ValueError, TypeError):
-            counts["unreadable"] += 1
-            continue
-
-        data["curve"] = curve.to_dict()
-        data["sign_convention"] = "response"
-        data["point_count"] = len(curve.freqs_hz)
-        try:
-            # Atomic and stat-preserving: a crash mid-migration must leave the
-            # OLD record rather than a truncated one, and `preserve_target_stat`
-            # keeps the existing owner/mode so this root-run repair cannot
-            # re-own a file a de-rooted jasper-correction-web must write.
-            atomic_write_text(
-                path,
-                json.dumps(data, indent=2),
-                preserve_target_stat=True,
-            )
-        except OSError:
-            counts["write_failed"] += 1
-            continue
-        counts[f"migrated_{method}"] += 1
-        # WARNING, not INFO: a one-time migration MUTATING household measurement
-        # state, and the deploy transcript is where an operator looks. Bounded by
-        # the one or two mic records a household owns, so it cannot spam.
-        log_event(
-            logger,
-            "correction_calibration_sign_migrated",
-            level=logging.WARNING,
-            provider=provider,
-            model=model,
-            calibration_id=str(data.get("calibration_id") or ""),
-            method=method,
-            point_count=len(curve.freqs_hz),
-        )
-
-    migrated = counts["migrated_rederived"] + counts["migrated_negated"]
-    if migrated or counts["unreadable"] or counts["write_failed"]:
-        log_event(
-            logger,
-            "correction_calibration_sign_migration",
-            level=logging.WARNING,
-            **counts,
-        )
-    return counts

@@ -4,19 +4,15 @@
 
 """Install-profile guardrails after the endpoint tier was removed.
 
-There are now exactly TWO install profiles — ``full`` and ``streambox``.
-The legacy ``endpoint`` / ``satellite`` tokens are still ACCEPTED and map
-to ``streambox`` so a field box with a persisted ``endpoint`` marker
-auto-migrates on its next deploy instead of stranding. "Endpoint
-behaviour" is now the multiroom follower runtime role.
+There are exactly TWO install profiles — ``full`` and ``streambox``.
+"Endpoint behaviour" is now the multiroom follower runtime role.
 
-These tests pin the NEW invariants:
+These tests pin:
 
-1. ``normalize_install_profile`` maps endpoint/satellite -> streambox in
-   BOTH Python and the bash mirror in deploy/install.sh; full/streambox
-   pass through; bogus raises.
-2. A persisted endpoint marker resolves to streambox (auto-migration)
-   with NO implicit-tier-change error and NO accept flag.
+1. ``normalize_install_profile`` passes full/streambox through and refuses
+   anything else, in BOTH Python and the bash mirror in deploy/install.sh.
+2. An explicit profile resolves against the persisted marker, and a
+   conversion is logged.
 3. ``main()`` and ``--dry-run`` iterate one ``INSTALL_STEPS`` table: the
    plan renders exactly the steps the run executes, each profile reaches
    its own tier functions, the required orderings hold, and a failing
@@ -108,7 +104,6 @@ def _run_main(
             "done",
             """logger() { printf 'JOURNAL %s\\n' "$*"; }""",
             f"resolve_install_profile() {{ printf '%s\\n' {profile}; }}",
-            "install_profile_legacy_marker_migrating() { return 1; }",
             extra,
             "main",
         ]
@@ -172,42 +167,27 @@ def _plan_steps(profile: str) -> list[str]:
     ]
 
 
-# ---------- (1) normalize maps endpoint/satellite -> streambox ----------
+# ---------- (1) normalize passes full/streambox, refuses the rest --------
 
 
-def test_python_normalize_maps_legacy_tokens_to_streambox():
+def test_python_normalize_passes_the_two_profiles_and_refuses_the_rest():
     from jasper.install_profile import (
         VALID_INSTALL_PROFILES,
-        is_streambox_install_profile,
         normalize_install_profile,
     )
 
     assert VALID_INSTALL_PROFILES == frozenset({"full", "streambox"})
-    assert normalize_install_profile("endpoint") == "streambox"
-    assert normalize_install_profile("satellite") == "streambox"
     assert normalize_install_profile("streambox") == "streambox"
     assert normalize_install_profile("full") == "full"
     assert normalize_install_profile("") == "full"
     assert normalize_install_profile(None) == "full"
 
-    assert is_streambox_install_profile("satellite")
-
     with pytest.raises(ValueError, match="invalid install profile"):
         normalize_install_profile("bogus")
 
 
-def test_legacy_aliases_never_raise():
-    from jasper.install_profile import normalize_install_profile
-
-    # The whole point of the alias: a field box must never fail closed.
-    for token in ("endpoint", "satellite"):
-        assert normalize_install_profile(token) == "streambox"
-
-
-def test_bash_normalize_maps_legacy_tokens_to_streambox():
+def test_bash_normalize_passes_the_two_profiles_and_refuses_the_rest():
     for token, expected in [
-        ("endpoint", "streambox"),
-        ("satellite", "streambox"),
         ("streambox", "streambox"),
         ("full", "full"),
         ("", "full"),
@@ -221,10 +201,10 @@ def test_bash_normalize_maps_legacy_tokens_to_streambox():
     assert "use full or streambox" in bogus.stderr
 
 
-def test_python_and_bash_normalize_agree_on_legacy_tokens():
+def test_python_and_bash_normalize_agree():
     from jasper.install_profile import normalize_install_profile
 
-    for token in ("", "full", "streambox", "endpoint", "satellite"):
+    for token in ("", "full", "streambox"):
         py = normalize_install_profile(token)
         bash = _run_install_helper(
             f"normalize_install_profile {shlex.quote(token)}"
@@ -232,81 +212,7 @@ def test_python_and_bash_normalize_agree_on_legacy_tokens():
         assert py == bash, f"{token!r}: py={py} bash={bash}"
 
 
-# ---------- (2) persisted endpoint marker auto-migrates to streambox -----
-
-
-def test_persisted_endpoint_marker_resolves_to_streambox_without_error(
-    tmp_path: Path,
-):
-    """A field box with a persisted endpoint marker auto-migrates: resolve
-    returns streambox, rc=0, NO implicit-tier-change error, NO accept flag."""
-    marker = tmp_path / "install_profile"
-    marker.write_text("endpoint\n")
-
-    read = _run_install_helper(
-        "unset JASPER_INSTALL_PROFILE JASPER_ACCEPT_INSTALL_PROFILE_CHANGE; "
-        f"resolve_install_profile {shlex.quote(str(marker))}"
-    )
-
-    assert read.returncode == 0, read.stderr
-    assert read.stdout.strip() == "streambox"
-    assert "install profile mismatch" not in read.stderr
-
-
-def test_persisted_satellite_marker_resolves_to_streambox(tmp_path: Path):
-    marker = tmp_path / "install_profile"
-    marker.write_text("satellite\n")
-    read = _run_install_helper(
-        "unset JASPER_INSTALL_PROFILE JASPER_ACCEPT_INSTALL_PROFILE_CHANGE; "
-        f"resolve_install_profile {shlex.quote(str(marker))}"
-    )
-    assert read.returncode == 0, read.stderr
-    assert read.stdout.strip() == "streambox"
-
-
-def test_endpoint_dry_run_produces_streambox_plan():
-    """JASPER_INSTALL_PROFILE=endpoint must now produce the STREAMBOX plan,
-    proving the alias drives the streambox install path."""
-    endpoint = _run_install_plan(profile="endpoint")
-    streambox = _run_install_plan(profile="streambox")
-    satellite = _run_install_plan(profile="satellite")
-
-    assert endpoint.returncode == 0, endpoint.stderr
-    assert streambox.returncode == 0, streambox.stderr
-    assert endpoint.stdout == streambox.stdout
-    assert satellite.stdout == streambox.stdout
-    # ...and that is a different plan from the full tier's, so the equality
-    # above is not satisfied by every profile rendering the same thing.
-    assert streambox.stdout != _run_install_plan(profile="full").stdout
-
-
-def test_legacy_marker_migration_logs_observable_line(tmp_path: Path):
-    marker = tmp_path / "install_profile"
-    marker.write_text("endpoint\n")
-    r = _run_install_helper(
-        f"install_profile_legacy_marker_migrating {shlex.quote(str(marker))} "
-        "&& echo MIGRATING || echo STEADY"
-    )
-    assert r.returncode == 0, r.stderr
-    assert "MIGRATING" in r.stdout
-
-    marker.write_text("streambox\n")
-    r2 = _run_install_helper(
-        f"install_profile_legacy_marker_migrating {shlex.quote(str(marker))} "
-        "&& echo MIGRATING || echo STEADY"
-    )
-    assert "STEADY" in r2.stdout
-
-
-def test_persisted_install_profile_rewrites_legacy_marker(tmp_path: Path):
-    """persist_install_profile normalizes, so a re-persist of an endpoint
-    token writes streambox to disk."""
-    marker = tmp_path / "install_profile"
-    write = _run_install_helper(
-        f"persist_install_profile endpoint {shlex.quote(str(marker))}"
-    )
-    assert write.returncode == 0, write.stderr
-    assert marker.read_text().strip() == "streambox"
+# ---------- (2) explicit profile resolution against the persisted marker --
 
 
 @pytest.mark.parametrize(
@@ -314,8 +220,6 @@ def test_persisted_install_profile_rewrites_legacy_marker(tmp_path: Path):
     [
         ("full", "streambox", "streambox", 0, True),
         ("streambox", "full", "full", 0, True),
-        ("full", "endpoint", "streambox", 0, True),
-        ("full", "satellite", "streambox", 0, True),
         ("full", "full", "full", 0, False),
         ("streambox", "streambox", "streambox", 0, False),
         ("full", "", "full", 0, False),
@@ -389,7 +293,6 @@ _ON_EVERY_PROFILE = (
     "jasper",
     "secrets_perms",
     "intsecrets_perms",
-    "mic_cal_sign",
     "output_hw_state",
     "outputd_config",
     "outputd_statefile",
@@ -507,7 +410,7 @@ def test_every_row_is_well_formed_and_named_by_exactly_one_membership_pin():
     whose `profiles` token is mistyped runs on neither profile; a deleted row
     drops below the floor and out of the pin it was named by."""
     rows = _step_rows()
-    assert len(rows) >= 46, rows
+    assert len(rows) >= 45, rows
     assert {profiles for _, profiles, _, _ in rows} <= {"both", "full", "streambox"}
     assert all(size > 0 for _, _, _, size in rows), rows
 
