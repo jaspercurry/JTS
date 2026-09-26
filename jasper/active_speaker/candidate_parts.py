@@ -169,7 +169,7 @@ def resolve_alignment(
 ) -> tuple[MeasuredCrossoverAlignment, AlignmentSource]:
     """Resolve timing once for the trial graph and apply record. See ADR-0319."""
     read = commissioning.get("alignment") or {}
-    measured = read.get("timing_verdict") == TIMING_MEASURED and commissioning.get("status") in (None, "awaiting_apply")
+    measured = read.get("timing_verdict") == TIMING_MEASURED
     if "alignment" in selected:
         pin = selected["alignment"]
         if not pin:

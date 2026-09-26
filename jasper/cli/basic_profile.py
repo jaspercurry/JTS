@@ -282,8 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-basic-profile",
         description=(
             "Review and reapply the current candidate, including its tuning layers. "
-            "Without an applied candidate, use the saved profile or commissioning "
-            "candidate. No evidence is deleted."
+            "Without an applied candidate, use the saved profile or the declared "
+            "crossover. No evidence is deleted."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(

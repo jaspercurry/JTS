@@ -74,7 +74,7 @@ Each take banks how the playback route's counters moved across its capture in `c
 <!-- BEGIN GENERATED TOOL MENU (scripts/generate-tuning-tool-menu.py -- do not hand-edit) -->
 | Tool | Does | Authority | Where |
 |---|---|---|---|
-| `jasper-basic-profile review\|apply` | Review and reapply the current candidate, including its tuning layers. Without an applied candidate, use the saved profile or commissioning candidate. No evidence is deleted. | mutating-with-gates | `jasper/cli/basic_profile.py` |
+| `jasper-basic-profile review\|apply` | Review and reapply the current candidate, including its tuning layers. Without an applied candidate, use the saved profile or the declared crossover. No evidence is deleted. | mutating-with-gates | `jasper/cli/basic_profile.py` |
 | `jasper-mic-calibration models\|fetch\|upload\|show` | Register the household's measurement microphone: fetch its vendor calibration by serial or store a file you already have, and remember that mic so every measurement resolves its calibration from one record. A box with no record measures uncalibrated. | advisory (`fetch`/`upload` write; `models`/`show` do not) | `jasper/cli/mic_calibration.py` |
 | `jasper-seat-level` | Play the room/bass summed measurement sweep and adjust the fader until the calibrated mic's loudest half-second (loudest_half_second_db_spl) reads the target; bank the session gain. | measured | `jasper/cli/seat_level.py` |
 | `jasper-angle-capture serve` | Serve the microphone arm against the daemon's position gate. | mutating (`serve` moves the arm) | `jasper/cli/angle_capture.py` |

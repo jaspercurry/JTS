@@ -17,8 +17,6 @@ from .applied_identity import applied_identity
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
-from .candidate_bank import CandidateBankRefusal
-from .commissioning_experiment import bank_commissioning_experiment
 from .crossover_v2.evidence_packet import build_crossover_evidence_packet
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
@@ -246,11 +244,6 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                   measured=axis.get("timing_verdict") == TIMING_MEASURED,
                   needs_measurement=axis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT),
               "packet_fingerprint": fingerprint, "limits": limits, "artifacts": artifacts, "unavailable": errors}
-    if purpose == PURPOSE_SPEAKER:
-        try:
-            packet["commissioning"] = bank_commissioning_experiment(target, manifest, sources, packet["alignment"])
-        except ROUND_INPUT_ERRORS + (CandidateBankRefusal,) as exc:
-            packet["commissioning"] = {"status": "unavailable", "reason": getattr(exc, "code", "commissioning_candidate_unavailable")}
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
