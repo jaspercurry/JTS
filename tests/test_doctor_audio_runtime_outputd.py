@@ -539,7 +539,7 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
 # ===========================================================================
 
 def _xrun_section(rate_per_hour, last_xrun_age_ms, xrun_count=2):
-    """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
+    """Minimal outputd STATUS DAC section for the xrun-rate helper."""
     return {
         "xrun_count": xrun_count,
         "xrun_rate_per_hour": rate_per_hour,
@@ -550,7 +550,7 @@ def _xrun_section(rate_per_hour, last_xrun_age_ms, xrun_count=2):
 def test_outputd_xrun_warning_none_when_no_recent_xrun():
     """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
     quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    assert audio_runtime_outputd._outputd_xrun_rate_warning(quiet, quiet) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(quiet) is None
 
 
 def test_outputd_xrun_warning_suppressed_for_stale_burst():
@@ -560,7 +560,7 @@ def test_outputd_xrun_warning_suppressed_for_stale_burst():
         rate_per_hour=50.0,
         last_xrun_age_ms=audio_runtime_outputd._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
     )
-    assert audio_runtime_outputd._outputd_xrun_rate_warning(stale, stale) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(stale) is None
 
 
 @pytest.mark.parametrize("rate_per_hour,xrun_count", [
@@ -572,7 +572,7 @@ def test_outputd_xrun_warning_suppressed_for_recent_blip(rate_per_hour, xrun_cou
     """A recent xrun below the sustained rate, or a single xrun at any rate,
     is a transient and must not warn."""
     blip = _xrun_section(rate_per_hour, last_xrun_age_ms=1000, xrun_count=xrun_count)
-    assert audio_runtime_outputd._outputd_xrun_rate_warning(blip, blip) is None
+    assert audio_runtime_outputd._outputd_xrun_rate_warning(blip) is None
 
 
 def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
@@ -582,21 +582,11 @@ def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
         rate_per_hour=audio_runtime_outputd._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
         last_xrun_age_ms=2000,
     )
-    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    reason = audio_runtime_outputd._outputd_xrun_rate_warning(quiet, hot)
+    reason = audio_runtime_outputd._outputd_xrun_rate_warning(hot)
     assert reason is not None
     assert "dac" in reason
     assert "xrun_rate_per_hour" in reason
     assert "last_xrun_age_ms" in reason
-
-
-def test_outputd_xrun_warning_reports_worst_lane():
-    """When both lanes qualify, the higher-rate lane is reported."""
-    content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
-    dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
-    reason = audio_runtime_outputd._outputd_xrun_rate_warning(content, dac)
-    assert reason is not None
-    assert reason.startswith("dac ")
 
 
 # --- the dac-content marker reaches the doctor's content-source expectation --

@@ -333,9 +333,7 @@ pub struct OutputdState {
     content_partial_period_count: AtomicU64,
     content_eagain_count: AtomicU64,
     dac_frames_written: AtomicU64,
-    content_xrun_count: AtomicU64,
     dac_xrun_count: AtomicU64,
-    last_content_xrun_ms: AtomicU64,
     last_dac_xrun_ms: AtomicU64,
     total_clipped_samples: AtomicU64,
     last_period_clipped_samples: AtomicU64,
@@ -497,9 +495,7 @@ impl OutputdState {
             content_partial_period_count: AtomicU64::new(0),
             content_eagain_count: AtomicU64::new(0),
             dac_frames_written: AtomicU64::new(0),
-            content_xrun_count: AtomicU64::new(0),
             dac_xrun_count: AtomicU64::new(0),
-            last_content_xrun_ms: AtomicU64::new(NEVER_MS),
             last_dac_xrun_ms: AtomicU64::new(NEVER_MS),
             total_clipped_samples: AtomicU64::new(0),
             last_period_clipped_samples: AtomicU64::new(0),
@@ -573,13 +569,6 @@ impl OutputdState {
             .store(counters.content_eagain_count, Ordering::Relaxed);
         self.dac_frames_written
             .store(counters.dac_frames_written, Ordering::Relaxed);
-        let previous_content_xruns = self
-            .content_xrun_count
-            .swap(counters.content_xrun_count, Ordering::Relaxed);
-        if counters.content_xrun_count > previous_content_xruns {
-            self.last_content_xrun_ms
-                .store(uptime_ms, Ordering::Relaxed);
-        }
         let previous_dac_xruns = self
             .dac_xrun_count
             .swap(counters.dac_xrun_count, Ordering::Relaxed);
@@ -883,7 +872,6 @@ impl OutputdState {
         // a chip-AEC box, and 1 KiB meant a dozen reallocations per read.
         let mut buf = String::with_capacity(32 * 1024);
         let sample_rate = self.sample_rate.load(Ordering::Relaxed);
-        let content_xrun_count = self.content_xrun_count.load(Ordering::Relaxed);
         let dac_xrun_count = self.dac_xrun_count.load(Ordering::Relaxed);
         buf.push('{');
         push_kv_f64(&mut buf, "uptime_seconds", (uptime_ms as f64) / 1000.0, 2);
@@ -895,7 +883,7 @@ impl OutputdState {
         push_kv_str(&mut buf, "sched_policy", self.sched_policy());
         buf.push(',');
 
-        self.content_json(&mut buf, uptime_ms, content_xrun_count);
+        self.content_json(&mut buf);
         self.content_bridge_json(&mut buf);
 
         self.shm_ring_json(&mut buf);
@@ -1183,7 +1171,6 @@ pub(crate) mod tests {
                     content_empty_period_count: 3,
                     content_partial_period_count: 5,
                     content_eagain_count: 7,
-                    content_xrun_count: 11,
                     dac_xrun_count: 13,
                 },
                 41,
@@ -1246,7 +1233,6 @@ pub(crate) mod tests {
                 write_failed: false,
             });
             for timestamp in [
-                &state.last_content_xrun_ms,
                 &state.last_dac_xrun_ms,
                 &state.last_progress_ms,
                 &state.dac_snd_pcm_delay_sample_ms,
@@ -1277,7 +1263,7 @@ pub(crate) mod tests {
             capture(&state);
         }
         assert!(expected.next().is_none());
-        assert_eq!(hash, 2_334_067_162_804_135_790);
+        assert_eq!(hash, 17_509_113_329_446_784_856);
     }
 
     #[test]
@@ -1328,7 +1314,6 @@ pub(crate) mod tests {
                 content_partial_period_count: 5,
                 content_eagain_count: 6,
                 dac_frames_written: 1024,
-                content_xrun_count: 1,
                 dac_xrun_count: 2,
             },
             42,
@@ -2435,8 +2420,8 @@ pub(crate) mod tests {
         state.mark_period(IoCounters::default(), 1, 0);
 
         let j = state.snapshot_json();
-        assert_eq!(j.matches(r#""last_xrun_age_ms":null"#).count(), 2);
-        assert_eq!(j.matches(r#""xrun_rate_per_hour":0.000"#).count(), 2);
+        assert_eq!(j.matches(r#""last_xrun_age_ms":null"#).count(), 1);
+        assert_eq!(j.matches(r#""xrun_rate_per_hour":0.000"#).count(), 1);
     }
 
     #[test]
