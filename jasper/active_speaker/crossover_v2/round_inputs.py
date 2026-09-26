@@ -52,7 +52,7 @@ __all__ = [
     'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
-    'round_inputs', 'contract_sources', 'prescription_sources', 'default_out', 'view_path',
+    'round_inputs', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH', 'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
@@ -351,6 +351,10 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
                for section in ("median", "persistence", "ceiling")}}
 
 
+#: The round directory's packet names another round (or none), so its bass evidence is not this round's.
+BASS_PACKET_ROUND_MISMATCH = "bass_packet_round_mismatch"
+
+
 def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = None) -> dict[str, Any]:
     if inputs is None:
         return {"bass_evidence": {}}
@@ -361,7 +365,8 @@ def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = Non
     round_dir = banked_round_of(inputs.session_dir) or inputs.session_dir
     packet = _read_json_mapping(round_dir / PACKET_FILENAME) or {}
     return {**sources,
-            "bass_evidence": packet if packet.get("round_id") == round_dir.name else {},
+            "bass_evidence": (packet if packet.get("round_id") == round_dir.name
+                              else {"code": BASS_PACKET_ROUND_MISMATCH} if packet else {}),
             "draft": (_read_json_mapping(inputs.design_draft_path) or {}) if inputs.design_draft_path else {},
             "receipt": (_read_json_mapping(artifact_dir / "round_receipt.json") or {}) if artifact_dir else {},
             "applied_profile": load_applied_baseline_profile_state(inputs.applied_profile_path) if inputs.applied_profile_path else None}
