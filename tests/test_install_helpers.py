@@ -1245,9 +1245,7 @@ def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
 
 
 def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
-    """Fresh installs must not write stale empty Spotify overrides; an
-    already-seeded box is swept by the retirement table's env rows
-    (test_retired_env_rows_strip_stale_seeds_and_keep_overrides)."""
+    """Fresh installs must not write stale empty Spotify overrides."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "\nSPOTIFY_CLIENT_ID=" not in env_example
     assert "\nSPOTIFY_REDIRECT_URI=" not in env_example
@@ -1255,8 +1253,7 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
 
 def test_mic_device_candidates_is_never_seeded_in_env_example():
     """A seeded value outranks the mic registry on every installed box, so
-    the key ships commented out; an already-seeded box is swept by the
-    retirement table's env rows."""
+    the key ships commented out."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
 
@@ -3469,12 +3466,14 @@ retire_leftovers
 """
 
 # Overrides the real table (sourced beforehand) with a fixture confined to
-# tmp_path -- the real table's `file` row names an absolute host path, and
-# this test must never touch anything outside tmp_path.
+# tmp_path -- the real table's `file` rows name absolute host paths, and these
+# tests must never touch anything outside tmp_path.
 _RETIRE_TEST_TABLE = r"""
 JASPER_RETIRED_LEFTOVERS=(
     "unit|jasper-retired-test-a.service jasper-retired-test-b.timer|fixture: two retired units"
     "file|${STATE_DIR}/retired_test_a.json ${SYSTEMD_DIR}/retired_test_b.service|fixture: two retired files"
+    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|fixture: bare and prefix keys"
+    "env|${ENV_DIR}/jasper.env JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824 JASPER_MIC_DEVICE_CANDIDATES=Array JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch|fixture: anchored seeds"
 )
 """
 
@@ -3575,11 +3574,10 @@ _RETIRE_ENV_CASES = [
 
 
 def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
-    """Drive the real table's `env` rows with ENV_DIR confined to tmp_path.
+    """Drive the fixture table's `env` rows with ENV_DIR confined to tmp_path.
 
-    The table expands ENV_DIR at SOURCE time, so it is exported rather than
-    assigned after the source. Only the env applier runs: the unit and file
-    rows name the host's real paths."""
+    The table expands ENV_DIR when it is assigned, so it is exported. Only the
+    env applier runs."""
     env_dir = tmp_path / "etc"
     env_dir.mkdir(exist_ok=True)
     if seeded is not None:
@@ -3591,6 +3589,7 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
             "-euc",
             f". {shlex.quote(str(env_lib))}\n"
             f". {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
+            f"{_RETIRE_TEST_TABLE}"
             "_retire_apply env _retire_env_lines\n",
         ],
         capture_output=True,
@@ -3616,11 +3615,10 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
 def test_retired_env_rows_strip_stale_seeds_and_keep_overrides(
     tmp_path: Path, line: str, survives: bool,
 ) -> None:
-    """jasper.env is a frozen first-install seed, so the retired keys can only
-    leave a box through these rows. A bare key takes every value, an anchored
-    `KEY=VALUE` row takes only the stale seed (a deliberate override survives),
-    and the `KEY*` row takes a whole retired prefix without touching keys that
-    merely start with the same letters."""
+    """A bare key takes every value, an anchored `KEY=VALUE` row takes only the
+    stale seed (a deliberate override survives), and the `KEY*` row takes a
+    whole retired prefix without touching keys that merely start with the same
+    letters."""
     proc = _run_retire_env_rows(tmp_path, f"JASPER_MARKER=1\n{line}\n")
     assert proc.returncode == 0, proc.stderr
     lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
