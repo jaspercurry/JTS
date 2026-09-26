@@ -56,9 +56,9 @@ just make sure your python is 3.13 — the deployed and CI-tested
 interpreter:
 
 ```sh
-python3.13 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
+python3.13 -m venv --upgrade-deps .venv   # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
-pip install -e '.[full,dev]'
+pip install -e '.[full]' --group dev   # --group needs pip 25.1+
 scripts/test-fast
 ```
 
@@ -69,8 +69,8 @@ Before publishing substantial work, run `scripts/test-merge` — see
 
 The Ubuntu CI path also installs `portaudio19-dev`, then replays the
 committed lock with
-`uv sync --locked --extra full --extra dev --group openwakeword-onnx`.
-That group lock-covers the ONNX-only openWakeWord helper packages
+`uv sync --locked --extra full --group dev --group openwakeword-onnx`.
+The `openwakeword-onnx` group lock-covers the ONNX-only openWakeWord helper packages
 (`requests`, `tqdm`, `scikit-learn`). After the exact sync, CI installs
 only `openwakeword==0.6.0` itself with `--no-deps`, mirroring the Pi
 installer's ONNX-only setup.

@@ -39,15 +39,6 @@ streambox = [
 full = [
     "matplotlib>=3.8,<4",
     "google-genai==2.22.0",
-    # OpenAI Realtime SDK — used by jasper.voice.openai_session for
-    # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
-    # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
-    # Agent backend. 2.36.0 shipped on 2026-05-07 alongside
-    # gpt-realtime-2 and exposes the post-GA `client.realtime.connect`
-    # path; older SDKs only have `client.beta.realtime.connect`,
-    # which we don't use. Pulls in `websockets` as the realtime
-    # transport. Skippable at install time only if the active
-    # provider is gemini AND the user is sure they'll never switch.
     "openai[realtime]>=3.12.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594).
     "audioop-lts>=0.2",
@@ -117,21 +108,6 @@ full = [
     "zeroconf>=0.151.3,<1.0",
 ]
 
-dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=0.23",
-    "pytest-timeout>=2.3",
-    "pytest-xdist>=3.8",
-    "ruff>=0.16.1",
-    "import-linter>=2.15,<2.16",
-    # The day-one baseline is checker-version-sensitive. Bump this
-    # deliberately when tightening or regenerating the baseline.
-    "mypy>=2.3.0,<2.4",
-]
-
-# Keep this dependency group identical to the ``dev`` optional extra above:
-# uv consumes the group, while pip users still install ``.[dev]``. The
-# cross-frontend contract is pinned by tests/test_dependency_groups.py.
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

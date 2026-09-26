@@ -42,11 +42,11 @@ if sys.version_info < (3, 13):
         f"venv silently happens (most often on macOS where the default "
         f"`python3` is Apple's 3.9).\n\n"
         f"Rebuild (the extras carry the runtime packages the suite imports;\n"
-        f"a bare `uv sync` / `.[dev]` installs only the dev tools):\n"
+        f"a bare `uv sync` installs only the dev tools):\n"
         f"  rm -rf .venv && uv sync --extra full --extra streambox   # recommended\n"
         f"  # or:\n"
-        f"  rm -rf .venv && python3.13 -m venv .venv && \\\n"
-        f"    .venv/bin/pip install -e '.[full,dev]'\n"
+        f"  rm -rf .venv && python3.13 -m venv --upgrade-deps .venv && \\\n"
+        f"    .venv/bin/pip install -e '.[full]' --group dev\n"
     )
 
 
