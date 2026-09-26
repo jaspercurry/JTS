@@ -88,7 +88,7 @@ def _record_systemctl(
 ) -> list[list[str]]:
     """Record every `systemctl` call, answering the diagnostics oneshot's
     ActiveState probe with ``active_state``."""
-    from jasper.control import aec_endpoints
+    from jasper.control.handlers import system as system_routes
 
     started: list[list[str]] = []
 
@@ -98,7 +98,7 @@ def _record_systemctl(
             return SimpleNamespace(returncode=0, stdout=active_state, stderr="")
         return proc()
 
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", fake_run)
+    monkeypatch.setattr(system_routes.subprocess, "run", fake_run)
     return started
 
 
@@ -118,7 +118,7 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
     """
     from jasper.cli import doctor as doctor_mod
     from jasper.cli.doctor import _harness as doctor_harness
-    from jasper.control import aec_endpoints
+    from jasper.control.handlers import system as system_routes
 
     cached = {
         "fails": 2,
@@ -139,8 +139,8 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
             return _FakeProc()
         return _spy
 
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", _record("subprocess.run"))
-    monkeypatch.setattr(aec_endpoints.subprocess, "Popen", _record("subprocess.Popen"))
+    monkeypatch.setattr(system_routes.subprocess, "run", _record("subprocess.run"))
+    monkeypatch.setattr(system_routes.subprocess, "Popen", _record("subprocess.Popen"))
     for name in ("main", "render_json"):
         monkeypatch.setattr(doctor_mod, name, _record(f"doctor.{name}"))
     # `run_async` resolves this in `_harness`'s own globals, so a

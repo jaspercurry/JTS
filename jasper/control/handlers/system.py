@@ -45,7 +45,6 @@ from ...local_sources import (
 )
 from ...log_event import log_event
 from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
-from .. import aec_endpoints
 from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker
@@ -72,6 +71,16 @@ _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_started_at: float | None = None
 
 
+def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
 def _diagnostics_unit_in_flight() -> bool:
     """Is the doctor oneshot still running? Asked of systemd, not inferred from
     the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
@@ -82,7 +91,7 @@ def _diagnostics_unit_in_flight() -> bool:
     per request. A `oneshot` reads `activating` while it runs.
     """
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
         )
     except (subprocess.SubprocessError, OSError):
@@ -118,7 +127,7 @@ def _start_diagnostics_refresh(
     with _diagnostics_refresh_lock:
         _diagnostics_refresh_started_at = now
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "--no-block", "start", "jasper-doctor-json.service",
         )
         error = "" if proc.returncode == 0 else (
