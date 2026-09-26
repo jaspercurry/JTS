@@ -30,10 +30,12 @@ from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
 from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.control import measurement_hold
 from jasper.dsp_apply import camilla_graph_mutation
 from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
+from jasper.platform.control_client import ControlError
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_echo import ECHO_WINDOW_SEC
@@ -55,6 +57,17 @@ def _reset_bluealsa_probe_state():
     bluealsa_probe.note_probe_success()
     yield
     bluealsa_probe.note_probe_success()
+
+
+@pytest.fixture(autouse=True)
+def measurement_hold_served(monkeypatch) -> measurement_hold.MeasurementHold:
+    """jasper-control's real hold, free unless a test takes it, served where
+    `read_measurement_hold` asks: a reconcile write that raises consults it."""
+    hold = measurement_hold.MeasurementHold()
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement", lambda **_: hold.snapshot(),
+    )
+    return hold
 
 
 # ---------- mapping helpers -------------------------------------------------
@@ -2793,6 +2806,46 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
     await coord.maybe_reconcile_camilla()
     assert client.db == pytest.approx(expected_db)
     assert len(event_records(caplog, "volume.reconcile_deferred")) == 1
+
+
+@pytest.mark.parametrize(
+    ("hold_state", "current_db", "writes"),
+    [
+        pytest.param("held", percent_to_db(70) - 25.0, False, id="raise_held"),
+        pytest.param("unreadable", percent_to_db(70) - 25.0, False, id="raise_unreadable"),
+        pytest.param("free", percent_to_db(70) - 25.0, True, id="raise_free"),
+        pytest.param("held", 0.0, True, id="lowering_held"),
+        pytest.param("unreadable", 0.0, True, id="lowering_unreadable"),
+    ],
+)
+async def test_a_raise_waits_on_the_measurement_hold_and_a_lowering_never_does(
+    tmp_path, monkeypatch, caplog, measurement_hold_served,
+    hold_state, current_db, writes,
+):
+    """A measurement whose MEASURE_PAUSE never landed still holds
+    jasper-control's hold: the reconciler raises the fader only once that hold
+    is free and readable, and lowers it regardless (ADR-0368)."""
+    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    coord, cam, _ = _real_coord(
+        tmp_path, active={}, db=current_db, level=70, mark_user_change=True,
+    )
+    if hold_state != "free":
+        measurement_hold_served.acquire("correction-measurement")
+    if hold_state == "unreadable":
+        def refused(**_kwargs: object) -> dict:
+            raise ControlError("connection refused")
+
+        monkeypatch.setattr("jasper.platform.control_client.get_measurement", refused)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls == ([pytest.approx(percent_to_db(70))] if writes else [])
+    assert coord.reconcile_deferred is not writes
+    reasons = [
+        fields["reason"]
+        for fields in event_field_maps(caplog, "volume.reconcile_deferred")
+    ]
+    assert reasons == ([] if writes else ["measurement_hold"])
 
 
 async def test_a_refused_write_speaks_once_and_says_when_it_lands(

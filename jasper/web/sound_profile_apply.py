@@ -11,14 +11,12 @@ serialize behind one write lock.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
@@ -269,6 +267,9 @@ async def _apply_settings(
     is not re-stamped or re-persisted. A full ``SoundSettings`` is also accepted
     for internal callers and tests. A failed live re-apply returns the saved
     state with a ``warning`` rather than reverting a setting already kept.
+    The floor never reaches the graph (``output_trim_db`` ignores it), so a save
+    of it alone re-emits nothing and needs no DSP writer lock, and only a
+    changed floor reconciles the fader (ADR-0368).
     """
     raw_changes = changes.to_dict() if isinstance(changes, SoundSettings) else changes
     recognized = {
@@ -277,7 +278,8 @@ async def _apply_settings(
         if key in raw_changes
     }
     with _sound_state_write_lock:
-        merged_raw = load_sound_settings().to_dict()
+        previous = load_sound_settings()
+        merged_raw = previous.to_dict()
         merged_raw.update(recognized)
         settings = SoundSettings.from_mapping(merged_raw)
         save_sound_settings(settings)
@@ -293,17 +295,18 @@ async def _apply_settings(
         blocked: dict[str, str] | None = None
         volume_warning: str | None = None
         apply_result: tuple[Any, Path, SoundProfile] | None = None
-        reconciled = False
+        reconciled = True
         try:
-            apply_result = await _load_profile_config(
-                profile,
-                profile_path=profile_path,
-                config_dir=config_dir,
-                camilla_factory=camilla_factory,
-                source="sound_settings",
-                persist_profile=False,
-                output_trim_db=_output_trim(profile, settings),
-            )
+            if recognized.keys() != {"volume_floor_db"}:
+                apply_result = await _load_profile_config(
+                    profile,
+                    profile_path=profile_path,
+                    config_dir=config_dir,
+                    camilla_factory=camilla_factory,
+                    source="sound_settings",
+                    persist_profile=False,
+                    output_trim_db=_output_trim(profile, settings),
+                )
         except (OSError, RuntimeError, ValueError, TypeError) as e:
             refusal = _carrier_refusal(e)
             if refusal is None:
@@ -321,10 +324,12 @@ async def _apply_settings(
                 blocked = refusal.to_payload()
 
         try:
-            reconciled = await _reconcile_volume_curve_after_settings(
-                camilla_factory=camilla_factory,
-            )
+            if settings.volume_floor_db != previous.volume_floor_db:
+                reconciled = await _reconcile_volume_curve_after_settings(
+                    camilla_factory=camilla_factory,
+                )
         except (AttributeError, OSError, RuntimeError) as e:
+            reconciled = False
             logger.warning("volume floor saved but volume reconcile failed: %s", e)
             volume_warning = (
                 "Saved, but the current volume will use the new floor on the next "
@@ -372,8 +377,9 @@ async def _reconcile_volume_curve_after_settings(
     ``maybe_reconcile_camilla`` only writes for camilla-master sources
     (idle/AirPlay/USB), so changing the floor cannot unguard a
     Spotify/Bluetooth push-mode handoff. ``False`` when it stood down for a
-    measurement or a DSP writer; jasper-voice's reconciler lands the floor
-    once they end.
+    DSP writer or, before a louder write, a measurement; the floor then lands
+    on jasper-voice's next reconcile tick where that daemon runs, and otherwise
+    at the next volume change or save (ADR-0368).
     """
     from jasper import librespot_state
     from jasper.renderer import RendererClient
@@ -381,13 +387,6 @@ async def _reconcile_volume_curve_after_settings(
     from jasper.volume_persistence import VolumePersistence
     from jasper.volume_persistence import configured_path as volume_state_path
 
-    # This coordinator never hears the MEASURE_PAUSE jasper-voice's reconciler
-    # stands down on; jasper-control's hold is the copy of that window
-    # jasper-voice adopts at startup. Unreadable counts as open: this path only
-    # lands the floor sooner (ADR-0368).
-    hold = await asyncio.to_thread(read_measurement_hold)
-    if hold is None or hold.get("active"):
-        return False
     coord = VolumeCoordinator(
         camilla=camilla_factory(),
         persistence=VolumePersistence(volume_state_path()),

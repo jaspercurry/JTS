@@ -47,6 +47,7 @@ from .assistant_volume import (
     volume_context_stamp_boot_ns,
 )
 from .assistant_loudness import tts_envelope_lufs_for_level
+from .control.measurement_hold import read_measurement_hold
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .log_event import log_event
 from .music_sources import (
@@ -192,7 +193,7 @@ class VolumeCoordinator:
         self._measurement_lapse_logged: bool = False
         # Edge state for the three conditions this reconciler re-evaluates
         # every tick; each is reported once per episode, never at 1 Hz.
-        self._reconcile_deferred: bool = False
+        self._reconcile_deferred: str | None = None
         self._write_failures: int = 0
         self._graph_probe_failures: int = 0
         # Serializes the final reconciler write with MEASURE_PAUSE acquisition.
@@ -1390,14 +1391,19 @@ class VolumeCoordinator:
         4. No DSP writer — a graph swap, or the volume-floor audition —
            holds the graph-mutation lock (ADR-0213, ADR-0368). It defers a
            mute correction too: an unmute mid-swap is the loud write the
-           graph-swap bracket exists to prevent (`_graph_mutation_in_progress`).
+           graph-swap bracket exists to prevent (`_defer_for_dsp_writer`).
+        5. A write that makes the speaker louder also waits while
+           jasper-control holds the fader for a measurement, or cannot say:
+           the window whose MEASURE_PAUSE never reached this process. A
+           write that makes it quieter never waits on it
+           (`_defer_for_measurement_hold`).
 
         A write failure is non-fatal: WARN on the episode's first, then the
         observer keeps ticking (`volume.reconcile_write_failed`).
         """
-        # A deferral spans consecutive ticks; one that returns before the
-        # probe ends it, so the next deferral opens a new episode.
-        deferred, self._reconcile_deferred = self._reconcile_deferred, False
+        # A deferral spans consecutive ticks; a tick that returns before the
+        # probes ends it, and a new reason opens a new episode.
+        deferred, self._reconcile_deferred = self._reconcile_deferred, None
         self._lapse_stranded_measurement_flag()
         if self._voice_session_active or self._measurement_active:
             return
@@ -1430,7 +1436,7 @@ class VolumeCoordinator:
         )
         if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
             return
-        if self._graph_mutation_in_progress(reported=deferred):
+        if self._defer_for_dsp_writer(reported=deferred):
             return
         # The preflight above avoids taking the cross-daemon lease on every
         # healthy 1 Hz tick; a candidate write then joins the same ordered
@@ -1467,7 +1473,14 @@ class VolumeCoordinator:
                 )
                 if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:
                     return
-                if self._graph_mutation_in_progress(reported=deferred):
+                if self._defer_for_dsp_writer(reported=deferred):
+                    return
+                louder = not expected_mute and (
+                    drift > RECONCILE_DRIFT_DB or current_mute is True
+                )
+                if louder and await self._defer_for_measurement_hold(
+                    reported=deferred,
+                ):
                     return
                 try:
                     ok = await self._write_camilla_db_with_mute(
@@ -1510,7 +1523,7 @@ class VolumeCoordinator:
                     },
                 )
 
-    def _graph_mutation_in_progress(self, *, reported: bool) -> bool:
+    def _defer_for_dsp_writer(self, *, reported: str | None) -> bool:
         """Stand this tick down while a DSP writer owns CamillaDSP's graph.
 
         The graph-swap bracket and the volume-floor audition take no claim
@@ -1539,15 +1552,33 @@ class VolumeCoordinator:
             self._graph_probe_failures = 0
         if held is not True:
             return False
-        if not reported:
-            log_event(logger, "volume.reconcile_deferred", reason="dsp_writer_lock")
-        self._reconcile_deferred = True
+        return self._defer("dsp_writer_lock", reported)
+
+    async def _defer_for_measurement_hold(self, *, reported: str | None) -> bool:
+        """Stand a louder write down while jasper-control holds the fader.
+
+        The backstop for a measurement whose MEASURE_PAUSE never landed here —
+        a window that went ahead without it, or whose renewal lapsed: the hold
+        is the window's copy that outlives both. An unreadable hold counts as
+        held, which costs only a late raise; a quieter write never asks, so the
+        safety correction stays live (ADR-0177, ADR-0368).
+        """
+        hold = await asyncio.to_thread(read_measurement_hold)
+        if hold is not None and not hold.get("active"):
+            return False
+        return self._defer("measurement_hold", reported)
+
+    def _defer(self, reason: str, reported: str | None) -> bool:
+        if reason != reported:
+            log_event(logger, "volume.reconcile_deferred", reason=reason)
+        self._reconcile_deferred = reason
         return True
 
     @property
     def reconcile_deferred(self) -> bool:
-        """Whether the last reconcile tick stood down for a DSP writer."""
-        return self._reconcile_deferred
+        """Whether the last reconcile tick stood down for a DSP writer or a
+        measurement."""
+        return self._reconcile_deferred is not None
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare

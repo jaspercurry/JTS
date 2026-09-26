@@ -30,32 +30,42 @@ save's coordinator.
 ## Decision
 
 1. **The audition holds `CANONICAL_DSP_WRITER_LOCK_PATH` for its whole
-   life.** It takes it with `atomic_io.advisory_file_lock_async`, inside the
-   writers' 10 s admission budget, before the fader moves. The one restore
-   funnel lets it go only once fader and mute are back: on a stop (the page's
-   pagehide stop included), on the runner's error or 10-minute limit, and on a
-   start that fails (an unreachable CamillaDSP is a `RuntimeError` for the
-   route) or is cancelled. A lock won after a cancelled start has left is let
-   go at once. The kernel drops it if jasper-web dies.
-2. **No lock, no tone.** A missing lock directory, or a lock not won inside
-   the budget, refuses the start before anything moves.
-3. **`RECONCILE_DUCK_SKIP_DB` and `_deep_quiet_skip` are deleted.** Both
-   reconciler clients stand down on ADR-0213's probe while the audition plays,
-   and on an open measurement window: jasper-voice on `MEASURE_PAUSE`, the
-   settings save on jasper-control's hold — the copy of that window
-   jasper-voice adopts at startup — which it also counts as open when it
-   cannot read it. Any other quiet drift nobody announced is corrected to the
-   household level. The stand-down is logged once per episode, and `/settings`
-   answers `volume_reconciled: false` for it.
+   life,** admitted through `dsp_apply.dsp_writer_lock` like any writer (source
+   `volume_floor_tone`, the writers' 10 s budget) before the fader moves. The
+   one restore funnel lets it go only once fader and mute are back: on a stop
+   (the page's pagehide stop included), on the runner's error or 10-minute
+   limit, and on a start that fails for any reason (an unreachable CamillaDSP
+   is a `RuntimeError` for the route) or is cancelled. A start stopped while
+   it waits never moves the fader, and a lock won after its start has left is
+   let go at once. The kernel drops it if jasper-web dies.
+2. **No lock, no tone.** A missing lock directory, a lock not won inside the
+   budget, or a lock thread that dies first refuses the start before anything
+   moves.
+3. **`RECONCILE_DUCK_SKIP_DB` and `_deep_quiet_skip` are deleted**, and what
+   the carve-out bought is kept without reading ownership into a dB gap. Both
+   reconciler clients stand down on ADR-0213's probe while the audition plays;
+   jasper-voice also stands down on `MEASURE_PAUSE`. Before a write that makes
+   the speaker louder, every reconciler asks jasper-control's measurement
+   hold — the copy of the window that outlives a pause which never landed or
+   lapsed — and waits while it is held or cannot be read. A write that makes
+   it quieter never waits on it. Any other drift is corrected to the
+   household level. A stand-down is logged once per episode and reason, and
+   `/settings` answers `volume_reconciled: false` for it.
+4. **The floor never reaches the graph** (`output_trim_db` ignores it), so a
+   `/settings` save of the floor alone re-emits nothing and takes no writer
+   lock, and only a save that changes the floor reconciles the fader.
 
 ## Consequences
 
-- **The visible cost:** every DSP writer that lands during an audition — a
-  `/sound` save or live draft, a bass or correction apply, a multiroom graph
-  push — waits the 10 s admission budget and refuses. The honest answer is
-  "stop the tone first", and the page does not say so yet. Saving the floor
-  itself keeps the setting, reports the refused re-apply, and defers its
-  volume reconcile; the reconciler lands the new floor once the tone stops.
+- **The visible cost:** every other DSP writer that lands during an audition —
+  any other `/sound` save, a live draft, a bass or correction apply, a
+  multiroom graph push — waits the 10 s admission budget and refuses. The
+  honest answer is "stop the tone first", and the page does not say so yet.
+  Saving the floor, the card's own flow, neither waits nor refuses; its
+  volume reconcile defers to the tone.
+- A deferred floor lands on jasper-voice's next reconcile tick where that
+  daemon runs. A streambox runs it only while an accessory mic is published;
+  without it the floor lands at the next volume change or floor save.
 - A page that vanishes without its pagehide stop keeps the lock, and every
   DSP writer refusing, until the tone's 10-minute limit.
 - While the tone plays the reconciler corrects it in neither direction: a
@@ -64,9 +74,8 @@ save's coordinator.
   −9.975 dB, the 1% step on the −10 dB top floor.
 - The reconciler now repairs what the carve-out stranded, to the household
   level and never above it: the 0 dB ceiling, the `set_volume_db` clamp and
-  `devices.volume_limit` are untouched.
-- A settings save made while jasper-control cannot be reached leaves the new
-  floor for jasper-voice's reconciler to land.
+  `devices.volume_limit` are untouched. While jasper-control cannot be reached
+  it lowers but does not raise.
 - **Rejected:** a `MEASURE_PAUSE` window for the audition (attempt 2), for the
   wake deafness and the reach above; failing open without a lock directory
   (attempt 1), since with the carve-out gone an unannounced audition is

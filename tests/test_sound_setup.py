@@ -112,7 +112,7 @@ from .active_speaker_fixtures import (
     mono_output_topology,
 )
 from ._hat_eeprom import write_hat_eeprom
-from ._log_events import event_records, parse_event
+from ._log_events import event_field_maps, event_records, parse_event
 from ._web_test_helpers import (
     json_post_with_csrf,
     make_csrf_session,
@@ -449,9 +449,10 @@ class FakeVolumeFloorToneRunner:
 
 
 def _floor_tone_session(tmp_path: Path) -> volume_floor_tone.VolumeFloorToneSession:
-    """A session holding the lock `_real_controller(..., tmp_path)` probes."""
+    """A session holding the lock `_real_controller(..., tmp_path)` probes:
+    dsp_apply's writer lock resolves to one inside a temp dir under pytest."""
     session = volume_floor_tone.VolumeFloorToneSession()
-    session._writer_lock_path = tmp_path / ".dsp_apply.lock"
+    session._writer_lock_dir = tmp_path
     return session
 
 
@@ -468,7 +469,7 @@ class _WitnessCamilla(FakeVolumeCamilla):
     ``breaks`` fails the audition's start the way an unreachable CamillaDSP
     does: ``"read"`` answers its best-effort read with nothing,
     ``"unmute"`` raises from its one strict write, ``"unmute_hang"`` never
-    returns from it.
+    returns from it; ``""`` breaks nothing.
     """
 
     def __init__(
@@ -476,14 +477,14 @@ class _WitnessCamilla(FakeVolumeCamilla):
     ) -> None:
         super().__init__(db=-18.0, muted=True)
         self._held = held
-        self._breaks = breaks
+        self.breaks = breaks
         self.held_at_write: list[bool] = []
         self.unmute_entered = asyncio.Event()
 
     async def get_volume_and_mute(
         self, *, best_effort: bool = False,
     ) -> tuple[float, bool] | None:
-        if self._breaks == "read":
+        if self.breaks == "read":
             return None
         return await super().get_volume_and_mute(best_effort=best_effort)
 
@@ -493,9 +494,9 @@ class _WitnessCamilla(FakeVolumeCamilla):
 
     async def set_main_mute(self, muted: bool, *, best_effort: bool = False) -> bool:
         self.held_at_write.append(self._held())
-        if not best_effort and self._breaks.startswith("unmute"):
+        if not best_effort and self.breaks.startswith("unmute"):
             self.unmute_entered.set()
-            if self._breaks == "unmute_hang":
+            if self.breaks == "unmute_hang":
                 await asyncio.Event().wait()
             raise CamillaUnavailable("camilla restarting")
         return await super().set_main_mute(muted, best_effort=best_effort)
@@ -4076,8 +4077,6 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     attempted = [threading.Event(), threading.Event()]
     reemit_entered = threading.Event()
     allow_reemit = threading.Event()
-    reconcile_entered = threading.Event()
-    allow_reconcile = threading.Event()
     call_lock = threading.Lock()
     save_snapshots = []
     emitted = []
@@ -4118,11 +4117,7 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
 
     async def fake_reconcile(**_kwargs):
         with call_lock:
-            call_index = len(reconciled_floors)
             reconciled_floors.append(load_sound_settings().volume_floor_db)
-        if call_index == 0:
-            reconcile_entered.set()
-            assert allow_reconcile.wait(timeout=2.0)
         return True
 
     monkeypatch.setattr(sound_profile_apply, "save_sound_settings", recording_save)
@@ -4160,9 +4155,6 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
         assert reemit_entered.wait(timeout=1.0)
         assert len(save_snapshots) == 1
         allow_reemit.set()
-        assert reconcile_entered.wait(timeout=1.0)
-        assert len(save_snapshots) == 1
-        allow_reconcile.set()
         responses = dict(future.result(timeout=3.0) for future in futures)
 
     merged = load_sound_settings()
@@ -4174,7 +4166,8 @@ def test_concurrent_split_page_settings_merge_and_live_state_converge(
     assert len(save_snapshots) == 2
     assert emitted[-1]["settings"] == merged.to_dict()
     assert emitted[-1]["trim"] == sound_profile_apply._output_trim(profile, merged)
-    assert reconciled_floors[-1] == -30.0
+    # Only the save that moved the floor reconciles the fader.
+    assert reconciled_floors == [-30.0]
     assert responses[emitted[-1]["worker"]]["sound_settings"] == merged.to_dict()
 
 
@@ -4657,19 +4650,21 @@ async def test_floor_tone_moves_the_fader_only_under_the_dsp_writer_lock(
     [
         ("lock_directory_missing", RuntimeError, False),
         ("lock_held_by_a_dsp_writer", RuntimeError, False),
+        ("lock_thread_died", RuntimeError, False),
+        ("camilla_unbuildable", ValueError, False),
         ("camilla_unreadable", RuntimeError, False),
         ("camilla_unavailable", RuntimeError, True),
         ("cancelled", asyncio.CancelledError, True),
     ],
 )
 async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
-    tmp_path: Path, monkeypatch, failure: str, raised: type[BaseException],
+    tmp_path: Path, monkeypatch, caplog, failure: str, raised: type[BaseException],
     fader_moved: bool,
 ):
-    """Never unannounced, never stranded (#3038): no lock directory or a writer
-    mid-apply refuses before the fader moves; an unreachable CamillaDSP (a
-    ``RuntimeError`` for the route) or a cancellation lets the lock go, only
-    after the restore funnel once the fader moved."""
+    """Never unannounced, never stranded (#3038): no lock, a lock that cannot be
+    won, or a dead lock thread refuses before the fader moves; whatever else a
+    start raises lets the lock go, only after the restore funnel once the fader
+    moved. Either way the next audition plays."""
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     FakeVolumeFloorToneRunner.instances.clear()
@@ -4681,27 +4676,35 @@ async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
     }.get(failure, ""))
     _install_floor_tone_owner(fake)
     session = _floor_tone_session(tmp_path)
-    if failure == "lock_directory_missing":
-        session._writer_lock_path = tmp_path / "absent" / ".dsp_apply.lock"
 
-    async with AsyncExitStack() as writer:
-        if failure == "lock_held_by_a_dsp_writer":
-            monkeypatch.setattr(
-                volume_floor_tone, "DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S", 0.05,
-            )
-            await writer.enter_async_context(camilla_graph_mutation(
-                source="test.swap", lock_path=tmp_path / ".dsp_apply.lock",
+    def unbuildable() -> FakeVolumeCamilla:
+        raise ValueError("camilla port is not a number")
+
+    with monkeypatch.context() as broken:
+        if failure == "lock_directory_missing":
+            broken.setattr(session, "_writer_lock_dir", tmp_path / "absent")
+        if failure == "lock_thread_died":
+            broken.setattr(volume_floor_tone._WriterLockHold, "_run", lambda self: None)
+        async with AsyncExitStack() as writer:
+            if failure == "lock_held_by_a_dsp_writer":
+                broken.setattr(
+                    volume_floor_tone, "DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S", 0.05,
+                )
+                await writer.enter_async_context(camilla_graph_mutation(
+                    source="test.swap", lock_path=tmp_path / ".dsp_apply.lock",
+                ))
+            start = asyncio.create_task(session.start_or_update(
+                {"volume_floor_db": -24.0},
+                camilla_factory=(
+                    unbuildable if failure == "camilla_unbuildable" else lambda: fake
+                ),
+                runner_factory=FakeVolumeFloorToneRunner,
             ))
-        start = asyncio.create_task(session.start_or_update(
-            {"volume_floor_db": -24.0},
-            camilla_factory=lambda: fake,
-            runner_factory=FakeVolumeFloorToneRunner,
-        ))
-        if failure == "cancelled":
-            await asyncio.wait_for(fake.unmute_entered.wait(), timeout=2.0)
-            start.cancel()
-        with pytest.raises(raised):
-            await start
+            if failure == "cancelled":
+                await asyncio.wait_for(fake.unmute_entered.wait(), timeout=2.0)
+                start.cancel()
+            with pytest.raises(raised):
+                await asyncio.wait_for(start, timeout=5.0)
 
     assert held() is False
     assert fake.db == pytest.approx(-18.0)
@@ -4710,13 +4713,28 @@ async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
     assert all(fake.held_at_write)
     assert FakeVolumeFloorToneRunner.instances[0].started is False
     assert not (tmp_path / "absent").exists()
+    # Admitted like any DSP writer, so a refusal reads like any other's.
+    assert len(event_field_maps(
+        caplog, "dsp.writer_lock", result="timeout", source="volume_floor_tone",
+    )) == (failure == "lock_held_by_a_dsp_writer")
+
+    fake.breaks = ""
+    payload = await asyncio.wait_for(session.start_or_update(
+        {"volume_floor_db": -24.0},
+        camilla_factory=lambda: fake,
+        runner_factory=FakeVolumeFloorToneRunner,
+    ), timeout=5.0)
+    assert payload["status"] == "started"
+    await session.stop(camilla_factory=lambda: fake, reason="stop")
+    assert held() is False
 
 
-async def test_a_floor_tone_cancelled_while_it_waits_lets_a_late_lock_go(
-    tmp_path: Path, monkeypatch,
+@pytest.mark.parametrize("interruption", ["cancel", "stop"])
+async def test_a_floor_tone_interrupted_while_it_waits_never_plays(
+    tmp_path: Path, monkeypatch, interruption: str,
 ):
-    """The lock its thread wins after the start was cancelled is released at
-    once — the late win that leaked in #3038's first attempt."""
+    """A start cancelled, or answered by a stop, while it waits for the lock
+    never moves the fader, and lets go of the lock its thread wins after."""
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     FakeVolumeFloorToneRunner.instances.clear()
@@ -4734,14 +4752,22 @@ async def test_a_floor_tone_cancelled_while_it_waits_lets_a_late_lock_go(
             runner_factory=FakeVolumeFloorToneRunner,
         ))
         await asyncio.sleep(0.1)
-        start.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await start
+        if interruption == "cancel":
+            start.cancel()
+        else:
+            stopped = await session.stop(camilla_factory=lambda: fake, reason="stop")
+            assert stopped["status"] == "stopped"
+    if interruption == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await start
+    else:
+        assert (await asyncio.wait_for(start, timeout=5.0))["status"] == "stopped"
     # Well past the thread's 10 ms acquire poll, so a kept late win shows.
     await asyncio.sleep(0.2)
 
     assert held() is False
     assert fake.events == []
+    assert FakeVolumeFloorToneRunner.instances[0].started is False
 
 
 @pytest.mark.parametrize("reconciler", ["voice_observer", "floor_save"])
@@ -4798,33 +4824,27 @@ async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_afte
 
 
 @pytest.mark.parametrize("hold_read", ["held", "unreachable"])
-async def test_a_settings_save_writes_nothing_while_a_measurement_holds_the_fader(
+async def test_a_floor_save_never_raises_the_fader_a_measurement_holds(
     tmp_path: Path, monkeypatch, hold_read: str,
 ):
-    """jasper-control's hold is the window jasper-voice's reconciler stands down
-    on, and a /sound settings save reads that same hold: open, or unreadable,
-    it writes nothing and reports ``volume_reconciled: false``. Once the window
-    closes the same save lands the drift on the household target, never above
+    """A floor save's reconcile raises the fader only once jasper-control's
+    hold says no measurement holds it: open or unreadable, the save writes
+    nothing and reports ``volume_reconciled: false``. After the window closes
+    the next floor save lands the fader on the household target, never above
     it (ADR-0368)."""
     monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     client, web, hold = _household_fader(tmp_path, monkeypatch)
-    household_db = client.db
-    client.db = measuring_db = household_db - 25.0
-
-    async def emit_refused(*_args: object, **_kwargs: object) -> None:
-        raise OSError("a measurement graph is loaded")
+    client.db = measuring_db = client.db - 25.0
 
     def control_refused(**_kwargs: object) -> dict:
         raise ControlError("connection refused")
 
-    monkeypatch.setattr(sound_profile_apply, "_load_profile_config", emit_refused)
-
-    async def save() -> dict:
+    async def save_floor(floor_db: float) -> dict:
         return await sound_profile_apply._apply_settings(
-            {"match_loudness": True},
+            {"volume_floor_db": floor_db},
             profile_path=tmp_path / "sound_profile.json",
-            config_dir=tmp_path / "configs",
+            config_dir=tmp_path,
             camilla_factory=lambda: web,
         )
 
@@ -4834,12 +4854,56 @@ async def test_a_settings_save_writes_nothing_while_a_measurement_holds_the_fade
             outage.setattr(
                 "jasper.platform.control_client.get_measurement", control_refused,
             )
-        assert (await save())["volume_reconciled"] is False
+        assert (await save_floor(-40.0))["volume_reconciled"] is False
     assert client.db == pytest.approx(measuring_db)
 
     hold.release("correction-measurement")
-    assert (await save())["volume_reconciled"] is True
-    assert client.db == pytest.approx(household_db)
+    assert (await save_floor(-45.0))["volume_reconciled"] is True
+    assert client.db == pytest.approx(percent_to_db(70))
+
+
+async def test_saving_the_floor_while_the_tone_plays_neither_waits_nor_fails(
+    tmp_path: Path, monkeypatch,
+):
+    """The floor never reaches the graph, so saving it takes no writer lock:
+    the tone's hold costs the save nothing, the floor is kept, and its volume
+    reconcile defers to the tone (ADR-0368)."""
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    client, web, _hold = _household_fader(tmp_path, monkeypatch)
+    install_volume_owner(VolumeOwner(
+        set_fader_db=lambda db: web.set_volume_db(db, best_effort=True),
+        get_fader_db=lambda: web.get_volume_db(best_effort=True),
+    ))
+    emits: list[dict] = []
+
+    async def emit(*_args: object, **kwargs: object) -> None:
+        emits.append(kwargs)
+
+    monkeypatch.setattr(sound_profile_apply, "_load_profile_config", emit)
+    FakeVolumeFloorToneRunner.instances.clear()
+    session = _floor_tone_session(tmp_path)
+    await session.start_or_update(
+        {"volume_floor_db": -40.0},
+        camilla_factory=lambda: web,
+        runner_factory=FakeVolumeFloorToneRunner,
+    )
+    tone_db = client.db
+
+    payload = await asyncio.wait_for(sound_profile_apply._apply_settings(
+        {"volume_floor_db": -40.0},
+        profile_path=tmp_path / "sound_profile.json",
+        config_dir=tmp_path,
+        camilla_factory=lambda: web,
+    ), timeout=5.0)
+
+    assert emits == []
+    assert "warning" not in payload
+    assert payload["sound_settings"]["volume_floor_db"] == -40.0
+    assert payload["volume_reconciled"] is False
+    assert client.db == pytest.approx(tone_db)
+    await session.stop(camilla_factory=lambda: web, reason="stop")
 
 
 async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
