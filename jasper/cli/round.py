@@ -143,7 +143,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         configure_logging()
         arm_walk.install_park_on_signals()
         with arm_walk.RunOwnedArm(
-            arm_walk.TurntableMover(attest_rig_clear=args.attest_rig_clear),
+            arm_walk.TurntableMover(),
             arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
             arm_walk.WalkConfig(),
         ) as arm:

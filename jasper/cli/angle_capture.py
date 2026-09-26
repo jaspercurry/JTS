@@ -44,9 +44,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     arm_walk.install_park_on_signals()
     trail = arm_walk.Trail(args.trail)
     walk = arm_walk.ArmWalk(
-        arm_walk.TurntableMover(
-            tool_path=args.tool, attest_rig_clear=args.attest_rig_clear
-        ),
+        arm_walk.TurntableMover(tool_path=args.tool),
         arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
         config,
         trail=trail,
