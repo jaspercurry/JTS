@@ -518,7 +518,7 @@ class TuningSession:
                     if interruption is None:
                         raise
                     _attach_first(interruption, bank_failure)
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 - named on the event, then re-raised
             error = type(exc).__name__
             raise
         finally:
