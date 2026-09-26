@@ -61,15 +61,15 @@ from tests.test_crossover_v2_harmonic_evidence import _artifact as _harmonics
 
 
 @pytest.mark.parametrize("overrides, digest, fingerprint", [
-    ({}, "903c2ec82ccb5f618fa08f30b07cddeaf33077e044ee75e4749ba594102a2184",
-     "1268d91e6e812d0c63bdcd7c23cf92978c45ebd472ed0b720ef337bea4c2777a"),
+    ({}, "e6cce02e8b828589929fd914d4a1668d4532f36712825c943efd44b6370dd881",
+     "8f47b47ac5c3c805a4ce6011a96808fd54cfebb232ac225f3dcc9870d106bf4d"),
     ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
         "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "d11a0dc51fc20bdf14190a3876e7da6e0920b0bafe2b484b808c2d56c36d54cc",
-     "8cb80599a7c1cf4f96a2c6cdc33a9c8f84733266e642d986776c62759e0c3b3d"),
+    }}, "059ba33a5ea94e5e2091b9f9c5a693a816e99a5bfeced2cf9c8446bf5200a17a",
+     "b487417943e87f755959581dcd3c40dc9ef5c10a18813825791bf22bea7e0b59"),
     ({"cloud_over": {"positions": {}}},
-     "fd8add5753449b8afc864984ff4463f064a74cfcd21736d05b1525a3485e051c",
-     "b918b97987580b25c9e27f91c38bac60c1aa680ad13c2068e17c932cff9fe61c"),
+     "f31c9b385c66671692efddbb0e92d202998b39893acacc8261cbdc4479032803",
+     "cc2c4bdfa0db2401b00bb900f6b1a5d272c3b74ff8ddd92ce6d301a789cd555f"),
 ], ids=["default", "gate-and-seat-spread", "positions-absent"])
 def test_packet_json_bytes(tmp_path, overrides, digest, fingerprint):
     # A plain-box packet carries no rear contract (report H R3).
@@ -92,7 +92,7 @@ def test_a_round_that_filed_view_outputs_in_its_evidence_keeps_its_fingerprint(t
 
     packet = build_crossover_evidence_packet(session)
 
-    assert packet["packet_fingerprint"] == "359bf4b17d71c226ab411af01414f42748bc0179ab2cb02287e051331bafbe41"
+    assert packet["packet_fingerprint"] == "f5342d7ed1a00f210a2a43a4d6e0f66ab022ec7bd366f915e6325226f01e1c07"
     views = packet[DERIVED_VIEWS]
     assert views["legacy_view_files_in_evidence"] is True
     assert views["harmonics"]["available"] is True

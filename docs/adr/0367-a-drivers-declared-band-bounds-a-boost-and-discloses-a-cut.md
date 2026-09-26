@@ -25,7 +25,8 @@
      is judged exactly as before.
   3. When the speaker declares no band, the speaker's branches (`branch_context`) decide whether a
      cut's role, or its trim pin's, is the speaker's. A role outside them refuses as
-     `driver_role_unknown`.
+     `driver_role_unknown`. The document judge names a branch for every role the preset declares,
+     so a one-way speaker's `full_range` counts although it has no crossover region.
 - **Consequences:**
   - A prescribed cut is bounded by the per-role filter slots, the evaluable Q range and the
     evaluator's domain, not by the declared band.
@@ -44,11 +45,14 @@
       |a1| < 1 + a2) still passes those coefficients.
     - The emitter refuses any corner at or above Nyquist.
     - Cuts at those frequencies were refused before, as outside the band, and they still are.
-  - The prescriber's contract now says this: `freq_must_be_inside`, the boost refusals, and the
-    packet's note for a speaker with no declared band. The generated tuning-doc text
-    (`cuts_are_free`) needed no change.
+  - A role that has a branch but no band, on a speaker that declares bands for its other roles,
+    still refuses as `driver_role_unknown` for either sign. This is the conservative reading: its
+    target is missing from the confirmed driver-safety profile or its band is unreadable, so the
+    declaration is incomplete rather than absent.
+  - The prescriber is told this in the round contract's `speaker.driver.bounds.passband_scope`
+    (the response format's `freq_must_be_inside`) and in the packet's note for a speaker with no
+    declared band. The response format's boost refusals name both band refusals. The generated
+    tuning-doc text (`cuts_are_free`) needed no change.
   - Rejected:
     - Admitting a cut at any frequency above 0 Hz (the figures above).
     - Keeping the band for cuts: it guards no mechanism (R2-F14).
-    - Admitting a cut on a role that has a branch but no band while other roles declare bands:
-      not asked for, and such a role still refuses by name for either sign.

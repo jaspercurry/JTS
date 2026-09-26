@@ -876,7 +876,7 @@ def _check_displaced(
     displaced = 0
     worst_boost = 0.0
     worst_role: str | None = None
-    for role in sorted({str(entry["role"]) for entry in filters} or passbands.keys()):
+    for role in sorted({str(entry["role"]) for entry in filters} or incumbent.keys()):
         previous = [dict(entry) for entry in incumbent.get(role) or ()]
         displaced += len(previous)
         if not previous:

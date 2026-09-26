@@ -52,10 +52,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "c294254285d592e38fddd2130313e1d5e6c66bd95a78c430c880efce22d0a77f"),
-    ("mono", True, "640100d1f376c0e26947f0ac653552380f6278b8bdd2ec6078e368557db2fbaf"),
-    ("stereo", False, "e0e435294f225bda84610ef170c7e6df16efeadf6d3b11daa8e8ffff7ead6b06"),
-    ("stereo", True, "2b71ca11e0f741848240f0cb48aa1fb5030dbcf7ba431ebd03d29f056d647ea2"),
+    ("mono", False, "1509bdeaee4db5f2f58133f7f0a270db8d8baa0766817076b5e55c7625e2b2f7"),
+    ("mono", True, "28c5140f60db5adc1be7da7804fe6fa477de4590bc13ca4fa6cea556efcdf6a8"),
+    ("stereo", False, "1fa6433582327fb8a40f1dcdfbc2b6f884f7c16ad6eed389a02a4a6a967e64a1"),
+    ("stereo", True, "97490320e9eb2ddb4363a6d904fddf442c11f078f4fa260558fe61bec44c6899"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)

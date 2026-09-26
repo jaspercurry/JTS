@@ -224,6 +224,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             }),
             "bounds": {
                 "passbands_hz": {role: list(band) for role, band in sorted(passbands.items())},
+                "passband_scope": driver_format["bounds"]["freq_must_be_inside"],
                 "chain_scope": driver_format["filters_are_a_total"],
                 "trim_pin_scope": driver_format["optional_top_level"]["pinned_trim_db"],
                 "max_filters_per_role": driver.DRIVER_MAX_FILTERS_PER_ROLE,
