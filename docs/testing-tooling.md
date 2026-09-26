@@ -745,8 +745,8 @@ tuning CLI.
 The adapter runs as a subprocess at
 `/opt/jasper/jasper/turntable/jts_turntable.py`. Root must be able to
 detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
-and sends `position-ready`. The adapter's confirmation flags come from the
-person's attestation; a power sign voids it.
+and sends `position-ready`. The run is refused unless the person attests the
+arm's path is clear (`--attest-rig-clear`); a power sign voids it.
 
 ---
 

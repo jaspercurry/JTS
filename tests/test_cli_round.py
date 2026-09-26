@@ -449,7 +449,7 @@ def arm_runtime(monkeypatch):
     install = Mock(wraps=aw.install_park_on_signals)
     monkeypatch.setattr(aw, "install_park_on_signals", install)
     with _own_signals():
-        yield SimpleNamespace(install=install, mover=mover, trail=trail, threads=threads, factory=factory, session=session)
+        yield SimpleNamespace(install=install, mover=mover, trail=trail, threads=threads, session=session)
 
 
 @pytest.fixture
@@ -1428,7 +1428,6 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
     assert arm_runtime.mover.moves[-1] == 0
     assert trail.one("parked")["ok"] is True
     assert trail.one("up")["rig_clear_attested"] is True
-    arm_runtime.factory.assert_called_with(attest_rig_clear=True)
     arm_runtime.session.assert_called_once_with(host_header="jts.local", base_url="http://127.0.0.1:8080")
     arm_runtime.install.assert_called_once_with()
 

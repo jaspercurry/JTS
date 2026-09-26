@@ -44,9 +44,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     arm_walk.install_park_on_signals()
     trail = arm_walk.Trail(args.trail)
     walk = arm_walk.ArmWalk(
-        arm_walk.TurntableMover(
-            tool_path=args.tool, attest_rig_clear=args.attest_rig_clear
-        ),
+        arm_walk.TurntableMover(tool_path=args.tool),
         arm_walk.LoopbackSession(host_header=args.hostname, base_url=args.base_url),
         config,
         trail=trail,
@@ -84,9 +82,8 @@ def _add_serve_args(parser: argparse.ArgumentParser) -> None:
         required=True,
         help=(
             "attest, once for this run, that the arm's full travel path is "
-            "clear and the saved zero is the acoustic axis. Maps to the "
-            "turntable adapter's two --confirm-* flags on every move. A power "
-            "sign voids it: the walk then stops, parks, and refuses"
+            "clear and the saved zero is the acoustic axis. A power sign voids "
+            "it: the walk then stops, parks, and refuses"
         ),
     )
     parser.add_argument(
