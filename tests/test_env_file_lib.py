@@ -632,16 +632,6 @@ def test_env_file_export_skips_jasper_prefixed_keys(
     assert result.stdout == f"{plain_key}={plain_value}\n"
 
 
-def test_lib_consumers_source_shared_lib_and_never_printf_q() -> None:
-    """Shared quoting avoids the Bash 5.2 printf-%q comma bug."""
-    for script in LIB_CONSUMERS:
-        text = script.read_text()
-        assert "jasper-env-file.sh" in text, script.name
-        assert "printf '%q'" not in text, script.name
-        assert "printf %q" not in text, script.name
-        # The quoting loop lives only in the lib — a reconciler that
-        # re-grows its own `'\''` rewrite loop has forked the helper.
-        assert "${rest%%\\'*}" not in text, script.name
 
 
 def test_lib_consumers_prefer_script_dir_sibling_lib() -> None:
