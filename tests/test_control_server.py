@@ -165,8 +165,7 @@ _ROUTES = [
 ]
 
 
-# "endpoint" is a legacy token that normalizes to streambox.
-@pytest.mark.parametrize("profile", ["full", "streambox", "endpoint"])
+@pytest.mark.parametrize("profile", ["full", "streambox"])
 @pytest.mark.parametrize(
     ("method", "path", "requires"),
     # The last two are routes only under the other method: the gate passes
@@ -181,8 +180,7 @@ def test_route_allowed_iff_the_profile_grants_its_capability(
     ) is (requires is None or install_profile_has_capability(profile, requires))
 
 
-@pytest.mark.parametrize("profile", ["streambox", "endpoint"])
-def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes(profile):
+def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes():
     """A streambox serves every other route, including the measurement routes
     its own measurement pages call and the assistant's (ADR-0363)."""
     routes = {(method, path) for method, path, _ in _ROUTES}
@@ -190,7 +188,7 @@ def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes(profil
         (method, path)
         for method, path in routes
         if _control_route_allowed_for_install_profile(
-            profile, method=method, path=path,
+            "streambox", method=method, path=path,
         )
     }
     assert routes - allowed == {
@@ -208,16 +206,15 @@ def test_shipped_grants_refuse_a_streambox_exactly_the_mic_and_aec_routes(profil
     }
 
 
-def test_legacy_endpoint_token_uses_streambox_routes_at_http_layer(
+def test_streambox_profile_uses_streambox_routes_at_http_layer(
     monkeypatch,
     server_with_coordinator,
 ):
-    # A persisted legacy "endpoint" marker normalizes to streambox, so the
-    # HTTP route gate applies the streambox policy: source routes are allowed,
-    # wake-stack routes are 404.
+    # The HTTP route gate applies the streambox policy: source routes are
+    # allowed, wake-stack routes are 404.
     import jasper.control.server as srv_mod
 
-    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "endpoint")
+    monkeypatch.setattr(srv_mod, "read_install_profile", lambda: "streambox")
 
     base, _ = server_with_coordinator
     status, body = _get(f"{base}/healthz")

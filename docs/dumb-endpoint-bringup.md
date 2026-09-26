@@ -3,10 +3,9 @@
 > **Status: historical.** Snapshot from mid-2026, before the install-tier
 > consolidation. It predates the removal of the separate "endpoint" /
 > "satellite" install tier (#707/#716) — there are now exactly **two**
-> install profiles, `full` and `streambox`. The legacy `endpoint` /
-> `satellite` tokens are still accepted and map to `streambox`
-> (`jasper/install_profile.py`, `_LEGACY_STREAMBOX_ALIASES`), so a field
-> box auto-migrates on its next deploy. "Endpoint behaviour" (a box that
+> install profiles, `full` and `streambox`; the legacy `endpoint` /
+> `satellite` tokens are refused like any other unknown profile.
+> "Endpoint behaviour" (a box that
 > just plays a bonded channel) is now the runtime multiroom **follower**
 > role on any full/streambox box, not an install tier.
 >
