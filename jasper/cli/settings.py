@@ -32,7 +32,7 @@ from jasper.voice.provider_state import (
     select_voice,
     voice_env_files,
 )
-from jasper.web._common import RestartOutcome, restart_voice_daemon
+from jasper.control.service_restart import RestartOutcome, restart_voice_daemon
 
 from ._refusal import (
     EXIT_REFUSED,

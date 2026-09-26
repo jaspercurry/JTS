@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from jasper.control.service_restart import restart_voice_daemon
 from jasper.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
     ensure_seed_profile,
@@ -60,7 +61,6 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     form_guarded,
-    restart_voice_daemon,
     send_html_response,
     send_rejected_form,
     send_see_other,

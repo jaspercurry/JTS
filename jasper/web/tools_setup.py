@@ -45,6 +45,8 @@ URL surface (after nginx strips /assistant/tools/):
   POST /apply        restart jasper-voice once to apply staged changes
 """
 from __future__ import annotations
+from jasper.control.service_restart import restart_voice_daemon
+from jasper.voice.provider_state import read_active_provider
 
 import functools
 import logging
@@ -72,10 +74,8 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     json_body,
-    read_active_provider,
     read_json_body,
     resolve_samples,
-    restart_voice_daemon,
     send_html_response,
     send_json_response,
 )

@@ -90,19 +90,19 @@ import re
 import secrets
 import urllib.parse
 from collections.abc import Callable, Mapping
-from enum import Enum
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Literal
 
+from ..control.service_restart import (
+    RestartOutcome, bonded_follower_active, restart_systemd_units as restart_systemd_units,
+)
 from ..platform import control_client as control
 from ..control import control_token
-from ..control.restart_broker import manage_units
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..local_sources.markers import local_sources_allowed
 from ..log_event import log_event
 from ..multiroom.config import LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
 from ..secret_redaction import redact_secrets
-from ..voice.provider_state import read_active_provider
 
 logger = logging.getLogger(__name__)
 
@@ -169,59 +169,6 @@ def value_for_env(
 SECRET_ENV_MODE = 0o640
 
 
-class RestartOutcome(Enum):
-    """What actually happened to a wizard's privileged restart request.
-
-    Three states, because a saver that collapses them lies: RAN and SKIPPED
-    both look like success and REFUSED looks like nothing at all, so a
-    two-state result makes the page claim "restarting" for a restart that was
-    deliberately not attempted, or was attempted and refused.
-    """
-
-    RAN = "ran"
-    SKIPPED = "skipped"
-    REFUSED = "refused"
-
-
-def restart_systemd_units(*units: str) -> RestartOutcome:
-    """Best-effort non-blocking restart for wizard-owned config changes.
-
-    `--no-block` is important. `Type=notify` units make `systemctl
-    restart` block until the daemon emits READY=1, which for
-    jasper-voice means model load + cue regen + reconnect to the
-    LLM provider — often 8–12 s on a Pi. Without --no-block the
-    web wizard's save handler hangs that long before returning the
-    303 redirect, the browser shows a spinner, and the user thinks
-    nothing happened and clicks Save again (then again).
-
-    With --no-block, systemctl queues the restart and returns in
-    a few ms. The browser gets the success banner immediately.
-    A *queued* restart that later fails still surfaces only when wake
-    doesn't fire (or via /system/), but a REFUSED one — broker down,
-    unit not allowlisted, polkit denial — is reported here, so the
-    saver can say "saved, but it did not restart" instead of a bare
-    success banner.
-
-    The fallback timeout of 5 s is for systemctl's own argument-
-    parsing / dbus-roundtrip overhead, NOT the restart itself —
-    --no-block means systemctl shouldn't sit there waiting on the
-    unit. If we hit 5 s here, something is wedged (dbus dead, etc.)
-    and the bigger problem will surface elsewhere.
-
-    This does not shell out to systemctl directly — it asks jasper-control's
-    restart broker to do it (manage_units), so jasper-web needs no privilege
-    of its own once dropped to a non-root service user. manage_units is
-    best-effort and never raises, and logs its own
-    `event=restart_broker.client_error` on a refusal."""
-    if not units:
-        return RestartOutcome.SKIPPED
-    resp = manage_units(
-        *units, verb="restart", reason="wizard config change",
-        no_block=True, timeout=5.0,
-    )
-    return RestartOutcome.RAN if resp.get("ok") else RestartOutcome.REFUSED
-
-
 def bonded_follower_park_reason() -> str:
     """Bounded presentation reason local sources (and Bluetooth) are parked,
     or "" when not parked.
@@ -242,17 +189,6 @@ def bonded_follower_park_reason() -> str:
     if reason == LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER:
         return reason
     return "role_transition_in_progress"
-
-
-def bonded_follower_active() -> bool:
-    """True when a requested follower role actually remains effective.
-
-    The grouping reconciler may refuse an unsafe bond and land solo without
-    erasing the household's request.  Its fingerprinted status distinguishes
-    that safe fallback from an active follower; missing/stale status keeps a
-    requested follower parked until reconciliation proves otherwise.
-    """
-    return bool(bonded_follower_park_reason())
 
 
 def bonded_follower_leader_addr() -> str:
@@ -300,40 +236,6 @@ def pair_banner_html() -> str:
         "and leader-owned sound shaping run on the pair leader while paired "
         '(<a href="/sound/pair/">manage the pair</a>).</div>'
     )
-
-
-def restart_voice_daemon() -> RestartOutcome:
-    """Best-effort restart of jasper-voice so it picks up new
-    credentials / new provider / wake model on its next boot.
-
-    Both skip gates below return SKIPPED, never REFUSED: the saved
-    config is correct and applies on unbond, so the saver must not
-    report a failure — but it must not claim a restart either.
-
-    Two skip gates, both states where a restart would be WRONG:
-    provider unset (voice refuses to start anyway), and parked as a
-    bonded follower — the dumb-follower profile keeps voice disabled
-    while paired, and a wizard save must not boot 240 MB of models
-    that jasper-aec-reconcile would re-park; the saved config applies
-    on unbond (the un-park path restarts voice with fresh env)."""
-    if not read_active_provider():
-        logger.info("not starting jasper-voice: JASPER_VOICE_PROVIDER is unset")
-        return RestartOutcome.SKIPPED
-    if bonded_follower_active():
-        logger.info(
-            "not restarting jasper-voice: parked (bonded follower) — "
-            "saved config applies on unbond",
-        )
-        return RestartOutcome.SKIPPED
-    # No explicit `systemctl enable` here. jasper-voice is enabled at install,
-    # and the root jasper-aec-reconcile (Tier B) is the authoritative owner of
-    # voice's enable/disable (it disables on bonded-follower park and re-enables
-    # on unpark). The web side only needs the runtime restart. The non-root
-    # jasper-control is deliberately NOT granted polkit manage-unit-files —
-    # it can't be unit-scoped and `systemctl restart` consults it, which
-    # would re-open restart-of-any-unit; see
-    # deploy/polkit/49-jasper-control.rules.
-    return restart_systemd_units("jasper-voice")
 
 
 # The one sentence every saver appends about the daemon, so two buttons

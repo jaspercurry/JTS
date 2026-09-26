@@ -63,6 +63,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
 from .. import home_assistant as _ha_mod
 from ..log_event import log_event
 from ..atomic_io import write_env_file
@@ -80,7 +81,6 @@ from ._common import (
     header_guarded,
     read_guarded,
     mask_secret,
-    restart_voice_daemon,
     send_html_response,
     send_json_response,
     send_see_other,

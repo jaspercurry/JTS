@@ -38,7 +38,7 @@ Modularity: `jasper.transit.CITY_PACKS` owns the provider registry and
 wizard renders providers whose enabled pack covers the saved coordinates.
 
 Restart: every successful save kicks `systemctl restart jasper-voice`
-(non-blocking, see `_common.restart_voice_daemon`). The transit tools
+(non-blocking, see `control.service_restart.restart_voice_daemon`). The transit tools
 re-register on the daemon's next boot based on the new env values.
 
 URL surface (after nginx strips /assistant/transit/):
@@ -61,6 +61,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
 from .. import google_routes, location_state, transit
 from ..atomic_io import locked_transform_env_file, write_env_file
 from ..transit import geocode as geocode_mod
@@ -78,7 +79,6 @@ from ._common import (
     form_guarded,
     send_html_response,
     send_see_other,
-    restart_voice_daemon,
     SECRET_ENV_MODE,
 )
 from .chrome import return_to_href
