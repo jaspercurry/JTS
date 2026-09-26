@@ -144,8 +144,7 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
 @pytest.mark.parametrize("program_id,poses,banks", [
     ("nearfield", "nearfield/woofer", True),
     ("nearfield", None, True),
-    ("close", "nearfield/woofer", False),
-    ("nearfield", "close_spot", False),
+    ("tournament", "speaker_mark", False),
 ])
 def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, poses, banks):
     """A round banks under its program id, so a plan naming one the registry

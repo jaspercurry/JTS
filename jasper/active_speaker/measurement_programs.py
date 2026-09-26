@@ -122,7 +122,7 @@ PRESCRIPTION_SECTIONS = tuple(sorted(
 PURPOSES = tuple(name for _, name in sorted(
     [(row.purpose_order, row.purpose) for row in _PROGRAM_SECTIONS] + [(3, PURPOSE_REFERENCE)],
 ))
-#: Tuning order; reference is reached only through the close/spot program.
+#: Tuning order; reference evidence runs through :data:`REFERENCE_PROGRAMS`.
 RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
 PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
@@ -228,13 +228,18 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
+#: Program ids whose rows retired, and the purpose their banked rounds read as.
+#: Frozen: a banked id is never renamed or reused (ADR-0366 §6).
+RETIRED_PROGRAM_PURPOSES = MappingProxyType({"close": PURPOSE_REFERENCE})
+
+
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
-    or a custom layout's ``nearfield/custom``)."""
+    a custom layout's ``nearfield/custom``, or a retired row's ``close/spot``)."""
     name, _, size = str(run_program or "").partition("/")
     if not name or name in PURPOSES:
         return name
-    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    return RETIRED_PROGRAM_PURPOSES.get(name) or program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -545,14 +550,6 @@ def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
     return tuple(section.name for row in _PROGRAM_SECTIONS
                  if purpose is None or row.purpose == purpose for section in row.sections if section.reset)
 
-# Compatibility values derived from the config, which remains their owner.
-ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
-SEAT_OFFSET_M = max(
-    abs(component)
-    for pose in _PROGRAMS[("seat", "cloud")].poses
-    for component in pose.seat_offset_m or ()
-)
-CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 #: Programs a run may name beside the tuning programs: reference evidence no
 #: tuning reader admits (ADR-0360).
 REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))

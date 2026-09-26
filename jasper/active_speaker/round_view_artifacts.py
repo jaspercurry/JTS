@@ -24,10 +24,6 @@ TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
 TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
-TAKES_FAR_AND_CLOSE = (
-    "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
-    "--close-m", "<distance-m>",
-)
 
 
 class ViewArtifact(NamedTuple):
@@ -93,7 +89,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "--after-set", "<set-id>", "--change", "<change>",
     ), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/1"),
     "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,), schema="jts_delay_landscape/1"),
-    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,), schema="jts_close_reference/1"),
     "nearfield": ViewArtifact("nearfield_view.json", purposes=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1"),
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
     # The packet owns these two names, so the rows take those constants rather
@@ -125,7 +120,6 @@ VIEW_PURPOSES = {
 ANSWER_SCHEMAS = {
     "speaker-fit": "jts_speaker_fit/1",
     "repeat --set": "jts_repeat/1",
-    "close-reference --distance": "jts_mic_distance/1",
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact

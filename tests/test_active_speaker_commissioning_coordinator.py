@@ -141,7 +141,7 @@ def test_program_order_consumers(consumer):
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
-        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("close", "nearfield")
+        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("nearfield",)
         order = order[:len(RUNNABLE_PROGRAMS)]
     else:
         order = tuple(next_program_action(
@@ -171,7 +171,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert ids & rear_ids == (rear_ids if rear else set())
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
-    assert {"seat/cube", "room/cloud", "room/seat", "close/spot"} <= ids
+    assert {"seat/cube", "room/cloud", "room/seat"} <= ids
     near_field = {"nearfield/woofer", "nearfield/rear", "nearfield/cardioid"}
     assert ids & near_field == (set() if passive else near_field if rear else {"nearfield/woofer"})
     assert sum(choice["default"] for choice in choices) == 1

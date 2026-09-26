@@ -141,8 +141,8 @@ different candidates and then claim their full configurations were compared.
 ## 6. Linearize per driver
 
 Is this a speaker feature the filter can control? `classify-features`,
-`jasper-round-views sweep --scope round|take`, `close-reference`, and
-`distortion` give distinct evidence. Run useful views before writing the
+`jasper-round-views sweep --scope round|take` and `distortion` give distinct
+evidence. Run useful views before writing the
 prescription; a view files beside the round and never changes the evidence
 the prescription answers. Unavailable classification is not a negative verdict.
 
@@ -170,8 +170,6 @@ speaker-only evidence. More repeats do not remove a systematic room contribution
 
 A gate sweep varies the analysis window over existing raw captures. It costs no
 new sound, but it cannot recover missing WAVs or make an invalid capture valid.
-`close-reference` compares a suitable local reference with the pose response;
-inspect reference compatibility before assigning a physical mechanism.
 
 ESS harmonic extraction separates orders in time. The window may overlap a
 neighboring order or extend past available samples. Read per-order status,
@@ -249,9 +247,9 @@ tune, analyzed ungated so the reflections stay in. A seat take records its
 kind, its offset from the head and its window; it is not a bearing at the mark,
 and no gated reader treats it as one.
 `0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md`
-establishes the pose categories and the bass program's lack of a nearfield rung. The
-close reference (`close/spot`, about 0.3 m on the design axis) stays the
-room-suppressed diagnostic of the speaker's own share.
+establishes the pose categories and the bass program's lack of a nearfield rung. A
+close take is any pose at a short distance, read inside its own band
+(`0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md`).
 
 The seam is the ceiling: the applied candidate's trusted floor (2.5/T of the
 gate it earned), clamped to the room boundary's bounds, with the shipped

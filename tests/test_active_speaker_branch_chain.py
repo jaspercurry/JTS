@@ -39,7 +39,6 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_db,
     headroom_charge_db,
     radiating_band_hz,
-    recommended_distance,
     rear_branch_sum_headroom_db,
     rear_stage_chain_response,
 )
@@ -1179,31 +1178,6 @@ def test_the_model_is_the_butterworth_biquad_cascade_the_graph_realizes(
         freqs, (CrossoverSection(fc_hz, order, highpass=highpass),)
     )
     assert float(np.max(np.abs(actual_db - expected_db))) < 1e-9
-
-
-# --------------------------------------------------------------------------- #
-# piston geometry: where a close reference stands (#3501)
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "diameter_in, fc_hz, expected_in",
-    [(5.5, 2500.0, 12.4), (12.0, 500.0, 25.3), (2.5, 2500.0, 5.3)],
-)
-def test_recommended_distance_lands_where_the_issue_says(
-    diameter_in, fc_hz, expected_in
-):
-    record = recommended_distance(diameter_in * 0.0254, fc_hz)
-    assert record["distance_in"] == pytest.approx(expected_in, abs=0.1)
-    assert record["distance_m"] == pytest.approx(
-        record["far_field_term_m"] + record["margin_term_m"]
-    )
-    assert record["far_field_ceiling_hz"] > record["band_top_hz"]
-    # The margin is the dominant term at every anchor; the far-field distance
-    # is the correction on top, which is why both are published separately.
-    assert record["margin_term_m"] > record["far_field_term_m"]
-    # A tolerance is a MAGNITUDE, never a signed gain to apply.
-    assert record["placement_tolerance_db"] > 0.0
 
 
 def _chain(**overrides) -> dict:

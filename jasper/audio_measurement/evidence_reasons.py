@@ -41,21 +41,11 @@ REASON_TOO_FEW_POSITIONS = "too_few_positions"
 REASON_TOO_FEW_SEATS = "too_few_seats"
 REASON_UNREADABLE = "round_views_unreadable_round"
 REASON_UNWRITABLE = "round_views_unwritable_out"
-REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
-REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
 REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
-REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
-UNRESOLVED_LOW_CONFIDENCE = "alignment_confidence_below_floor"
-UNRESOLVED_NO_CANCELLATION = "agreement_without_cancellation"
-UNRESOLVED_OUTSIDE_VALIDITY = "band_outside_validity"
-UNRESOLVED_RESIDUAL_SMALL = "disagreement_without_residual"
-VERDICT_AGREEMENT = "agreement"
-VERDICT_ROOM_DOMINATED = "room_dominated"
-VERDICT_UNRESOLVED = "unresolved"
 
 EVIDENCE_REASONS = MappingProxyType({
     CAPTURES_UNREADABLE: "The round has an admissible capture shape but its stamped audio cannot be read.",
@@ -94,19 +84,9 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_TOO_FEW_SEATS: "Too few usable seats support the requested comparison; a sample spread needs at least two member curves.",
     REASON_UNREADABLE: "The round view could not read its input round.",
     REASON_UNWRITABLE: "The round view could not write its output artifact.",
-    REFUSE_AT_HZ_OFF_SPEC_TABLE: "The requested close-reference frequency has no specification tolerance.",
-    REFUSE_GATE_NOT_POSITIVE: "The requested close-reference gate is not finite and positive.",
     REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
     REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
     REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
     REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
-    REFUSE_RATE_MISMATCH: "The close and far captures have different sample rates.",
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
-    UNRESOLVED_LOW_CONFIDENCE: "The alignment confidence is below the comparison threshold.",
-    UNRESOLVED_NO_CANCELLATION: "The responses agree without enough cancellation to support that agreement.",
-    UNRESOLVED_OUTSIDE_VALIDITY: "The band has too few points inside the valid comparison range.",
-    UNRESOLVED_RESIDUAL_SMALL: "The responses disagree without a large enough residual to identify the room.",
-    VERDICT_AGREEMENT: "The close and far responses agree and the residual supports cancellation.",
-    VERDICT_ROOM_DOMINATED: "The close and far responses disagree with a large room residual.",
-    VERDICT_UNRESOLVED: "The close-reference comparison cannot resolve speaker response from room response.",
 })

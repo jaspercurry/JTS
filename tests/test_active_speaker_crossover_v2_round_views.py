@@ -275,17 +275,13 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
-    # this round in the slot that writes the artifact beside it. What is left
-    # in brackets is what no inventory of one round can fill, and running it
-    # without that round argparse rejects.
-    multi = rows["close_reference.json"]
+    # this round in its own slot. What is left in brackets is what no
+    # inventory of one round can fill.
+    multi = rows["repeatability.json"]
     assert shlex.split(multi["produced_by"]) == [
-        "jasper-round-views", "close-reference", "--far-round", str(round_dir),
-        "--close-round", "<other-round>", "--close-m", "<distance-m>",
+        "jasper-round-views", "repeat", str(round_dir), "<other-round>",
     ]
     assert multi["producer_needs_more_than_this_round"] is True
-    with pytest.raises(SystemExit):
-        cli.main(["close-reference", "--far-round", str(round_dir)])
 
     assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
         f"jasper-round-views classify-features {round_dir}"

@@ -811,13 +811,7 @@ def request_for_program(
         candidates=candidates,
         level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
-        # ``spot`` carries caller geometry rather than a registry row, so its
-        # size names nothing an operator chose.
-        program=(
-            program.program_id
-            if program.program_id == "spot"
-            else f"{program.program_id}/{program.size}"
-        ),
+        program=f"{program.program_id}/{program.size}",
     )
 
 
