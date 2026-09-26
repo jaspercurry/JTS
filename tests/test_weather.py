@@ -824,7 +824,7 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
 
 # --- cache bounding + forecast TTL ------------------------------------
 #
-# Mirrors jasper.citibike's TTL-cache tests: drive the client through a
+# Mirrors jasper.transit.citibike's TTL-cache tests: drive the client through a
 # MockTransport whose handler counts hits, and monkeypatch the module's
 # `time` for the clock so TTL boundaries are deterministic.
 

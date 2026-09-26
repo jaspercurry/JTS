@@ -65,8 +65,8 @@ from datetime import datetime
 
 import httpx
 
-from .log_event import log_event
-from .transit._mta_stations import Station, stations_by_id
+from ..log_event import log_event
+from ._mta_stations import Station, stations_by_id
 
 logger = logging.getLogger(__name__)
 

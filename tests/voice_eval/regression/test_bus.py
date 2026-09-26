@@ -37,7 +37,7 @@ import os
 
 import pytest
 
-from jasper.bus import BusClient, parse_bus_stops
+from jasper.transit.bus import BusClient, parse_bus_stops
 from tests.voice_eval import oracles
 
 

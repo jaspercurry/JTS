@@ -22,7 +22,7 @@ This module is the GBFS data layer; the wizard provider at
 
 Everything here is sync. The voice tool wraps `CitiBikeClient.get_status`
 in `asyncio.to_thread` so the realtime LLM session never blocks —
-matches the subway pattern in `jasper.subway` rather than bus's
+matches the subway pattern in `jasper.transit.subway` rather than bus's
 parallel-fan-out AsyncClient (we only hit two feeds, both cached,
 so async would be unnecessary complexity).
 """
@@ -40,8 +40,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
-from .log_event import log_event
-from .transit.base import TransitError
+from ..log_event import log_event
+from .base import TransitError
 
 logger = logging.getLogger(__name__)
 

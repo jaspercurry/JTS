@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.citibike and jasper.transit.providers.citibike.
+"""Tests for jasper.transit.citibike and jasper.transit.providers.citibike.
 
 All hardware-free; httpx network calls mocked via MockTransport. The
 module-level GBFS cache is cleared between every test by the autouse
@@ -16,8 +16,8 @@ from typing import Any
 import httpx
 import pytest
 
-import jasper.citibike as citibike_mod
-from jasper.citibike import (
+import jasper.transit.citibike as citibike_mod
+from jasper.transit.citibike import (
     INFO_TTL_SECONDS,
     STATION_INFO_URL,
     STATION_STATUS_URL,
@@ -211,7 +211,7 @@ def test_get_status_filter_matches_normalized_form(monkeypatch):
     and we should match against the normalized label even though the
     saved label is raw '9 Ave & 41 St'."""
     monkeypatch.setattr(
-        "jasper.citibike.fetch_feed",
+        "jasper.transit.citibike.fetch_feed",
         lambda url, ttl, **kw: _gbfs_envelope(
             _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
         ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
@@ -227,7 +227,7 @@ def test_get_status_filter_matches_raw_form(monkeypatch):
     raw substring matches the saved label even though normalization
     would turn it into '9th Avenue'."""
     monkeypatch.setattr(
-        "jasper.citibike.fetch_feed",
+        "jasper.transit.citibike.fetch_feed",
         lambda url, ttl, **kw: _gbfs_envelope(
             _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
         ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
@@ -240,7 +240,7 @@ def test_get_status_filter_matches_ordinal_only(monkeypatch):
     """User says '41st' alone — must match. Normalization doesn't
     add or remove '41st' from either side, so substring works."""
     monkeypatch.setattr(
-        "jasper.citibike.fetch_feed",
+        "jasper.transit.citibike.fetch_feed",
         lambda url, ttl, **kw: _gbfs_envelope(
             _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
         ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
@@ -638,10 +638,10 @@ def test_provider_find_stops_near_sorts_by_distance(monkeypatch):
         _station_status("far"),
     )
     # Patch on the source module — the provider lazy-imports
-    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # fetch_feed from jasper.transit.citibike inside find_stops_near to break
     # a startup-time import cycle, so the patch target must be the
     # source module, not the provider's namespace.
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
@@ -660,10 +660,10 @@ def test_provider_find_stops_near_excludes_uninstalled(monkeypatch):
         _station_status("off", installed=0),
     )
     # Patch on the source module — the provider lazy-imports
-    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # fetch_feed from jasper.transit.citibike inside find_stops_near to break
     # a startup-time import cycle, so the patch target must be the
     # source module, not the provider's namespace.
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
@@ -681,10 +681,10 @@ def test_provider_find_stops_near_excludes_status_missing(monkeypatch):
     )
     status = _gbfs_envelope(_station_status("on"))
     # Patch on the source module — the provider lazy-imports
-    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # fetch_feed from jasper.transit.citibike inside find_stops_near to break
     # a startup-time import cycle, so the patch target must be the
     # source module, not the provider's namespace.
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
@@ -697,10 +697,10 @@ def test_provider_find_stops_near_includes_snapshot(monkeypatch):
     info = _gbfs_envelope(_station_info("abc", "9 Av", 40.65, -74.00))
     status = _gbfs_envelope(_station_status("abc", bikes=7, ebikes=3, docks=25))
     # Patch on the source module — the provider lazy-imports
-    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # fetch_feed from jasper.transit.citibike inside find_stops_near to break
     # a startup-time import cycle, so the patch target must be the
     # source module, not the provider's namespace.
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
@@ -719,10 +719,10 @@ def test_provider_find_stops_near_caps_at_count(monkeypatch):
     info = _gbfs_envelope(*info_stations)
     status = _gbfs_envelope(*status_stations)
     # Patch on the source module — the provider lazy-imports
-    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # fetch_feed from jasper.transit.citibike inside find_stops_near to break
     # a startup-time import cycle, so the patch target must be the
     # source module, not the provider's namespace.
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,

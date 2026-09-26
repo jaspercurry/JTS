@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper.tool_prompt_overrides — wizard-owned prompt override state."""
+"""jasper.tools.tool_prompt_overrides — wizard-owned prompt override state."""
 from __future__ import annotations
 
 import json
 import os
 import stat
 
-from jasper.tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
+from jasper.tools.tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
 
 
 def test_missing_file_reads_empty(tmp_path):

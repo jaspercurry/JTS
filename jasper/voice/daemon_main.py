@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Composition root for jasper-voice: `run()` assembles the daemon's
-startup phases; `main()` maps boot-time failures to a park. The
-`jasper-voice` script entry point calls `jasper.voice_daemon.main`,
-which lazily delegates here."""
+"""Voice daemon startup and command entry point."""
 
 from __future__ import annotations
 
@@ -61,8 +58,8 @@ from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
-from ..tool_prompt_overrides import read_prompt_overrides
-from ..tool_state import read_tool_state
+from ..tools.tool_prompt_overrides import read_prompt_overrides
+from ..tools.tool_state import read_tool_state
 from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
 from ..usage import (
     BillableActivityMeter,
@@ -103,6 +100,8 @@ from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+HEARTBEAT_STALE_THRESHOLD_SEC = 5.0
 
 _T = TypeVar("_T")
 
@@ -1174,7 +1173,7 @@ async def run() -> None:
         # Tier 1 of the resilience ladder: bumped on every mic frame inside
         # WakeLoop.run, paired with `Type=notify` + `WatchdogSec=30s` in
         # jasper-voice.service. See jasper/watchdog.py.
-        heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
+        heartbeat = Heartbeat(stale_threshold_sec=HEARTBEAT_STALE_THRESHOLD_SEC, interval_sec=10.0)
         heartbeat.start()
         _release(stack, "heartbeat", heartbeat.stop)
         wake_loop = WakeLoop(

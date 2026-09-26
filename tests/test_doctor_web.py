@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import tool_catalog_view
+from jasper.tools import tool_catalog_view
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared
 from jasper.cli.doctor import web as doctor_web

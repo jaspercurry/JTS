@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.bus.BusClient — mocked HTTP, no network.
+"""Unit tests for jasper.transit.bus.BusClient — mocked HTTP, no network.
 
 v2 shape: BusClient holds a list of configured stops; every
 get_arrivals call fans out, unions, sorts, caps. Each BusArrival
@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from jasper.bus import BusClient, parse_bus_stops
+from jasper.transit.bus import BusClient, parse_bus_stops
 from jasper.transit.base import TransitError
 
 

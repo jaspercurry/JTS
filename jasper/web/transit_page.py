@@ -11,7 +11,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import google_routes, location_state, transit
-from ..bus import parse_bus_stops
+from ..transit.bus import parse_bus_stops
 from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
@@ -580,10 +580,10 @@ def _citibike_card_html(
         error = f"unexpected error: {safe}"
 
     # Lazy-import via the runtime module — same cycle-break rationale
-    # as in jasper.transit.providers.citibike (`jasper.citibike`'s
+    # as in jasper.transit.providers.citibike (`jasper.transit.citibike`'s
     # `from .transit.base import TransitError` triggers the registry
     # which loads the provider which would re-enter the runtime).
-    from ..citibike import parse_saved_stations
+    from ..transit.citibike import parse_saved_stations
 
     saved_picks = parse_saved_stations(_value_for(state, "JASPER_CITIBIKE_STATIONS"))
     saved_ids = {sid for sid, _ in saved_picks}

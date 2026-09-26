@@ -11,10 +11,9 @@ the user turns it on, the detail page surfaces the setup wizard.
 
 This page READS the catalog jasper-voice wrote at /run/jasper/tools.json
 and writes tool UI state to /var/lib/jasper/tool_state.env plus prompt
-overrides to /var/lib/jasper/tool_prompt_overrides.json. It does NOT
-import jasper.tools / build the registry — the socket-activated wizard
-stays light (the transit lazy-import lesson); it uses jasper.tool_catalog_view
-(json + tool_state only) to read + overlay.
+overrides to /var/lib/jasper/tool_prompt_overrides.json. The light
+jasper.tools.tool_catalog_view reader keeps the tool factories out of this
+socket-activated wizard.
 
 Toggle stages, Apply commits — two-step on purpose:
   * POST /toggle just writes staged tool UI state. It does NOT restart voice:
@@ -62,10 +61,10 @@ from typing import Any, TypeVar
 
 from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
-from ..tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
-from ..tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
-from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
-from ..tool_state import read_tool_state, write_tool_state
+from ..tools.tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
+from ..tools.tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
+from ..tools.tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
+from ..tools.tool_state import read_tool_state, write_tool_state
 from ._common import (
     RestartOutcome,
     RouteTable,

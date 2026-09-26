@@ -22,7 +22,7 @@ from jasper.tools.catalog import (
     build_pack_payloads,
     write_catalog,
 )
-from jasper.tool_state import ToolState
+from jasper.tools.tool_state import ToolState
 from jasper.tools.packs import CapabilityPack, CatalogPack, register_packs
 from tests._tool_pack_contract import (
     ALWAYS_ON_TOOL_NAMES,
@@ -166,7 +166,7 @@ def test_disabled_pack_disables_all_child_tools():
 
 def test_full_catalog_registry_ignores_staged_disabled_packs(monkeypatch):
     """Full schema enumeration must keep disabled packs visible to re-enable."""
-    import jasper.tool_state as tool_state
+    import jasper.tools.tool_state as tool_state
 
     monkeypatch.setattr(
         tool_state,

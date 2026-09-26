@@ -57,9 +57,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
-from .log_event import log_event
-from .secret_redaction import redact_secrets
-from .transit.base import TransitError
+from ..log_event import log_event
+from ..secret_redaction import redact_secrets
+from .base import TransitError
 
 logger = logging.getLogger(__name__)
 

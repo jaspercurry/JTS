@@ -187,8 +187,8 @@ class TransitProvider(Protocol):
         reading a typed field off the central `Config`. That's the boundary
         that makes a provider truly self-contained: adding a new provider (or
         city) needs no edit to `jasper/config.py`, only this module. Parse with
-        the same canonical helpers `Config` uses (`jasper.bus.parse_bus_stops`,
-        `jasper.citibike.parse_saved_stations`) so behaviour is identical.
+        the same canonical helpers `Config` uses (`jasper.transit.bus.parse_bus_stops`,
+        `jasper.transit.citibike.parse_saved_stations`) so behaviour is identical.
 
         Implementations LAZY-import the client inside the method (e.g.
         `from ...subway import SubwayClient`) so importing the discovery layer
