@@ -10,6 +10,7 @@ type and packet-fingerprint anchoring. Every admission bar is SHAPE: the
 classification vouch DISCLOSES, never refuses (#2863). The band is the
 DRIVER's declared band (:func:`driver_passbands_from_safety_profile`), not
 the crossover region — a cut past the handoff still spends no headroom (#2523).
+The band bounds a boost only (ADR-0367).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from ._prescription_common import (
 )
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,6 +33,8 @@ from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     CrossoverSection,
     branch_chain_peak_db,
+    _GRID_EDGE_HI_HZ,
+    _GRID_EDGE_LO_HZ,
     _evaluation_grid,
     chain_response,
 )
@@ -253,6 +256,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "subaudible_filters",
     "rationale_dropped_chars",
     "boosts_in_crossover_overlap",
+    "cuts_outside_passband",
     "composed_boost_db",
     "composed_boost_role",
     "max_spl_spend_bound_db",
@@ -344,6 +348,9 @@ class DriverPrescription:
     #: How many boosting filters sit inside a crossover overlap — see
     #: :func:`_boosts_in_crossover_overlap`.
     boosts_in_crossover_overlap: int | None = None
+    #: How many cuts sit outside their role's declared band — see
+    #: :func:`_cuts_outside_passband`.
+    cuts_outside_passband: int | None = None
     #: The worst per-role composed boost the gate evaluated, dB.
     composed_boost_db: float | None = None
     #: Which role carried it. The emitter folds by worst BRANCH, so the number
@@ -424,6 +431,7 @@ class DriverPrescription:
             "subaudible_filters": self.subaudible_filters,
             "rationale_dropped_chars": self.rationale_dropped_chars,
             "boosts_in_crossover_overlap": self.boosts_in_crossover_overlap,
+            "cuts_outside_passband": self.cuts_outside_passband,
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
             "max_spl_spend_bound_db": self.max_spl_spend_bound_db,
@@ -452,7 +460,7 @@ def driver_passbands_from_safety_profile(
     is declared — an undeclared floor leaves the published lower edge standing,
     on ``declared_protection_highpass_floor_hz``'s never-nanny rule. A target
     with no readable band, or whose composed edges cross, is OMITTED rather
-    than guessed, and the gate then refuses that role by name.
+    than guessed.
     """
     targets = profile.get("targets") if isinstance(profile, Mapping) else None
     if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)):
@@ -672,8 +680,30 @@ def _subaudible_filters(filters: Sequence[Mapping[str, Any]]) -> int:
     )
 
 
+def _outside_band(band: tuple[float, float] | None, freq: float) -> bool:
+    return band is None or not band[0] <= freq <= band[1]
+
+
+def _cuts_outside_passband(
+    filters: Sequence[Mapping[str, Any]], passbands: DriverPassbands
+) -> int:
+    """How many cuts sit outside their role's declared band, or where none is declared.
+
+    **It refuses nothing** (ADR-0367): a cut only removes level, so the band
+    bounds a boost alone.
+    """
+    return sum(
+        1
+        for entry in filters
+        if float(entry["gain"]) <= 0.0
+        and _outside_band(passbands.get(str(entry["role"])), float(entry["freq"]))
+    )
+
+
 def _check_bounds(
-    filters: tuple[dict[str, Any], ...], passbands: DriverPassbands
+    filters: tuple[dict[str, Any], ...],
+    passbands: DriverPassbands,
+    branch_roles: Collection[str],
 ) -> str:
     """Every per-filter bound, and the class the gains add up to.
 
@@ -682,7 +712,21 @@ def _check_bounds(
     names what it is capable of, and each filter is bounded by its OWN sign,
     magnitude ceiling and width. Neither sign has a magnitude FLOOR: a
     sub-threshold filter is counted, not refused, by :func:`_subaudible_filters`.
+
+    Only a boost is bounded by its role's declared band (ADR-0367). A cut
+    outside it is bounded to the evaluator's domain instead, and where the
+    speaker declares no band at all, ``branch_roles`` names its roles.
     """
+    prescription_class = "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
+    if prescription_class == "boost" and not passbands:
+        _refuse(
+            PASSBAND_UNAVAILABLE,
+            "this speaker's evidence declares no per-driver band, so there is "
+            "nothing a per-driver prescription could be checked against. The "
+            "bands come from --drivers <design draft JSON>'s confirmed "
+            "driver-safety profile — its own measurement_band_hz and "
+            "required_protection_filters",
+        )
     for position, entry in enumerate(filters):
         role = str(entry["role"])
         freq = float(entry["freq"])
@@ -690,16 +734,20 @@ def _check_bounds(
         gain = float(entry["gain"])
         band = passbands.get(role)
         if band is None:
-            _refuse(
-                ROLE_UNKNOWN,
-                f"filter {position} names role {role!r}, which this speaker's "
-                "evidence declares no band for; the roles it does declare are "
-                f"{sorted(passbands) or 'none'}",
-                role=role,
-                declared_roles=sorted(passbands),
-            )
-        lo, hi = band
-        if not lo <= freq <= hi:
+            if passbands:
+                _refuse(
+                    ROLE_UNKNOWN,
+                    f"filter {position} names role {role!r}, which this speaker's "
+                    "evidence declares no band for; the roles it does declare are "
+                    f"{sorted(passbands)}",
+                    role=role,
+                    declared_roles=sorted(passbands),
+                )
+            if role not in branch_roles:
+                _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
+                        speaker_roles=sorted(branch_roles))
+        elif gain > 0.0 and _outside_band(band, freq):
+            lo, hi = band
             _refuse(
                 FILTER_OUTSIDE_PASSBAND,
                 f"filter {position} at {freq:.1f} Hz is outside the {role}'s own "
@@ -707,6 +755,19 @@ def _check_bounds(
                 role=role,
                 freq_hz=freq,
                 passband_hz=[lo, hi],
+            )
+        # Past these edges the emitter refuses the corner or, at Q up to
+        # EVALUABLE_Q_MAX, round-off rises above the 24-bit floor. See ADR-0367.
+        if _outside_band(band, freq) and not _GRID_EDGE_LO_HZ <= freq <= _GRID_EDGE_HI_HZ:
+            _refuse(
+                FILTER_MALFORMED,
+                f"filter {position} at {freq:g} Hz is a cut outside any band the "
+                f"{role} declares, so it must sit within {_GRID_EDGE_LO_HZ:g}-"
+                f"{_GRID_EDGE_HI_HZ:g} Hz, where this system builds and "
+                "evaluates it faithfully",
+                role=role,
+                freq_hz=freq,
+                evaluable_hz=[_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ],
             )
         # The evaluator's own floor: below EVALUABLE_Q_MIN, `biquad_coeffs`
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
@@ -735,7 +796,7 @@ def _check_bounds(
                 f"filter {position} gain {gain:g} dB exceeds finite 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
             )
-    return "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
+    return prescription_class
 
 
 #: How densely one role's band is sampled before the filter centres go in.
@@ -746,19 +807,16 @@ _COMPOSED_GRID_POINTS = 2048
 
 
 def _composed_grid(
-    role_filters: Sequence[Mapping[str, Any]], lo: float, hi: float
+    role_filters: Sequence[Mapping[str, Any]], band: tuple[float, float] | None
 ) -> np.ndarray:
     """Full-spectrum grid for comparing a replacement with its incumbent.
 
     Mixed-sign cascades can peak outside their declared band. The dense
-    per-band sweep also resolves narrow differences between two cascades.
+    per-band sweep, where the role declares a band, also resolves narrow
+    differences between two cascades.
     """
-    return _evaluation_grid(
-        role_filters,
-        np.concatenate([
-            CHAIN_GRID_HZ, np.geomspace(lo, hi, _COMPOSED_GRID_POINTS),
-        ]),
-    )
+    dense = [] if band is None else [np.geomspace(band[0], band[1], _COMPOSED_GRID_POINTS)]
+    return _evaluation_grid(role_filters, np.concatenate([CHAIN_GRID_HZ, *dense]))
 
 
 def _check_composed(
@@ -825,10 +883,9 @@ def _check_displaced(
             for entry in filters
             if entry["role"] == role
         ]
-        lo, hi = passbands[role]
         # One grid over BOTH cascades, so neither extremum falls between the
         # other's sample points.
-        grid = _composed_grid(role_filters + previous, lo, hi)
+        grid = _composed_grid(role_filters + previous, passbands.get(role))
         delta = 20.0 * np.log10(
             np.maximum(np.abs(np.asarray(chain_response(role_filters, grid))), 1e-12)
             / np.maximum(np.abs(np.asarray(chain_response(previous, grid))), 1e-12)
@@ -1043,19 +1100,10 @@ def read_driver_prescription(
     ) = _parse_prescription(raw)
     expected_delta_db, declared_tilt = _pre_registration(raw)
 
-    if filters and not passbands_hz:
-        _refuse(
-            PASSBAND_UNAVAILABLE,
-            "this speaker's evidence declares no per-driver band, so there is "
-            "nothing a per-driver prescription could be checked against. The "
-            "bands come from --drivers <design draft JSON>'s confirmed "
-            "driver-safety profile — its own measurement_band_hz and "
-            "required_protection_filters",
-        )
     passbands = dict(passbands_hz or {})
-    prescription_class = _check_bounds(filters, passbands)
+    prescription_class = _check_bounds(filters, passbands, branch_context)
     for role, _ in pinned_trim_db:
-        if role not in passbands and not (not filters and role in branch_context):
+        if role not in passbands and not ((not filters or not passbands) and role in branch_context):
             _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
                     speaker_roles=sorted(set(passbands) | set(branch_context)))
     context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
@@ -1093,6 +1141,7 @@ def read_driver_prescription(
         boosts_in_crossover_overlap=_boosts_in_crossover_overlap(
             filters, passbands
         ),
+        cuts_outside_passband=_cuts_outside_passband(filters, passbands),
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
         max_spl_spend_bound_db=MAX_PROGRAM_HEADROOM_DB,
@@ -1296,9 +1345,13 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "max_filters_per_role's slots, which is the scarce thing"
             ),
             "freq_must_be_inside": (
-                "the named role's own band in the packet's drivers block — the "
-                "driver's published response range, floored by any protective "
-                "high-pass it declares and capped by any protective low-pass"
+                "for a BOOST, the named role's own band in the packet's drivers "
+                "block — the driver's published response range, floored by any "
+                "protective high-pass it declares and capped by any protective "
+                "low-pass. A cut outside that band, or on a speaker that "
+                "declares none, is admitted and counted onto "
+                "prescription.cuts_outside_passband (ADR-0367); it must still "
+                f"sit within {_GRID_EDGE_LO_HZ:g}-{_GRID_EDGE_HI_HZ:g} Hz"
             ),
             "composed_cap_is_evaluated": (
                 "the composed cap is checked per role on the evaluated biquad "
@@ -1329,7 +1382,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "the same classification_bar. What differs is the COST: a cut "
                 "spends a filter slot, a boost also spends maximum SPL, up to "
                 "max_spl_spend_bound_db — which is also why a boost is the one "
-                "sign that keeps a WIDTH ceiling (q_max_boost). Boost no deeper "
+                "sign that keeps a WIDTH ceiling (q_max_boost) and must sit "
+                "inside its role's declared band. Boost no deeper "
                 "than the dip the verdict measured (its depth_db is in the "
                 "packet) — nothing refuses a deeper one, and nothing makes it "
                 "work either"
@@ -1354,6 +1408,8 @@ def driver_prescription_response_format() -> dict[str, Any]:
             "refusals": sorted({
                 COMPOSED_BOOST_EXCEEDED,
                 FILTER_Q_OUT_OF_RANGE,
+                FILTER_OUTSIDE_PASSBAND,
+                PASSBAND_UNAVAILABLE,
             }),
         },
         "classification_bar": {

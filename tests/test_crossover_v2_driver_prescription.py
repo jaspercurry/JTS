@@ -763,12 +763,13 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # Every boost refusal the gate can raise is named in the block a prescriber
     # reads, so a bar it can walk into is a bar it was told about.
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
-    # `filter_q_out_of_range` joined this set on 2026-08-29: the Q CEILING is a
-    # boost-only bar now, so the block a boost's author reads is where it has to
-    # be named. The floor refusal left the same day and must not be here.
+    # The Q ceiling and the declared band are boost-only bars (ADR-0367), so the
+    # block a boost's author reads is where they have to be named.
     assert set(fmt["boosts"]["refusals"]) == {
         dp.COMPOSED_BOOST_EXCEEDED,
         dp.FILTER_Q_OUT_OF_RANGE,
+        dp.FILTER_OUTSIDE_PASSBAND,
+        dp.PASSBAND_UNAVAILABLE,
     }
     # …and all ELEVEN retired slugs are gone from the module entirely, not
     # merely from this block: a prescriber that could still read
@@ -833,17 +834,12 @@ def test_no_prescription_is_the_deterministic_path_untouched(packet):
     (TWEETER_BAND[1] + 0.1, False),
 ])
 def test_the_passband_edges_are_inclusive_and_refuse_by_name(packet, freq, ok):
-    """Exactness is legal; one step past is `driver_filter_outside_passband`.
+    """A boost's band is inclusive; one step past is `driver_filter_outside_passband`.
 
     Both sides, because a bound tested on one side only is a bound whose
     direction nothing pins.
     """
-    rows = [_verdict(freq)]
-    document = _document([_cut(freq=freq)], packet)
-    packet = dict(packet)
-    packet["feature_classification"] = {
-        "available": True, "verdicts": [read_feature_verdicts(rows)[0].to_dict()],
-    }
+    document = _document([_boost(freq=freq)], packet)
     if ok:
         assert _gate(packet, document).filters[0]["freq"] == freq
         return
@@ -1012,16 +1008,40 @@ def test_a_role_the_speaker_declares_no_band_for_is_refused_by_name(packet):
     assert excinfo.value.evidence["declared_roles"] == ["tweeter", "woofer"]
 
 
-def test_a_packet_with_no_declared_band_refuses_rather_than_inventing_one(tmp_path):
-    packet = _speaker(tmp_path, draft=None)
+_BANDS = {"woofer": WOOFER_BAND, "tweeter": TWEETER_BAND}
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
 
-    assert excinfo.value.reason == dp.PASSBAND_UNAVAILABLE
-    # F-7: this refusal used to read like a speaker-data problem when the
-    # ordinary cause is a missing/unreadable --drivers evidence source.
-    assert "--drivers" in excinfo.value.detail
+@pytest.mark.parametrize(("filters", "passbands", "pins", "reason", "outside"), [
+    pytest.param([_cut()], _BANDS, {}, None, 0, id="cut in band"),
+    pytest.param([_cut(freq=1200.0)], _BANDS, {}, None, 1, id="cut out of band"),
+    pytest.param([_cut()], {}, {}, None, 1, id="cut with no declared band"),
+    pytest.param([_cut()], {}, {"tweeter": -3.0}, None, 1, id="pinned cut with no declared band"),
+    pytest.param([_boost()], _BANDS, {}, None, 0, id="boost in band"),
+    pytest.param([_boost(freq=1200.0)], _BANDS, {}, dp.FILTER_OUTSIDE_PASSBAND, None,
+                 id="boost out of band"),
+    pytest.param([_boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None, id="boost with no declared band"),
+    pytest.param([_cut(), _boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None,
+                 id="mixed with no declared band"),
+    pytest.param([_boost(gain=60.0), _cut(freq=1200.0)], _BANDS, {}, dp.COMPOSED_BOOST_EXCEEDED, None,
+                 id="boost past headroom beside a cut out of band"),
+    pytest.param([_cut(role="midrange")], {}, {}, dp.ROLE_UNKNOWN, None, id="role the speaker lacks"),
+    pytest.param([_cut(freq=0.5)], _BANDS, {}, dp.FILTER_MALFORMED, None, id="cut below the evaluable range"),
+    pytest.param([_cut(freq=23999.0)], _BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut past the evaluable range"),
+])
+def test_the_declared_band_bounds_a_boost_and_discloses_a_cut(filters, passbands, pins, reason, outside):
+    """ADR-0367: every boost refusal stands; a cut outside the band is admitted and counted."""
+    document = _document(filters, {"packet_fingerprint": "fp"}, pinned_trim_db=pins)
+    args = dict(packet_fingerprint="fp", passbands_hz=passbands, classifications=None,
+                incumbent_filters={"tweeter": INCUMBENT_TWEETER}, branch_context=BRANCH_CONTEXT)
+    if reason is not None:
+        with pytest.raises(BlendPrescriptionRefused) as excinfo:
+            read_driver_prescription(document, **args)
+        assert excinfo.value.reason == reason
+        return
+    receipt = read_driver_prescription(document, **args).to_dict()
+    assert receipt["cuts_outside_passband"] == outside
+    assert receipt["pinned_trim_db"] == pins
 
 
 def test_the_per_role_filter_count_is_the_branchs_own_ceiling(packet, tmp_path):
@@ -2354,7 +2374,7 @@ def test_the_span_clause_is_what_makes_the_bound_sound():
         {"type": "Peaking", "freq": 40.0, "q": 0.7, "gain": 3.0},
         {"type": "Peaking", "freq": 48.0, "q": 2.0, "gain": -12.0},
     ]
-    grid = dp._composed_grid(role_filters, 40.0, 3000.0)
+    grid = dp._composed_grid(role_filters, (40.0, 3000.0))
 
     # The charge's whole span is inside the gate's grid — every point of it.
     charge_span = _evaluation_grid(role_filters, CHAIN_GRID_HZ)
