@@ -14,10 +14,12 @@ It does not direct an active measurement.
 `packet.json` holds the numbers. `index.md` names them and the commands.
 `frequency.png` shows the response. `evidence` is the round's evidence packet,
 built once when the round was banked; `packet_fingerprint` names it, and every
-candidate composed against the round records it (ADR-0371). Read `result` and `reason`, then `applied`
-identity and `layers`, then the program evidence. Speaker evidence is in
-`fits`; room and bass evidence is in `packet["room"]` and `packet["bass"]`,
-one entry per set. Artifact paths remain as fallbacks for failed views. A
+candidate composed against the round records it (ADR-0371). Read `result` and
+`reason`, then `applied` identity and `layers`, then the program evidence.
+Speaker evidence is in `fits`; room and bass evidence is in `packet["room"]`
+and `packet["bass"]`, one entry per set. A room view run after the bank is not
+the round's evidence; the room contract of a round that banked none answers
+`room_not_banked`. Artifact paths remain as fallbacks for failed views. A
 joined bass ladder adds `bass_table`. Read `alignment` per pair. After the
 timing block, read each fit's `verdict` and `crossover_band_spread`,
 each filter's `position_variance`, and the per-pose null ceiling in
