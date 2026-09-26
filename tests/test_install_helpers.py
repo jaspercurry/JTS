@@ -1742,7 +1742,10 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
 def test_base_source_builds_use_hash_checked_archives():
     """Base Pi installs should consume pinned archives, not require git
     just to fetch source-build inputs."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (_INSTALL_SH, _INSTALL_LIB_DIR / "deps.sh")
+    )
 
     for expected in [
         "NQPTP_ARCHIVE_URL",
