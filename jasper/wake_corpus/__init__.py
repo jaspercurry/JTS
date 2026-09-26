@@ -7,6 +7,8 @@
 This package holds the engine behind the operator-only `/wake-corpus/`
 recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
 
+  - :mod:`jasper.wake_corpus.errors` — the refusals the recorder raises to
+    that adapter.
   - :mod:`jasper.wake_corpus.runtime_probe` — corpus leg/profile
     vocabulary and the env + hardware probes over it. The package
     leaf: the modules below import it; it imports none of them.
