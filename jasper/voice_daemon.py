@@ -1104,6 +1104,7 @@ class WakeLoop:
             await self._turns.end()
 
     async def _handle_manual_session_frame(self, frame, *, captured_at: float | None = None) -> None:
+        self._turns.manual_frames += 1
         now = time.monotonic() if captured_at is None else captured_at
         if self._push_to_talk.hold_cap_exceeded(
             now - self._turns.started_at_loop, self._cfg.idle_timeout_sec,
@@ -1250,8 +1251,8 @@ class WakeLoop:
         wake does: the user-deliberate stop-listening signals
         (mic-mute, room-correction measurement window), spend cap, and
         connection-paused. Returns one of
-        OK / BUSY / MUTED / MEASURING / CAP / PAUSED / UNKNOWN_SOURCE /
-        NO_ROOM_MIC / ERROR for the caller's logging.
+        OK / BUSY / MUTED / MEASURING / CAP / NOT_READY / PAUSED /
+        UNKNOWN_SOURCE / NO_ROOM_MIC / ERROR for the caller's logging.
         """
         if source and source not in self._push_to_talk.sources:
             log_event(
@@ -1306,6 +1307,19 @@ class WakeLoop:
             )
             self._spawn_manual_refusal_cue("spend_cap_reached")
             return "CAP"
+        if source and (not_ready := self._push_to_talk.not_ready(source)):
+            # A remote waking from sleep is back by the next press, which is
+            # what the cue asks for (issue #3346).
+            log_event(
+                logger,
+                "manual_mic.hold_failed",
+                source=source,
+                reason="not_ready",
+                link=not_ready,
+                level=logging.WARNING,
+            )
+            self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
+            return "NOT_READY"
         self._push_to_talk.active_source = source
         self._frozen_pre_roll = () if source else tuple(self._pre_roll)
         self._input_admit_after = time.monotonic()
@@ -1372,6 +1386,15 @@ class WakeLoop:
             return "NO_SESSION"
         if self._turns.input_ended:
             return "OK"
+        if self._turns.manual_endpoint_this_turn and not self._turns.manual_frames:
+            # The remote delivered nothing. Close input against late frames
+            # and end the turn off this reply, whose caller times out at 5 s;
+            # the teardown names the failure and cues it.
+            self._turns.input_ended = True
+            self._create_fire_and_forget_task(
+                self._turns.end(), name="manual-hold-no-frames",
+            )
+            return "OK"
         await self._end_session_input("push-to-talk release")
         return "OK"
 
@@ -1436,7 +1459,7 @@ class WakeLoop:
                 "kind": self._output_gate.active_kind,
                 "epoch": self._output_gate.epoch,
             },
-            "manual_mic_sources": sorted(self._push_to_talk.sources),
+            "push_to_talk": self._push_to_talk.status(),
             "active_manual_mic_source": self._push_to_talk.active_source,
             # This speaker has no room mic of its own: zero wake legs, every
             # turn opened by an accessory button. Surfaced because it is a

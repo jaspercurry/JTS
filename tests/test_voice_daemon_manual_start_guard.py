@@ -23,12 +23,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from jasper.accessories import status as accessory_status
 from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
 from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
 from ._cue_spy import SpyCues as _SpyCues
-from ._log_events import event_fields
+from ._log_events import event_fields, event_records
 from ._wake_loop import wake_loop_for_tests
 
 
@@ -497,22 +498,54 @@ async def test_source_less_start_without_a_room_mic_silently_refuses(caplog):
     assert event_fields(caplog, "session.manual_refused")["reason"] == "no_room_microphone"
 
 
-async def test_ptt_only_speaker_still_serves_a_named_source():
-    """Control: the refusal is scoped to the SOURCE-LESS call. Naming the
-    remote on the same speaker opens a normal button turn — otherwise the
-    guard would have parked the very box it exists to serve."""
+@pytest.mark.parametrize(
+    ("link", "not_ready"),
+    [
+        ({"connected": True, "subscribed": True}, None),
+        ({"connected": False, "subscribed": False}, "disconnected"),
+        (None, "adapter_down"),
+    ],
+    ids=["ready", "asleep", "no_adapter"],
+)
+async def test_a_named_hold_opens_a_turn_only_while_its_remote_is_ready(
+    monkeypatch, caplog, link, not_ready,
+):
+    """Naming the remote on a speaker with no room mic opens a normal button
+    turn — otherwise the source-less refusal above would park the very box it
+    exists to serve — but only while the adapter reports the remote
+    connected and subscribed. A press it cannot carry fails at once with the
+    honest cue instead of a turn that hears nothing (issue #3346)."""
+    bridges = {} if link is None else {
+        "wiim_remote_2": {"restarts": 0, "last_error": None, "link": link},
+    }
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": bridges},
+    )
     wl = _ptt_only_wake_loop()
 
-    result = await wl.manual_session_start("wiim_remote_2")
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        result = await wl.manual_session_start("wiim_remote_2")
+    await _drain_refusal_cue(wl)
 
-    assert result == "OK"
-    assert wl._cues.played == []
-    assert wl._begin_turn.called is True
-    assert wl._begin_turn.kwargs == {
-        "pre_roll": False,
-        "listening_feedback": True,
+    if not_ready is None:
+        assert result == "OK"
+        assert wl._cues.played == []
+        assert wl._begin_turn.kwargs == {
+            "pre_roll": False,
+            "listening_feedback": True,
+        }
+        assert wl._push_to_talk.active_source == "wiim_remote_2"
+        assert not event_records(caplog, "manual_mic.hold_failed")
+        return
+    assert result == "NOT_READY"
+    assert wl._begin_turn.called is False
+    assert wl._play_listening_chirp.called is False
+    assert wl._push_to_talk.active_source is None
+    assert wl._cues.played == [INTERNAL_ERROR_CUE_SLUG]
+    assert event_fields(caplog, "manual_mic.hold_failed") == {
+        "source": "wiim_remote_2", "reason": "not_ready", "link": not_ready,
     }
-    assert wl._push_to_talk.active_source == "wiim_remote_2"
 
 
 async def test_source_less_refusal_reads_the_single_derivation():

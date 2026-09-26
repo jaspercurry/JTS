@@ -45,12 +45,14 @@ Detail = Callable[[Publish], Mapping[str, Any]]
 def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
     global _publish_failure_warned
     try:
-        # 0640 + the parent's group: jasper-control (Group=jasper) reads it.
+        # 0640 + the parent's group: jasper-voice and jasper-control
+        # (Group=jasper) read it.
         atomic_write_json(status_path, {"bridges": health}, mode=0o640)
     except OSError as exc:
-        # Fail-soft — an unwritable /run costs observability, never a bridge.
-        # One WARNING per process (a missing RuntimeDirectory is a deploy bug
-        # worth seeing once), then quiet: this runs on every restart.
+        # Fail-soft for the bridges, which keep running; jasper-voice then
+        # reads every accessory mic as not ready and refuses its holds with
+        # the cue. One WARNING per process (a missing RuntimeDirectory is a
+        # deploy bug worth seeing once), then quiet: this runs on every restart.
         log_event(
             logger,
             "accessory.status_publish_failed",

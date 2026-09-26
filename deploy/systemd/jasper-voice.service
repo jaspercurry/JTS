@@ -76,8 +76,8 @@ ConditionPathExists=!/var/lib/jasper/voice-input-absent
 # loop is running. Input death is NOT covered: the accessory's audio
 # arrives on a separate task, and a dead sender blocks it rather
 # than ending it, so the pats continue while the speaker cannot
-# hear. Runtime liveness for that path is issue #2243 (connection
-# state, owned by the accessory reconciler) — not this watchdog.
+# hear. Runtime liveness for that path is the adapter's published link
+# state, which every hold consults (issue #3346) — not this watchdog.
 Type=notify
 WatchdogSec=30s
 TimeoutStopSec=14s

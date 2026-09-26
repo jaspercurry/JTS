@@ -111,6 +111,7 @@ def _timeline_loop(*, wake: bool):
     wl = wake_loop_for_tests()
     wl._turns.user_speech_seen = True
     wl._turns.manual_endpoint_this_turn = not wake
+    wl._turns.manual_frames = int(not wake)  # a button turn that carried audio
     wl._turns.barge_in_active = False
     _arm_turn(wl, wake=wake)
     return wl
