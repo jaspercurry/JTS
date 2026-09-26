@@ -192,11 +192,6 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
     assert built["signals"] is signals
 
 
-# 3. the wired runner (fake conductor)
-
-# 5. hosting: the local kind + the completion endpoint
-
-
 def _fake_handler(body: bytes = b"{}"):
     from email.message import Message
 
@@ -691,17 +686,19 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert fakes.graph.restores == 1
 
 
-async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path):
+@pytest.mark.parametrize("opened", [False, True])
+async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path, opened):
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     conductor = _conductor(FlowSeams())
     v2state.save_v2_state({"session_id": conductor.session_id, "execution": {"volume_restore": "stale"}})
-    door = SimpleNamespace(opened=None)
+    door = SimpleNamespace(isolation=None)
 
     async def execute(*args, **kwargs):
         try:
             raise RuntimeError("x")
         finally:
-            door.opened = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
+            if opened:
+                door.isolation = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
 
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door, signals=RunSignals(), ceiling_s=30,
@@ -712,7 +709,7 @@ async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, 
     state = v2state.load_v2_state()
     assert state["failure"]["code"] == "internal_error"
     assert state["failure"]["detail"] == "RuntimeError: x"
-    assert state["execution"]["volume_restore"] == "exact_restored"
+    assert state["execution"]["volume_restore"] == ("exact_restored" if opened else "not_opened")
 
 
 @pytest.mark.parametrize("repeats", [1, 3])

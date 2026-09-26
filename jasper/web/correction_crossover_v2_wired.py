@@ -147,8 +147,8 @@ def build_v2_wired_run_and_consume(
                     gain_ceiling_db=conductor.measure_gain_ceiling_db,
                 )
             finally:
-                restore = door.opened.restore_result if door.opened else None
-                v2state._persist_execution_result(session_id, volume_restore=restore.value if restore else "failed")
+                restore = door.isolation.restore_result if door.isolation else None
+                v2state._persist_execution_result(session_id, volume_restore=restore or "not_opened")
             if result.reason and result.reason != "complete_requested":
                 if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")

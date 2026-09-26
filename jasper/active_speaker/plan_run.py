@@ -179,7 +179,7 @@ class RunDoor:
     device: Any
     ceiling_db_spl: float | None
     current: TuningSession | None = None
-    opened: OpenMeasurementDoor | None = None
+    isolation: IsolationHold | None = None
     program_for_spec: Callable[..., ExcitationProgram] | None = None
 
     @property
@@ -451,7 +451,7 @@ async def _run(
         if door is not None:
             if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
-            hold = await stack.enter_async_context(door.hold)
+            hold = door.isolation = await stack.enter_async_context(door.hold)
         while offset < len(work):
             if signals.complete.is_set():
                 manifest.reason = "complete_requested"
@@ -542,8 +542,8 @@ async def _run(
                         topology=None, preset=None, sensitivity=door.sensitivity, device=door.device,
                         resolved_ceiling_db_spl=door.ceiling_db_spl,
                     )
-                    door.opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
-                    session = door.build_session(door.opened, manifest.allocate_take_id)
+                    opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
+                    session = door.build_session(opened, manifest.allocate_take_id)
                     door.current = session
                     await stack.enter_async_context(session)
                 assert session is not None
