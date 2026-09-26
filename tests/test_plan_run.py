@@ -1334,7 +1334,7 @@ async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_
         )
         assert (result.reason, result.status, result.takes_measured) == ("internal_error", "partial", 1)
         assert fakes.play.bearings == [0, 20]
-        assert door.opened.restore_result is SessionVolumeRestoreResult.DEFERRED
+        assert door.isolation.restore_result is SessionVolumeRestoreResult.DEFERRED
         assert result.finalized and not door.is_open
         assert fakes.graph.restores == 1
     finally:

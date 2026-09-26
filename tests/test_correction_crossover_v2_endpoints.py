@@ -37,12 +37,17 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL
+from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL, open_bundle
+from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
+from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
+from jasper.web import correction_crossover_v2_wired as wired
+from tests.test_correction_crossover_v2_wired import _device
+from tests.active_speaker_fixtures import mono_output_topology
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
@@ -5265,3 +5270,34 @@ def test_declaration_record_failure_does_not_hide_a_successful_apply(monkeypatch
     assert result["declaration_update"]["status"] == "failed"
     assert result["declaration_update"]["code"] == "ValueError"
     assert event_records(caplog, "correction.crossover_v2_declaration_update")[0].levelno == logging.WARNING
+
+
+@pytest.mark.parametrize("restore,closed", [(None, True), (SessionVolumeRestoreResult.EXACT_RESTORED, True),
+    (SessionVolumeRestoreResult.FAILED, False), (SessionVolumeRestoreResult.DEFERRED, False)])
+async def test_refused_door_bundle_closes_only_after_restore(monkeypatch, tmp_path, restore, closed):
+    prepared, store = _inline_prepared(monkeypatch, tmp_path)
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(set_wall_clock_ceiling_s=lambda _: None))
+    monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
+    tuning = SimpleNamespace(isolation=None, is_open=False)
+
+    async def execute(*args, **kwargs):
+        if restore is None:
+            raise refusal_copy.CrossoverV2Refused("refused", code="measurement_door_volume_not_open")
+        tuning.isolation = IsolationHold(
+            graph=SimpleNamespace(install=AsyncMock(side_effect=RuntimeError("graph install failed"))),
+            claim=SimpleNamespace(release=AsyncMock()), volume_door=None,
+            plan=SimpleNamespace(open=AsyncMock(return_value=SessionVolumeOpenResult.OPENED),
+                                 close=AsyncMock(return_value=restore)),
+        )
+        async with level_window(-20, hold=tuning.isolation, spl_monitor=object()):
+            pytest.fail("the graph was installed")
+
+    monkeypatch.setattr(v2host, "bind_run_door", lambda **kw: (tuning, None, None, execute))
+    opened = prepared.open()
+    with pytest.raises((refusal_copy.CrossoverV2Refused, RuntimeError)):
+        await prepared.run_and_consume(opened.pi_session)
+    assert v2state.load_v2_state()["execution"]["volume_restore"] == (restore or "not_opened")
+    path = Path(store.bundle_dir) / "info.json"
+    assert json.loads(path.read_text())["state"] == ("closed" if closed else "open")
+    assert open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions") is not None
+    assert json.loads(path.read_text())["state"] == ("closed" if closed else "abandoned")
