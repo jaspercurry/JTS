@@ -7,14 +7,14 @@
 # jasper-camilla-topology-gate — refuse to start CamillaDSP on a graph that was
 # proved against a different speaker topology.
 #
-# Runs as ExecCondition= on jasper-camilla.service. Since #4416 R8 that unit
-# only Wants= the hardware reconciler, so a failed reconcile no longer stops the
-# daemon that must never stay stopped. What Requires= WAS carrying is exactly
-# this: the statefile CamillaDSP loads is a pointer to a graph the reconciler
-# proved, and a reconcile that failed after a topology change leaves that
-# pointer naming a graph whose crossover and protection belong to the previous
-# speakers. Driving a tweeter through the previous topology's filters is the
-# hazard; a stopped daemon is not.
+# Runs as ExecCondition= on jasper-camilla.service. That unit only Wants= the
+# hardware reconciler (#4416 R8), so a failed reconcile does not stop the daemon
+# that must never stay stopped. This gate keeps the one guarantee a Requires=
+# would add: the statefile CamillaDSP loads is a pointer to a graph the
+# reconciler proved, and a reconcile that failed after a topology change leaves
+# that pointer naming a graph whose crossover and protection belong to the
+# previous speakers. Driving a tweeter through the previous topology's
+# filters is the hazard; a stopped daemon is not.
 #
 # Two stamps, no interpreter (ADR-0226 rules 1 and 2): both fingerprints are
 # computed by the root convergence that owns the statefile and published beside

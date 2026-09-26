@@ -15,6 +15,9 @@ from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 
 from .angle_capture import AngleCaptureRequest
+from .arm_walk import TurntableMover
+from .anchor_provenance import read_graph, read_pose
+from .movers import MOVER_ARM
 from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
@@ -68,7 +71,8 @@ def read_preflight_facts(
         except candidate_bank.CandidateBankRefusal as exc:
             candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
     anchor = AnchorFacts(load_seat_level_reference() or {},
-                         resolved_household_sensitivity(device) if device is not None else None)
+                         resolved_household_sensitivity(device) if device is not None else None,
+                         graph=read_graph(compile_graph=True), pose=read_pose(arm_offset_deg=TurntableMover(timeout_s=5.0).offset_deg() if plan.mover == MOVER_ARM else None))
     pilot_band = None
     if context is not None and anchor.record.get("ambient_report") and any(pose.plays_summed for pose in plan.stops):
         program = SessionExcitation(

@@ -108,6 +108,7 @@ def aec_mode_file(tmp_path: Path, monkeypatch):
 def wake_model_file(tmp_path: Path, monkeypatch):
     path = tmp_path / "wake_model.env"
     monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(path))
+    monkeypatch.setattr(wake_models, "WAKE_MODEL_FILE", str(path))
     return path
 
 
@@ -398,7 +399,7 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
 
     def write_threshold():
         try:
-            aec_endpoints._write_wake_threshold(0.42)
+            wake_models.select_wake_threshold(0.42, via="control")
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
@@ -457,7 +458,7 @@ def test_write_wake_threshold_preserves_model(wake_model_file):
         "JASPER_WAKE_MODEL=/var/lib/jasper/wake/jarvis_v2.onnx\n"
         "JASPER_WAKE_THRESHOLD=0.50\n"
     )
-    aec_endpoints._write_wake_threshold(0.65)
+    wake_models.select_wake_threshold(0.65, via="control")
     body = wake_model_file.read_text()
     assert "JASPER_WAKE_MODEL=/var/lib/jasper/wake/jarvis_v2.onnx" in body
     assert "JASPER_WAKE_THRESHOLD=0.65" in body
@@ -467,7 +468,7 @@ def test_write_wake_threshold_normalises_to_two_decimals(wake_model_file):
     """Browsers can ship value="0.5000000001" after JSON roundtrip.
     Match the slider step granularity (0.05) by formatting to two
     decimal places — keeps wake_model.env clean and diffable."""
-    aec_endpoints._write_wake_threshold(0.5000000001)
+    wake_models.select_wake_threshold(0.5000000001, via="control")
     body = wake_model_file.read_text()
     assert "JASPER_WAKE_THRESHOLD=0.50" in body
 
@@ -475,7 +476,7 @@ def test_write_wake_threshold_normalises_to_two_decimals(wake_model_file):
 def test_write_wake_threshold_rejects_out_of_range(wake_model_file):
     for bad in (-0.1, 1.1, 5.0, -1.0):
         with pytest.raises(ValueError, match="threshold out of range"):
-            aec_endpoints._write_wake_threshold(bad)
+            wake_models.select_wake_threshold(bad, via="control")
 
 
 def test_read_wake_threshold_default_when_file_missing(wake_model_file, monkeypatch):
@@ -487,21 +488,21 @@ def test_read_wake_threshold_default_when_file_missing(wake_model_file, monkeypa
     threshold to."""
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     assert not wake_model_file.exists()
-    assert aec_endpoints._read_wake_threshold() == 0.3
+    assert wake_models.read_wake_threshold() == 0.3
 
 
 def test_read_wake_threshold_reads_persisted_value(wake_model_file, monkeypatch):
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
     wake_model_file.write_text("JASPER_WAKE_THRESHOLD=0.35\n")
-    assert aec_endpoints._read_wake_threshold() == 0.35
+    assert wake_models.read_wake_threshold() == 0.35
 
 
-def test_read_wake_threshold_falls_back_to_env(wake_model_file, monkeypatch):
-    """If no wizard file but process env has the var (operator set
-    in /etc/jasper/jasper.env), use that. Matches daemon precedence."""
-    monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.42")
-    assert not wake_model_file.exists()
-    assert aec_endpoints._read_wake_threshold() == 0.42
+def test_read_wake_threshold_uses_saved_base_before_shell(wake_model_file, monkeypatch):
+    base = wake_model_file.with_name("jasper.env")
+    base.write_text("JASPER_WAKE_THRESHOLD=0.42\n")
+    monkeypatch.setenv("JASPER_ENV_FILE", str(base))
+    monkeypatch.setenv("JASPER_WAKE_THRESHOLD", "0.99")
+    assert wake_models.read_wake_threshold() == 0.42
 
 
 def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monkeypatch):
@@ -520,7 +521,7 @@ def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monk
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     assert not wake_model_file.exists()
-    assert aec_endpoints._read_wake_threshold() == Config.from_env().wake_threshold
+    assert wake_models.read_wake_threshold() == Config.from_env().wake_threshold
 
 
 # ---------- _aec_full_status -----------------------------------------------

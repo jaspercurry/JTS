@@ -553,7 +553,8 @@ def test_status_publishes_the_banked_seat_level_once(banked, request):
     ) as load:
         block = v2status.crossover_v2_status_block()
     assert block["level"] == (
-        {"seat_level_reference_volume_db": -20.0, "leveled_db_spl": 75.0}
+        {"seat_level_reference_volume_db": -20.0, "leveled_db_spl": 75.0,
+         "graph": None, "pose": None, "anchor_graph_mismatch": None, "anchor_pose_mismatch": None}
         if banked else None
     )
     load.assert_called_once()

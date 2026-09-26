@@ -38,8 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 
 AIRPLAY_HEALTH_SUPPRESS_PATH="/run/jasper-airplay-health-suppress-until"
-AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC:-2700}"
-AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC:-120}"
+AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC=2700
+AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC=120
 SSH_TARGET="${PI_USER}@${PI_HOST}"
 SUDO_INTERACTIVE=0
 HOSTNAME_FOR_INSTALL=""
@@ -292,9 +292,7 @@ ensure_origin_fetched() {
 
 # Direction guard: never move the Pi's code BACKWARDS silently.
 # Multiple checkouts/worktrees (and multiple agent sessions) deploy to
-# the same Pi. On 2026-06-11 a stale parallel checkout deployed four
-# minutes after a bugfix build and silently reverted it; the operator's
-# hardware retest then ran the old code and the fix looked broken.
+# the same Pi, so a stale checkout can revert a fix the Pi already runs.
 # Compare the local commit against the Pi's installed build manifest
 # BEFORE rsync: a downgrade aborts unless JASPER_DEPLOY_ALLOW_DOWNGRADE=1
 # (deliberate rollback/bisect); diverged sibling branches warn and

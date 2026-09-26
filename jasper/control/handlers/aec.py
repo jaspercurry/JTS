@@ -10,7 +10,7 @@ import subprocess
 import time
 from typing import Any, cast
 
-from ... import enhanced_aec
+from ... import enhanced_aec, wake_models
 from ...audio_profile_state import normalize_audio_input_profile
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
@@ -362,7 +362,7 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            aec_endpoints._write_wake_threshold(threshold)
+            wake_models.select_wake_threshold(threshold, via="control", client=self.address_string())
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write wake_model.env failed: {e}"},
@@ -387,12 +387,6 @@ class AecRoutes(ControlHandlerMixin):
                 threshold=threshold,
             )
             return
-        log_event(
-            logger,
-            "wake.threshold",
-            value=f"{threshold:.2f}",
-            client=self.address_string(),
-        )
         self._send_accepted(threshold=threshold)
         return
 

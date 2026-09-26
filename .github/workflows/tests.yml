@@ -259,9 +259,8 @@ jobs:
           install-full: "true"
 
       - name: Lint (ruff)
-        # ruff ships in the dev extras installed above. Config + rule
-        # selection live in [tool.ruff] in pyproject.toml. Runs before
-        # the suite for fast feedback on undefined names / dead imports.
+        # Runs before the suite for fast feedback on undefined names /
+        # dead imports.
         run: .venv/bin/ruff check .
 
       - name: Test (hardware-free; voice_eval explicitly excluded)

@@ -12,7 +12,7 @@
 # Why ExecStartPre and not only OnFailure=: preventing a known dead-pipe start
 # preserves the pipe evidence and avoids spending the bounded recovery budget.
 #
-# The measured failure modes (camilladsp 4.1.3 on jts3, 2026-06-11):
+# The measured failure modes (camilladsp 4.1.3):
 #   - File sink path ABSENT (snapserver stopped; its RuntimeDirectory
 #     reaped) -> "Playback error: No such file or directory" + CLEAN
 #     exit 0. With Restart=always + RestartSec=2 + StartLimitBurst=5/60s,
@@ -99,7 +99,7 @@ if [ "$playback_filename" = "$SNAPFIFO" ]; then
         "camilla starts on runtime-contract-safe graph; next reconcile re-applies the live lane when its pipe is healthy"
 fi
 
-# A File sink that is not the snapserver FIFO. Since #2135 the common case is
+# A File sink that is not the snapserver FIFO. The common case (#2135) is
 # the PARKED graph (/dev/null, every output hard muted) on a roleful topology
 # that has not staged a startup graph yet — not an unrecognised bonded pipe. Both
 # are "nothing for this guard to repair", but they need distinguishable labels or
