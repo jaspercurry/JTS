@@ -650,7 +650,7 @@ class CrossoverV2Session:
             ledger=None if executor_ledger is not None and attempt == 1 else ledger,
             last_reason=self._last_reason.get(slot),
             non_retriable=NON_RETRIABLE_CODES,
-            default_code=REASON_LOCATE_FAILED,
+            default_code="retries_spent",
             retry_charge=executor_ledger.charge
             if executor_ledger is not None
             else "operator",
@@ -682,7 +682,7 @@ class CrossoverV2Session:
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 code,
-                self._extras_spent_message(
+                _admission.extras_spent_message(
                     ledger,
                     diagnosis=diagnosis,
                     outcome=self._spent_slot_outcome(phase, index),
@@ -734,20 +734,6 @@ class CrossoverV2Session:
             extra_used=ledger.extras_used,
             extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
             extra_by_speaker=ledger.by_speaker,
-        )
-
-    @staticmethod
-    def _extras_spent_message(
-        ledger: SlotAttempts,
-        *,
-        diagnosis: str,
-        outcome: str,
-    ) -> str:
-        """The household sentence for a position whose extras are gone."""
-        return _admission.extras_spent_message(
-            ledger,
-            diagnosis=diagnosis,
-            outcome=outcome,
         )
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:

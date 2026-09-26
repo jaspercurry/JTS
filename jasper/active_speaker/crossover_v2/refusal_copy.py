@@ -1177,7 +1177,7 @@ CAPTURE_QUALITY_REFUSAL_CODES = frozenset(
 
 
 TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
-TakeCharge = Literal["speaker", "operator", "none"]
+TakeCharge = Literal["speaker", "operator", "none", "replay"]
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     SegmentLocation,
 )
+from jasper.active_speaker.crossover_v2.admission import SlotAttempts
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from tests.crossover_v2_fixtures import (
@@ -26,20 +27,23 @@ from tests.crossover_v2_fixtures import (
 )
 
 
-@pytest.mark.parametrize("refused", [False, True])
-@pytest.mark.parametrize("charge", ["operator", "speaker"])
-def test_executor_admission_uses_only_the_runs_pose_ledger(refused, charge):
-    from jasper.active_speaker.crossover_v2.admission import SlotAttempts
-    from jasper.active_speaker.crossover_v2.refusal_copy import NON_RETRIABLE_CODES
-
+@pytest.mark.parametrize("charge,retries,last_reason,refused", [
+    ("operator", 1, None, None), ("speaker", 0, None, None),
+    ("operator", 1, "channel_map_mismatch", "channel_map_mismatch"),
+    ("speaker", 0, "channel_map_mismatch", "channel_map_mismatch"),
+    ("operator", 0, None, "retries_spent"),
+])
+def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, last_reason, refused):
     conductor = _conductor(FakeSeams())
-    ledger = SlotAttempts(charge=charge, retries_per_pose=0 if charge == "speaker" else 1)
+    ledger = SlotAttempts(charge=charge, retries_per_pose=retries)
     conductor.authorize_begin(1, 1, executor_ledger=ledger)
     assert ledger.admitted == 1
+    if last_reason:
+        conductor._last_reason[conductor._slot_of_index(1)] = last_reason
     if refused:
-        conductor._last_reason[conductor._slot_of_index(1)] = next(iter(NON_RETRIABLE_CODES))
-        with pytest.raises(CaptureBeginRefused):
+        with pytest.raises(CaptureBeginRefused) as refusal:
             conductor.authorize_begin(1, 2, executor_ledger=ledger)
+        assert refusal.value.code == refused
     else:
         conductor.authorize_begin(1, 2, executor_ledger=ledger)
     assert ledger.by_household == (1 if charge == "operator" and not refused else 0)
