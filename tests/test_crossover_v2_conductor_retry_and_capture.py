@@ -67,31 +67,6 @@ def test_a_vertical_seat_states_its_elevation_and_still_banks_no_bearing():
             capture_plan.position_angle_deg(prompt)
 
 
-def test_the_compound_retake_rung_states_the_rise_it_asks_for():
-    """The one shipped pose that moves BOTH ways states both, or it lies.
-
-    Rung 2 asks for 75 cm sideways AND 30 cm up. Its two displacements differ,
-    so a single ``offset_cm`` cannot carry them — and a record that defaulted
-    its elevation to 0 would claim mark height for a microphone the household
-    was told to raise, and would pair that take against a mark-height baseline.
-    """
-    rung_2 = capture_plan.CloudPositionPrompt(
-        capture_plan.CLOUD_GEOMETRY_RETRY_PROMPTS[1],
-        offset_cm=capture_plan.GEOMETRY_RETRY_OFFSET_CM,
-        role=spatial.POSITION_ROLE_OFFAX,
-        vertical_sign=1,
-        vertical_offset_cm=capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1],
-    )
-    geometry = capture_plan.position_geometry(rung_2)
-
-    assert capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1] > 0
-    assert geometry.vertical_deg == 17
-    # Its lateral distance is the wider one and is NOT what the rise came from.
-    assert capture_plan.GEOMETRY_RETRY_OFFSET_CM != capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[1]
-    # Rung 1 is at mark height and says so.
-    assert capture_plan.CLOUD_GEOMETRY_RETRY_RISE_CM[0] == 0.0
-
-
 def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
     """The mixed walk's horizontal aggregates do not notice the raised seats.
 

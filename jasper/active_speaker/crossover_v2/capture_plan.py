@@ -164,10 +164,6 @@ CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 WIDE_OFFSET_MIN_CM = 30.0
 # The shortest prompted move that still decorrelates HF nulls.
 MIN_CLOUD_OFFSET_CM = 10.0
-# How far the geometry-locked retake rungs ask the operator to go: past every
-# position in the table (widest 60 cm), and no further, because a desk-scale
-# setup has to be able to reach it (#1874).
-GEOMETRY_RETRY_OFFSET_CM = 75.0
 
 # Owned by :mod:`.spatial`.
 POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
@@ -637,34 +633,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
         return "Hold the microphone at the head centre of the listening position, at ear height."
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
-
-# What the geometry-locked retake asks for. Two rungs, so a second retake is a
-# genuinely different instruction. Same register as the position table (#1805):
-# numeric distances in both units, absolute poses measured from the mark.
-CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
-    "Same measurement, wider spot: move the microphone "
-    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the LEFT of the "
-    "mark, at mark height, still pointed at the speaker.",
-    "One more, wider still: move the microphone "
-    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the RIGHT of the "
-    f"mark and {format_position_distance(WIDE_OFFSET_MIN_CM)} ABOVE mark "
-    "height.",
-)
-
-#: The RISE each retake rung asks for, one per rung, in centimetres — the
-#: machine-readable half of the sentences above, since these rungs are built
-#: outside :func:`_pose`. Read into
-#: :attr:`CloudPositionPrompt.vertical_offset_cm` by ``_prompt_shown_for``.
-CLOUD_GEOMETRY_RETRY_RISE_CM: tuple[float, ...] = (0.0, WIDE_OFFSET_MIN_CM)
-
-# A rung added without a rise beside it would bank mark height for whatever it
-# asks for.
-if len(CLOUD_GEOMETRY_RETRY_RISE_CM) != len(CLOUD_GEOMETRY_RETRY_PROMPTS):
-    raise ValueError(
-        "every geometry-retake rung must state the rise it asks for: "
-        f"{len(CLOUD_GEOMETRY_RETRY_PROMPTS)} rungs, "
-        f"{len(CLOUD_GEOMETRY_RETRY_RISE_CM)} rises"
-    )
 
 
 def _min_positions_for_two_wide_offsets(

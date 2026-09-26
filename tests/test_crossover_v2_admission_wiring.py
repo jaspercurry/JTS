@@ -69,51 +69,6 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
     assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
 
 
-def _exhausted_non_retriable(code: str):
-    """A conductor at index 1 whose meter is spent AND whose last rejection is
-    a condition no further take can clear — the state the precedence turns on."""
-    c = _conductor(FakeSeams())
-    slot = c._slot_of_index(1)
-    c._slot_attempts[slot] = admission.SlotAttempts(
-        admitted=1 + admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        by_household=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    )
-    c._last_reason[slot] = code
-    return c
-
-
-@pytest.mark.parametrize("code", sorted(refusal_copy.NON_RETRIABLE_CODES))
-def test_a_non_retriable_code_outranks_a_spent_meter(code):
-    """Which of two true conditions the household is told about.
-
-    ``assess_begin`` asks "is the last rejection non-retriable?" BEFORE "are the
-    extras gone?", and when BOTH hold the answer changes what a household reads:
-    the condition's own sentence ("You stopped the measurement…") rather than
-    the exhaustion sentence ("JTS measured this spot 4 times… and still could
-    not get a clean read"). The second would be false comfort — it says try
-    harder about a condition another take cannot clear.
-
-    **The refusal CODE is identical in both orders**, which is why the ordering
-    survived every count-based check: ``last_reason`` supplies it either way.
-    The sentence is the only observable, so the sentence is what this anchors
-    on — the DECLARED registry rendering, not the output of the function under
-    test. Swapping the two branches reddens every row here.
-
-    This replaces an evidence claim that did not hold: the slice's original
-    mutation row reported this ordering RED, and it was not — the discriminating
-    state above never occurs in the suite, so nothing pinned it until now.
-    """
-    c = _exhausted_non_retriable(code)
-
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 9)
-
-    spec = refusal_copy.REASON_REGISTRY[code]
-    assert excinfo.value.code == code
-    assert excinfo.value.user_message == refusal_copy.reason_message(code, spec)
-    assert "JTS measured this spot" not in excinfo.value.user_message
-
-
 def test_every_begin_decision_kind_is_handled(caplog):
     """The catch-all must not answer for a kind nobody wired.
 
@@ -187,17 +142,13 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
     )
 
     def ask(**kw):
-        base = dict(
-            ledger=None, last_reason=None, non_retriable=frozenset({"stopped"}),
-            default_code="locate_failed",
-        )
+        base = dict(ledger=None, default_code="locate_failed")
         return admission.assess_begin(**{**base, **kw}).kind
 
     produced = {
         ask(),                                                    # free first take
         ask(ledger=admission.SlotAttempts(admitted=1)),           # spends an extra
-        ask(ledger=admission.SlotAttempts(admitted=1), last_reason="stopped"),
-        ask(ledger=spent, last_reason="other"),
+        ask(ledger=spent),
     }
 
     assert produced == set(admission.DECISION_KINDS)
@@ -252,14 +203,10 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
 
     from_fresh_ledger = admission.assess_begin(
         ledger=fresh,
-        last_reason=None,
-        non_retriable=frozenset(),
         default_code="unused",
     )
     from_no_ledger = admission.assess_begin(
         ledger=None,
-        last_reason=None,
-        non_retriable=frozenset(),
         default_code="unused",
     )
 

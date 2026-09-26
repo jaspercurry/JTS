@@ -59,8 +59,6 @@ class AttemptOverspendError(RuntimeError):
 #: :attr:`BeginDecision.kind` — admit this begin (``spends_extra`` says whether
 #: it costs one of the position's extras, and ``initiator`` who is charged).
 ADMIT = "admit"
-#: Refuse: the slot's last rejection was a condition another take cannot clear.
-REFUSE_NON_RETRIABLE = "refuse_non_retriable"
 #: Refuse: the slot's extras are gone (the backstop — see :func:`assess_begin`).
 REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
 
@@ -70,7 +68,6 @@ REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
 #: retry it can make again.
 DECISION_KINDS = frozenset({
     ADMIT,
-    REFUSE_NON_RETRIABLE,
     REFUSE_EXTRAS_SPENT,
 })
 
@@ -215,22 +212,14 @@ def reflection_measured_for(
 def assess_begin(
     *,
     ledger: SlotAttempts | None,
-    last_reason: str | None,
-    non_retriable: Container[str],
     default_code: str,
     retry_charge: SlotCharge = "operator",
 ) -> BeginDecision:
     """Admit (or refuse) one phone ``begin_capture`` (§5.7)."""
     if ledger is None or not ledger.admitted:
         return BeginDecision(ADMIT)
-    # The ``is not None`` half narrows the type and changes no answer: the flow
-    # passes a ``frozenset[str]``, in which ``None`` is never a member.
-    if last_reason is not None and last_reason in non_retriable:
-        # Not exhaustion — a condition another take cannot clear, whose own copy
-        # already names the one action that helps.
-        return BeginDecision(REFUSE_NON_RETRIABLE, code=last_reason)
     if not ledger.can_retry(retry_charge):
-        return BeginDecision(REFUSE_EXTRAS_SPENT, code=last_reason or default_code)
+        return BeginDecision(REFUSE_EXTRAS_SPENT, code=default_code)
     return BeginDecision(
         ADMIT,
         spends_extra=True,
