@@ -39,18 +39,19 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import EnvKeyAction as EnvAction, locked_upsert_env_file
+from jasper.audio_hardware import reconcile_boot as boot
 from jasper.audio_hardware import reconcile_env_files as env_files
+from jasper.audio_hardware import reconcile_hardware as hardware
 from jasper.audio_hardware import reconcile_outputd_lane as outputd_lane
 from jasper.audio_hardware import reconcile_render as render
 from jasper.audio_hardware import reconcile_units as units
 from jasper.audio_hardware.config_txt import boot_config_path
 from jasper.audio_hardware.i2s_hat import i2s_hat_intent_path
-from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH, observe
+from jasper.audio_hardware.output_probe import DEFAULT_PROC_ASOUND_PATH
 from jasper.audio_hardware.reconcile_common import (
     ENV_DIR_MODE,
     ENV_FILE_MODE,
     _Abort,
-    _ensure_dir,
     _log_token,
 )
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
@@ -69,7 +70,6 @@ from jasper.output_hardware import (
     degraded_marker_path,
     state_path,
 )
-from jasper.output_topology_observation import observed_output
 from jasper.shell_env import render_shell_assignments
 
 logger = logging.getLogger(__name__)
@@ -102,13 +102,12 @@ def _resolve_asound_render_lib() -> str:
     return "/usr/local/lib/jasper/jasper-asound-render.sh"
 
 
-#: ALSA card ids are not stable across a re-enumeration, so the Apple mixer
-#: units bake in "resolve it yourself" rather than a card this pass observed.
-APPLE_SERVICE_CARD_AUTO = "auto"
-
-
 class Pass:
-    """One reconcile pass over the box's owned output-hardware state."""
+    """One reconcile pass over the box's owned output-hardware state.
+
+    Holds the pass's state, the plumbing its steps share and the order they
+    run in; each step lives in the ``reconcile_*`` module of its concern.
+    """
 
     def __init__(self, *, reason: str, print_env: bool, no_restart: bool) -> None:
         env = os.environ
@@ -167,7 +166,7 @@ class Pass:
         self.ring_conf_d = env.get("JASPER_RING_CONF_D") or ""
 
         self.apple_dongle_present = False
-        self.apple_dongle_service_card = APPLE_SERVICE_CARD_AUTO
+        self.apple_dongle_service_card = hardware.APPLE_SERVICE_CARD_AUTO
         self.dongle_card = "A"
         self.output_dac_card = "A"
         self.output_dac_id = "unknown"
@@ -262,148 +261,6 @@ class Pass:
         while one is open, the live file otherwise."""
         return self.outputd_env_stage or self.outputd_env_file
 
-    # -- the observed record ------------------------------------------------
-
-    def observe_output_hardware_state(self, *, write: bool) -> None:
-        action = "written" if write else "observed"
-        try:
-            state, cards, record_changed = observe(write=write)
-            observed = observed_output(state, cards, record_changed=record_changed)
-        # noqa reason: the classifier walks sysfs, /proc and an `aplay` spawn; a
-        # failure of ANY shape must still leave the DAC-role policy below to run.
-        except Exception:  # noqa: BLE001
-            self.mark_degraded()
-            self.log(f"state_{action}_failed", path=self.state_path)
-            return
-        # A record missing either of the two facts the whole thing hangs off is
-        # not one anything below may read.
-        if not observed.valid:
-            self.observed = ObservedOutput()
-            self.log(
-                f"state_{action}_failed",
-                reason="invalid_payload",
-                path=self.state_path,
-            )
-            return
-        self.observed = observed
-        if observed.record_changed:
-            self.record_changed = True
-        if observed.apple_card_ids:
-            self.dongle_card = observed.apple_card_ids[0]
-            self.apple_dongle_present = True
-        if write:
-            # Never fatal: a full /run must not skip the DAC-role policy the
-            # caller runs next. --print-env promises no mutations, which is why
-            # this is gated on the write.
-            try:
-                self.publish_management_transport_marker(
-                    observed.management_transport_available
-                )
-            except OSError:
-                pass
-        self.log(
-            f"state_{action}",
-            path=self.state_path,
-            profile_id=observed.profile_id or "unknown",
-            status=observed.status or "unknown",
-            blockers=_log_token(",".join(observed.blocker_codes) or "none"),
-        )
-
-    def publish_management_transport_marker(self, available: bool | None) -> None:
-        """Read by jasper-usbgadget's composition with ``test -e``. In /run so
-        a reboot clears it before the boot config it describes can change.
-        Truncated in place rather than replaced: an unlink would leave a window
-        where a true->true republish reads as false."""
-        marker = self.management_transport_marker
-        if not available:
-            marker.unlink(missing_ok=True)
-            return
-        _ensure_dir(marker.parent, 0o755)
-        marker.open("w").close()
-
-    # -- I2S HAT boot intent ------------------------------------------------
-
-    def reconcile_i2s_hat_boot(self) -> None:
-        # lazy: patch target — the tests replace it on the source module, which
-        # only a per-call import sees.
-        from jasper.audio_hardware.usb_port_role import (
-            reconcile_boot_config, boot_role_events,
-        )
-
-        try:
-            (
-                state,
-                boot_changed,
-                hat_changed,
-                desired_profile,
-                durability_failed,
-                hat_collision,
-            ) = reconcile_boot_config(
-                model_path=self.model_path,
-                boot_config_path=self.boot_config_path,
-                udc_class_dir=self.udc_class_dir,
-                i2s_hat_intent_path=self.i2s_hat_intent_file,
-            )
-        # noqa reason: any failure here means the boot config was NOT applied, and
-        # 66 (rather than a traceback) is what says the config was preserved.
-        except Exception:  # noqa: BLE001
-            self.log("i2s_hat_apply", result="error", action="preserve_boot_config")
-            raise _Abort(66) from None
-        for name, fields in boot_role_events(
-            state,
-            boot_config_changed=boot_changed,
-            hat_profile=desired_profile or "",
-            hat_changed=hat_changed,
-            hat_collision=hat_collision,
-        ):
-            log_event(logger, name, fields=fields)
-        if durability_failed:
-            self.i2s_hat_apply_error = True
-        self.i2s_hat_desired_profile = desired_profile or ""
-        if state.board_topology == "unsupported":
-            self.log(
-                "i2s_hat_apply", result="unavailable", board_topology="unsupported"
-            )
-            return
-        self.i2s_hat_boot_changed = bool(hat_changed)
-        if self.i2s_hat_apply_error:
-            self.log(
-                "i2s_hat_apply",
-                result="error",
-                error="boot_config_published_not_durable",
-            )
-            return
-        self.log(
-            "i2s_hat_apply",
-            result=self.i2s_hat_boot_changed,
-            profile=self.i2s_hat_desired_profile or "none",
-        )
-
-    def sync_i2s_hat_reboot_marker(self) -> None:
-        """State, not edge: an install-time pass can write the detected HAT's
-        boot line before this service ever runs, so "changed this pass" is
-        false while the kernel still runs the old overlay. Any registered I2S
-        profile, not just InnoMaker: a HAT can be the composite's child device
-        rather than the top-level profile_id."""
-        desired = self.i2s_hat_desired_profile
-        if self.i2s_hat_boot_changed is None or not self.observed.valid:
-            return
-        observed = self.observed.profile_id
-        children = self.observed.child_device_ids
-        if desired and desired in children:
-            observed = desired
-        marker = Path(self.i2s_hat_reboot_required_path)
-        if observed == desired:
-            marker.unlink(missing_ok=True)
-            return
-        # No HAT desired: whatever DAC is attached is not a pending boot
-        # change, so only this pass having cleared the managed block pends one.
-        if not desired and not self.i2s_hat_boot_changed:
-            return
-        _ensure_dir(marker.parent, 0o755)
-        marker.write_text("", encoding="utf-8")
-        os.chmod(marker, 0o644)
-
     # -- registry and graph probes ------------------------------------------
 
     def saved_topology(self) -> Any | None:
@@ -469,78 +326,6 @@ class Pass:
             return False, decision.reason
         return True, (str(decision.width), decision.endpoint_device or "")
 
-    # -- role policy --------------------------------------------------------
-
-    def apply_observed_single_policy(self) -> None:
-        """Consume the classifier's verdict for ordinary single devices, so a
-        newly registered DAC needs no second hardware rule here."""
-        if self.observed.status != "ready":
-            return
-        if not self.observed.selected_card_id:
-            return
-        self.output_dac_card = self.observed.selected_card_id
-        self.output_dac_id = self.observed.profile_id
-        self.output_dac_recognized = True
-
-    def apply_observed_composite_policy(self) -> None:
-        if self.observed.kind != "composite":
-            return
-        # The parked shape, up front: a composite is NAMED whatever its status,
-        # so every branch leaves these exactly here except the one that arms.
-        self.output_dac_id = self.observed.profile_id
-        self.output_dac_card = ""
-        self.output_dac_recognized = False
-        self.apple_dongle_present = True
-        self.apple_dongle_service_card = APPLE_SERVICE_CARD_AUTO
-        if self.observed.status != "ready":
-            self.log(
-                "dual_apple_detected",
-                status=self.observed.status or "unknown",
-                action="park_until_ready",
-            )
-            return
-        if not self.observed.dual_mapping_ok:
-            self.log(
-                "dual_apple_detected",
-                status="ready",
-                action="park_unstable_child_order",
-                topology_path=self.output_topology_path,
-                reason=self.observed.dual_mapping_reason
-                or "unknown",
-            )
-            return
-        self.dual_apple_order_source = self.observed.dual_order_source
-        self.dual_apple_dac_a_pcm = self.observed.dual_dac_a_pcm
-        self.dual_apple_dac_b_pcm = self.observed.dual_dac_b_pcm
-        # The composite sink is rigidly 4-channel in outputd, so the dual
-        # branch needs the gate's pass/fail and its ENDPOINT DEVICE but not the
-        # returned width. The endpoint field must not be discarded: the marker
-        # `active_ring_endpoint_proof` demands is derived from exactly it.
-        ok, payload = self.active_graph_status(4)
-        if not ok:
-            self.dual_apple_dac_a_pcm = ""
-            self.dual_apple_dac_b_pcm = ""
-            self.dual_apple_active_endpoint_device = ""
-            self.log(
-                "dual_apple_detected",
-                status="ready",
-                action="park_until_active_graph",
-                reason=payload,
-            )
-            return
-        self.output_dac_card = self.dongle_card
-        self.output_dac_recognized = True
-        self.dual_apple_active_endpoint_device = payload[1]
-        self.log(
-            "dual_apple_detected",
-            status="ready",
-            action="outputd_dual_sink",
-            order_source=self.dual_apple_order_source,
-            dac_a_pcm=_log_token(self.dual_apple_dac_a_pcm),
-            dac_b_pcm=_log_token(self.dual_apple_dac_b_pcm),
-            active_endpoint=self.dual_apple_active_endpoint_device or "none",
-        )
-
     # -- the pass -----------------------------------------------------------
 
     def rejected_stage_exit(self, name: str, **fields: Any) -> int:
@@ -579,20 +364,20 @@ class Pass:
             )
             raise _Abort(66)
         if self.print_env:
-            self.observe_output_hardware_state(write=False)
-            self.apply_observed_single_policy()
-            self.apply_observed_composite_policy()
+            hardware.observe_output_hardware_state(self, write=False)
+            hardware.apply_observed_single_policy(self)
+            hardware.apply_observed_composite_policy(self)
             self.print_role_env()
             return 0
         render.open_runtime_graph_attempt(self)
-        self.reconcile_i2s_hat_boot()
-        self.observe_output_hardware_state(write=True)
-        self.sync_i2s_hat_reboot_marker()
+        boot.reconcile_i2s_hat_boot(self, logger)
+        hardware.observe_output_hardware_state(self, write=True)
+        boot.sync_i2s_hat_reboot_marker(self)
         if self.i2s_hat_apply_error:
             units.restart_dac_init_for_record_change(self)
             return 74
-        self.apply_observed_single_policy()
-        self.apply_observed_composite_policy()
+        hardware.apply_observed_single_policy(self)
+        hardware.apply_observed_composite_policy(self)
 
         env_changed = 0
         # dac_env_changed tracks ONLY a DAC-identity/card move — the class of

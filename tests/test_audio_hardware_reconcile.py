@@ -1082,7 +1082,7 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     # failed observation (#i2s-hat-intent).
     for extra_env, patches in (
         ({"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}, None),
-        (None, {"jasper.audio_hardware.reconcile.observe": _statusless_observation}),
+        (None, {"jasper.audio_hardware.reconcile_hardware.observe": _statusless_observation}),
         (None, None),
     ):
         for marker_present in (False, True):
@@ -1217,7 +1217,7 @@ def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
         "--print-env",
-        patches={"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))},
+        patches={"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))},
     )
 
     assert result.returncode == 0, result.stderr
@@ -1895,7 +1895,7 @@ def test_a_signalled_pass_names_the_signal_and_exits_128_plus_it(
         APPLE_LISTING,
         "--reason",
         "test",
-        patches={"jasper.audio_hardware.reconcile.observe": _signal_self(signum)},
+        patches={"jasper.audio_hardware.reconcile_hardware.observe": _signal_self(signum)},
     )
 
     assert result.returncode == status, result.stderr
@@ -3892,7 +3892,7 @@ _LANE_CAP_ANSWERS_FOUR = _lane_cap(lambda _id: 4)
 # is why the shell reconciler marked degraded only when the probe could not be
 # reached at all.
 _PROBE_FAILURES = {
-    "observe": ({"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))}, 0),
+    "observe": ({"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))}, 0),
     "outputd_env_validator": (
         {"jasper.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
         78,
