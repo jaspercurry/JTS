@@ -519,14 +519,12 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
             if step.get("names") == ["bass_ext_dynamic_boost"]:
                 step["names"] = ["bass_ext_dynamic_loudness"]
     old = "\n".join(line for line in fresh.splitlines() if line.startswith("#")) + "\n" + yaml.safe_dump(old_payload)
-    artifact.write_text(fresh if case in {"already_safe"} else old)
-    current = artifact if case == "heal_current" else tmp_path / "prior.yml"
+    artifact.write_text(_under_charged_boosted_baseline() if regressed else fresh if case == "already_safe" else old)
+    # A commissioned box boots its applied artifact itself.
+    current = artifact if case == "heal_current" or regressed else tmp_path / "prior.yml"
     current.write_text(artifact.read_text())
     if case in {"current_startup"}:
         current = startup
-    elif regressed:
-        artifact.write_text(_under_charged_boosted_baseline())
-        current.write_text(artifact.read_text())
     paths["statefile_path"].write_text(f"config_path: {current}\nvolume: -18.0\nmute: false\n")
     if case == "missing":
         paths["applied_baseline_path"].unlink()
@@ -565,7 +563,7 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         "read_only", "disabled", "missing", "already_safe", "current_startup",
     } else 1)
     if case in {"heal", "heal_current", "regressed"}:
-        assert result.decision.status == ("preserve_current" if case == "heal_current" else "select_active_baseline")
+        assert result.decision.status == ("select_active_baseline" if case == "heal" else "preserve_current")
         assert result.decision.preferred_graph.allowed
         if case == "heal":
             assert result.decision.current_graph.issues[0]["code"] == "bass_extension_block_invalid"

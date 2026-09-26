@@ -110,7 +110,7 @@ def converge_boot_statefile(
     if flat_config_path is not None:
         kwargs["flat_config_path"] = flat_config_path
     decision = safe_graph_for_current_topology(topology, **kwargs)
-    # The one blocked decision a re-emit can clear: the boot graph's headroom proof regressed (#2847).
+    # The selector's refusal of a graph whose headroom charge stopped proving; a re-emit re-charges it (#2847).
     headroom_regressed = decision.status == "blocked" and {
         issue["code"] for issue in decision.issues} == {LINEARIZATION_HEADROOM_UNPROVEN_CODE}
     if (
@@ -127,9 +127,11 @@ def converge_boot_statefile(
                 if (reproved.status in ("preserve_current", "select_active_baseline")
                         and reproved.selected_config_path == str(report.path)):
                     decision = reproved
-                log_event(logger, "active_speaker.baseline_reemit", decision=decision.status)
+                # WARNING so the install transcript shows it: runtime-safe-graph configures no logging.
+                log_event(logger, "active_speaker.baseline_reemit", level=logging.WARNING, decision=decision.status)
         except (CandidateBankRefusal, OSError, RuntimeError, ValueError, TypeError) as exc:
-            log_event(logger, "active_speaker.baseline_reemit", decision=decision.status, error=str(exc))
+            log_event(logger, "active_speaker.baseline_reemit", level=logging.WARNING,
+                      decision=decision.status, error=str(exc))
     if not (write_statefile and decision.ok):
         return StatefileConvergenceResult(decision, topology, False)
     try:
