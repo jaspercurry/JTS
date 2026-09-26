@@ -20,8 +20,6 @@ from typing import Any, Container, Literal
 from .refusal_copy import TakeCharge
 
 __all__ = [
-    "ATTEMPT_INITIATOR_HOUSEHOLD",
-    "ATTEMPT_INITIATOR_SPEAKER",
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
     "MAX_AUTOMATIC_RETAKES_PER_POSITION",
@@ -40,9 +38,6 @@ MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
 # Six extra takes per pose bound USB-fault work; planned configs/repeats spend none.
 MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
 
-ATTEMPT_INITIATOR_HOUSEHOLD = "household"
-ATTEMPT_INITIATOR_SPEAKER = "speaker"
-
 #: The ledger's own free charge, for a take the executor admits without spending a retry (#5722).
 SlotCharge = TakeCharge | Literal["replay"]
 
@@ -56,8 +51,7 @@ class AttemptOverspendError(RuntimeError):
     """
 
 
-#: :attr:`BeginDecision.kind` — admit this begin (``spends_extra`` says whether
-#: it costs one of the position's extras, and ``initiator`` who is charged).
+#: :attr:`BeginDecision.kind` — admit this begin; the ledger charges it (:meth:`SlotAttempts.admit`).
 ADMIT = "admit"
 #: Refuse: the slot's extras are gone (the backstop — see :func:`assess_begin`).
 REFUSE_EXTRAS_SPENT = "refuse_extras_spent"
@@ -127,15 +121,11 @@ class SlotAttempts:
 class BeginDecision:
     """What :func:`assess_begin` concluded about one ``begin_capture``.
 
-    ``code`` is an opaque reason token on every refusal. ``spends_extra`` and
-    ``initiator`` are meaningful only on :data:`ADMIT`, and the session
-    performs the charge.
+    ``code`` is an opaque reason token on every refusal.
     """
 
     kind: str
     code: str = ""
-    spends_extra: bool = False
-    initiator: str = ""
 
 
 def extras_spent_message(
@@ -220,8 +210,4 @@ def assess_begin(
         return BeginDecision(ADMIT)
     if not ledger.can_retry(retry_charge):
         return BeginDecision(REFUSE_EXTRAS_SPENT, code=default_code)
-    return BeginDecision(
-        ADMIT,
-        spends_extra=True,
-        initiator=ATTEMPT_INITIATOR_SPEAKER if ledger.charge == "speaker" else ATTEMPT_INITIATOR_HOUSEHOLD,
-    )
+    return BeginDecision(ADMIT)
