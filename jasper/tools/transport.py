@@ -123,59 +123,75 @@ async def _resolve_airplay_account(router):
     return await router.resolve_for_transport(client_name, title)
 
 
+async def _spotify_is_playing(sp) -> bool:
+    try:
+        playback = await asyncio.to_thread(sp.current_playback)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("spotify current_playback failed: %s", e)
+        return False
+    return bool(playback and playback.get("is_playing"))
+
+
+
+async def _spotify_call(sp, action: str, device_id: str | None) -> None:
+    if action == "toggle":
+        action = "pause" if await _spotify_is_playing(sp) else "play"
+    fn = {
+        "next": sp.next_track,
+        "previous": sp.previous_track,
+        "pause": sp.pause_playback,
+        "play": sp.start_playback,
+    }[action]
+    await asyncio.to_thread(fn, device_id=device_id)
+
+
+
+async def _dispatch_airplay(action: str, router, hostname: str) -> dict:
+    matched = await _resolve_airplay_account(router)
+    if matched is not None:
+        device_id = await _spotify_active_device_id(matched.sp)
+        await _spotify_call(matched.sp, action, device_id)
+        logger.info(
+            "airplay+spotify: %s routed to account=%s device_id=%s",
+            action, matched.account.name, device_id,
+        )
+        return {
+            "ok": True,
+            "source": "airplay+spotify",
+            "account": matched.account.name,
+        }
+    # No Spotify account playing the AirPlay track — try
+    # DACP for non-Spotify senders that expose it.
+    if not await _airplay_remote_available():
+        return {
+            "error": "the airplay sender isn't playing a track "
+            "from any configured spotify account, and the device "
+            "doesn't accept remote control. tell the user to use "
+            "the controls on the device they're casting from, or "
+            f"to link their spotify account at {hostname}/spotify.",
+            "source": "airplay",
+        }
+    await _mpris_call(_PLAYER_METHODS[action])
+    return {"ok": True, "source": "airplay"}
+
+
+async def _dispatch_spotify(action: str, router, hostname: str) -> dict:
+    active = None
+    if await ensure_clients(router):
+        active = await router.active(airplay_active=False)
+    if active is None:
+        return {"error": no_account_msg(router, f"{hostname}/spotify")}
+    device_id = await _spotify_active_device_id(active.sp)
+    await _spotify_call(active.sp, action, device_id)
+    return {
+        "ok": True,
+        "source": "spotify",
+        "account": active.account.name,
+    }
+
+
 def make_transport_dispatcher(renderer, router):
-    """Returns `async dispatch(action) -> dict`, the source-aware
-    transport routing function. Both the voice-tool decorators
-    (make_transport_tools) and external callers (jasper-control's
-    HTTP toggle endpoint) share this implementation so that `pause`
-    behaves identically whether triggered by voice or by the remote.
-
-    Routing logic for AirPlay (the interesting case):
-
-      - Cross-reference shairport's MPRIS `xesam:title` against each
-        configured account's `current_playback.item.name`. If exactly
-        one matches, that's the AirPlay sender — route Next/Previous/
-        Pause/Play/Toggle to that account via the Spotify Web API.
-      - If no Spotify account is playing the AirPlay-pushed track,
-        the sender is something else (Apple Music, podcast, browser
-        tab). Try DACP via shairport's MPRIS — works for legacy
-        AirPlay 1 and older Apple Music builds; silently no-ops on
-        iOS 17.4+ Spotify (shairport-sync #1822), but those will
-        have hit the title-match path above.
-      - If DACP isn't available either, tell the user to use the
-        controls on the device they're casting from.
-
-    Spotify Connect (no AirPlay): router picks the active or default
-    account; spotipy targets that account's active device.
-
-    Bluetooth: AVRCP via BlueZ MediaPlayer1 when the source phone
-    exposes a player object. No-source: error response telling the
-    model nothing is playing.
-
-    Toggle action: query the current is-playing state for the active
-    source and dispatch pause-or-play accordingly. MPRIS exposes a
-    native PlayPause method which is preferred for non-Spotify AirPlay.
-    """
-
-    async def _spotify_is_playing(sp) -> bool:
-        try:
-            playback = await asyncio.to_thread(sp.current_playback)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("spotify current_playback failed: %s", e)
-            return False
-        return bool(playback and playback.get("is_playing"))
-
-    async def _spotify_call(sp, action: str, device_id: str | None) -> None:
-        if action == "toggle":
-            action = "pause" if await _spotify_is_playing(sp) else "play"
-        fn = {
-            "next": sp.next_track,
-            "previous": sp.previous_track,
-            "pause": sp.pause_playback,
-            "play": sp.start_playback,
-        }[action]
-        await asyncio.to_thread(fn, device_id=device_id)
-
+    """Shared transport routing for voice tools and jasper-control."""
     async def _dispatch(action: str) -> dict:
         source = await _detect_source(renderer)
         logger.info("transport dispatch: action=%s source=%s", action, source)
@@ -183,45 +199,9 @@ def make_transport_dispatcher(renderer, router):
         hostname = resolve_hostname()
         try:
             if source == "airplay":
-                matched = await _resolve_airplay_account(router)
-                if matched is not None:
-                    device_id = await _spotify_active_device_id(matched.sp)
-                    await _spotify_call(matched.sp, action, device_id)
-                    logger.info(
-                        "airplay+spotify: %s routed to account=%s device_id=%s",
-                        action, matched.account.name, device_id,
-                    )
-                    return {
-                        "ok": True,
-                        "source": "airplay+spotify",
-                        "account": matched.account.name,
-                    }
-                # No Spotify account playing the AirPlay track — try
-                # DACP for non-Spotify senders that expose it.
-                if not await _airplay_remote_available():
-                    return {
-                        "error": "the airplay sender isn't playing a track "
-                        "from any configured spotify account, and the device "
-                        "doesn't accept remote control. tell the user to use "
-                        "the controls on the device they're casting from, or "
-                        f"to link their spotify account at {hostname}/spotify.",
-                        "source": "airplay",
-                    }
-                await _mpris_call(_PLAYER_METHODS[action])
-                return {"ok": True, "source": "airplay"}
+                return await _dispatch_airplay(action, router, hostname)
             if source == "spotify":
-                active = None
-                if await ensure_clients(router):
-                    active = await router.active(airplay_active=False)
-                if active is None:
-                    return {"error": no_account_msg(router, f"{hostname}/spotify")}
-                device_id = await _spotify_active_device_id(active.sp)
-                await _spotify_call(active.sp, action, device_id)
-                return {
-                    "ok": True,
-                    "source": "spotify",
-                    "account": active.account.name,
-                }
+                return await _dispatch_spotify(action, router, hostname)
             if source == "bluetooth":
                 await _bluetooth_call(_PLAYER_METHODS[action])
                 return {"ok": True, "source": "bluetooth"}
@@ -243,6 +223,7 @@ def make_transport_dispatcher(renderer, router):
         except Exception as e:  # noqa: BLE001
             logger.warning("transport %s/%s failed: %s", source, action, e)
             return {"error": f"transport failed: {e}"}
+
 
     return _dispatch
 
