@@ -369,6 +369,18 @@ def test_linkwitz_schema_edges_match_the_validator(name):
             validate(shape[rules["target_hz_exclusive_upper_field"]])
 
 
+def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys):
+    """A re-run room view is a view (ADR-0371)."""
+    bank, _ = round_bank
+    stored = json.loads((bank / "room.json").read_text())
+    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "set_id": "set-1"}]}))
+    (bank / "room.json").write_text(json.dumps({}))
+    assert cli.main(["contract", "--round", str(bank), "--section", "room"]) == cli.EXIT_OK
+    served = json.loads(capsys.readouterr().out)
+    assert served["evidence_status"] == "evaluated"
+    assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
+
+
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path)

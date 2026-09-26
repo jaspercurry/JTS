@@ -43,11 +43,10 @@ from ..prescription_contract import (
 from ..record_index import Measurement, bundle_measurements
 from ..round_inputs import (
     NO_ROUND_ARTIFACTS_REASON,
-    PACKET_FILENAME,
     STATE_SESSION_UNKNOWN,
     CrossoverEvidencePacketError,
     RoundInputs,
-    banked_round_of,
+    banked_packet,
     contract_sources,
     round_artifact_dir,
     round_inputs,
@@ -572,10 +571,8 @@ def build_crossover_evidence_packet(
 
     receipt_raw, receipt_reason = _read_json(round_dir / "round_receipt.json")
     cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
-    # Only a round banked while views wrote into its evidence carries these;
-    # they stay in its fingerprint, the one its candidates were judged against.
-    # Consumers read DERIVED_VIEWS. Drop both reads (moving every fingerprint
-    # once) when no such round matters.
+    # Only a round banked while views wrote into its evidence carries these,
+    # and a rebuild of it fingerprints them. Consumers read DERIVED_VIEWS.
     classification_raw, classification_reason = _read_json(
         round_dir / CLASSIFICATION_ARTIFACT
     )
@@ -753,17 +750,14 @@ def build_crossover_evidence_packet(
     return packet
 
 
-def build_round_evidence(inputs: RoundInputs) -> dict[str, Any]:
+def build_round_evidence(inputs: RoundInputs, *, state_path: Path | None = None) -> dict[str, Any]:
     """The packet built from the round's own inputs, as its bank builds it.
 
-    A live session is built without its flow state and CamillaDSP statefile:
-    both are rewritten as it runs, and would move its fingerprint (#3316). A
-    banked round's copies are frozen.
+    Never its flow state or CamillaDSP statefile, which a live session rewrites
+    as it runs (#3316); ``state_path`` is a ``status`` what-if's.
     """
     return build_crossover_evidence_packet(
-        inputs.session_dir, round_context=inputs,
-        state_path=inputs.state_path if inputs.banked else None,
-        statefile_path=inputs.statefile_path if inputs.banked else None,
+        inputs.session_dir, round_context=inputs, state_path=state_path,
         driver_draft_path=inputs.design_draft_path, applied_profile_path=inputs.applied_profile_path,
         repeat_floor_path=inputs.repeat_floor_path, declared_geometry_path=inputs.declared_geometry_path,
     )
@@ -777,8 +771,7 @@ def round_evidence(inputs: RoundInputs) -> dict[str, Any]:
     answers with any fingerprint its bank stored.
     """
     # See ADR-0371
-    round_dir = banked_round_of(inputs.session_dir)
-    stored = _mapping(_read_json(round_dir / PACKET_FILENAME)[0]) if round_dir else {}
+    stored = banked_packet(inputs)
     evidence = stored.get(EVIDENCE_KEY)
     if isinstance(evidence, dict):
         packet = {**evidence, DERIVED_VIEWS: _derived_views_block(round_artifact_dir(inputs.session_dir)[0], inputs)}

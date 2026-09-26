@@ -659,11 +659,8 @@ def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypat
             }],
         }],
     )
-    monkeypatch.setattr(
-        evidence_packet,
-        "build_crossover_evidence_packet",
-        lambda _bundle: _packet("saved"),
-    )
+    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
+    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
 
     run = measurement_archive.load_measurement(
         ArchivedMeasurement("saved", tmp_path / "saved", 1.0, "applied"),
@@ -692,11 +689,8 @@ def test_archive_keeps_old_packet_positions_when_a_record_has_only_a_baseline(
             "magnitude_db": [-25.0, -24.0],
         }],
     )
-    monkeypatch.setattr(
-        evidence_packet,
-        "build_crossover_evidence_packet",
-        lambda _bundle: _packet("saved"),
-    )
+    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
+    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
 
     run = measurement_archive.load_measurement(
         ArchivedMeasurement("saved", tmp_path / "saved"),
@@ -717,7 +711,8 @@ def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, m
                          "magnitude_db": [-20, -20, -21], "reference_db": -20}]}
             for take, candidate, graph in (("a", "candidate-a", "played-a"), ("b", "candidate-b", "played-b"))]
     monkeypatch.setattr(measurement_archive, "_measurement_documents", lambda _: docs)
-    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", lambda _: _packet("saved"))
+    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
+    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
     run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
     assert len(run.series) == 2
     assert {r.details["take_id"] for r in run.series} == {"a", "b"}

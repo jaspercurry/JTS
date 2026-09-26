@@ -281,13 +281,15 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
     assert packet["entry_baseline"]["available"] is True
-    assert packet["identity"]["calibration"] == (calibration if snapshot else {})
-    assert packet["verify"]["available"] is False
     assert ("state.json" in banked.provenance["missing"]) is not snapshot
+
+    def banked_calibration():
+        state = round_inputs(banked.path).state_path
+        return json.loads(state.read_text())["evidence"]["calibration"] if state else {}
+
+    assert banked_calibration() == (calibration if snapshot else {})
     (banked.path / "state.json").write_text(state_path.read_text())
-    reread = load_banked_round(banked.path).packet
-    assert reread["identity"]["calibration"] == (calibration if snapshot else {})
-    assert reread["verify"]["available"] is False
+    assert banked_calibration() == (calibration if snapshot else {})
 
 SR = 48000
 

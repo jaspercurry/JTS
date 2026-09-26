@@ -238,8 +238,6 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
         "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
         "declared_geometry_path": round_inputs_mod.DECLARED_GEOMETRY_DEFAULT_PATH,
-        # No default, same reason as ``state_path`` above (#3316).
-        "statefile_path": None,
     }
 
 
@@ -296,7 +294,7 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
-    packet = cli.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
+    packet = evidence_packet.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
     trim = packet["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
@@ -871,7 +869,7 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     _rebank_round_as_no_crossover(session)
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
+    packet = evidence_packet.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
     not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
@@ -977,7 +975,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     )
 
     _, cli_payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
+    packet = evidence_packet.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(

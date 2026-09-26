@@ -49,15 +49,14 @@ class BankedRound:
 
 def load_banked_round(round_dir: Path) -> BankedRound:
     """Read one round — banked tree or LIVE session bundle — into a
-    :class:`BankedRound`.
+    :class:`BankedRound`, its packet read through :func:`~.evidence_packet.round_evidence`.
 
-    Which of the two it is, and so where the flow state, design draft and
-    applied profile come from, is :func:`~.round_inputs.round_inputs`' answer;
-    it rides on :attr:`BankedRound.inputs` so the views read the same files this
-    packet was built from. Raises :class:`RoundViewsError` when the directory is
-    neither shape, when a banked tree holds more than one session, or when the
-    bundle carries no readable evidence packet. It does NOT judge what the round
-    banked — what a view needs, the view says (#3478, #3482).
+    Which of the two it is, and so where its inputs come from, is
+    :func:`~.round_inputs.round_inputs`' answer; they ride on
+    :attr:`BankedRound.inputs`. Raises :class:`RoundViewsError` when the
+    directory is neither shape, when a banked tree holds more than one session,
+    or when a packet built on read finds no crossover-v2 bundle. It does NOT
+    judge what the round banked — what a view needs, the view says (#3478, #3482).
     """
     round_dir = Path(round_dir)
     inputs = round_inputs(round_dir)

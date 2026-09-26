@@ -20,7 +20,7 @@ from typing import Any
 
 from .frequency_view import FrequencyRun, FrequencySeries
 from .measurement_document import frequency_run_from_documents
-from .crossover_v2.round_inputs import capture_identity
+from .crossover_v2.round_inputs import capture_identity, round_inputs
 
 
 @dataclass(frozen=True)
@@ -123,12 +123,12 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     documents = _measurement_documents(run.bundle_dir)
     from .crossover_v2.evidence_packet import (
         CrossoverEvidencePacketError,
-        build_crossover_evidence_packet,
+        round_evidence,
     )
     from .crossover_v2.round_frequency_view import frequency_run as packet_frequency_run
 
     try:
-        retained = packet_frequency_run(build_crossover_evidence_packet(run.bundle_dir))
+        retained = packet_frequency_run(round_evidence(round_inputs(run.bundle_dir)))
     except (CrossoverEvidencePacketError, OSError, TypeError, ValueError):
         retained = None
 

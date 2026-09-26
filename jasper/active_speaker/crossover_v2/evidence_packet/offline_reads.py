@@ -38,8 +38,8 @@ LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
 
 #: The three phases a finding set was banked under, each at its own
 #: ``findings_{phase}.json``: the two cloud-group closes and the level-frame
-#: gate's own MEASURE-phase set. No writer remains; reading them keeps the
-#: packet's shape, and so a banked round's fingerprint, unchanged (#5668).
+#: gate's own MEASURE-phase set. No writer remains; reading them keeps a
+#: rebuilt packet's shape, and so its fingerprint, unchanged (#5668).
 _FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 
 #: The phases whose banked set came from carve-out promotion, which read only
