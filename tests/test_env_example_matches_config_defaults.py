@@ -10,10 +10,6 @@ systemd loads for the daemons, so any literal in .env.example permanently
 overrides the matching `Config` default on every existing Pi. A code
 default that diverges from .env.example therefore ships a lie: production
 runs the (frozen) .env.example value while code + docs claim the code one.
-This has twice silently hidden a code-default fix — a HEADROOM volume value
-and the wake threshold (see MEMORY: "Pi jasper.env is a frozen first-install
-seed"). `tests/test_config.py` guards the wake threshold one key at a time;
-this file generalizes that guard across the load-bearing tunables.
 
 Scope: the JASPER_* (and SPOTIFY_*) tunables that have BOTH a line in
 .env.example AND a real default in `Config.from_env`. EXCLUDED, because they
@@ -104,6 +100,7 @@ _CASES: tuple[tuple[str, str, str], ...] = (
     ("JASPER_CAMILLA_PORT", "camilla_port", "int"),
     # Timeouts / idle context reset.
     ("JASPER_IDLE_TIMEOUT_SEC", "idle_timeout_sec", "int"),
+    ("JASPER_FOLLOWUP_TIMEOUT_SEC", "followup_timeout_sec", "float"),
     ("JASPER_OPENAI_CONTEXT_RESET_SEC", "openai_context_reset_sec", "int"),
     ("JASPER_GEMINI_CONTEXT_RESET_SEC", "gemini_context_reset_sec", "int"),
     ("JASPER_GROK_CONTEXT_RESET_SEC", "grok_context_reset_sec", "int"),
