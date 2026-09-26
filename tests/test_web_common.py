@@ -10,6 +10,7 @@ handlers rather than real http.server instances — keeps the suite fast
 and lets us assert on exactly the header bytes that go on the wire.
 """
 from __future__ import annotations
+from jasper.control import service_restart
 
 import http
 from email.message import Message
@@ -486,9 +487,9 @@ def test_restart_systemd_units_routes_through_broker_no_block(monkeypatch):
         calls.append((units, kwargs))
         return {"ok": True}
 
-    monkeypatch.setattr(_common, "manage_units", fake_manage)
+    monkeypatch.setattr(service_restart, "manage_units", fake_manage)
 
-    _common.restart_systemd_units(
+    service_restart.restart_systemd_units(
         "jasper-voice", "jasper-control", "jasper-mux",
     )
 
@@ -497,6 +498,7 @@ def test_restart_systemd_units_routes_through_broker_no_block(monkeypatch):
     assert units == ("jasper-voice", "jasper-control", "jasper-mux")
     assert kwargs["verb"] == "restart"
     assert kwargs["no_block"] is True
+
 
 
 @pytest.mark.parametrize("broker_ok,expected", [
@@ -511,43 +513,45 @@ def test_restart_systemd_units_reports_a_refused_restart(
     restart that never happened. REFUSED must also stay distinct from the
     deliberate skips below, which are not failures."""
     monkeypatch.setattr(
-        _common, "manage_units", lambda *units, **kwargs: {"ok": broker_ok},
+        service_restart, "manage_units", lambda *units, **kwargs: {"ok": broker_ok},
     )
-    monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
-    monkeypatch.setattr(_common, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "openai")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
 
-    assert _common.restart_systemd_units("jasper-voice") is expected
-    assert _common.restart_voice_daemon() is expected
+    assert service_restart.restart_systemd_units("jasper-voice") is expected
+    assert service_restart.restart_voice_daemon() is expected
+
 
 
 def test_restart_voice_daemon_parks_when_provider_unset(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(_common, "read_active_provider", lambda: "")
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "")
     monkeypatch.setattr(
-        _common, "manage_units",
+        service_restart, "manage_units",
         lambda *units, **kwargs: calls.append((units, kwargs)) or {"ok": True},
     )
 
     # A deliberate skip is neither a failure nor a restart: the saver must
     # not claim the daemon is restarting, and must not report a failure.
-    assert _common.restart_voice_daemon() is _common.RestartOutcome.SKIPPED
+    assert service_restart.restart_voice_daemon() is service_restart.RestartOutcome.SKIPPED
 
     assert calls == []
+
 
 
 def test_restart_voice_daemon_restarts_when_provider_set(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(_common, "read_active_provider", lambda: "openai")
-    monkeypatch.setattr(_common, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "openai")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     monkeypatch.setattr(
-        _common, "manage_units",
+        service_restart, "manage_units",
         lambda *units, **kwargs: calls.append((units, kwargs.get("verb")))
         or {"ok": True},
     )
 
-    _common.restart_voice_daemon()
+    service_restart.restart_voice_daemon()
 
     # WS1 Phase 3b-2: ONLY the runtime restart via the broker — no `systemctl
     # enable`. jasper-voice is enabled at install and the root
@@ -555,8 +559,9 @@ def test_restart_voice_daemon_restarts_when_provider_set(monkeypatch):
     # deliberately not granted polkit manage-unit-files (which can't be
     # unit-scoped and would re-open restart-of-any-unit).
     assert calls == [
-        (("jasper-voice",), "restart"),
+        (("jasper-voice.service",), "restart"),
     ]
+
 
 
 # ----------------------------------------------------------------------
@@ -758,28 +763,28 @@ def test_is_valid_token_shape(value, expected):
 def test_restart_voice_daemon_skips_while_parked(monkeypatch):
     """A wizard save on a bonded follower must not boot 240 MB of parked
     models — config persists; the un-park path restarts voice on unbond."""
-    import jasper.web._common as common
 
-    monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(common, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: True)
     calls = []
-    monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
-    assert common.restart_voice_daemon() is common.RestartOutcome.SKIPPED
+    monkeypatch.setattr(service_restart, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
+    assert service_restart.restart_voice_daemon() is service_restart.RestartOutcome.SKIPPED
     assert calls == []
 
 
-def test_restart_voice_daemon_runs_when_solo(monkeypatch):
-    import jasper.web._common as common
 
-    monkeypatch.setattr(common, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(common, "bonded_follower_active", lambda: False)
+def test_restart_voice_daemon_runs_when_solo(monkeypatch):
+
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     calls = []
-    monkeypatch.setattr(common, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
-    common.restart_voice_daemon()
+    monkeypatch.setattr(service_restart, "restart_systemd_units", lambda *u: calls.append(("restart", u)))
+    service_restart.restart_voice_daemon()
     # WS1 Phase 3b-2: only the runtime restart — no `systemctl enable` (the root
     # jasper-aec-reconcile owns voice's boot-enable; the non-root jasper-control
     # is not granted polkit manage-unit-files).
-    assert ("restart", ("jasper-voice",)) in calls
+    assert ("restart", ("jasper-voice.service",)) in calls
+
 
 
 def test_pair_banner_html_renders_only_when_bonded(monkeypatch):
