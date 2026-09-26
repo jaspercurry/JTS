@@ -226,6 +226,7 @@ def test_python_and_bash_normalize_agree():
         ("streambox", "", "streambox", 0, False),
         ("full", "invalid", "", 2, False),
         ("streambox", "invalid", "", 2, False),
+        ("endpoint", "", "", 2, False),
     ],
 )
 def test_explicit_install_profile_resolution(

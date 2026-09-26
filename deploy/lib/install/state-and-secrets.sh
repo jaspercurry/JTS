@@ -593,5 +593,5 @@ widen_control_secret_env_modes() {
             chmod "${m}" "${path}" 2>/dev/null || true
         fi
     done
-    echo "  widen_control_secret_env_modes: config jasper-control reads is group-jasper readable (0640)"
+    echo "  widen_control_secret_env_modes: config jasper-control reads has its mode (0640, locks 0660)"
 }
