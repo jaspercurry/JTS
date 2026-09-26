@@ -371,39 +371,42 @@ class RecordingBackend:
                 )
                 return
             self._clear_pending_stop()
-            loop = self._loop
-            loop_thread = self._loop_thread
-            if (
-                loop_thread is None
-                or not loop_thread.is_alive()
-                or (loop is not None and loop.is_closed())
-            ):
-                finished = True
-                return
-            if loop is not None:
-                try:
-                    loop.call_soon_threadsafe(loop.stop)
-                except RuntimeError:
-                    # The loop can close between the state check and signal.
-                    # That is success only when teardown actually won.
-                    if loop.is_closed() or not loop_thread.is_alive():
-                        finished = True
-                        return
-                    raise
-            loop_thread.join(
-                timeout=max(0.0, deadline - time.monotonic()),
-            )
-            if loop_thread.is_alive():
-                logger.warning(
-                    "wake-corpus shutdown timed out waiting for its loop",
-                )
-                return
-            finished = True
+            finished = self._stop_loop(deadline)
         finally:
             with self._lock:
                 if self._shutdown_owner is current_thread:
                     self._shutdown_owner = None
                     self._shutdown_complete = finished
+
+    def _stop_loop(self, deadline: float) -> bool:
+        """Stop the backend loop and join its thread by `deadline`; whether
+        the loop is down."""
+        loop = self._loop
+        loop_thread = self._loop_thread
+        if (
+            loop_thread is None
+            or not loop_thread.is_alive()
+            or (loop is not None and loop.is_closed())
+        ):
+            return True
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                # The loop can close between the state check and signal.
+                # That is success only when teardown actually won.
+                if loop.is_closed() or not loop_thread.is_alive():
+                    return True
+                raise
+        loop_thread.join(
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        if loop_thread.is_alive():
+            logger.warning(
+                "wake-corpus shutdown timed out waiting for its loop",
+            )
+            return False
+        return True
 
     def _submit(self, coro: Any) -> Any:
         """Run a coroutine on the backend loop, block for the result."""
@@ -1276,12 +1279,15 @@ class RecordingBackend:
             ):
                 return
             handle = self._stop_retry_handle
-            self._pending_stop = None
-            self._pending_stop_generation = None
-            self._stop_retry_handle = None
-            self._stop_retry_attempts = 0
+            self._reset_pending_stop_locked()
         if handle is not None:
             handle.cancel()
+
+    def _reset_pending_stop_locked(self) -> None:
+        self._pending_stop = None
+        self._pending_stop_generation = None
+        self._stop_retry_handle = None
+        self._stop_retry_attempts = 0
 
     def _schedule_stop_retry(
         self,
@@ -1313,33 +1319,13 @@ class RecordingBackend:
             if attempt > STOP_RETRY_MAX_ATTEMPTS:
                 abandoned_attempts = attempt - 1
                 abandoned_clip_id = self._current_clip_id
-                self._pending_stop = None
-                self._pending_stop_generation = None
-                self._stop_retry_handle = None
-                self._stop_retry_attempts = 0
+                self._reset_pending_stop_locked()
                 # The lifecycle owner never released; the clip is lost, but
                 # the recorder must stay usable for the next one — clear the
                 # in-progress slot `start_recording()` checks.
-                self._current = None
-                self._current_clip_id = None
-                self._current_meta = None
-                self._current_plan_conformance = None
+                self._clear_current_locked()
             else:
-                exponent = min(attempt - 1, 8)
-                delay = min(
-                    STOP_RETRY_INITIAL_SEC * (2 ** exponent),
-                    STOP_RETRY_MAX_SEC,
-                )
-                retry_timer = threading.Timer(
-                    delay,
-                    self._retry_pending_stop,
-                    args=(generation,),
-                )
-                retry_timer.daemon = True
-                self._stop_retry_handle = retry_timer
-                # Start under the state lock so shutdown never observes an
-                # unstarted Timer and then tries to join it.
-                retry_timer.start()
+                delay = self._arm_stop_retry_locked(generation, attempt)
         if abandoned_attempts:
             log_event(
                 logger,
@@ -1361,6 +1347,27 @@ class RecordingBackend:
                 mute_stopped=merged_mute,
                 level=logging.WARNING,
             )
+
+    def _arm_stop_retry_locked(
+        self, generation: _StopGeneration, attempt: int,
+    ) -> float:
+        """Start retry `attempt`'s Timer; return its capped-backoff delay."""
+        exponent = min(attempt - 1, 8)
+        delay = min(
+            STOP_RETRY_INITIAL_SEC * (2 ** exponent),
+            STOP_RETRY_MAX_SEC,
+        )
+        retry_timer = threading.Timer(
+            delay,
+            self._retry_pending_stop,
+            args=(generation,),
+        )
+        retry_timer.daemon = True
+        self._stop_retry_handle = retry_timer
+        # Start under the state lock so shutdown never observes an
+        # unstarted Timer and then tries to join it.
+        retry_timer.start()
+        return delay
 
     def _retry_pending_stop(self, generation: _StopGeneration) -> None:
         """One Timer-owned publication attempt; rearm only after it exits."""
