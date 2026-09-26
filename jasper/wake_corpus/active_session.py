@@ -603,11 +603,8 @@ def status_snapshot(backend: RecordingBackend) -> dict[str, Any]:
 def load_session(
     backend: RecordingBackend, session_id: str,
 ) -> dict[str, Any]:
-    with backend._lock:
-        if backend._current is not None or backend._starting_clip_id is not None:
-            raise StateError(
-                "can't load session: recording in progress",
-            )
+    if backend.is_recording():
+        raise StateError("can't load session: recording in progress")
     saved = session_store.find_session(backend._metadata_dir, session_id)
     if saved is None:
         raise ValueError(f"session not found: {session_id}")
@@ -650,11 +647,8 @@ def unload_session(backend: RecordingBackend) -> str | None:
 def delete_session(
     backend: RecordingBackend, session_id: str,
 ) -> dict[str, int]:
-    with backend._lock:
-        if backend._current is not None or backend._starting_clip_id is not None:
-            raise StateError(
-                "can't delete session: recording in progress",
-            )
+    if backend.is_recording():
+        raise StateError("can't delete session: recording in progress")
     saved = session_store.find_session(backend._metadata_dir, session_id)
     if saved is None:
         raise ValueError(f"session not found: {session_id}")
