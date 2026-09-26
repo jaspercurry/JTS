@@ -119,7 +119,7 @@ def _cmd_models(_args: argparse.Namespace) -> int:
 
 
 def _cmd_fetch(args: argparse.Namespace) -> int:
-    from jasper.audio_measurement.calibration import (  # lazy: numpy
+    from ._vendor_calibration import (  # lazy: numpy
         CalibrationNotFoundError,
         CalibrationUpstreamError,
         fetch_vendor_calibration,

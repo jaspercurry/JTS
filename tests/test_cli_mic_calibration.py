@@ -19,7 +19,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.household_mic import read_household_mic
-from jasper.cli import _refusal, mic_calibration
+from jasper.cli import _refusal, _vendor_calibration, mic_calibration
 
 SAMPLE_CAL = "20 -1\n100 0\n1000 1\n"
 
@@ -61,7 +61,7 @@ def test_fetch_stores_the_vendor_calibration_and_remembers_the_mic(
             orientation=orientation, root=root,
         )
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", fake_fetch)
 
     code, answer = _run(
         ["fetch", "--model", "dayton_imm6", "--serial", "700-1234",
@@ -83,12 +83,12 @@ def test_fetch_stores_the_vendor_calibration_and_remembers_the_mic(
     ("error", "code", "reason"),
     [
         (
-            calibration.CalibrationNotFoundError,
+            _vendor_calibration.CalibrationNotFoundError,
             _refusal.EXIT_REFUSED,
             mic_calibration.REFUSE_VENDOR_NOT_FOUND,
         ),
         (
-            calibration.CalibrationUpstreamError,
+            _vendor_calibration.CalibrationUpstreamError,
             _refusal.EXIT_REFUSED,
             mic_calibration.REFUSE_VENDOR_UNREACHABLE,
         ),
@@ -107,7 +107,7 @@ def test_a_failed_vendor_lookup_refuses_by_name_and_writes_nothing(
     def fake_fetch(**_kwargs):
         raise error("the vendor said no")
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", fake_fetch)
 
     exit_code, document = _run(
         ["fetch", "--model", "dayton_imm6", "--serial", "700-1234"], capsys
@@ -136,7 +136,7 @@ def test_an_impossible_lookup_refuses_before_the_vendor_is_reached(
     def never(**_kwargs):  # pragma: no cover - the point is that it is not called
         raise AssertionError("the fetcher was reached")
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", never)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", never)
 
     code, document = _run(argv, capsys)
 
