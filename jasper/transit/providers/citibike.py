@@ -24,6 +24,7 @@ import logging
 from collections.abc import Mapping
 
 from ...env_load import parse_bool_value
+from .. import citibike
 from ..base import BoundingBox, Stop, haversine_miles
 
 logger = logging.getLogger(__name__)
@@ -66,15 +67,8 @@ class _CitiBike:
         credentials: dict[str, str] | None = None,
         count: int = 10,
     ) -> list[Stop]:
-        from ..citibike import (
-            INFO_TTL_SECONDS,
-            STATION_INFO_URL,
-            STATION_STATUS_URL,
-            STATUS_TTL_SECONDS,
-            fetch_feed,
-        )
-        info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
-        status = fetch_feed(STATION_STATUS_URL, STATUS_TTL_SECONDS)
+        info = citibike.fetch_feed(citibike.STATION_INFO_URL, citibike.INFO_TTL_SECONDS)
+        status = citibike.fetch_feed(citibike.STATION_STATUS_URL, citibike.STATUS_TTL_SECONDS)
         status_by_id = {
             s["station_id"]: s
             for s in (status.get("data") or {}).get("stations", [])
@@ -125,15 +119,13 @@ class _CitiBike:
         return {k: "citibike is keyless" for k in credentials} or None
 
     def build_client(self, env: Mapping[str, str]) -> object | None:
-        from ..citibike import CitiBikeClient, parse_saved_stations
-
-        stations = list(parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
+        stations = list(citibike.parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
         if not stations:
             return None
         ebike_only = parse_bool_value(
             env.get("JASPER_CITIBIKE_EBIKE_ONLY"),
         ) is True
-        return CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
+        return citibike.CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
 
     def make_tools(self, client: object):
         from ...tools.citibike import make_citibike_tools  # lazy: cycle via transit/__init__ imports this provider
