@@ -138,48 +138,9 @@ $PRE_STATE
 
 HEADER
 
-# Run capture: stop jasper-voice (no sessions, no TTS), bridge in
-# debug-record mode, wait DURATION, restore everything.
-ssh "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/capture.log"
-set -euo pipefail
-DURATION="$1"
-OUT="$2"
-
-mkdir -p "$OUT"
-chmod 0777 "$OUT"
-
-OVERRIDE_DIR=/run/systemd/system/jasper-aec-bridge.service.d
-mkdir -p "$OVERRIDE_DIR"
-cat > "$OVERRIDE_DIR/debug-record.conf" <<EOF
-[Service]
-Environment=JASPER_AEC_DEBUG_RECORD_DIR=$OUT
-EOF
-
-cleanup() {
-    echo "Cleanup: restoring jasper-voice + bridge to production state ..."
-    rm -f "$OVERRIDE_DIR/debug-record.conf"
-    rmdir "$OVERRIDE_DIR" 2>/dev/null || true
-    systemctl daemon-reload
-    systemctl restart jasper-aec-bridge.service
-    systemctl start jasper-voice.service
-}
-trap cleanup EXIT
-
-systemctl stop jasper-voice.service
-systemctl daemon-reload
-systemctl restart jasper-aec-bridge.service
-
-echo "Bridge in debug-record; jasper-voice stopped. Warmup 10s ..."
-sleep 10
-
-echo ""
-echo "  ▶ START THE PHONE TRACK NOW. Capturing for ${DURATION}s."
-echo ""
-sleep "$DURATION"
-
-sleep 1
-echo "Capture done."
-REMOTE_SCRIPT
+aec_debug_record_capture "$OUT_REMOTE" 10 "$DURATION" stop \
+    "▶ START THE PHONE TRACK NOW. Capturing for ${DURATION}s." \
+    2>&1 | tee "$OUT_LOCAL/capture.log"
 
 # Pull artifacts back
 rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"

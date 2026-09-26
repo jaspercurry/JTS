@@ -20,20 +20,7 @@
 # fixed-phone-track case; this script covers the live-user-speech
 # case).
 #
-# Mechanism (mirrors scripts/wake-rate-test.sh):
-#   1. Writes a systemd drop-in to /run/systemd/system/jasper-aec-bridge.service.d/
-#      that sets JASPER_AEC_DEBUG_RECORD_DIR — the bridge's
-#      built-in debug-record mode writes all three WAVs (see
-#      jasper/cli/aec_bridge.py `_aec_loop` docstring).
-#   2. Stops jasper-voice so a stray wake fire won't trigger TTS
-#      playback that contaminates the capture.
-#   3. Restarts jasper-aec-bridge with the override applied;
-#      warms up 5 s; opens the capture window for `seconds`.
-#   4. `trap cleanup EXIT` removes the override + restarts the
-#      bridge + restarts jasper-voice — even if the script
-#      crashes / Ctrl-C'd. Production state is always restored.
-#   5. Rsyncs WAVs back, renames to aec-on/aec-off/reference,
-#      reports sanity stats.
+# The Pi-side recording is aec_debug_record_capture (scripts/_lib.sh).
 #
 # Usage:
 #   bash scripts/capture-reference-condition.sh <condition> [seconds]
@@ -125,48 +112,9 @@ else
 fi
 read -r -p "Press Enter when ready..."
 
-# Pi-side capture: stop jasper-voice, drop in JASPER_AEC_DEBUG_RECORD_DIR
-# override, restart bridge, wait, restore. Uses single-quoted heredoc so
-# laptop shell doesn't try to expand $variables.
-ssh "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/capture.log"
-set -euo pipefail
-DURATION="$1"
-OUT="$2"
-
-mkdir -p "$OUT"
-chmod 0777 "$OUT"
-
-OVERRIDE_DIR=/run/systemd/system/jasper-aec-bridge.service.d
-mkdir -p "$OVERRIDE_DIR"
-cat > "$OVERRIDE_DIR/debug-record.conf" <<EOF
-[Service]
-Environment=JASPER_AEC_DEBUG_RECORD_DIR=$OUT
-EOF
-
-cleanup() {
-    echo "Cleanup: restoring jasper-voice + bridge to production state ..."
-    rm -f "$OVERRIDE_DIR/debug-record.conf"
-    rmdir "$OVERRIDE_DIR" 2>/dev/null || true
-    systemctl daemon-reload
-    systemctl restart jasper-aec-bridge.service
-    systemctl start jasper-voice.service
-}
-trap cleanup EXIT
-
-systemctl stop jasper-voice.service
-systemctl daemon-reload
-systemctl restart jasper-aec-bridge.service
-
-echo "Bridge in debug-record; jasper-voice stopped. Warmup 5s ..."
-sleep 5
-
-echo ""
-echo "  ▶ SPEAK NOW — ${DURATION}-second capture window is open"
-echo ""
-sleep "$DURATION"
-
-echo "Capture done."
-REMOTE_SCRIPT
+aec_debug_record_capture "$OUT_REMOTE" 5 "$DURATION" stop \
+    "▶ SPEAK NOW — ${DURATION}-second capture window is open" \
+    2>&1 | tee "$OUT_LOCAL/capture.log"
 
 # Pull artifacts back
 rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"
