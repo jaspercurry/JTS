@@ -21,6 +21,7 @@ from jasper import aec_sweep, wake_ports
 from jasper.chip_aec.policy import ChipAecGate
 from jasper.env_file import read_env_file
 from jasper.wake_corpus import (
+    active_session,
     bridge_session,
     capture_plan,
     recording_backend,
@@ -1582,7 +1583,7 @@ def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
         "include_raw_mic_0": True,
         "clips": [],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
     b = recording_backend.RecordingBackend(output_dir=out)
@@ -1608,7 +1609,7 @@ def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
         "include_usb_dtln": True,
         "clips": [],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
     b = recording_backend.RecordingBackend(output_dir=out)
@@ -1634,7 +1635,7 @@ def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
         "clips": [],
         # NO include_raw_mic_0 key
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
     b = recording_backend.RecordingBackend(output_dir=out)
@@ -1661,7 +1662,7 @@ def test_recovery_handles_pre_audio_context_session_metadata(tmp_path: Path) -> 
              "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
         ],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
     b = recording_backend.RecordingBackend(output_dir=out)

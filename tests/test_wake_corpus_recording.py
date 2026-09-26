@@ -21,6 +21,7 @@ import pytest
 from jasper import audio_profile_state, wake_conditions
 from jasper.cli import wake_enroll
 from jasper.wake_corpus import (
+    active_session,
     bridge_session,
     clip_capture,
     clip_store,
@@ -180,7 +181,7 @@ def test_begin_session_rejects_concurrent_initialization(
         return {"test": True}
 
     monkeypatch.setattr(
-        recording_backend,
+        active_session,
         "build_session_audio_context",
         blocking_audio_context,
     )
@@ -904,7 +905,7 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
     }
     md_file = md_dir / "enroll_jasper_20260525T120000Z.json"
     md_file.write_text(json.dumps(session_data))
-    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "20260525T120000Z",
     }))
 
@@ -957,10 +958,10 @@ def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
     md_file.write_text(json.dumps({
         "session_id": "old", "member": "jasper", "ports": {}, "clips": [],
     }))
-    marker = md_dir / recording_backend.ACTIVE_SESSION_MARKER
+    marker = md_dir / active_session.ACTIVE_SESSION_MARKER
     marker.write_text(json.dumps({"session_id": "old"}))
     # Force mtime to be old
-    old_mtime = time.time() - (recording_backend.RESUME_WINDOW_SEC + 60)
+    old_mtime = time.time() - (active_session.RESUME_WINDOW_SEC + 60)
     os.utime(md_file, (old_mtime, old_mtime))
     os.utime(marker, (old_mtime, old_mtime))
 
@@ -1012,7 +1013,7 @@ def test_begin_session_after_recovery_starts_fresh(
         "session_id": "recovered", "member": "jasper",
         "ports": {}, "clips": [],
     }))
-    (md_dir / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md_dir / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "recovered",
     }))
 
