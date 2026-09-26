@@ -45,9 +45,8 @@ def install_env_canonical_target_provider() -> None:
     Every process that performs a CamillaDSP graph swap needs one. A swap's
     duck release lands at ``min(canonical, current + own depth)``; with no
     canonical target it falls back to the entry snapshot, which an interleaved
-    voice cue may already have ducked, stranding the fader tens of dB quiet
-    inside the band `maybe_reconcile_camilla` refuses to heal. Every swap that
-    ducks now uses the canonical target, with no exception.
+    voice cue may already have ducked, landing the fader tens of dB quiet.
+    Every swap that ducks now uses the canonical target, with no exception.
 
     A process that already owns a long-lived coordinator registers that
     coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead

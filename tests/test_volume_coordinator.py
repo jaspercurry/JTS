@@ -14,6 +14,7 @@ import asyncio
 import logging
 import threading
 import time
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -29,11 +30,14 @@ from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
+from jasper.atomic_io import advisory_file_lock
 from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.control import measurement_hold
 from jasper.dsp_apply import camilla_graph_mutation
 from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
+from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_echo import ECHO_WINDOW_SEC
@@ -55,6 +59,17 @@ def _reset_bluealsa_probe_state():
     bluealsa_probe.note_probe_success()
     yield
     bluealsa_probe.note_probe_success()
+
+
+@pytest.fixture(autouse=True)
+def measurement_hold_served(monkeypatch) -> measurement_hold.MeasurementHold:
+    """jasper-control's real hold, free unless a test takes it, served where
+    `read_measurement_hold` asks: a reconcile write that raises consults it."""
+    hold = measurement_hold.MeasurementHold()
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement", lambda **_: hold.snapshot(),
+    )
+    return hold
 
 
 # ---------- mapping helpers -------------------------------------------------
@@ -1817,13 +1832,10 @@ async def test_every_tick_refreshes_the_level_another_process_saved(tmp_path, so
         pytest.param(percent_to_db(70) - 0.3, 70, False, id="dead_band"),
         pytest.param(-18.0, 76, True, id="quiet_drift"),
         pytest.param(-8.0, 70, True, id="loud_drift"),
-        # Deep LOUD drift is unsafe in a way deep quiet is not.
         pytest.param(0.0, 0, True, id="deep_loud_drift"),
-        # The retained quiet carve-out: a fader claim held in ANOTHER process
-        # — jasper-web's volume-floor audition — parks camilla tens of dB
-        # below the household level with nothing this reconciler can ask
-        # (#3038).
-        pytest.param(percent_to_db(70) - 25.0, 70, False, id="deep_quiet_drift"),
+        # No depth is exempt: a quiet drift nobody announced at the writer
+        # lock is a stranded fader, not somebody's duck (ADR-0368).
+        pytest.param(percent_to_db(70) - 25.0, 70, True, id="deep_quiet_drift"),
     ],
 )
 async def test_which_drift_the_reconciler_corrects(
@@ -2746,12 +2758,8 @@ def _owned_coord(tmp_path, db: float):
 
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     """The reconciler writes by DECLARING the household level, so a duck held
-    in this process outranks it — no dB inference is involved, which is why
-    `RECONCILE_DUCK_SKIP_DB` is not what protects a cue's duck.
-
-    The duck is shallower than that threshold, so the carve-out cannot be
-    what spares it; releasing the claim lands the fader back on the household
-    level.
+    in this process outranks it — no dB inference is involved. Releasing the
+    claim lands the fader back on the household level.
     """
     expected_db = percent_to_db(70)
     coord, _, client = _owned_coord(tmp_path, db=expected_db)
@@ -2771,7 +2779,9 @@ async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
     assert client.db == pytest.approx(expected_db)
 
 
-async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_path):
+async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
+    tmp_path, caplog,
+):
     """The swap's claim on the fader is the writer lock, not the duck's depth.
 
     The realistic shape: a household volume change lands during the bracket,
@@ -2779,8 +2789,10 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
     expects — the one direction it always corrects. Only the lock can hold
     that write back, and once the lock goes the very next tick corrects it,
     which is what makes the stand-down transient rather than a second
-    carve-out.
+    carve-out. The stand-down is one line per episode, not one per tick: the
+    volume-floor audition holds the lock for minutes (ADR-0368).
     """
+    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
     expected_db = percent_to_db(40)
     coord, cam, client = _owned_coord(tmp_path, db=expected_db)
     await coord.set_listening_level(40)
@@ -2789,56 +2801,85 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(tmp_pat
     async with camilla_graph_mutation(
         source="test.swap", lock_path=cam._graph_mutation_lock_path,
     ):
-        await coord.maybe_reconcile_camilla()
+        for _ in range(3):
+            await coord.maybe_reconcile_camilla()
         assert client.db == pytest.approx(0.0)
 
     await coord.maybe_reconcile_camilla()
     assert client.db == pytest.approx(expected_db)
+    assert len(event_records(caplog, "volume.reconcile_deferred")) == 1
 
 
-async def test_reconciler_still_corrects_a_drift_louder_than_expected(tmp_path):
-    """The quiet carve-out is directional — it must never turn the
-    reconciler's loud-direction safety correction into a skip."""
-    expected_db = percent_to_db(40)
-    coord, _, client = _owned_coord(tmp_path, db=expected_db)
-    await coord.set_listening_level(40)
-
-    client.db = 0.0  # some other writer left camilla far too loud
-    await coord.maybe_reconcile_camilla()
-
-    assert client.db == pytest.approx(expected_db)
-
-
-async def test_deep_quiet_refusal_speaks_once_per_episode(tmp_path, caplog):
-    """The refusal is evaluated at the observer's 1 Hz for as long as the
-    unowned duck holds, so it is reported on the episode's edge — and a NEW
-    episode is a new line, not silence. Delete with the event.
-    """
+@pytest.mark.parametrize(
+    ("hold_state", "current_db", "writes"),
+    [
+        pytest.param("held", percent_to_db(70) - 25.0, False, id="raise_held"),
+        pytest.param("unreadable", percent_to_db(70) - 25.0, False, id="raise_unreadable"),
+        pytest.param("free", percent_to_db(70) - 25.0, True, id="raise_free"),
+        pytest.param("held", 0.0, True, id="lowering_held"),
+        pytest.param("unreadable", 0.0, True, id="lowering_unreadable"),
+    ],
+)
+async def test_a_raise_waits_on_the_measurement_hold_and_a_lowering_never_does(
+    tmp_path, monkeypatch, caplog, measurement_hold_served,
+    hold_state, current_db, writes,
+):
+    """A measurement whose MEASURE_PAUSE never landed still holds
+    jasper-control's hold: the reconciler raises the fader only once that hold
+    is free and readable, and lowers it regardless (ADR-0368)."""
     caplog.set_level(logging.INFO, logger=vc_mod.__name__)
-    expected_db = percent_to_db(70)
     coord, cam, _ = _real_coord(
-        tmp_path, active={}, db=expected_db - 25.0, level=70,
-        mark_user_change=True,
+        tmp_path, active={}, db=current_db, level=70, mark_user_change=True,
     )
+    if hold_state != "free":
+        measurement_hold_served.acquire("correction-measurement")
+    if hold_state == "unreadable":
+        def refused(**_kwargs: object) -> dict:
+            raise ControlError("connection refused")
 
-    for _ in range(3):
+        monkeypatch.setattr("jasper.platform.control_client.get_measurement", refused)
+
+    await coord.maybe_reconcile_camilla()
+
+    assert cam.set_calls == ([pytest.approx(percent_to_db(70))] if writes else [])
+    assert coord.reconcile_deferred is not writes
+    deferrals = [
+        (fields["reason"], fields["hold"])
+        for fields in event_field_maps(caplog, "volume.reconcile_deferred")
+    ]
+    assert deferrals == ([] if writes else [("measurement_hold", hold_state)])
+
+
+async def test_a_writer_admitted_while_the_hold_is_read_still_defers_the_raise(
+    tmp_path, monkeypatch, measurement_hold_served,
+):
+    """The writer lock is asked after the measurement hold, with nothing
+    between it and the write, so a graph swap or a tone admitted while the
+    hold is read still holds the raise off; the read itself gives up sooner
+    than the control client's default (ADR-0368)."""
+    expected_db = percent_to_db(70)
+    coord, cam, client = _owned_coord(tmp_path, db=expected_db)
+    await coord.set_listening_level(70)
+    client.db = expected_db - 25.0
+    writer = ExitStack()
+    timeouts: list[object] = []
+
+    def read_while_a_writer_is_admitted(**kwargs: object) -> dict:
+        timeouts.append(kwargs.get("timeout"))
+        writer.enter_context(advisory_file_lock(cam._graph_mutation_lock_path))
+        return measurement_hold_served.snapshot()
+
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement",
+        read_while_a_writer_is_admitted,
+    )
+    with writer:
         await coord.maybe_reconcile_camilla()
-    assert cam.set_calls == []
-    cam._db = expected_db  # the unowned writer let go
-    await coord.maybe_reconcile_camilla()
-    cam._db = expected_db - 25.0  # and a second episode opens
-    await coord.maybe_reconcile_camilla()
-    # A tick that returns before the drift comparison ends the episode too,
-    # so the duck still standing when the session hands camilla back is news.
-    coord.note_voice_session(True)
-    await coord.maybe_reconcile_camilla()
-    coord.note_voice_session(False)
-    await coord.maybe_reconcile_camilla()
 
-    skips = event_field_maps(
-        caplog, "volume.reconcile_skipped", reason="deep_quiet_unowned",
-    )
-    assert [fields["drift_db"] for fields in skips] == ["+25.00"] * 3
+        assert client.db == pytest.approx(expected_db - 25.0)
+        assert coord.reconcile_deferred is True
+    (timeout,) = timeouts
+    assert isinstance(timeout, float) and timeout < DEFAULT_TIMEOUT
 
 
 async def test_a_refused_write_speaks_once_and_says_when_it_lands(
@@ -2895,8 +2936,7 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
     the canonical target — and it is never above it while either still holds.
 
     Replaying entry snapshots stranded it instead: whichever holder exited last
-    wrote back a value the other had already ducked, tens of dB quiet, in the
-    one band `maybe_reconcile_camilla` deliberately refuses to heal.
+    wrote back a value the other had already ducked, tens of dB quiet.
     """
     monkeypatch.setattr(camilla, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     canonical_db = percent_to_db(70)

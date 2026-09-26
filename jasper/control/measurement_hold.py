@@ -22,7 +22,9 @@ in-memory measurement state can survive between two requests there. This
 module is process-scoped instead — the same lifetime as jasper-control
 itself, and the same shape as
 ``handlers.grouping._grouping_reconciler_kick_coalescer``.
-``jasper/volume_coordinator.py`` is deliberately untouched by this design.
+The volume coordinator only reads the hold, through
+:func:`read_measurement_hold`, before a reconcile write that would raise the
+fader (ADR-0368).
 
 Contract:
 
@@ -404,7 +406,7 @@ def snapshot() -> dict[str, Any]:
     return _hold.snapshot()
 
 
-def read_measurement_hold() -> dict[str, Any] | None:
+def read_measurement_hold(*, timeout: float | None = None) -> dict[str, Any] | None:
     """The hold as seen from ANOTHER process, or ``None`` when unreadable.
 
     The read half of this module: every process except jasper-control asks over
@@ -415,12 +417,13 @@ def read_measurement_hold() -> dict[str, Any] | None:
     ``None`` means "jasper-control could not be asked" and is deliberately
     distinct from ``{"active": False}`` ("asked, and nothing is held") —
     callers that must degrade conservatively can only do so if those two are
-    not conflated.
+    not conflated. ``timeout`` bounds the round trip in seconds; ``None`` keeps
+    the control client's default.
     """
     from ..platform.control_client import ControlError, get_measurement  # lazy: test patch boundary (tests/test_measurement_hold.py)
 
     try:
-        hold = get_measurement()
+        hold = get_measurement() if timeout is None else get_measurement(timeout=timeout)
     except (ControlError, ValueError, UnicodeDecodeError):
         return None
     # The shape check makes this function's OWN return contract true rather
