@@ -29,7 +29,7 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
 # the table when it is empty.
 PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "active_speaker": ("active_speaker", "cli"),
-    "aec": ("aec", "control"),
+    "aec": ("aec", "cli", "control"),
     "aec_bridge": ("aec", "cli"),
     "airplay": ("jasper",),
     "assistant_loudness": ("jasper", "voice"),

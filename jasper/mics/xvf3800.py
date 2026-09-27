@@ -605,7 +605,7 @@ MIC_CHANNEL_INDEX = 1
 # Helpers
 # ---------------------------------------------------------------------
 
-def _capture_channels_for_card(
+def capture_channels_for_card(
     card: str,
     *,
     asound_root: Path = Path("/proc/asound"),
@@ -814,7 +814,7 @@ def detect_runtime_profile(
 
     bld_variant = variant_for_bld_msg(bld_msg)
     for card in ALSA_CARD_NAMES:
-        channels = _capture_channels_for_card(card, asound_root=asound_root)
+        channels = capture_channels_for_card(card, asound_root=asound_root)
         if channels is None:
             continue
         variant = bld_variant or variant_for_card(card, channels)
@@ -886,7 +886,7 @@ def capture_channels() -> int | None:
     endpoint) then Capture (Channels: 6 on 6-ch firmware).
     `grep Channels:` returns the Playback value, not Capture —
     reading the wrong one silently disables software AEC."""
-    return _capture_channels_for_card(alsa_card_name())
+    return capture_channels_for_card(alsa_card_name())
 
 
 def dfu_flash_command(firmware_path: str = "") -> str:
