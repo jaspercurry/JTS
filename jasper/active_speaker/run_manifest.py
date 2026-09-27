@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from statistics import median
 from typing import Any, Mapping
@@ -12,6 +13,7 @@ from typing import Any, Mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
+from jasper.speaker_layout import measurement_target_parts
 
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
@@ -33,6 +35,39 @@ def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 def room_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [row for row in view_sets(manifest) if row["capture_basis"].get("gating_applied") is False
             and row["capture_basis"].get("role") in (None, "summed")]
+
+
+#: dB two drivers of one role, so of one declared size, may play apart at one
+#: placement for the same drive before a round shows it: two such drivers
+#: should match within their tolerance, well inside it, and jts3's two woofers
+#: of one model play 6.2 dB apart (#5714).
+LEVEL_MISMATCH_DB = 3.0
+
+
+def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Each placement (a pose less its driver) where the drivers of one role play
+    more than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
+    ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
+    located sweeps read (ADR-0364) less the stimulus gain and the fader it played
+    at. A finding, never a refusal (#5714)."""
+    heard: dict[tuple[str, str], dict[str, list[float]]] = {}
+    for take in (take for group in view_sets(manifest) for take in group["takes"] if take.get("selected")):
+        pose, level = take.get("pose") or {}, take.get("level") or {}
+        spl, gain, fader = (finite_float(value) for value in (
+            ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
+            level.get("stimulus_dbfs"), level.get("level_db")))
+        if pose.get("driver") and spl is not None and gain is not None and fader is not None:
+            place = json.dumps({key: value for key, value in pose.items() if key not in {"driver", "place"}},
+                               sort_keys=True)
+            heard.setdefault((measurement_target_parts(pose["driver"])[0], place), {}).setdefault(
+                pose["driver"], []).append(spl - gain - fader)
+    findings = []
+    for (role, place), by_driver in heard.items():
+        levels = {driver: median(values) for driver, values in sorted(by_driver.items())}
+        if (spread := max(levels.values()) - min(levels.values())) > LEVEL_MISMATCH_DB:
+            findings.append({"role": role, "pose": json.loads(place), "spread_db": round(spread, 2),
+                             "unit_drive_db_spl": {driver: round(db, 2) for driver, db in levels.items()}})
+    return findings
 
 
 def capture_alignment_levels(

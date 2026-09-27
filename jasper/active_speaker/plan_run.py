@@ -55,7 +55,7 @@ from .measurement_programs import (
     BASE_CANDIDATE,
 )
 from .crossover_v2.programs import predictive_program_for_spec
-from .run_manifest import RunManifest
+from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
 
 logger = logging.getLogger(__name__)
@@ -464,7 +464,8 @@ async def _run(
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1}
+                        "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1,
+                        "level_mismatches": driver_level_mismatches(manifest.to_dict())}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
@@ -623,12 +624,19 @@ async def _run(
                 raise
         finally:
             manifest.finalized = True
+            document = manifest.to_dict()
+            mismatches = driver_level_mismatches(document)
             if gate:
                 gate.abandon_hold()
                 gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,
-                              "level": manifest.level, **take_counts(manifest.to_dict()), "not_measured": manifest.takes_skipped,
+                              "level": manifest.level, **take_counts(document), "not_measured": manifest.takes_skipped,
+                              "level_mismatches": mismatches,
                               "fault": manifest.reason or (verdict.fault if verdict else None),
                               "next_action": "accept" if manifest.status == "complete" else "stop"})
+            for finding in mismatches:
+                log_event(logger, "active_speaker.driver_level_mismatch", level=logging.WARNING, fields={
+                    "role": finding["role"], **finding["pose"], "spread_db": finding["spread_db"],
+                    "unit_drive_db_spl": finding["unit_drive_db_spl"]})
             log_event(logger, "active_speaker.plan_run", status=manifest.status, reason=manifest.reason,
                       takes=manifest.takes_measured, skipped=manifest.takes_skipped, mic_moves=manifest.mic_moves)
             await manifest.persist()

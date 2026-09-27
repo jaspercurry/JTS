@@ -23,7 +23,8 @@ FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = piston_step_db(0.015, 0.030, 0.057)
 
 
-def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0)):
+def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0),
+          stimulus_dbfs=-32.0):
     rng = np.random.default_rng(seed)
     sweeps = [np.full(FREQS.size, level_db) + rng.normal(0.0, 0.01, FREQS.size) for _ in range(3)]
     sweeps[0] = sweeps[0] + np.where(FREQS < 35.0, first_low_db, 0.0)
@@ -31,7 +32,8 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist()} for sweep in sweeps[1:]]}
     return {"take_id": take_id, "selected": selected, "pose": {"driver": driver, "distance_m": distance_mm / 1000},
             "quality": {"evidence": {"level_db_spl": 80.0}}, "curve": curve,
-            "level": {"level_db": -30.0}, "artifacts": {"record_id": f"crossover_v2/run/positions/{take_id}.json"}}
+            "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs},
+            "artifacts": {"record_id": f"crossover_v2/run/positions/{take_id}.json"}}
 
 
 def _graph(pad_db):
@@ -176,3 +178,28 @@ def test_a_take_is_read_only_where_its_sweep_reached():
 
     assert [[band["band_hz"] for band in row["bands"]] for row in view["takes"]] == [[[800.0, 2000.0]]] * 2
     assert view["drivers"][0]["steps"] == []
+
+
+@pytest.mark.parametrize("driver,distance_mm,stimulus_dbfs,flagged", [
+    ("woofer:rear", 15, -26.0, True), ("woofer:rear", 15, -30.0, False),
+    ("tweeter", 15, -26.0, False), ("woofer:rear", 30, -26.0, False),
+], ids=["6_db_apart", "2_db_apart", "another_role", "another_placement"])
+def test_drivers_of_one_size_at_one_placement_are_flagged_when_they_play_apart(
+        tmp_path, monkeypatch, capsys, driver, distance_mm, stimulus_dbfs, flagged):
+    """Two drivers of one role at one placement are compared per unit of drive:
+    each kept take's level less its stimulus gain and fader. More than 3 dB apart
+    is flagged; a take not kept, another role or another placement never
+    compares (#5714)."""
+    monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "undeclared.json")
+    bundle = tmp_path / "sessions" / "nearfield"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
+    takes = [_take("w15", "woofer", 15, 90.0), _take("probe", driver, distance_mm, 60.0, selected=False, stimulus_dbfs=-44.0),
+             _take("other", driver, distance_mm, 84.0, seed=1, stimulus_dbfs=stimulus_dbfs)]
+    write_manifest(bundle, program="nearfield/custom", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+
+    assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
+
+    assert json.loads(capsys.readouterr().out)["level_mismatches"] == ([{
+        "role": "woofer", "pose": {"distance_m": 0.015}, "spread_db": 6.0,
+        "unit_drive_db_spl": {"woofer": 142.0, "woofer:rear": 136.0}}] if flagged else [])

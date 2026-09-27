@@ -11,7 +11,7 @@ from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.run_manifest import view_sets
+from jasper.active_speaker.run_manifest import driver_level_mismatches, view_sets
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_NO_NEAR_FIELD_TAKES
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
@@ -54,6 +54,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
                               room=room, played_graphs=graphs, banked_bands=bands)
     if not document["takes"]:
         return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])
+    document["level_mismatches"] = driver_level_mismatches(manifest)
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write({"round_dir": str(round_dir), **document}, args.out,
                      default_out(inputs, round_dir, spec.artifact, None), schema=spec.schema)
@@ -62,6 +63,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
         args.command, schema=spec.schema,
         subject=subject(inputs, take_ids=[take["take_id"] for take in document["takes"]]),
         parameters=document["parameters"], out=written, drivers=document["drivers"],
+        level_mismatches=document["level_mismatches"],
         line=(f"nearfield: {len(document['takes'])} take(s) of {len(document['drivers'])} driver(s), "
               f"{sum(step['verdict'] == 'pass' for step in steps)}/{len(steps)} distance step(s) pass -> {written}"),
     )
@@ -69,8 +71,8 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
-        "nearfield", help=("each near-field take band by band, each driver's raw curve per distance, and its "
-                           "step between distances against a piston"),
+        "nearfield", help=("each near-field take band by band, each driver's raw curve per distance, its "
+                           "step between distances against a piston, and drivers of one size that play apart"),
     )
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     parser.add_argument("--out", default=None, help="write the result here")
