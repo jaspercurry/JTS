@@ -170,10 +170,6 @@ class ProgramAdmission:
     def allowed(self) -> bool:
         return not self.refusals
 
-    @property
-    def fingerprint(self) -> str:
-        return json_fingerprint(self.to_dict())
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
