@@ -1087,9 +1087,9 @@ async def run() -> None:
         volume_coordinator, spotify_router = _build_volume_coordinator(
             cfg, camilla=camilla, renderer=renderer,
         )
-        # Every duck holder in this process releases against the coordinator's
-        # canonical target so their interleavings cannot strand the fader at a
-        # value one of them had ducked.
+        # A graph swap's duck releases against the coordinator's canonical
+        # target, so a volume change made during the swap survives it
+        # (ADR-0004).
         set_canonical_target_db_provider(
             volume_coordinator.get_camilla_target_db,
         )

@@ -159,17 +159,13 @@ class OwnerVolumeDoor:
         discriminator between them is
         :meth:`~jasper.volume_owner.VolumeOwner.declared_level_db`, and the
         recorded case is ``DEFERRED`` rather than ``FAILED`` so the drain does
-        not fall to its −60 dB emergency rung. ``LANDED`` is judged against the
-        owner's ``target_db``, not the bare level, because a transient duck
-        moves the fader without moving the declared level.
+        not fall to its −60 dB emergency rung.
         """
         if not await self._owner.declare_household_level_db(level_db):
             return RestoreOutcome.FAILED
         in_effect = self._owner.declared_level_db()
         if in_effect is None or not fader_matches(in_effect, level_db):
             return RestoreOutcome.DEFERRED
-        target = self._owner.target_db()
-        reading = await self.read_household_level_db()
-        if target is not None and fader_matches(reading, target):
+        if fader_matches(await self.read_household_level_db(), in_effect):
             return RestoreOutcome.LANDED
         return RestoreOutcome.FAILED

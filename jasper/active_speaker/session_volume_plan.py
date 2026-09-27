@@ -125,8 +125,7 @@ class RestoreOutcome(str, Enum):
     what walks the ladder to its emergency rung over a perfectly good level.
     """
 
-    #: The fader carries this level now (ducks included — a duck is an
-    #: attenuation over a level in effect, not a different level).
+    #: The fader carries this level now.
     LANDED = "landed"
     #: Recorded, not written, because a higher-ranked LEVEL claim holds the
     #: fader. The owner lands it when that claim releases.

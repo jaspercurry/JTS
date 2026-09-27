@@ -15,14 +15,13 @@ fader only through the injected door, so that clamp cannot be routed around.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 
 import pytest
 
 from ._async_wait import wait_signalled
 
-from jasper.volume_latch import READBACK_TOLERANCE_DB, duck_release_target_db
+from jasper.volume_latch import READBACK_TOLERANCE_DB
 from jasper.volume_owner import (
     ClaimKind,
     VolumeClaimConflict,
@@ -215,7 +214,6 @@ async def test_a_second_claim_of_one_kind_is_refused_not_stacked():
 @pytest.mark.parametrize(
     "kind,level",
     [
-        (ClaimKind.TRANSIENT_DUCK, -10.0),
         (ClaimKind.HOUSEHOLD, -10.0),
         (ClaimKind.SESSION_MEASUREMENT, float("nan")),
         (ClaimKind.SESSION_MEASUREMENT, float("inf")),
@@ -230,73 +228,6 @@ async def test_a_level_the_owner_cannot_arbitrate_is_refused(kind, level):
 
     with pytest.raises(VolumeClaimRefused):
         await owner.acquire_level(kind, level)
-
-
-# --- the release algebra (ADR-0004) -----------------------------------------
-
-
-@pytest.mark.parametrize(
-    "reference,current,entry,expected",
-    [
-        # Readable: the holder gives back its own 40 dB (-60 -> -20) and
-        # nothing else, never above the reference; the entry level is moot.
-        (-10.0, -60.0, None, -20.0),
-        (-30.0, -60.0, None, -30.0),
-        (-10.0, -60.0, -50.0, -20.0),
-        (-30.0, -60.0, -50.0, -30.0),
-        # Unreadable: the reference, and never above a known entry level.
-        (-10.0, None, None, -10.0),
-        (-30.0, None, None, -30.0),
-        (-10.0, None, -25.0, -25.0),
-        (-30.0, None, -25.0, -30.0),
-    ],
-)
-def test_the_duck_release_gives_back_its_own_depth_and_no_more(
-    reference, current, entry, expected,
-):
-    assert duck_release_target_db(
-        reference_db=reference, current_db=current, depth_db=40.0,
-        entry_db=entry,
-    ) == pytest.approx(expected)
-
-
-async def test_ducks_stack_and_each_gives_back_only_its_own():
-    fader = _Fader()
-    owner = await _household(fader)
-
-    first = await owner.acquire_duck(10.0)
-    second = await owner.acquire_duck(40.0)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 50.0)
-
-    await owner.release(second)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
-
-    await owner.release(first)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB)
-
-
-async def test_a_duck_rides_the_claim_in_effect_not_the_household_level():
-    """#2929's defect, made structural: the household level is not a bound."""
-    fader = _Fader()
-    owner = await _household(fader)
-    await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB)
-
-    duck = await owner.acquire_duck(40.0)
-    assert fader.db == pytest.approx(MEASUREMENT_DB - 40.0)
-
-    await owner.release(duck)
-    assert fader.db == pytest.approx(MEASUREMENT_DB)
-
-
-async def test_a_duck_over_no_declared_level_writes_nothing_and_still_releases():
-    fader = _Fader()
-    owner = _owner(fader)
-
-    duck = await owner.acquire_duck(40.0)
-    assert fader.writes == []
-
-    await owner.release(duck)
-    assert fader.writes == []
 
 
 # --- MS-14: prove -----------------------------------------------------------
@@ -339,17 +270,6 @@ async def test_an_unreadable_fader_is_never_proven(failure):
         fader.readable = False
     else:
         fader.raise_on_read = True
-
-    assert await owner.prove(claim) is None
-
-
-async def test_a_ducked_fader_is_not_at_the_declared_level():
-    fader = _Fader()
-    owner = await _household(fader)
-    claim = await owner.acquire_level(
-        ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
-    )
-    await owner.acquire_duck(40.0)
 
     assert await owner.prove(claim) is None
 
@@ -439,9 +359,7 @@ async def test_a_setter_that_reports_success_without_moving_is_not_believed(
 ):
     """Every write confirms through an independent readback.
 
-    This is what lets wave 5e delete the 1 Hz drift reconciler instead of
-    replacing it: a write that did not land is an alarm at the write boundary,
-    not something a cross-process patrol silently corrects a second later.
+    A write that did not land is an alarm at the write boundary.
     ``set_volume_db`` returning ``True`` means the command was accepted, never
     that the fader moved.
     """
@@ -465,88 +383,18 @@ async def test_the_owner_does_not_rewrite_a_level_the_fader_already_carries():
     """
     fader = _Fader()
     owner = await _household(fader)
-    claim = await owner.acquire_level(
-        ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
-    )
-    await owner.acquire_duck(40.0)
     fader.writes.clear()
 
-    await owner.declare_household_level_db(HOUSEHOLD_DB)
+    assert await owner.declare_household_level_db(HOUSEHOLD_DB) is True
 
     assert fader.writes == []
-    assert await owner.prove(claim) is None
-
-
-async def test_a_release_that_lands_where_the_fader_sits_writes_nothing():
-    """The other half of "arbitration is not churn": the RELEASE path.
-
-    The household level moving inside the duck window is the shape that gets
-    here — the voice duck re-declares it as part of its release, and the
-    give-back then lands exactly where the duck already put the fader, so
-    CamillaDSP is not asked to ramp 400 ms to where it already is.
-
-    The skip is decided on the settle's OWN fresh read, never on the earlier
-    give-back sample — see the foreign-write test below for what that
-    distinction is worth.
-    """
-    fader = _Fader()
-    owner = await _household(fader)
-    duck = await owner.acquire_duck(10.0)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
-    fader.writes.clear()
-
-    await owner.release(duck, household_level_db=HOUSEHOLD_DB - 10.0)
-
-    assert fader.writes == []
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
-
-
-async def test_a_foreign_write_landing_mid_release_is_repaired_not_skipped():
-    """A release's two reads are NOT one question asked twice.
-
-    They are separated by a round-trip, and the fader is shared across
-    daemons. A duck holder clears the duck-active flag BEFORE awaiting
-    ``release``, so jasper-control's probe
-    (``control.volume_ops.make_duck_active_probe``) stops deferring and its
-    own CamillaDSP write can land while the give-back read is in flight.
-
-    The settle re-reads, sees the foreign value, and repairs. Deciding the
-    skip on the earlier sample instead leaves the speaker wherever the
-    foreign writer put it — here LOUDER than the level in effect, which is
-    the direction that matters.
-    """
-    fader = _Fader()
-    owner = await _household(fader)
-    duck = await owner.acquire_duck(10.0)
-    plain_get = fader.get
-    landed = False
-
-    async def racing_get():
-        nonlocal landed
-        answer = await plain_get()
-        if not landed:
-            # A foreign daemon writes between the sample and its return, so
-            # `answer` is stale the moment the caller sees it.
-            landed = True
-            fader.db = -5.0
-        return answer
-
-    fader.get = racing_get
-    try:
-        await owner.release(duck, household_level_db=HOUSEHOLD_DB - 10.0)
-    finally:
-        fader.get = plain_get
-
-    assert fader.writes != []
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
 
 
 async def test_a_fader_that_drifted_off_the_level_is_repaired_not_skipped():
     """Skipping a redundant write must never mean skipping the check.
 
-    This is the half that lets wave 5e delete the 1 Hz drift reconciler: the
-    owner reads before it decides, so drift is repaired at the next claim
-    boundary rather than patrolled for.
+    The owner reads before it decides, so drift is repaired at the next claim
+    boundary.
     """
     fader = _Fader()
     owner = await _household(fader)
@@ -581,116 +429,25 @@ async def test_a_refused_claim_hands_the_fader_back_instead_of_stranding_it():
     assert owner.declared_level_db() == HOUSEHOLD_DB
 
 
-@pytest.mark.parametrize("taking", ["level", "duck"])
-async def test_a_door_that_raises_leaves_no_claim_stranded_in_the_ledger(
-    taking,
-):
+async def test_a_door_that_raises_leaves_no_claim_stranded_in_the_ledger():
     """B1. A raise from the injected door must not leave a claim held.
 
     The ledger entry goes in before the fader is touched, so an escape between
     those two — the shape a door that raises instead of reporting produces —
     used to leave a claim nobody holds. Every later arbitration then answered
-    against a level with no owner: the next duck would ride the dead claim's
-    level, and its release would land there rather than on the household one.
+    against a level with no owner, and the next release would land there
+    rather than on the household level.
     """
     fader = _Fader()
     owner = await _household(fader)
     fader.raise_on_write = True
 
     with pytest.raises(_DoorRaised):
-        if taking == "level":
-            await owner.acquire_level(
-                ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
-            )
-        else:
-            await owner.acquire_duck(40.0)
+        await owner.acquire_level(
+            ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
+        )
 
     assert owner.declared_level_db() == HOUSEHOLD_DB
-    assert owner.duck_depth_db() == 0.0
-
-    # ...and the ledger is not merely reported clean, it BEHAVES clean: a
-    # later duck cycle rides the household level and gives it back.
-    fader.raise_on_write = False
-    fader.db = HOUSEHOLD_DB
-    duck = await owner.acquire_duck(10.0)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
-    await owner.release(duck)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB)
-
-
-async def test_prove_is_atomic_against_a_duck_landing_mid_read():
-    """B2. The read and the verdict are one decision, under the owner's lock.
-
-    The read is an await. Without the lock a duck acquired while it was in
-    flight lands between the reading and the verdict, and ``prove`` then passes
-    a PRE-duck number that agrees with the declared level while the speaker
-    plays ducked — a proven level the speaker never had, which is the whole
-    thing MS-14 refuses.
-
-    The getter below captures its answer BEFORE yielding, so the reading is
-    deliberately stale by the time the verdict runs. Under the lock the duck
-    cannot land at all; without it, it does.
-    """
-    fader = _Fader()
-    owner = await _household(fader)
-    claim = await owner.acquire_level(
-        ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
-    )
-    raced: list[asyncio.Task] = []
-    plain_get = fader.get
-
-    async def racing_get():
-        answer = await plain_get()
-        if not raced:
-            raced.append(asyncio.create_task(owner.acquire_duck(40.0)))
-            # Run the duck as far as it can get. Under the lock it blocks on
-            # the first await and these yields cost nothing; without the lock
-            # it finishes, and `answer` is stale by the time it is judged.
-            for _ in range(200):
-                if raced[0].done():
-                    break
-                await asyncio.sleep(0)
-        return answer
-
-    fader.get = racing_get
-    try:
-        result = await owner.prove(claim)
-        ducked_now = owner.duck_depth_db() > 0.0
-    finally:
-        fader.get = plain_get
-        for task in raced:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-
-    assert not (ducked_now and result is not None)
-
-
-async def test_a_refused_household_level_on_release_leaves_the_claim_held():
-    """A release that refuses must refuse having done NOTHING.
-
-    ``household_level_db`` is validated inside the lock, and the ledger change
-    is not undone if it fails. Deleting the claim first and validating second
-    strands a ducked — quiet — speaker: the holder believes it released, its
-    own restore has no claim left to give back, and the attenuation stands
-    until some later arbitration happens to repair it.
-
-    The claim survives intact, so the holder's ordinary release still works.
-    """
-    fader = _Fader()
-    owner = await _household(fader)
-    duck = await owner.acquire_duck(10.0)
-    fader.writes.clear()
-
-    with pytest.raises(VolumeClaimRefused):
-        await owner.release(duck, household_level_db="loud")
-
-    assert owner.holds(duck)
-    assert fader.writes == []
-    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
-
-    await owner.release(duck)
-    assert fader.db == pytest.approx(HOUSEHOLD_DB)
 
 
 async def test_release_is_idempotent_and_safe_against_nothing_held():
@@ -719,18 +476,10 @@ async def test_every_write_the_owner_makes_goes_through_the_injected_door():
     claim = await owner.acquire_level(
         ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
     )
-    duck = await owner.acquire_duck(40.0)
-    await owner.release(duck)
     await owner.release(claim)
 
     assert fader.db == HOUSEHOLD_DB
-    assert fader.writes == [
-        HOUSEHOLD_DB,
-        MEASUREMENT_DB,
-        MEASUREMENT_DB - 40.0,
-        MEASUREMENT_DB,
-        HOUSEHOLD_DB,
-    ]
+    assert fader.writes == [HOUSEHOLD_DB, MEASUREMENT_DB, HOUSEHOLD_DB]
 
 
 # --- the process registration -----------------------------------------------

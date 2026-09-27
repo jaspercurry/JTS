@@ -336,25 +336,3 @@ async def test_the_ladder_stops_on_a_deferral_and_leaves_the_exact_level_standin
         "the losing rung replaced the winning declaration — the speaker came "
         "back to the emergency floor instead of the household level"
     )
-
-
-async def test_a_duck_over_the_household_level_is_landed_not_failed():
-    """A duck is an attenuation over a level in effect, not a rival level.
-
-    Judging "landed" against the bare level would call a ducked speaker a
-    failed write and send the ladder to its floor — the same clobber as B2,
-    arriving through a different door.
-    """
-    fader = _Fader(MEASUREMENT_DB)
-    owner = _owner_over(fader)
-    await owner.declare_household_level_db(HOUSEHOLD_DB)
-    await owner.acquire_duck(12.0)
-    door = OwnerVolumeDoor(owner, read_fader=fader.get)
-
-    outcome = await door.restore_household_level_db(HOUSEHOLD_DB)
-
-    assert outcome is RestoreOutcome.LANDED, (
-        "a ducked speaker read as a failed write — the ladder would walk to "
-        "its floor and leave -60 dB standing"
-    )
-    assert fader.db == HOUSEHOLD_DB - 12.0, "the duck is still down"
