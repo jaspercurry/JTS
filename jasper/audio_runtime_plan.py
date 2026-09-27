@@ -47,7 +47,6 @@ from jasper.audio_runtime_settings import (
     DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES,
     FANIN_INPUT_BUFFER_KEY,
     FANIN_INPUT_RESAMPLER_CUSHION_KEY,
-    FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY,
     FANIN_INPUT_RESAMPLER_RING_KEY,
     FANIN_INPUT_RESAMPLER_TARGET_KEY,
@@ -476,7 +475,6 @@ def route_owned_env_actions(
     )
     if not profile.fanin_input_resampler_required:
         return (
-            RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_LANE_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_TARGET_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_CUSHION_KEY),
@@ -484,9 +482,6 @@ def route_owned_env_actions(
         )
 
     return (
-        RuntimeEnvAction(
-            "set", FANIN_INPUT_RESAMPLER_LANE_KEY, USB_LOW_LATENCY_SOURCE_ID
-        ),
         RuntimeEnvAction(
             "set",
             FANIN_INPUT_RESAMPLER_TARGET_KEY,
@@ -546,7 +541,7 @@ def fanin_resampler_config_for_route(route: AudioRouteProfile) -> dict[str, Any]
     values = _route_action_values(route)
     return {
         "enabled": True,
-        "lane": values.get(FANIN_INPUT_RESAMPLER_LANE_KEY, ""),
+        "lane": USB_LOW_LATENCY_SOURCE_ID,
         "target_frames": _int_like(
             values.get(FANIN_INPUT_RESAMPLER_TARGET_KEY, ""),
         ),

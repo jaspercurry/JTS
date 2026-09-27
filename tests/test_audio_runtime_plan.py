@@ -21,7 +21,6 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
-    FANIN_INPUT_RESAMPLER_LANE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
     OUTPUTD_DAC_BUFFER_KEY,
     OUTPUTD_PERIOD_KEY,
@@ -360,7 +359,6 @@ def test_usb_low_latency_route_requires_direct_fanin_resampler_and_reference():
     assert profile.low_latency_claim is True
     assert profile.fanin_usb_direct_required is True
     assert profile.fanin_input_resampler_required is True
-    assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].value == "usbsink"
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
     assert by_key["JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES"].value == "1536"
 
@@ -479,7 +477,7 @@ def test_non_low_latency_route_clears_fanin_resampler_knobs_only():
     actions = route_owned_env_actions(ROUTE_CORRECTED_48K)
     by_key = {action.key: action for action in actions}
 
-    assert by_key[FANIN_INPUT_RESAMPLER_LANE_KEY].action == "unset"
+    assert all(action.action == "unset" for action in actions)
     assert all(not key.startswith("JASPER_USBSINK_") for key in by_key)
 
 

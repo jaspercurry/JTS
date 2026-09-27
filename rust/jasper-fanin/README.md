@@ -51,9 +51,4 @@ cargo run --release
 
 # With debug logging:
 JASPER_FANIN_LOG_LEVEL=debug cargo run --release
-
-# With non-default config:
-JASPER_FANIN_INPUT_PCMS='hw:Loopback,1,0|hw:Loopback,1,1' \
-JASPER_FANIN_INPUT_RENDERERS='spotify|airplay' \
-cargo run --release
 ```
