@@ -24,7 +24,7 @@ from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.json_fields import finite_float
 from jasper.speaker_layout import measurement_target_id
 
-from ..measurement_programs import BRANCH_PAIR_FRONT_REAR
+from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS
 from .contracts import (
     DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
@@ -201,6 +201,9 @@ class MeasureSpec:
     #: parked. The take's own choice, so it travels on the spec rather than
     #: being re-derived from the box's acoustic roles. Empty otherwise.
     branch_target_ids: tuple[str, ...] = ()
+    #: The applied candidate layers this take's purpose clears, emptied by the
+    #: door when it compiles the take's graph (ADR-0370). Candidate graphs only.
+    cleared_layers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.stimulus is not None and self.graph_scope != "candidate":
@@ -223,6 +226,10 @@ class MeasureSpec:
             raise ValueError(
                 f"branch_target_ids requires the candidate_branches or drivers graph_scope, got {self.graph_scope!r}"
             )
+        if self.cleared_layers and (self.graph_scope not in CANDIDATE_SCOPES
+                                    or not set(self.cleared_layers) <= set(CANDIDATE_LAYERS)):
+            raise ValueError(f"cleared_layers names layers of a candidate graph, each one of {CANDIDATE_LAYERS}, "
+                             f"got {self.cleared_layers!r} on {self.graph_scope!r}")
         if self.sweep_band_hz:
             if self.graph_scope == GRAPH_SCOPE_DRIVERS:
                 raise ValueError("sweep_band_hz requires a summed graph_scope")
@@ -381,7 +388,7 @@ _TRIMMED_STRINGS = frozenset({
     "candidate_id", "delayed_role", "graph_scope", "program_phase",
 })
 _ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz",
-                     "branch_target_ids"})
+                     "branch_target_ids", "cleared_layers"})
 #: ``sweep_s`` read ``None`` back as the statement it is.
 _NUMBERS = frozenset({"delay_us", "sweep_s"})
 #: Read back as banked; the dataclass judges them.
@@ -416,7 +423,7 @@ def _from_json(name: str, value: Any) -> Any:
     if name in _ARRAYS:
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{name} must be a JSON array, got {value!r}")
-        if name in ("pose_prompts", "branch_target_ids") and not all(
+        if name in ("pose_prompts", "branch_target_ids", "cleared_layers") and not all(
             isinstance(entry, str) for entry in value
         ):
             raise ValueError(f"{name} entries must be strings, got {value!r}")

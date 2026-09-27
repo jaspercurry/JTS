@@ -259,7 +259,8 @@ def bind_measurement_graph(
     from .composition import confirm_graph_is_live
     from .session_graph import MeasurementSessionGraph
 
-    def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int]) -> str:
+    def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int],
+                    cleared_layers: tuple[str, ...] = ()) -> str:
         selected = None
         if scope in CANDIDATE_SCOPES:
             selected = (reference if reference is not None and candidate_id == reference.fingerprint else
@@ -269,6 +270,7 @@ def bind_measurement_graph(
             scope=cast(TuningGraphScope, scope),
             candidate=selected,
             branch_channels=branch_channels,
+            cleared_layers=cleared_layers,
         )
 
     try:
