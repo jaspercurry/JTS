@@ -17,6 +17,7 @@ import pytest
 
 from jasper.bluetooth.rfkill import BluetoothRfkillState
 from jasper import source_intent, source_intent_units as units
+from jasper.json_fields import sha256_text
 from jasper.local_sources import reconcile
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.multiroom import reconcile as reconcile_mod
@@ -446,7 +447,7 @@ def test_production_reconcile_publishes_atomic_per_source_outcomes(tmp_path):
 
     payload = json.loads(status_path.read_text(encoding="utf-8"))
     assert payload["completed_monotonic_ns"] > 0
-    assert payload["intent_fingerprint"] == source_intent.intent_fingerprint("")
+    assert payload["intent_fingerprint"] == sha256_text("")
     assert set(payload["sources"]) == {
         source.value for source in source_intent.source_intent_sources()
     }

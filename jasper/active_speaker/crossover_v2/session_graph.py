@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Mapping
 import yaml
 
 from jasper.active_speaker.commissioning_admission import parse_running_graph
+from jasper.json_fields import sha256_text
 from jasper.active_speaker.restore_wait import attempt_graph_restore
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
@@ -432,7 +433,7 @@ class MeasurementSessionGraph:
                 description = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
                     "scope": self._scope,
                     "anchor_path": self._entry_config_path,
-                    "anchor_sha256": hashlib.sha256(self._entry_yaml.encode("utf-8")).hexdigest(),
+                    "anchor_sha256": sha256_text(self._entry_yaml),
                     "graph_sha256": _graph_body_fingerprint(normalized),
                 }, sort_keys=True)
                 submitted = yaml_text + "\n" + yaml.safe_dump({"description": description})

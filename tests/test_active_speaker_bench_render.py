@@ -26,7 +26,7 @@ import yaml
 
 from jasper.active_speaker.bench import bass_replay, render
 from jasper.active_speaker.bench.replay import replay_graph, replay_levels
-from jasper.json_fields import sha256_file
+from jasper.json_fields import sha256_file, sha256_text
 from jasper.bass_extension.dynamic_graph import apply_dynamic_bass_graph
 from jasper.cli.round_views import dsp_replay
 from tests.test_bass_extension_dynamic import _base_graph, _descriptor
@@ -631,9 +631,7 @@ def test_determinism_receipt_passes_on_identical_renders(
     assert config_paths == [config_path, config_path]
     # The recorded shape identity is the SHA of the file that was actually
     # rendered, read from disk here rather than passed in alongside it.
-    assert receipt.config_sha256 == render.config_shape_sha256(
-        config_path.read_text(encoding="utf-8")
-    )
+    assert receipt.config_sha256 == sha256_text(config_path.read_text(encoding="utf-8"))
 
 
 def test_determinism_receipt_refuses_on_byte_mismatch(
@@ -1009,15 +1007,6 @@ def test_reference_soft_clip_is_odd_symmetric() -> None:
     samples = np.array([0.3, -0.3], dtype=np.float64)
     out = render.reference_soft_clip(samples, clip_limit_dbfs=-3.0)
     np.testing.assert_allclose(out[0], -out[1], atol=1e-12)
-
-
-def test_config_shape_sha256_is_stable_and_content_addressed() -> None:
-    a = render.config_shape_sha256("devices: {}\n")
-    b = render.config_shape_sha256("devices: {}\n")
-    c = render.config_shape_sha256("devices: {samplerate: 48000}\n")
-    assert a == b
-    assert a != c
-    assert len(a) == 64
 
 
 def test_binary_identity_tap_implementation_id_excludes_binary_path() -> None:

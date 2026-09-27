@@ -1898,7 +1898,7 @@ def _commissioning_apply_site(cam):
     from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
     from jasper.active_speaker import applied_tune, baseline_profile
-    from jasper.active_speaker.state_paths import config_text_sha256
+    from jasper.json_fields import sha256_text
 
     def call_site():
         reviewed = applied_tune.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
@@ -1906,7 +1906,7 @@ def _commissioning_apply_site(cam):
         result = asyncio.run(apply_candidate(camilla_factory=lambda: cam))
         assert result["status"] == "applied", result["issues"]
         assert cam.path == result["profile"]["config"]["path"]
-        assert config_text_sha256(Path(cam.path).read_text()) == reviewed["config"]["sha256"]
+        assert sha256_text(Path(cam.path).read_text()) == reviewed["config"]["sha256"]
         return result["profile"]
 
     return call_site

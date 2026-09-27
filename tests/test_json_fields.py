@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import OrderedDict
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -23,10 +26,13 @@ from jasper.json_fields import (
     as_float,
     canonical_json_bytes,
     finite_float,
+    freeze_json,
     json_fingerprint,
+    lenient_json_fingerprint,
     require_finite,
     require_sha256_hex,
     sha256_file,
+    sha256_text,
     utc_now_iso,
 )
 
@@ -91,6 +97,31 @@ def test_sha256_file_digests_the_whole_file_across_chunk_boundaries(tmp_path):
     target = tmp_path / "blob.bin"
     target.write_bytes(payload)
     assert sha256_file(target) == hashlib.sha256(payload).hexdigest()
+
+
+def test_sha256_text_hashes_the_utf8_bytes():
+    assert sha256_text("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert sha256_text("é") == hashlib.sha256(b"\xc3\xa9").hexdigest()
+
+
+@pytest.mark.parametrize("value", [{"a": [1, 2.5, None, True, "é"], "b": {}}, OrderedDict(b=1, a=[{}])])
+def test_freeze_json_copies_the_exact_json_data_model(value):
+    frozen = freeze_json(value, field="x", error=_Refused)
+    assert frozen == value and type(frozen) is dict and frozen is not value
+
+
+@pytest.mark.parametrize("value", [
+    {"a": (1, 2)}, {1: "a"}, {"a": float("nan")}, {"a": float("-inf")}, {"a": {1}},
+    {"a": Decimal("1")}, {"a": type("_Str", (str,), {})("x")}, {"a": [b"x"]},
+])
+def test_freeze_json_refuses_anything_outside_the_exact_json_model(value):
+    with pytest.raises(_Refused):
+        freeze_json(value, field="x", error=_Refused)
+
+
+def test_lenient_json_fingerprint_keeps_its_persisted_bytes():
+    payload = {"b": (1, -0.0, 1e16), "a": Path("/x/é"), "n": float("nan")}
+    assert lenient_json_fingerprint(payload) == "ac1affe20330669dd9ae2688a2d6f9f2c4af238a0c7abcc811c216d71329fa1c"
 
 
 def test_json_fingerprint_ignores_key_order_but_not_values():

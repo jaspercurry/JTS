@@ -29,7 +29,7 @@ from typing import Any, Iterable, Iterator, Mapping
 import numpy as np
 
 from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, sha256_text
 
 # The model registry -- SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
 # measurement_mic_usb_ids, mic_tier_for_model -- lives in the numpy-free leaf
@@ -179,10 +179,6 @@ def serial_hash(serial: str | None) -> str | None:
     if not normalized:
         return None
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _public_source(source: str) -> str:
@@ -475,7 +471,7 @@ def store_calibration(
     root: Path = DEFAULT_CALIBRATION_DIR,
 ) -> CalibrationRecord:
     curve = parse_calibration_text(text, sign_convention=sign_convention)
-    file_hash = _sha256_text(text)
+    file_hash = sha256_text(text)
     serial_hash_value = serial_hash(serial)
     calibration_id = _record_id(
         provider=provider,

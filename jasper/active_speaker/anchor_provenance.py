@@ -6,13 +6,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from jasper.json_fields import sha256_text
+
 from .applied_identity import applied_identity
-from .state_paths import config_text_sha256
 
 
 def graph_provenance(candidate_fingerprint: str, compiled_graph: str) -> dict[str, Any]:
     return {"candidate_fingerprint": candidate_fingerprint,
-            "compiled_graph_sha256": config_text_sha256(compiled_graph)}
+            "compiled_graph_sha256": sha256_text(compiled_graph)}
 
 
 def read_pose(*, arm_offset_deg: float | None = None) -> dict[str, Any]:
