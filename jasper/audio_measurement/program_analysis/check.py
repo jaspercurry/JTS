@@ -428,8 +428,9 @@ def _channel_map_ok(
     2. CROSS: did every OTHER driver's band stay at least
        ``CHANNEL_MAP_MIN_ISOLATION_DB`` below this driver's own rise (the
        ISOLATION RATIO)? Guards ABNORMAL CROSS-BAND ENERGY (bleed, skirt,
-       nonlinearity) — not the mis-wire discriminator, which rung 1
-       catches. A ratio rather than an additive bound because honest
+       nonlinearity). TARGET (rung 1) catches a dead, missing, or bridged
+       channel, not a swap under a realistic rolloff — that gap is #2800
+       (parked). A ratio rather than an additive bound because honest
        cross-band content sits at a roughly fixed RELATIVE level (see
        ``CHANNEL_MAP_MIN_ISOLATION_DB``'s derivation). Judged only once the
        CROSS band itself rose ``CHANNEL_MAP_TARGET_RISE_DB`` — the bar a
