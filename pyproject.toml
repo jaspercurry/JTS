@@ -478,6 +478,7 @@ exhaustive_ignores = [
   "volume_curve",
   "volume_echo",
   "volume_handoff",
+  "volume_measurement_gate",
   "volume_persistence",
   "volume_push_sources",
   "volume_scales",
