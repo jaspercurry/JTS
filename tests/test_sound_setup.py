@@ -46,8 +46,8 @@ from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_d
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_UNCONFIGURED
 from jasper.active_speaker.runtime_contract import (
-    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
     PARKED_MUTED_STATUS,
     apply_safe_graph_decision_to_statefile,
     parked_safe_graph_decision,

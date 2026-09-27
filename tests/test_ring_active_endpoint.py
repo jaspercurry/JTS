@@ -1699,9 +1699,7 @@ def test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_sto
     full-range graph on a crossover box would reach a protected tweeter. This
     pins that refusal, since it is the load-bearing half of the argument.
     """
-    from jasper.active_speaker.runtime_contract import (
-        flat_program_graph_blocked_reason,
-    )
+    from jasper.sound.flat_verifier import flat_program_graph_blocked_reason
     from jasper.fanin_coupling import capture_kwargs_for_coupling
 
     # The kwargs are unconditionally the STEREO ring's...
