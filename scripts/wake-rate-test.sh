@@ -93,14 +93,8 @@ LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}/${SLUG}.wav"
 if [[ ! -f "$LOCAL_TEMPLATE" ]]; then
     LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}.wav"
 fi
-if [[ ! -f "$LOCAL_PY" ]]; then
-    echo "ERROR: $LOCAL_PY missing" >&2
-    exit 1
-fi
-if [[ ! -f "$LOCAL_METRICS" ]]; then
-    echo "ERROR: $LOCAL_METRICS missing" >&2
-    exit 1
-fi
+[[ -f "$LOCAL_PY" ]] || die "ERROR: $LOCAL_PY missing"
+[[ -f "$LOCAL_METRICS" ]] || die "ERROR: $LOCAL_METRICS missing"
 scp -q "$LOCAL_PY" "${PI_USER}@${PI_HOST}:/tmp/_offline_wake_count.py"
 scp -q "$LOCAL_METRICS" "${PI_USER}@${PI_HOST}:/tmp/_wake_audio_metrics.py"
 
@@ -116,7 +110,7 @@ else
 fi
 
 # Capture pre-test state for the log
-PRE_STATE=$(ssh "${PI_USER}@${PI_HOST}" "
+PRE_STATE=$(ssh_remote "
 echo 'chip SHF_BYPASS:'
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 2>&1 | grep SHF_BYPASS
 echo 'bridge:'
@@ -161,8 +155,7 @@ MODEL_ARG=""
 
 echo ""
 echo "Running offline wake-word detection on AEC ON output (phrase='$PHRASE', model=${MODEL:-default}) ..."
-WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
-    "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
+WAKE_RESULT=$(ssh_remote "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
         $TEMPLATE_ARG $THRESH_ARG $MODEL_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
 
 # Save + display
@@ -182,8 +175,7 @@ WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
 # just without AEC processing. This is the "AEC OFF" leg.
 echo ""
 echo "─── AEC OFF  (aec-off.wav — chip raw mic 1, pre-AEC) ───"
-RAW_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
-    "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
+RAW_RESULT=$(ssh_remote "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
         $TEMPLATE_ARG $THRESH_ARG $MODEL_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
 echo "$RAW_RESULT" | tee -a "$OUT_LOCAL/result.txt"
 

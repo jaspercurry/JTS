@@ -477,6 +477,35 @@ def test_env_file_write_matches_the_shared_helper(
     )
 
 
+def test_rename_speaker_connects_with_its_own_longer_timeout(
+    script_repo: tuple[Path, Path, Path],
+) -> None:
+    """ssh keeps the FIRST value of a repeated -o, so rename-speaker's 8 s
+    must come before the shared set's 5 s — for the current name and the
+    not-yet-claimed new one alike. Real `ssh -G` reads each logged argv."""
+    real_ssh = shutil.which("ssh")
+    assert real_ssh, "ssh -G is the oracle for ssh's option precedence"
+    result, calls = _run_script(
+        script_repo, "rename-speaker.sh", env_local=None,
+        inherited={"PI_HOST": "explicit.invalid", "PI_USER": "operator"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    timeouts: dict[str, set[str]] = {}
+    for line in calls.splitlines():
+        name, *argv = line.split("\t")
+        if name != "ssh":
+            continue
+        config = subprocess.run(
+            [real_ssh, "-G", "-F", "/dev/null", *argv[:-1]],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.split("\n")
+        timeouts.setdefault(argv[-2], set()).update(
+            entry.split()[1] for entry in config if entry.startswith("connecttimeout ")
+        )
+    assert timeouts == {"operator@explicit.invalid": {"8"}, "operator@jts4.local": {"8"}}
+
+
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
 def test_pi_target_scripts_are_valid_bash(name: str) -> None:
     run_bash(["-n", str(ROOT / "scripts" / name)], timeout=30).check_returncode()

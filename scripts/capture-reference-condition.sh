@@ -73,7 +73,7 @@ mkdir -p "$OUT_LOCAL"
 
 # Pre-capture state for the log so a future reader knows what
 # bridge config the baseline was captured under.
-PRE_STATE=$(ssh "${PI_USER}@${PI_HOST}" "
+PRE_STATE=$(ssh_remote "
 echo 'chip SHF_BYPASS:'
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 2>&1 | grep SHF_BYPASS || echo '  (xvf_host unavailable)'
 echo 'bridge:'
