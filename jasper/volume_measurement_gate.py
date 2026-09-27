@@ -12,16 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 
 from .log_event import log_event
+from .voice import measurement_hold as voice_measurement
 from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_owner import VolumeClaimRefused
 
 logger = logging.getLogger(__name__)
-
-# Keep the measurement clock independent of asyncio clocks.
-_measurement_monotonic = time.monotonic
 
 
 class MeasurementGate:
@@ -64,7 +61,7 @@ class MeasurementGate:
         """
         if not self.active:
             return False
-        held_for = _measurement_monotonic() - self._active_at
+        held_for = voice_measurement._measurement_monotonic() - self._active_at
         if held_for < MEASUREMENT_AUTOCLEAR_SEC:
             return True
         if not self._lapse_logged:
@@ -118,5 +115,5 @@ class MeasurementGate:
         async with self.write_lock:
             self.active = bool(active)
             if self.active:
-                self._active_at = _measurement_monotonic()
+                self._active_at = voice_measurement._measurement_monotonic()
                 self._lapse_logged = False

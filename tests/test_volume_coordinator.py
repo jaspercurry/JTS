@@ -41,7 +41,6 @@ from tests.volume_coordinator_fixtures import (
 
 from jasper import bluealsa_probe, camilla, renderer, volume_process
 from jasper import spotify_router as spotify_router_mod
-from jasper import volume_measurement_gate as gate_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
 from jasper.atomic_io import advisory_file_lock
@@ -51,6 +50,7 @@ from jasper.dsp_apply import camilla_graph_mutation
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
 from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
+from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_echo import ECHO_WINDOW_SEC
@@ -1982,7 +1982,7 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
     later window that strands its own flag lapses, and says so, again.
     """
     now = [0.0]
-    monkeypatch.setattr(gate_mod, "_measurement_monotonic", lambda: now[0])
+    monkeypatch.setattr(voice_measurement, "_measurement_monotonic", lambda: now[0])
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
     )
@@ -2021,7 +2021,7 @@ async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
     IS the clock the pause runs on — so it may clear what it finds lapsed.
     """
     now = [0.0]
-    monkeypatch.setattr(gate_mod, "_measurement_monotonic", lambda: now[0])
+    monkeypatch.setattr(voice_measurement, "_measurement_monotonic", lambda: now[0])
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
     )
