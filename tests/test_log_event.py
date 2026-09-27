@@ -60,16 +60,18 @@ def test_logfmt_quotes_value_with_whitespace_ssid_case():
     assert line == 'event=wifi_guardian.recover ssid="My Home Wifi" ok=true'
 
 
-def test_logfmt_quotes_and_escapes_embedded_quotes():
-    line = render_logfmt("x.y", {"label": 'a "quoted" name'})
-    assert line == r'event=x.y label="a \"quoted\" name"'
-
-
-def test_logfmt_escapes_backslash_before_quote():
-    # Backslashes are escaped first so a trailing one can't escape the
-    # closing quote.
-    line = render_logfmt("x.y", {"path": r"C:\dir\x"})
-    assert line == r'event=x.y path="C:\\dir\\x"'
+@pytest.mark.parametrize(
+    'fields,expected',
+    [
+        ({'label': 'a "quoted" name'}, 'event=x.y label="a \\"quoted\\" name"'),
+        ({'path': 'C:\\dir\\x'}, 'event=x.y path="C:\\\\dir\\\\x"'),
+        ({'kv': 'a=b'}, 'event=x.y kv="a=b"'),
+    ],
+    ids=['embedded-quotes', 'backslashes', 'equals-sign'],
+)
+def test_logfmt_quotes_and_escapes_fields(fields, expected):
+    line = render_logfmt("x.y", fields)
+    assert line == expected
 
 
 def test_logfmt_escapes_control_characters_onto_one_physical_line():
@@ -119,11 +121,6 @@ def test_logfmt_escapes_unicode_line_separators_in_one_field(separator, escaped)
     )
     assert line.splitlines() == [line]
     assert line.count(" ssid=") == 1
-
-
-def test_logfmt_quotes_value_with_equals_sign():
-    line = render_logfmt("x.y", {"kv": "a=b"})
-    assert line == 'event=x.y kv="a=b"'
 
 
 def test_logfmt_quotes_empty_string():

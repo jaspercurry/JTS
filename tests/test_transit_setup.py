@@ -322,14 +322,20 @@ def test_apply_routes_save_clear_removes_existing_key():
     assert new == {}
 
 
-def test_apply_save_subway_direction_both_clears_default():
-    """'Both' means 'ask me each time' — drop the default so the model
-    prompts. Leaving the old value in would silently keep it active."""
-    current = {"JASPER_SUBWAY_DEFAULT_DIRECTION": "uptown"}
-    form = {"nyc_subway_direction": "both"}
+@pytest.mark.parametrize(
+    'key,saved,form',
+    [
+        ('JASPER_SUBWAY_DEFAULT_DIRECTION', 'uptown', {'nyc_subway_direction': 'both'}),
+        ('JASPER_CITIBIKE_EBIKE_ONLY', '1', {'citibike_stations': 'abc|9 Av'}),
+        ('JASPER_CITIBIKE_STATIONS', 'abc|9 Av,def|Atlantic', {'citibike_stations': ''}),
+    ],
+    ids=['direction-both', 'ebike-unchecked', 'stations-empty'],
+)
+def test_apply_save_clears_deselected_preference(key, saved, form):
+    current = {key: saved}
     new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
     assert err is None
-    assert "JASPER_SUBWAY_DEFAULT_DIRECTION" not in new
+    assert key not in new
 
 
 def test_apply_save_empty_picks_preserve_existing():
@@ -462,26 +468,6 @@ def test_apply_save_citibike_ebike_only_checkbox_persists():
     new, err = transit_setup._apply_save(form, {}, bus_provider=_StubBus(True))
     assert err is None
     assert new["JASPER_CITIBIKE_EBIKE_ONLY"] == "1"
-
-
-def test_apply_save_citibike_ebike_only_unchecked_drops_flag():
-    """Marker present, checkbox absent → flag was unchecked. Drop
-    the env var so the daemon sees default-False."""
-    current = {"JASPER_CITIBIKE_EBIKE_ONLY": "1"}
-    form = {"citibike_stations": "abc|9 Av"}  # no ebike_only key
-    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
-    assert err is None
-    assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
-
-
-def test_apply_save_citibike_empty_stations_drops_saved():
-    """Marker present but value empty → user unchecked every station.
-    Drop the saved list so the tool disables on next daemon restart."""
-    current = {"JASPER_CITIBIKE_STATIONS": "abc|9 Av,def|Atlantic"}
-    form = {"citibike_stations": ""}
-    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
-    assert err is None
-    assert "JASPER_CITIBIKE_STATIONS" not in new
 
 
 def test_apply_save_citibike_does_not_disturb_other_providers():

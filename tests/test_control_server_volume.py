@@ -460,30 +460,20 @@ def server_with_transport_stub(monkeypatch):
         thread.join(timeout=2)
 
 
-def test_transport_toggle_dispatches_toggle(server_with_transport_stub):
+@pytest.mark.parametrize(
+    'action',
+    [
+        'toggle',
+        'next',
+        'previous',
+    ],
+)
+def test_transport_dispatches_action(server_with_transport_stub, action):
     base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/toggle", {})
+    status, body = _post(f"{base}/transport/{action}", {})
     assert status == 200
-    assert calls == ["toggle"]
-    assert body["action"] == "toggle"
-
-
-def test_transport_next_dispatches_next(server_with_transport_stub):
-    """Double-tap on the remote / VK-01 lands here."""
-    base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/next", {})
-    assert status == 200
-    assert calls == ["next"]
-    assert body["action"] == "next"
-
-
-def test_transport_previous_dispatches_previous(server_with_transport_stub):
-    """Triple-tap on the remote / VK-01 lands here."""
-    base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/previous", {})
-    assert status == 200
-    assert calls == ["previous"]
-    assert body["action"] == "previous"
+    assert calls == [action]
+    assert body["action"] == action
 
 
 def test_transport_dispatcher_error_propagates_as_502(monkeypatch):

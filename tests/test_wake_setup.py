@@ -943,25 +943,20 @@ def test_unknown_layer_returns_404_before_csrf(wired_server, with_csrf):
     assert not [entry for entry in received if entry[0] == "POST"]
 
 
-def test_layer_rejects_non_boolean_enabled(wired_server):
+@pytest.mark.parametrize(
+    'path,payload,error',
+    [
+        ('/layer/raw', {'enabled': 'yes'}, 'boolean'),
+        ('/sensitivity', {'value': 'loud'}, 'number'),
+        ('/sensitivity', {'value': 2.0}, 'between 0 and 1'),
+    ],
+    ids=['non-boolean-leg', 'non-numeric-threshold', 'threshold-range'],
+)
+def test_invalid_control_value_is_rejected(wired_server, path, payload, error):
     base, _, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/layer/raw", {"enabled": "yes"})
+    status, body = _json_post_with_csrf(base, path, payload)
     assert status == 400
-    assert "boolean" in body["error"]
-
-
-def test_sensitivity_rejects_non_numeric_value(wired_server):
-    base, _, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/sensitivity", {"value": "loud"})
-    assert status == 400
-    assert "number" in body["error"]
-
-
-def test_sensitivity_rejects_out_of_range(wired_server):
-    base, _, _, _ = wired_server
-    status, body = _json_post_with_csrf(base, "/sensitivity", {"value": 2.0})
-    assert status == 400
-    assert "between 0 and 1" in body["error"]
+    assert error in body["error"]
 
 
 def test_layer_requires_csrf(wired_server):

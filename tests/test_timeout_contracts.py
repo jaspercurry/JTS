@@ -23,6 +23,8 @@ the fuller rationale. A marker on a call that turns out to be bounded
 """
 from __future__ import annotations
 
+import pytest
+
 import ast
 import io
 import re
@@ -196,36 +198,27 @@ def test_every_unbounded_call_is_marked_and_every_marker_is_live() -> None:
     assert not stale, f"'# unbounded: ...' marker(s) on now-bounded call(s): {stale}"
 
 
-def test_scan_flags_a_timeout_less_subprocess_run() -> None:
-    """Proof the walk actually detects the fault it exists to catch."""
-    findings = scan_source(textwrap.dedent("""
-        import subprocess
-        def f():
-            subprocess.run(["true"], check=False)
-    """))
-    assert findings == [(4, "subprocess.run")]
-
-
-def test_scan_flags_an_unwrapped_asyncio_connect() -> None:
-    findings = scan_source(textwrap.dedent("""
-        import asyncio
-        async def f(path):
-            return await asyncio.open_unix_connection(path)
-    """))
-    assert findings == [(4, "asyncio.open_unix_connection")]
-
-
-def test_scan_flags_a_captured_popen() -> None:
-    """A Popen whose handle is kept (not fired-and-forgotten) needs its
-    bound demonstrated elsewhere -- the walk cannot verify that, so it
-    always flags a captured Popen."""
-    findings = scan_source(textwrap.dedent("""
-        import subprocess
-        def f():
-            proc = subprocess.Popen(["true"])
-            return proc
-    """))
-    assert findings == [(4, "subprocess.Popen")]
+@pytest.mark.parametrize(
+    'source,call',
+    [
+        ('\nimport subprocess\ndef f():\n    subprocess.run(["true"], check=False)\n', 'subprocess.run'),
+        ('\n'
+         'import asyncio\n'
+         'async def f(path):\n'
+         '    return await asyncio.open_unix_connection(path)\n',
+         'asyncio.open_unix_connection'),
+        ('\n'
+         'import subprocess\n'
+         'def f():\n'
+         '    proc = subprocess.Popen(["true"])\n'
+         '    return proc\n',
+         'subprocess.Popen'),
+    ],
+    ids=['run', 'asyncio-connect', 'captured-popen'],
+)
+def test_scan_flags_unbounded_calls(source, call):
+    findings = scan_source(textwrap.dedent(source))
+    assert findings == [(4, call)]
 
 
 def test_scan_passes_bounded_calls() -> None:

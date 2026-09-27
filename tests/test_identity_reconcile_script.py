@@ -23,6 +23,8 @@ Two contracts beyond the field values:
 """
 from __future__ import annotations
 
+import pytest
+
 import os
 import stat
 import subprocess
@@ -159,58 +161,40 @@ def test_avahi_unavailable_falls_back_to_os_hostname(tmp_path):
     assert "event=identity_reconcile.avahi_unavailable" in proc.stderr
 
 
-def test_missing_jasper_env_defaults_configured_to_jts_local(tmp_path):
+@pytest.mark.parametrize(
+    'os_hostname,jasper_env,name_key,name_value,flag_key,flag_value',
+    [
+        ('jts3', None, 'JASPER_IDENTITY_CONFIGURED_HOSTNAME', 'jts.local', 'JASPER_IDENTITY_DRIFT', '1'),
+        ('JTS3.fritz.box',
+         'JASPER_HOSTNAME=jts3.local\n',
+         'JASPER_IDENTITY_OS_HOSTNAME',
+         'jts3',
+         'JASPER_IDENTITY_COLLISION',
+         '0'),
+        ('jts3',
+         'JASPER_HOSTNAME=old.local\nJASPER_HOSTNAME=jts3.local\n',
+         'JASPER_IDENTITY_CONFIGURED_HOSTNAME',
+         'jts3.local',
+         'JASPER_IDENTITY_DRIFT',
+         '0'),
+        ('jts3',
+         'JASPER_HOSTNAME="jts3.local"\n',
+         'JASPER_IDENTITY_CONFIGURED_HOSTNAME',
+         'jts3.local',
+         'JASPER_IDENTITY_DRIFT',
+         '0'),
+    ],
+    ids=['missing-env', 'fqdn-case', 'last-assignment', 'quoted-hostname'],
+)
+def test_hostname_inputs(
+    tmp_path, os_hostname, jasper_env, name_key, name_value, flag_key, flag_value,
+):
     proc, identity = _run(
-        tmp_path,
-        os_hostname="jts3",
-        busctl_reply='s "jts3.local"',
-        jasper_env=None,
+        tmp_path, os_hostname=os_hostname, busctl_reply='s "jts3.local"', jasper_env=jasper_env,
     )
     assert proc.returncode == 0, proc.stderr
-    assert identity["JASPER_IDENTITY_CONFIGURED_HOSTNAME"] == "jts.local"
-    # jts3.local advertised vs jts.local intended → drift, surfaced.
-    assert identity["JASPER_IDENTITY_DRIFT"] == "1"
-
-
-def test_fqdn_os_hostname_is_shortened_and_lowercased(tmp_path):
-    proc, identity = _run(
-        tmp_path,
-        os_hostname="JTS3.fritz.box",
-        busctl_reply='s "jts3.local"',
-        jasper_env="JASPER_HOSTNAME=jts3.local\n",
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert identity["JASPER_IDENTITY_OS_HOSTNAME"] == "jts3"
-    assert identity["JASPER_IDENTITY_COLLISION"] == "0"
-
-
-def test_last_jasper_hostname_assignment_wins(tmp_path):
-    """Mirrors systemd EnvironmentFile layering: a duplicated key's
-    last assignment is the effective one."""
-    proc, identity = _run(
-        tmp_path,
-        os_hostname="jts3",
-        busctl_reply='s "jts3.local"',
-        jasper_env="JASPER_HOSTNAME=old.local\nJASPER_HOSTNAME=jts3.local\n",
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert identity["JASPER_IDENTITY_CONFIGURED_HOSTNAME"] == "jts3.local"
-    assert identity["JASPER_IDENTITY_DRIFT"] == "0"
-
-
-def test_quoted_jasper_hostname_matches_python_parser(tmp_path):
-    """A hand-edited `JASPER_HOSTNAME="x.local"` must parse to the same
-    hostname jasper.env_file.parse_env_mapping sees — quotes kept on the
-    bash side would flag drift forever and pollute the allowlist."""
-    proc, identity = _run(
-        tmp_path,
-        os_hostname="jts3",
-        busctl_reply='s "jts3.local"',
-        jasper_env='JASPER_HOSTNAME="jts3.local"\n',
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert identity["JASPER_IDENTITY_CONFIGURED_HOSTNAME"] == "jts3.local"
-    assert identity["JASPER_IDENTITY_DRIFT"] == "0"
+    assert identity[name_key] == name_value
+    assert identity[flag_key] == flag_value
 
 
 # ----------------------------------------------------------------------
