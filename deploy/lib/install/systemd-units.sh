@@ -1280,8 +1280,9 @@ restart_jasper_control_and_input() {
     systemctl reset-failed jasper-control.service 2>/dev/null || true
     systemctl restart jasper-control.service || \
         echo "  WARN: jasper-control restart failed; /system/ will 502. Check logs with: journalctl -u jasper-control -e"
-    # Ordered after jasper-control, which is what the input bridge posts key events to.
-    systemctl restart jasper-input.service 2>/dev/null || true
+    # Ordered after jasper-control, which is what the input bridge posts key
+    # events to. Start only: the accessory pass restarts it (ADR-0372).
+    systemctl enable --now jasper-input.service 2>/dev/null || true
 }
 
 # Enable the profile's core units ("$@") and run the core-graph restart tail
@@ -1375,7 +1376,7 @@ resolve_fanin_coupling_default() {
 # The rest of the runtime tail, once the core graph is back. "$1" is the
 # install profile; only `full` reconciles AEC.
 _converge_runtime_units() {
-    local profile="$1" unit
+    local profile="$1" unit input_invocation
     # Mux is core arbitration infrastructure, not a selectable source: start it
     # on every install. A bonded follower lacks the allowed/shared marker that
     # its ConditionPathExists= needs.
@@ -1393,11 +1394,18 @@ _converge_runtime_units() {
     restart_jasper_control_and_input
     # Before the AEC reconcile, which takes over its accessory half on full, and
     # before the park-record forget: where wake detection does not run, this
-    # reconciler owns jasper-voice (ADR-0217).
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || {
+    # reconciler owns jasper-voice (ADR-0217). Its restart moves jasper-input
+    # onto the new code in ADR-0372's withdraw, restart, verify, arm order.
+    input_invocation="$(systemctl show -p InvocationID --value jasper-input.service 2>/dev/null || true)"
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install --restart-hosts || {
         echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
         JASPER_CORE_GRAPH_TAIL_DEGRADED=1
     }
+    # A pass that ended before its restart left the old code running.
+    if [[ "$(systemctl show -p InvocationID --value jasper-input.service 2>/dev/null)" == "${input_invocation}" ]]; then
+        echo "  WARN: the accessory pass did not restart jasper-input; restarting it"
+        systemctl restart jasper-input.service 2>/dev/null || true
+    fi
     if [[ "${profile}" == full ]]; then
         # An absent Array parks voice instead of leaving it on an unfed UDP socket.
         reconcile_aec_state

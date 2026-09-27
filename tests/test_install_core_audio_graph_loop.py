@@ -980,6 +980,10 @@ trap install_exit_cleanup EXIT
 
 
 _WIZARD_UNITS = ("jasper-web", "jasper-bluetooth-web", "jasper-correction-web", "jasper-system-web", "jasper-chat-web")
+_ACCESSORY_PASS = (
+    "fn install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install --restart-hosts"
+)
+_INPUT_INVOCATION = "systemctl show -p InvocationID --value jasper-input.service"
 # Each profile's steps once the core graph is back, in order; the local-source
 # refresh is one step (its roster is pinned against the registry below).
 _TAIL_TO_AEC = (
@@ -987,8 +991,8 @@ _TAIL_TO_AEC = (
     *(f"systemctl stop {unit}.service" for unit in _WIZARD_UNITS),
     # A spent StartLimitAction=reboot burst is cleared first; the HID bridge posts to control.
     "systemctl reset-failed jasper-control.service", "systemctl restart jasper-control.service",
-    "systemctl restart jasper-input.service",
-    "fn install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install",
+    # Started, not restarted: the accessory pass restarts it (ADR-0372).
+    "systemctl enable --now jasper-input.service", _INPUT_INVOCATION, _ACCESSORY_PASS, _INPUT_INVOCATION,
 )
 _TAIL_AFTER_AEC = (
     "fn reconcile_grouping_state", "fn resolve_fanin_coupling_default", "fn forget_core_graph_park_record",
@@ -1002,12 +1006,27 @@ _RUNTIME_TAILS = {
                                       *_TAIL_TO_AEC, *_TAIL_AFTER_AEC),
     "install_systemd_units": (*_TAIL_TO_AEC, "fn reconcile_aec_state", *_TAIL_AFTER_AEC),
 }
-# install.sh, not the fragment, owns this, so the stub loop never sees it.
-_INSTALL_SH_RECORDERS = 'install_run_bounded() { echo "fn install_run_bounded${*:+ $*}" >> "$LOG"; }\n'
+def _install_sh_recorders(tmp_path: Path, *, pass_restarts_input: bool) -> str:
+    """install.sh, not the fragment, owns install_run_bounded, so the stub loop
+    never sees it. Its recorder stands in for the accessory pass, which starts a
+    new jasper-input invocation exactly when it restarts the host."""
+    invocation = tmp_path / "jasper-input.invocation"
+    restart = f'echo restarted > "{invocation}"' if pass_restarts_input else ":"
+    return f"""
+systemctl() {{
+    echo "systemctl $*" >> "$LOG"
+    [[ "$1" != show ]] || cat "{invocation}" 2>/dev/null || true
+}}
+install_run_bounded() {{
+    echo "fn install_run_bounded${{*:+ $*}}" >> "$LOG"
+    [[ "$3" != */jasper-accessory-reconcile ]] || {restart}
+}}
+"""
 
 
+@pytest.mark.parametrize("pass_restarts_input", (True, False))
 @pytest.mark.parametrize("function", tuple(_RUNTIME_TAILS))
-def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function):
+def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function, pass_restarts_input):
     result = subprocess.run(
         [
             "bash",
@@ -1016,7 +1035,7 @@ def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function):
                 tmp_path,
                 function,
                 keep=("_start_core_graph_units", "restart_jasper_control_and_input"),
-                extra_shims=_INSTALL_SH_RECORDERS,
+                extra_shims=_install_sh_recorders(tmp_path, pass_restarts_input=pass_restarts_input),
             ),
         ],
         capture_output=True,
@@ -1026,9 +1045,13 @@ def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function):
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls.log").read_text().splitlines()
 
+    expected = list(_RUNTIME_TAILS[function])
+    if not pass_restarts_input:
+        # A pass that ended before its restart must not leave the old code running.
+        expected.insert(expected.index(_ACCESSORY_PASS) + 2, "systemctl restart jasper-input.service")
     tail = calls[calls.index("fn release_fanin_coupling_fence") + 1:]  # the core graph's last step
     assert [c if not c.startswith("systemctl try-restart ") else "systemctl try-restart"
-            for c in tail] == list(_RUNTIME_TAILS[function])
+            for c in tail] == expected
 
     refresh = next(c for c in tail if c.startswith("systemctl try-restart "))
     assert set(local_source_audio_refresh_units()) <= set(refresh.split()[2:])
