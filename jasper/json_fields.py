@@ -113,9 +113,11 @@ def require_sha256_hex(
 
 
 def canonical_json_bytes(value: Any) -> bytes:
-    """The one canonical JSON encoding identities hash and persist: sorted
+    """The strict canonical JSON encoding identities hash and persist: sorted
     keys, no whitespace, ASCII only, finite numbers only (``ValueError`` on
-    NaN or infinity). Any change re-fingerprints every persisted record."""
+    NaN or infinity). Any change re-fingerprints every persisted record.
+    ``output_topology.canonical_fingerprint`` is a different, lenient rule
+    (``default=str``) with its own persisted fingerprints; do not fold it in."""
     return json.dumps(
         value,
         allow_nan=False,

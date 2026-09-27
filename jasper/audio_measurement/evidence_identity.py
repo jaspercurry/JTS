@@ -12,7 +12,6 @@ feature evidence.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -21,6 +20,7 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
+from jasper import json_fields
 from jasper.json_fields import canonical_json_bytes, require_sha256_hex
 
 ACTIVE_RAW_NORMALIZATION_DOMAIN = "camilladsp_active_raw"
@@ -71,8 +71,7 @@ def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -
 
     if not isinstance(value, Mapping) or not value:
         raise EvidenceIdentityError(f"{field_name} must be a non-empty mapping")
-    canonical = canonical_json_bytes(_freeze_json(value, field_name=field_name))
-    return hashlib.sha256(canonical).hexdigest()
+    return json_fields.json_fingerprint(_freeze_json(value, field_name=field_name))
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:

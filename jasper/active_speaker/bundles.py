@@ -395,7 +395,7 @@ def open_bundle(
             "topology_fingerprint": canonical_fingerprint(
                 {
                     "topology_id": topology.topology_id,
-                    "hardware": _measurement._hardware_payload(topology),
+                    "hardware": topology.hardware.to_dict(),
                 }
             ),
             "output_assignments": [
