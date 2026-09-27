@@ -465,14 +465,27 @@ async def ramp_audible_step(
     role = (role or "").strip().lower()
     group_id = (speaker_group_id or "").strip()
 
+    def _payload(
+        status: str, issues: list[dict[str, str]], **fields: Any
+    ) -> dict[str, Any]:
+        return {
+            "status": status,
+            "role": role,
+            "speaker_group_id": group_id,
+            **fields,
+            "issues": issues,
+        }
+
+    def _blocked(code: str, message: str, **extra: Any) -> dict[str, Any]:
+        issues = [_issue("blocker", code, message)]
+        return {**_payload("blocked", issues, gate=None, load=None), **extra}
+
     commission = load_commission_load_state(state_path=commission_load_state_path)
     loaded_target = commission.get("target") or {}
     if commission.get("status") != "loaded":
         return _blocked(
             "commission_not_loaded",
             "arm the driver with a commission load before ramping it audible",
-            role=role,
-            group_id=group_id,
         )
     if (loaded_target.get("speaker_group_id") or "") != group_id or (
         loaded_target.get("role") or ""
@@ -481,8 +494,6 @@ async def ramp_audible_step(
             "commission_target_mismatch",
             "the loaded commissioning target is not the driver being ramped; "
             "roll back and arm the intended driver first",
-            role=role,
-            group_id=group_id,
         )
 
     ramp_state = load_ramp_state(state_path=ramp_state_path_override)
@@ -509,9 +520,7 @@ async def ramp_audible_step(
             return _blocked(
                 "ramp_step_awaiting_ack",
                 "acknowledge the last audible step (commission-ramp ack) before stepping again",
-                role=role,
-                group_id=group_id,
-                extra={"pending": pending},
+                pending=pending,
             )
 
     try:
@@ -528,13 +537,9 @@ async def ramp_audible_step(
         return _blocked(
             "commission_ramp_at_limit",
             "the driver test is already at the maximum bounded level",
-            role=role,
-            group_id=group_id,
-            extra={
-                "current_gain_db": current_gain_db,
-                "next_gain_db": next_gain_db,
-                "max_gain_db": COMMISSION_RAMP_MAX_LEVEL_DBFS,
-            },
+            current_gain_db=current_gain_db,
+            next_gain_db=next_gain_db,
+            max_gain_db=COMMISSION_RAMP_MAX_LEVEL_DBFS,
         )
 
     # A third emit, separate from the load's preflight gate and its TOCTOU-safe
@@ -556,9 +561,7 @@ async def ramp_audible_step(
         return _blocked(
             "ramp_prepare_failed",
             "could not prepare the per-driver commissioning config for the next step",
-            role=role,
-            group_id=group_id,
-            extra={"prepare_issues": prepare.get("issues")},
+            prepare_issues=prepare.get("issues"),
         )
     evidence = prepare.get("audible_evidence") or {}
     present_roles = _present_roles(prepare)
@@ -587,6 +590,11 @@ async def ramp_audible_step(
         confirmed_roles=set(gate_confirmed_roles),
         prior_step_cleared=prior_step_cleared,
     )
+    step: dict[str, Any] = {
+        "current_gain_db": current_gain_db,
+        "next_gain_db": next_gain_db,
+        "gate": gate,
+    }
     if not gate["passed"]:
         failed = sorted(k for k, ok in gate["checks"].items() if not ok)
         log_event(
@@ -600,16 +608,8 @@ async def ramp_audible_step(
             next_db=next_gain_db,
             failed=",".join(failed),
         )
-        return {
-            "status": "gate_blocked",
-            "role": role,
-            "speaker_group_id": group_id,
-            "current_gain_db": current_gain_db,
-            "next_gain_db": next_gain_db,
-            "gate": gate,
-            "load": None,
-            "issues": [_stage5_gate_issue(f) for f in failed],
-        }
+        issues = [_stage5_gate_issue(f) for f in failed]
+        return _payload("gate_blocked", issues, **step, load=None)
 
     # Fail-closed: the operator-confirmation session must be armed BEFORE the
     # driver is audible, so a confirm can always land.
@@ -626,22 +626,15 @@ async def ramp_audible_step(
             role=role,
             next_db=next_gain_db,
         )
-        return {
-            "status": "blocked",
-            "role": role,
-            "speaker_group_id": group_id,
-            "next_gain_db": next_gain_db,
-            "gate": gate,
-            "load": None,
-            "issues": [
-                _issue(
-                    "blocker",
-                    "stage5_safe_session_arm_failed",
-                    "could not arm the operator-confirmation session; the driver "
-                    "was NOT made audible",
-                )
-            ],
-        }
+        issue = _issue(
+            "blocker",
+            "stage5_safe_session_arm_failed",
+            "could not arm the operator-confirmation session; the driver "
+            "was NOT made audible",
+        )
+        return _payload(
+            "blocked", [issue], next_gain_db=next_gain_db, gate=gate, load=None
+        )
 
     if replaced_pending is not None and not _pending_step_still_current(
         replaced_pending,
@@ -658,13 +651,11 @@ async def ramp_audible_step(
             role=role,
             replaced_playback_id=replaced_pending.get("playback_id"),
         )
-        return _stale_retry_payload(
-            role=role,
-            group_id=group_id,
-            current_gain_db=current_gain_db,
-            next_gain_db=next_gain_db,
-            gate=gate,
-            load_payload=None,
+        return _payload(
+            "stale_retry",
+            [_retry_superseded_issue()],
+            **step,
+            load=None,
             rollback=None,
         )
 
@@ -701,21 +692,18 @@ async def ramp_audible_step(
             role=role,
             next_db=next_gain_db,
         )
-        return {
-            "status": "load_failed",
-            "role": role,
-            "speaker_group_id": group_id,
-            "next_gain_db": next_gain_db,
-            "gate": gate,
-            "load": load_payload,
-            "issues": [
-                _issue(
-                    "blocker",
-                    "stage5_ramp_load_failed",
-                    "the guarded commissioning load did not reach the new audible level",
-                )
-            ],
-        }
+        issue = _issue(
+            "blocker",
+            "stage5_ramp_load_failed",
+            "the guarded commissioning load did not reach the new audible level",
+        )
+        return _payload(
+            "load_failed",
+            [issue],
+            next_gain_db=next_gain_db,
+            gate=gate,
+            load=load_payload,
+        )
 
     if replaced_pending is not None:
         if not _pending_step_still_current(
@@ -738,13 +726,11 @@ async def ramp_audible_step(
                 role=role,
                 replaced_playback_id=replaced_pending.get("playback_id"),
             )
-            return _stale_retry_payload(
-                role=role,
-                group_id=group_id,
-                current_gain_db=current_gain_db,
-                next_gain_db=next_gain_db,
-                gate=gate,
-                load_payload=load_payload,
+            return _payload(
+                "stale_retry",
+                [_retry_superseded_issue()],
+                **step,
+                load=load_payload,
                 rollback=rollback.get("rollback"),
             )
 
@@ -791,26 +777,23 @@ async def ramp_audible_step(
                 next_db=next_gain_db,
                 tone_status=tone_payload.get("status"),
             )
-            return {
-                "status": "tone_failed",
-                "role": role,
-                "speaker_group_id": group_id,
-                "current_gain_db": current_gain_db,
-                "next_gain_db": next_gain_db,
-                "gate": gate,
-                "load": load_payload,
-                "tone_playback": tone_payload,
-                "rollback": rollback.get("rollback"),
-                "issues": [
-                    *_tone_playback_issues(tone_payload),
-                    _issue(
-                        "blocker",
-                        "commission_tone_playback_failed",
-                        "JTS loaded the protected driver graph but could not play "
-                        "the test tone, so it re-muted the driver",
-                    ),
-                ],
-            }
+            issues = [
+                *_tone_playback_issues(tone_payload),
+                _issue(
+                    "blocker",
+                    "commission_tone_playback_failed",
+                    "JTS loaded the protected driver graph but could not play "
+                    "the test tone, so it re-muted the driver",
+                ),
+            ]
+            return _payload(
+                "tone_failed",
+                issues,
+                **step,
+                load=load_payload,
+                tone_playback=tone_payload,
+                rollback=rollback.get("rollback"),
+            )
     safe = _record_floor_pending(
         target=target,
         level_dbfs=next_gain_db,
@@ -843,19 +826,15 @@ async def ramp_audible_step(
         to_db=next_gain_db,
         tri_state=(safe.get("quiet_start") or {}).get("status"),
     )
-    return {
-        "status": "stepped",
-        "role": role,
-        "speaker_group_id": group_id,
-        "current_gain_db": current_gain_db,
-        "next_gain_db": next_gain_db,
-        "gate": gate,
-        "load": load_payload,
-        "tone_playback": tone_payload,
-        "safe_playback": _safe_summary(safe),
-        "ramp": ramp_payload,
-        "issues": [],
-    }
+    return _payload(
+        "stepped",
+        [],
+        **step,
+        load=load_payload,
+        tone_playback=tone_payload,
+        safe_playback=_safe_summary(safe),
+        ramp=ramp_payload,
+    )
 
 
 # The gate and the guarded load are the safety authority for the audible step;
@@ -1199,27 +1178,6 @@ async def remute_stepped_driver(
 # --- helpers -----------------------------------------------------------------
 
 
-def _blocked(
-    code: str,
-    message: str,
-    *,
-    role: str,
-    group_id: str,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    payload = {
-        "status": "blocked",
-        "role": role,
-        "speaker_group_id": group_id,
-        "gate": None,
-        "load": None,
-        "issues": [_issue("blocker", code, message)],
-    }
-    if extra:
-        payload.update(extra)
-    return payload
-
-
 def _stage5_gate_issue(check: str) -> dict[str, str]:
     if check == "role_order_woofer_first":
         return _issue(
@@ -1280,33 +1238,12 @@ def _pending_step_still_current(
     )
 
 
-def _stale_retry_payload(
-    *,
-    role: str,
-    group_id: str,
-    current_gain_db: float,
-    next_gain_db: float,
-    gate: dict[str, Any],
-    load_payload: dict[str, Any] | None,
-    rollback: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "status": "stale_retry",
-        "role": role,
-        "speaker_group_id": group_id,
-        "current_gain_db": current_gain_db,
-        "next_gain_db": next_gain_db,
-        "gate": gate,
-        "load": load_payload,
-        "rollback": rollback,
-        "issues": [
-            _issue(
-                "info",
-                "commission_ramp_retry_superseded",
-                "the driver test changed while the next louder step was preparing",
-            )
-        ],
-    }
+def _retry_superseded_issue() -> dict[str, str]:
+    return _issue(
+        "info",
+        "commission_ramp_retry_superseded",
+        "the driver test changed while the next louder step was preparing",
+    )
 
 
 def _safe_summary(safe: dict[str, Any]) -> dict[str, Any]:

@@ -259,49 +259,45 @@ def load_staged_startup_config(
     """Return the latest staged-config evidence, failing soft when absent."""
 
     path = staged_metadata_path(metadata_path)
+
+    def _payload(
+        status: str,
+        issues: list[dict[str, str]],
+        next_step: str = "Stage a fresh protected startup config.",
+    ) -> dict[str, Any]:
+        return {
+            "artifact_schema_version": SCHEMA_VERSION,
+            "kind": STAGED_STARTUP_CONFIG_KIND,
+            "status": status,
+            "metadata_path": str(path),
+            "config": None,
+            "issues": issues,
+            "next_step": next_step,
+        }
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": STAGED_STARTUP_CONFIG_KIND,
-            "status": "not_staged",
-            "metadata_path": str(path),
-            "config": None,
-            "issues": [],
-            "next_step": "Stage a protected startup config from the saved output setup.",
-        }
+        return _payload(
+            "not_staged",
+            [],
+            "Stage a protected startup config from the saved output setup.",
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": STAGED_STARTUP_CONFIG_KIND,
-            "status": "unreadable",
-            "metadata_path": str(path),
-            "config": None,
-            "issues": [
-                _issue(
-                    "blocker",
-                    "staged_config_metadata_unreadable",
-                    f"could not read staged active-speaker metadata: {type(exc).__name__}",
-                )
-            ],
-            "next_step": "Stage a fresh protected startup config.",
-        }
-    return payload if isinstance(payload, dict) else {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": STAGED_STARTUP_CONFIG_KIND,
-        "status": "unreadable",
-        "metadata_path": str(path),
-        "config": None,
-        "issues": [
-            _issue(
-                "blocker",
-                "staged_config_metadata_not_object",
-                "staged active-speaker metadata is not a JSON object",
-            )
-        ],
-        "next_step": "Stage a fresh protected startup config.",
-    }
+        issue = _issue(
+            "blocker",
+            "staged_config_metadata_unreadable",
+            f"could not read staged active-speaker metadata: {type(exc).__name__}",
+        )
+        return _payload("unreadable", [issue])
+    if isinstance(payload, dict):
+        return payload
+    issue = _issue(
+        "blocker",
+        "staged_config_metadata_not_object",
+        "staged active-speaker metadata is not a JSON object",
+    )
+    return _payload("unreadable", [issue])
 
 
 def _target_outputs_for_groups(
