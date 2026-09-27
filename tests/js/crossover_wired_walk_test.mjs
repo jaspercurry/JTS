@@ -41,8 +41,6 @@ const { elements, render } = await crossoverMainModule({
       posted.push({ path, body });
       return { ok: true, released: { index: body && body.index } };
     },
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
   },
 });
 

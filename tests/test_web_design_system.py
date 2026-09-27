@@ -206,9 +206,7 @@ def test_pages_do_not_invent_their_own_text_tiers():
 OFF_LADDER_HELD: dict[str, set[str]] = {
     "deploy/index.html": {"0.86rem", "0.88rem", "0.92rem"},
     "deploy/assets/bluetooth/bluetooth.css": {"0.7rem", "0.85rem", "0.95rem"},
-    "deploy/assets/correction/crossover.css": {
-        "0.8125rem", "0.82rem", "0.95rem", "0.9rem", "1.05rem",
-    },
+    "deploy/assets/correction/crossover.css": {"0.95rem", "0.9rem", "1.05rem"},
     "deploy/assets/sound-profile/sound.css": {"10px", "9px"},
     "deploy/assets/spotify/spotify.css": {"17px"},
     "deploy/assets/system-status/system.css": {

@@ -139,9 +139,9 @@
 /* The measurement walkthrough (main.js renderWalk, #2881): one prompted spot
  * at a time, for a session whose operator is at this browser. Same accent
  * treatment as `.info-card--accent` so the live instruction reads as the
- * page's subject rather than one more hint, and the same eyebrow/title/hint
- * type ramp the cloud section uses — no new scale. `.measurement-row__actions`
- * inside it keeps the release control on the established action row. */
+ * page's subject rather than one more hint, and the page's eyebrow/title/hint
+ * type ramp — no new scale. `.measurement-row__actions` inside it keeps the
+ * release control on the established action row. */
 .capture-walk {
   display: grid;
   gap: 0.35rem;
@@ -199,20 +199,6 @@
   text-align: center;
 }
 
-.candidate-provenance {
-  overflow-wrap: anywhere;
-}
-
-.candidate-provenance > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 0.8125rem;
-}
-
-.candidate-provenance > p {
-  margin: 0.4rem 0 0;
-}
-
 .capture-status[data-tone="bad"],
 #mic-support[data-tone="bad"] .form-hint {
   color: var(--status-danger);
@@ -244,88 +230,3 @@
   }
 }
 
-
-/* Before/after cloud chart (flat-linearization plan PR-7). Canvas fillStyle/
- * strokeStyle cannot reference `var(--token)` directly, so the drawing module
- * reads these through `getComputedStyle()` at draw time instead of
- * hardcoding hex — the one indirection that keeps the chart on the same
- * design tokens as the rest of the page (and any future palette change) with
- * zero JS edits. Scoped to this page rather than `app.css`: no other page
- * draws this chart. */
-.crossover-page {
-  --crossover-chart-measure: var(--status-danger);
-  --crossover-chart-verify: var(--status-ok);
-  /* The PREDICTED curve (two-stage commission D3). Deliberately NOT one of the
-   * two measured colours: it is a model, and the review screen's whole job is
-   * to keep that distinction legible. The chart also strokes it DASHED — see
-   * chart.js's drawCurve — so the difference survives a colour-blind reader
-   * and a greyscale screenshot, neither of which a hue alone would. */
-  --crossover-chart-predicted: var(--status-warn);
-  --crossover-chart-corridor: var(--primary);
-  --crossover-chart-excluded: var(--muted);
-}
-
-.crossover-chart-wrap {
-  width: 100%;
-  max-width: 640px;
-  margin: 0.8rem 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-canvas#crossover-cloud-chart { display: block; width: 100%; height: 240px; }
-
-.crossover-chart-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 1rem;
-  list-style: none;
-  margin: 0.4rem 0 0.6rem;
-  padding: 0;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-.crossover-chart-legend li {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-.crossover-chart-legend__swatch {
-  width: 0.85rem;
-  height: 0.85rem;
-  border-radius: 2px;
-  display: inline-block;
-}
-.crossover-chart-legend__swatch--measure { background: var(--crossover-chart-measure); }
-.crossover-chart-legend__swatch--verify { background: var(--crossover-chart-verify); }
-/* Striped rather than solid, mirroring the dashed stroke on the canvas so the
- * legend reads as the same series. */
-.crossover-chart-legend__swatch--predicted {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--crossover-chart-predicted) 0 3px,
-    transparent 3px 5px
-  );
-}
-.crossover-chart-legend__swatch--corridor {
-  background: var(--crossover-chart-corridor);
-  opacity: 0.35;
-}
-.crossover-chart-legend__swatch--excluded {
-  background: var(--crossover-chart-excluded);
-  opacity: 0.45;
-}
-
-/* Anomaly callouts (plain language first; the plan's τ/r vocabulary stays in
- * the .candidate-provenance <details> reused from the review screen above). */
-.crossover-callout {
-  margin: 0 0 0.7rem;
-  padding: 0.6rem 0.7rem;
-  border-radius: var(--radius-sm);
-  background: color-mix(in oklab, var(--status-warn) 10%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--status-warn) 30%, transparent);
-  font-size: 0.9rem;
-  line-height: 1.4;
-}
-.crossover-callout:last-child { margin-bottom: 0; }
-.crossover-callout > .candidate-provenance { margin-top: 0.35rem; }
