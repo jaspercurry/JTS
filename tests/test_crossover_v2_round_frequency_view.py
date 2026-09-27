@@ -974,7 +974,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0', 'loudness_volume_db': -20},
+                   'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0'},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
@@ -1010,7 +1010,7 @@ def bass_fit_pairs():
         'record_path': 'off.json',
         'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
-                   'loudness_volume_db': -10, 'program_id': 'sweep'},
+                   'program_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
         'fundamental_qualified': ((grid < 90) | (grid > 110)).tolist(), 'harmonics': {},
@@ -1067,7 +1067,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     roots = [tmp_path / f'round-{volume}' for volume in volumes]
     for volume, gain in zip(volumes, (10, 6, 3)):
         for index, take in enumerate(copy.deepcopy(bass_fit_pairs[0])):
-            take['record'].update(level_db=volume, loudness_volume_db=volume,
+            take['record'].update(level_db=volume,
                                   take_id=f'take-{len(takes)}', run_id=f'run-{volume}', phase='lateral')
             take['record_path'] = f'capture-{len(takes)}.json'
             take['fundamental_db'] = [volume - 6 + index * gain] * len(take['freqs_hz'])
@@ -1087,7 +1087,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 record = take['record']
                 if record['run_id'] != f'run-{volume}':
                     continue
-                key = record.get('candidate_id'), record.get('level_db'), record.get('loudness_volume_db')
+                key = record.get('candidate_id'), record.get('level_db')
                 groups.setdefault(key, []).append(take)
             manifest_groups = []
             for number, group in enumerate(groups.values()):

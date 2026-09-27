@@ -98,21 +98,16 @@ from tests.crossover_v2_fixtures import (
 #: The solved per-driver gains a CHECK pass would hand MEASURE.
 GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 
-#: Captured from ``origin/main`` at f06a280d2 — the commit before the
-#: extraction — by composing each program on the pre-extraction conductor and
-#: reading its id. Re-derive them ONLY by re-running that comparison; editing a
-#: literal here to make a test pass would delete the evidence it exists to be.
+#: MEASURE and VERIFY at this fixture with the courtesy prelude on, under the
+#: stimulus-only id (#5012). Re-derive them only by composing this fixture;
+#: editing a literal here to make a test pass deletes the evidence it exists to be.
 #:
-#: **Both entries are still pre-extraction ids, including ``measure``.** The
-#: 2026-08-18 prelude trim moved what MEASURE *ships* (it no
-#: longer opens on the courtesy prelude), and the way that change is pinned is
-#: by restoring the prelude and asserting THIS literal comes back — see
-#: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program`. So the
-#: evidence the extraction captured is spent proving the trim's own scope rather
-#: than being overwritten by it.
+#: ``measure`` is not what MEASURE ships (it no longer opens on the prelude):
+#: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program` puts the
+#: prelude back and asserts THIS literal returns.
 GOLDEN_DEEP_CAP = {
-    "measure": "90bd46b530f373531348acfc9786a9998c92dd11b2e5975d0cf7c9dec0be0814",
-    "verify": "29c3a0e1cceee6c2d95862bcb50e0c2edb884f798bc877fc98b46f7d731a46e3",
+    "measure": "94abc2a297ef6a4cd48daba6acdbffdfb65670c946ba3d68d5f10bf9947f6968",
+    "verify": "ef7a906a131c7417da95eec25f1634af3f3ab27b31b11d35a2e3aae0a889d592",
 }
 
 #: What the phases the courtesy prelude no longer announces ship TODAY, at the
@@ -121,8 +116,8 @@ GOLDEN_DEEP_CAP = {
 #: literal but the round trip below, which shows each one becomes its
 #: ``GOLDEN_DEEP_CAP`` twin the moment the prelude is put back.
 GOLDEN_UNANNOUNCED = {
-    "measure": "f0ad3c2a2c683dbed508d684baf37fc99f874b0507943a58a75f77afaee1a9c8",
-    "cloud": "99282a0841dcbcfc4c34da9f10ea522d3883e2b012079cbbb93a2aa51d2125e8",
+    "measure": "5be76cb30c427fb65512b3a79a3a2b1e381414884230a54d79c769f4d4ea051f",
+    "cloud": "0412078f86d175d214e945d90bd1da39091a4519657832dc920bc5bdc382ae79",
 }
 
 
@@ -163,13 +158,13 @@ def test_the_verify_program_is_the_one_that_shipped():
 
 
 @pytest.mark.parametrize("phase,scope,stimulus,expected", [
-    ("check", "drivers", None, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
-    ("check", "drivers", -30.0, "10176b8954f70c90c8a8203a45fcbfbdd18d3046a76d6ef11aa315d350632470"),
-    ("check", "drivers", -60.0, "1334611ae7010a92bdfa550c3a90399d0927fb53d4cc4d5b3d82d056521f72f6"),
+    ("check", "drivers", None, "097d28a112ff4a14165728b1df050ed6395872121cc716b81c798b166960c6c4"),
+    ("check", "drivers", -30.0, "097d28a112ff4a14165728b1df050ed6395872121cc716b81c798b166960c6c4"),
+    ("check", "drivers", -60.0, "04b75e36a2f65dcd57e7bce58e3db872d41676c332b71cfff1f3632c02e75cd1"),
     ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
     ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
     ("cloud_verify", "timing", None, GOLDEN_UNANNOUNCED["cloud"]),
-    ("verify", "candidate_branches", None, "b137f0fed1bed00e698d009782a39c5bad9de8096d5e7b2007ba1c4ab3fed7b3"),
+    ("verify", "candidate_branches", None, "615445f5d8751bf534b04de137ba19ea7be7bdbfd08991e94beb18714e311aa4"),
 ])
 def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,

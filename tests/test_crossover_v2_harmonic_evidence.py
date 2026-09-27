@@ -607,11 +607,11 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
     assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
     note = excinfo.value.evidence["note"]
-    assert "FITTED" in note
-    assert "#2921" in note
-    assert "did not bank the realized durations (#2923)" in note
-    assert "driver bands supplied are wrong" in note
-    assert "does not describe a MEASURE round" in note
+    for cause in ("FITTED", "#2921", "did not bank the realized durations (#2923)",
+                  "driver bands supplied are wrong", "does not describe a MEASURE round"):
+        assert cause in note
+    # The id leaves the fader out (#5012): a recorded volume is never the cause.
+    assert "the volume the banked program played at" not in note
 
 
 @pytest.mark.parametrize("raw", [

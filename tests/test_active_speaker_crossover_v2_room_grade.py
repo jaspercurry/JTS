@@ -176,10 +176,11 @@ def test_comparison_uses_only_common_frequency_support():
     assert top["delta_rms_db"] == pytest.approx(0.0, abs=1e-12)
 
 
-@pytest.mark.parametrize("level,program,disclosed", [
-    (-24.0, "changed-gains", "mismatched_fields"), (None, None, "unknown_fields"),
+@pytest.mark.parametrize("level,program,disclosed,fields", [
+    (-24.0, "program", "mismatched_fields", {"level_db"}),
+    (None, None, "unknown_fields", {"level_db", "program_id"}),
 ])
-def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclosed):
+def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclosed, fields):
     document = _comparison_document(graph="candidate")
     shifted = {
         **document,
@@ -196,7 +197,7 @@ def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclo
 
     assert artifact["comparison"]["available"] is True
     assert artifact["comparison"]["incompatible_fields"] == []
-    assert set(artifact["comparison"][disclosed]) == {"level_db", "program_id"}
+    assert set(artifact["comparison"][disclosed]) == fields
     assert artifact["comparison"]["level_alignment_db"] == pytest.approx(-6.0)
     assert artifact["comparison"]["level_reference_db"] == pytest.approx(
         float(np.median(document["median_db"]))
@@ -216,7 +217,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "side": side,
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
-            "loudness_volume_db": -30.0, "program_id": "program",
+            "program_id": "program",
             "stimulus_dbfs": -12.0,
             "stimulus_wav_sha256": "program",
             "stimulus_peak_dbfs": -12.0,
@@ -266,19 +267,19 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
 
-@pytest.mark.parametrize(("aux1", "available"), [(True, False), (False, True)])
-def test_medians_at_different_levels_compare_unless_both_played_the_taper(aux1, available):
-    """Medians banked under ADR-0352 carry their Aux1 level, and the taper then differed; later ones do not."""
+@pytest.mark.parametrize(("field", "value", "incompatible"), [
+    ("level_db", -24.0, []),
+    ("program_id", "another-stimulus", ["program_id"]),
+])
+def test_medians_compare_across_levels_but_not_across_stimuli(field, value, incompatible):
+    """Level alignment removes a pure level offset (ADR-0359); the stimulus id leaves the fader out (#5012)."""
     candidate, incumbent = _comparison_document(graph="candidate"), _comparison_document(graph="incumbent")
-    candidate["evidence"]["basis"].update(level_db=-24.0, loudness_volume_db=-24.0)
-    if not aux1:
-        for document in (candidate, incumbent):
-            del document["evidence"]["basis"]["loudness_volume_db"]
+    candidate["evidence"]["basis"][field] = value
 
     artifact = grade_room_median(read_room_median(candidate), incumbent=read_room_median(incumbent)).to_dict()
 
-    assert artifact["comparison"]["available"] is available
-    assert artifact["comparison"]["incompatible_fields"] == ([] if available else ["loudness_volume_db"])
+    assert artifact["comparison"]["available"] == (not incompatible)
+    assert artifact["comparison"]["incompatible_fields"] == incompatible
 
 
 @pytest.mark.parametrize(("changed_field", "change"), [

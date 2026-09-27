@@ -398,7 +398,7 @@ def rebuild_measure_program(
             "this round banked its realized sweep durations (#2923) and "
             "this replay composed at exactly them, so a duration fit is a "
             "LESS LIKELY cause here than it is for an unbanked round — "
-            "check (1), (3), and (4) first — but it is not ruled out: a "
+            "check (2) and (3) first — but it is not ruled out: a "
             "hand-edited banked value, or a genuine duration-limit change "
             "replayed against a byte-identical band, could still leave the "
             "banked figure wrong for this program"
@@ -418,16 +418,14 @@ def rebuild_measure_program(
             "measure_sweep_durations_banked": banked_durations_present,
             "measure_sweep_durations_usable": banked_durations is not None,
             "note": (
-                "no session volume a MEASURE capture recorded reproduces the "
-                "banked program id with the courtesy prelude either on or off. "
-                "Four causes: (1) no capture recorded the volume the banked "
-                f"program played at (tried: {tried or 'none recorded'}); "
-                f"(2) {duration_cause}; (3) the driver bands supplied are wrong "
-                "for this round; (4) this state does not describe a MEASURE "
-                "round. Only (3) and (4) are fixable by re-invoking — (1) needs "
-                "a take of the banked program that recorded its volume, and (2) "
-                "needs the round to bank its sweep durations (#2923) when it "
-                "has not already"
+                "the banked program id does not reproduce at the session volumes "
+                f"the MEASURE captures recorded ({tried or 'none recorded'}), with "
+                "the courtesy prelude either on or off. The id leaves the fader "
+                f"out, so the volume cannot be why. Three causes: (1) {duration_cause}; "
+                "(2) the driver bands supplied are wrong for this round; (3) this "
+                "state does not describe a MEASURE round. Only (2) and (3) are "
+                "fixable by re-invoking — (1) needs the round to bank its sweep "
+                "durations (#2923) when it has not already"
             ),
         },
     )

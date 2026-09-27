@@ -46,7 +46,7 @@ from .room_boundary import AUDIO_BAND_TOP_HZ, ROOM_FLOOR_HZ
 
 logger = logging.getLogger(__name__)
 
-PROGRAM_SCHEMA_VERSION = 1
+PROGRAM_SCHEMA_VERSION = 2
 PROGRAM_KIND = "jts_excitation_program"
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
@@ -191,8 +191,7 @@ class ProgramSegment:
     ``effective_peak_dbfs`` is ``gain_db + downstream_gain_db``, the
     admission input. The gate fields silence part of the sweep without
     changing the parent waveform (:func:`segment_emitted_band_hz` gives the
-    actual emitted band); default is "no gate", omitted by :meth:`to_dict`
-    for byte-identical ``program_id`` on pre-gate programs.
+    actual emitted band); default is "no gate", omitted by :meth:`to_dict`.
     """
 
     segment_id: str
@@ -257,7 +256,6 @@ class ProgramSegment:
             "gain_db": self.gain_db,
             "effective_peak_dbfs": self.effective_peak_dbfs,
         }
-        # Omitted when there is no gate, for byte-identical program_id on pre-gate programs.
         if self.is_gated:
             payload["gate_start_sample"] = self.gate_start_sample
             payload["gate_end_sample"] = self.gate_end_sample
@@ -302,8 +300,8 @@ class ProgramSegment:
 class ExcitationProgram:
     """A pure-data schedule of stimuli the session plays as one stream.
 
-    ``program_id`` is a content hash over the schedule, so a re-run with a
-    different program can never be mistaken for a resume of the old one.
+    ``program_id`` hashes the schedule but not ``effective_peak_dbfs``: the
+    fader is not the stimulus (#5012).
     """
 
     program_id: str
@@ -390,7 +388,7 @@ class ExcitationProgram:
 
 
 def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:
-    return seg.to_dict()
+    return {key: value for key, value in seg.to_dict().items() if key != "effective_peak_dbfs"}
 
 
 def _program_id(

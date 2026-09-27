@@ -413,6 +413,25 @@ def test_program_id_is_content_addressed():
     assert c.program_id != a.program_id  # a gain change is a new identity
 
 
+@pytest.mark.parametrize("compose", [
+    lambda fader: build_check_program(_roles(), downstream_gain_db=fader, courtesy_prelude=True),
+    lambda fader: build_measure_program(_gain_plan(), _roles(), downstream_gain_db=fader),
+    lambda fader: build_verify_program(1600.0, sweep_s=1.0, downstream_gain_db=fader),
+])
+def test_programs_that_differ_only_in_fader_share_one_id(compose):
+    quiet, loud = compose(-30.0), compose(-10.0)
+    assert quiet != loud
+    assert quiet.program_id == loud.program_id
+
+
+def test_a_version_1_program_refuses_to_load():
+    payload = build_verify_program(1600.0, sweep_s=1.0).to_dict()
+    assert ExcitationProgram.from_dict(payload).to_dict() == payload
+    payload["schema_version"] = 1
+    with pytest.raises(ValueError):
+        ExcitationProgram.from_dict(payload)
+
+
 def test_tampered_manifest_is_rejected():
     prog = build_verify_program(1600.0, sweep_s=1.0)
     payload = prog.to_dict()
