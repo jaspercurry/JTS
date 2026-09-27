@@ -9,7 +9,6 @@ from typing import Any, Collection, Mapping
 
 import yaml
 
-from jasper.camilla_config_contract import ensure_volume_limit_db
 from jasper.log_event import log_event
 from jasper.speaker_layout import measurement_target_id
 
@@ -44,14 +43,6 @@ from .topology import _channels_for_role
 EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR = (
     "blocked_tweeter_crossover_below_declared_floor"
 )
-
-
-def _assert_volume_limit(volume_limit_db: float) -> None:
-    """Restate the shared 0 dB software ceiling in this module's error type."""
-    try:
-        ensure_volume_limit_db(volume_limit_db)
-    except ValueError as e:
-        raise ActiveSpeakerConfigError(str(e)) from e
 
 
 def _assert_tweeter_crossover_honours_declared_floor(

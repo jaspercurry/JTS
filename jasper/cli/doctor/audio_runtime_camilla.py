@@ -16,12 +16,12 @@ from typing import Any
 from ...camilla import CamillaController, CamillaUnavailable, primary_controller
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_VOLUME_LIMIT_DB,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
+from ...camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames

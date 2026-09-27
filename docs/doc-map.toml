@@ -329,9 +329,11 @@ code = [
   # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
   # that preference EQ, headroom and the tuning fits all predict with.
   "jasper/biquad.py",
-  # Shared with audio-routing-and-renderers: it owns the device/volume_limit
-  # defaults.
+  # Shared with audio-routing-and-renderers: it owns the device defaults and
+  # the volume_limit door.
   "jasper/camilla_config_contract.py",
+  # Renders the one devices block; volume_limit is 0.0 by construction.
+  "jasper/camilla_emit.py",
   "jasper/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_profile_apply.py",

@@ -12,7 +12,8 @@ Two hardware-safety claims had no test asserting the actual literals:
    peaky voices inaudible against music.
 
 2. ``volume_limit: 0.0`` "in every JTS CamillaDSP YAML". The Python
-   config *emitters* raise on a positive limit (tests exist), but the
+   config *emitters* write 0.0 by construction (pinned by
+   ``test_every_emitter_writes_exactly_a_zero_volume_limit``), but the
    checked-in static configs under ``deploy/camilladsp/`` had no guard
    beyond a substring check on one file — a positive value edited into
    ``v1.yml`` would ship. This parses every deploy YAML and fails on a
