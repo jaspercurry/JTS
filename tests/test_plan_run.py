@@ -902,6 +902,30 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     assert (fakes.play.rungs, selected) == ([None, -29.0], [False, True])
 
 
+def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
+    """As on jts3, the rear woofer needs 6 dB more drive than the woofer to read
+    80 dB at each distance. A placement's finding shows in the round's facts and
+    lines from the next pose on; the ended round shows each in its facts, lines
+    and packet lines, and logs each once (#5714)."""
+    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
+        for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purpose="reference", regime="near_field"))
+
+    with caplog.at_level("WARNING", logger=plan_run.logger.name):
+        result, fakes, _, gate = _run_levelled(request, (70.0, 80.0) * 2 + (60.0, 80.0) * 2)
+
+    assert fakes.play.rungs == [None, -33.0] * 2 + [None, -27.0] * 2
+    *live, ended = gate.progress
+    assert [(finding["role"], finding["pose"]["distance_m"], finding["spread_db"])
+            for finding in ended["level_mismatches"]] == [("woofer", 0.015, 6.0), ("woofer", 0.03, 6.0)]
+    assert [len(facts["level_mismatches"]) for facts in live] == [int(facts["pose"] == 4) for facts in live]
+    lines = set(round_lines(ended)) - set(round_lines({**ended, "level_mismatches": []}))
+    assert len(lines) == 2 and lines <= set(coverage_lines({}, result.to_dict()))
+    assert len(lines & set(round_lines(live[-1]))) == 1
+    assert sum(getattr(record, "jasper_event", "") == "active_speaker.driver_level_mismatch"
+               for record in caplog.records) == 2
+
+
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     """Only a take at one driver's pose is held to the near-field target: a
     far-field repeat that reads 3 dB off its first is retaken as drift, at the
