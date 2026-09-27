@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import fsync_directory
+from jasper.json_fields import canonical_json_bytes, json_fingerprint, require_sha256_hex
 from jasper.log_event import log_event
 
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
@@ -40,7 +41,6 @@ def ensure_directory_mode(path: "str | os.PathLike[str]") -> None:
         os.chmod(path, ADMISSION_DIRECTORY_MODE)
 
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 # Fixed, not __name__: operators grep the journal by this name.
 logger = logging.getLogger("jasper.audio_measurement.excitation_artifacts")
@@ -85,7 +85,7 @@ class AdmissionAuthority:
         directory = Path(self.directory)
         _identifier(self.bundle_id, field="bundle_id")
         _text(self.bundle_kind, field="bundle_kind")
-        _sha256(self.fingerprint, field="fingerprint")
+        require_sha256_hex(self.fingerprint, field="fingerprint")
         if directory.name != self.bundle_id:
             raise ValueError("authority directory name must equal bundle_id")
         if not isinstance(self.marker, ArtifactIdentity):
@@ -127,22 +127,6 @@ def _identifier(value: object, *, field: str) -> str:
     return value
 
 
-def _sha256(value: object, *, field: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise ValueError(f"{field} must be a lowercase SHA-256 fingerprint")
-    return value
-
-
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-
-
 def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -179,7 +163,7 @@ def _authority_payload(bundle_kind: str, bundle_id: str) -> dict[str, Any]:
         "bundle_kind": bundle_kind,
         "bundle_id": bundle_id,
     }
-    return {**core, "fingerprint": hashlib.sha256(_canonical_json(core)).hexdigest()}
+    return {**core, "fingerprint": json_fingerprint(core)}
 
 
 def _parse_authority_marker(raw: bytes) -> dict[str, Any]:
@@ -207,7 +191,7 @@ def _parse_authority_marker(raw: bytes) -> dict[str, Any]:
             AdmissionArtifactErrorCode.AUTHORITY_INVALID,
             str(exc),
         ) from exc
-    if payload != expected or _canonical_json(payload) != raw:
+    if payload != expected or canonical_json_bytes(payload) != raw:
         raise AdmissionArtifactError(
             AdmissionArtifactErrorCode.AUTHORITY_INVALID,
             "admission authority marker is not exact canonical version 1",
@@ -376,7 +360,7 @@ def create_admission_authority(
             AdmissionArtifactErrorCode.ARTIFACT_PERSIST_OUTCOME_UNKNOWN,
             "admission authority directory publish outcome is unknown",
         ) from exc
-    raw = _canonical_json(_authority_payload(kind, identifier))
+    raw = canonical_json_bytes(_authority_payload(kind, identifier))
     try:
         _write_once(
             target / ADMISSION_AUTHORITY_MARKER,

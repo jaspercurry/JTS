@@ -52,7 +52,7 @@ from jasper.audio_measurement.admission.excitation_artifacts import (
 )
 from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, canonical_fingerprint
 from jasper.paths import resolve_state_path
 
 from . import measurement as _measurement
@@ -392,10 +392,10 @@ def open_bundle(
     try:
         topology_fingerprints = {
             "topology_id": topology.topology_id,
-            "topology_fingerprint": _measurement._fingerprint(
+            "topology_fingerprint": canonical_fingerprint(
                 {
                     "topology_id": topology.topology_id,
-                    "hardware": _measurement._hardware_payload(topology),
+                    "hardware": topology.hardware.to_dict(),
                 }
             ),
             "output_assignments": [

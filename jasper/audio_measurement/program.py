@@ -21,8 +21,6 @@ joins ``KNOWN_AUDIBLE_KINDS`` since it is real audible content.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 from dataclasses import dataclass, replace
@@ -39,6 +37,7 @@ from jasper.audio_measurement.sweep import (
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
+from jasper.json_fields import json_fingerprint
 from jasper.log_event import log_event
 
 from .deconv import required_pre_guard_s
@@ -412,11 +411,7 @@ def _program_id(
         "segments": [_canonical_segment(s) for s in segments],
         "total_samples": total_samples,
     }
-    blob = json.dumps(
-        payload, allow_nan=False, ensure_ascii=True,
-        separators=(",", ":"), sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    return json_fingerprint(payload)
 
 
 def _finalize(

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import math
-import re
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from jasper.json_fields import JsonFields, issue
@@ -69,7 +68,6 @@ MANUAL_CANDIDATE_FIELDS = {
     "confidence", "rationale", "warnings", "lower_polarity", "upper_polarity",
     "delay_ms", "delay_target_role", "source",
 }
-_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
@@ -111,24 +109,6 @@ def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
     except (TypeError, ValueError):
         out = default
     return min(max(out, lo), hi)
-
-
-def require_sha256_hex(
-    value: Any,
-    field_name: str,
-    exc_type: type[BaseException],
-    *,
-    message: str | None = None,
-) -> str:
-    """Require a lowercase SHA-256 digest."""
-
-    if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
-        return value
-    raise exc_type(
-        message
-        if message is not None
-        else f"{field_name} must be a lowercase SHA-256 fingerprint"
-    )
 
 
 class DriverFields(JsonFields):
