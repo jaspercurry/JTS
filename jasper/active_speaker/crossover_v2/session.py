@@ -480,7 +480,7 @@ class TuningSession:
         Every exit logs one ``active_speaker.stimulus_measured``.
         """
         self.seams.graph.select_scope(
-            spec.graph_scope, spec.candidate_id, branch_channels_for(spec),
+            spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers,
         )
         self._graph_fingerprint = await self.seams.graph.install(
             inverted_roles_for(spec),
@@ -625,6 +625,8 @@ class TuningSession:
             "vertical_deg": spec.vertical_deg,
             "prompt": prompt,
             "candidate_id": spec.candidate_id,
+            # The parent's layers this take's graph played emptied, absent when none (ADR-0370).
+            **({"cleared_layers": list(spec.cleared_layers)} if spec.cleared_layers else {}),
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,

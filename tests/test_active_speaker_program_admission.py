@@ -917,6 +917,32 @@ def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_cha
         assert admission.allowed, admission.to_dict()
 
 
+@pytest.mark.parametrize("evidence_cleared,allowed", [(("room_correction", "bass_extension"), True), ((), False)])
+def test_a_take_is_admitted_only_against_the_layers_it_plays(tmp_path, evidence_cleared, allowed):
+    """A bass run's base plays its candidate with room and bass cleared; the
+    admission proves that graph against evidence cleared the same way and
+    refuses evidence still carrying the bass layer (ADR-0370)."""
+    topology, safety, targets = _profile_and_targets(woofer_floor=40, woofer_highpass=40, max_sweep_duration_s=4)
+    profile = MeasurementGraphProfile(
+        _preset(), topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        protection_sections_by_role=confirmed_protection_sections(safety, targets),
+    )
+    candidate = replace(_trial_candidate(profile), bass_extension=BASS_EXTENSION)
+    graph = compile_tuning_graph(profile, candidate=candidate, cleared_layers=("room_correction", "bass_extension"))
+    program = SessionExcitation(
+        roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
+        session_volume_db=-20, fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
+    ).verify_program()
+    wav = tmp_path / "bass.wav"
+    write_program_wav(wav, program)
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=targets, session_volume_db=-20,
+        graph_evidence=measurement_graph_evidence(scope="candidate", candidate=candidate, cleared_layers=evidence_cleared),
+    )
+    assert admission.allowed is allowed, admission.to_dict()
+
+
 def test_cardioid_timing_admits_full_band_without_rear_lowpass(tmp_path, monkeypatch):
     topology, safety, targets = _profile_and_targets(
         rear=True, woofer_floor=30, woofer_upper=4000,

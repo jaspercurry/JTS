@@ -31,12 +31,13 @@ class SessionGraph(Protocol):
 
     def select_scope(
         self, scope: str, candidate_id: str = "",
-        branch_channels: Mapping[str, int] | None = None,
+        branch_channels: Mapping[str, int] | None = None, cleared_layers: tuple[str, ...] = (),
     ) -> None:
         """Select drivers or an exact candidate before install.
 
         ``branch_channels`` is the branch take's own pair — target id to stereo
         program channel — which only a ``candidate_branches`` scope names.
+        ``cleared_layers`` are the candidate layers the take plays emptied (ADR-0370).
         """
         raise NotImplementedError
 

@@ -49,6 +49,7 @@ from .measurement_programs import (
     BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
+    cleared_layers,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -229,7 +230,7 @@ class AngleStop:
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     ``branch_pair`` is which two targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
-    a near-field stop plays alone (ADR-0360).
+    a stop plays alone (ADR-0366).
     """
 
     angle_deg: int
@@ -710,6 +711,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
+            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 

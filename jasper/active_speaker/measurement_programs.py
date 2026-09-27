@@ -139,6 +139,8 @@ _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The size of a run whose poses are its own, not a bundled layout's.
 CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
+#: Each program's own candidate layer: the names a take may play cleared (ADR-0370).
+CANDIDATE_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER)
 
 
 def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
