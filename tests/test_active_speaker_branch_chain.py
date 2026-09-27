@@ -44,7 +44,7 @@ from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # The runtime re-proof's own float slack, imported rather than restated so the
 # migration corpus asserts the condition the contract actually applies.
 from jasper.active_speaker.graph.active_verifier import (
-    _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
+    _CHARGED_PEAK_EPS_DB as _RUNTIME_BOOST_EPS_DB,
 )
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
 from jasper.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
@@ -745,17 +745,13 @@ def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
     A migration bound stated only as "moved less than the margin" is therefore
     not the condition, and a corpus asserting it would call this class safe.
     """
-    from jasper.active_speaker.graph.active_verifier import (
-        _LINEARIZATION_BOOST_EPS_DB,
-    )
-
     just_under = _PEAK_EPS_DB - 0.002
     just_over = _PEAK_EPS_DB + 0.0001
 
     assert headroom_charge_db(just_under) == 0.0
     # A chain charged nothing has NEGATIVE room: any reading above unity at all
     # is already past its own allowance plus the slack.
-    assert headroom_charge_db(just_under) + _LINEARIZATION_BOOST_EPS_DB < just_under
+    assert headroom_charge_db(just_under) + _RUNTIME_BOOST_EPS_DB < just_under
     # One ten-thousandth of a dB higher and the step pays the whole margin.
     assert headroom_charge_db(just_over) - just_over == pytest.approx(
         HEADROOM_MARGIN_DB

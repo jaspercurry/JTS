@@ -101,17 +101,18 @@ def _names(step: Mapping[str, Any]) -> list[str]:
 
 
 def _evaluated_pipeline(pipeline: Any, *, charged: bool) -> Any:
-    """``pipeline`` less its preference steps, and less the headroom gain unless ``charged``."""
+    """``pipeline`` less its preference steps, and less the headroom gain unless
+    ``charged``; both only ahead of the first mixer."""
     if not isinstance(pipeline, list):
         return pipeline
     steps: list[Any] = []
-    preference = False
+    preference = mixed = False
     for step in pipeline:
         if isinstance(step, Mapping) and step.get("type") == "Mixer":
-            preference = False
+            preference, mixed = False, True
         elif preference:
             continue
-        elif isinstance(step, Mapping) and PROGRAM_HEADROOM_FILTER in _names(step):
+        elif not mixed and isinstance(step, Mapping) and PROGRAM_HEADROOM_FILTER in _names(step):
             preference = True
             if not charged:
                 step = {**step, "names": [

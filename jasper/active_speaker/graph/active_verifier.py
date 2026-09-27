@@ -73,7 +73,7 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
-from ..program_headroom import program_peak
+from ..program_headroom import PROGRAM_HEADROOM_FILTER, program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
@@ -1611,7 +1611,7 @@ def _active_graph_evidence(
             if not pipeline_contains_chain(
                 view,
                 channels={0, 1},
-                required_names=("active_baseline_headroom",),
+                required_names=(PROGRAM_HEADROOM_FILTER,),
             ):
                 issues.append(_issue(
                     "blocker",
@@ -1619,7 +1619,7 @@ def _active_graph_evidence(
                     "active baseline graph does not wire the shared headroom filter",
                 ))
             headroom = finite_float(
-                _filter_params(payload, "active_baseline_headroom").get("gain")
+                _filter_params(payload, PROGRAM_HEADROOM_FILTER).get("gain")
             )
             if headroom is None or headroom > 0.0:
                 issues.append(_issue(
@@ -1646,7 +1646,7 @@ def _active_graph_evidence(
                     "active_driver_domain_channel_select_after_split",
                     "driver-domain channel-select must run before the driver split",
                 ))
-            if "active_baseline_headroom" in view.filters:
+            if PROGRAM_HEADROOM_FILTER in view.filters:
                 issues.append(_issue(
                     "blocker",
                     "active_driver_domain_program_prefix_present",
