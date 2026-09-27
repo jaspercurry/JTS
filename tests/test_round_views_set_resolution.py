@@ -209,7 +209,7 @@ def test_retired_verbs_and_selectors_are_unknown(argv):
 @pytest.mark.parametrize("argv", [
     ["entry", "round"], ["directivity", "round"],
     ["repeat", "a", "b"], ["delay-landscape", "bundle", "--fc-hz", "1800"],
-    ["dsp-replay", "graph", "stimulus", "--main-db", "-30", "--bass-reference-db", "-30"],
+    ["dsp-replay", "graph", "stimulus", "--main-db", "-30"],
     ["dsp-levels", "manifest.json", "--raw", "output.f64le", "--window-s", "0", "1"],
 ])
 def test_stdout_cannot_replace_an_artifact(argv):
