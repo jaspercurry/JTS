@@ -5,14 +5,15 @@
 """Select banked takes from their saved identities and graph scopes.
 
 No index file exists (ADR-0198): every read rescans the banked takes and filters
-them in Python. Which takes a round kept is its run manifest's answer.
+them in Python, so the take files are the single source of truth at the read
+side as well as the write side.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -37,7 +38,6 @@ __all__ = [
     "MeasurementCaptureIdentityError",
     "bundle_measurements",
     "has_banked_take",
-    "kept_measurements",
     "measurement_documents",
     "reopen_measurement_capture",
     "reopen_measurement_record",
@@ -188,34 +188,6 @@ def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mappi
         row = _row(take.relative_to(artifacts).as_posix(), document)
         if row is not None:
             yield Measurement(*row), document
-
-
-def kept_measurements(
-    bundle_dir: Path, *, phases: Collection[str], purposes: Collection[str],
-) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:
-    """The takes of these phases and purposes that the round kept, in path order.
-
-    A kept take is one its verdict accepted and its run manifest selected for
-    its stop, so a refused take, or one a retake or redo replaced, is never
-    read. A bundle with no run manifest keeps none (#2902).
-    """
-    kept = _kept_record_ids(Path(bundle_dir))
-    for row, document in measurement_documents(bundle_dir):
-        if row.phase in phases and document.get("measurement_purpose") in purposes and row.path in kept:
-            yield row, document
-
-
-def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
-    from ..run_manifest import RUN_MANIFEST_FILENAME, TAKE_MEASURED  # lazy: run_manifest imports this module via measurement_context
-
-    manifests = (bundle_dir / EVIDENCE_ROOT / "artifacts").glob(f"crossover_v2/*/{RUN_MANIFEST_FILENAME}")
-    return frozenset(
-        take["artifacts"]["record_id"]
-        for path in manifests
-        for group in (read_json_mapping(path) or {}).get("sets", ())
-        for take in group["takes"]
-        if take["selected"] and take["quality"]["status"] == TAKE_MEASURED
-    )
 
 
 def bundle_measurements(

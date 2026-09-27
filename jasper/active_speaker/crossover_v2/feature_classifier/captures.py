@@ -37,6 +37,7 @@ from jasper.audio_measurement.evidence_reasons import (
     ROUND_SHAPE_INADMISSIBLE,
 )
 from ...measurement_programs import PURPOSE_SPEAKER
+from ...run_manifest import kept_measurements
 from ..evidence_packet.offline_reads import RING_SIDECAR_GLOB
 from ..journey import (
     PHASE_CLOUD_VERIFY,
@@ -47,7 +48,6 @@ from ..position_cycle import (
     parse_curve_magnitude,
     take_curves,
 )
-from ..record_index import kept_measurements
 from ..round_captures import radiated_band_of
 
 
@@ -385,8 +385,9 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     magnitude only.
 
     ``bundle_dir`` is the commissioning bundle, not the round's own artifact
-    directory. Reused, not re-walked: :func:`~.record_index.kept_measurements`
-    is the take index, and :func:`~.position_cycle.take_curves` the
+    directory. Reused, not re-walked:
+    :func:`~jasper.active_speaker.run_manifest.kept_measurements` is the take
+    index, and :func:`~.position_cycle.take_curves` the
     banked-curve reader the delay pair uses. Phase is dropped — a persistence
     read is magnitude-only.
 

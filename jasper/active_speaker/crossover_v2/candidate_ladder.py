@@ -19,11 +19,12 @@ from jasper.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
 from .position_cycle import measured_curve_band, take_curves
-from .record_index import Measurement, kept_measurements
+from .record_index import Measurement
 from .round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key, document_capture_id
 from .round_inputs import RoundInputs
 from ..frequency_view import FREQUENCY_VIEW_FILENAME, frequency_run_from_view
 from ..measurement_programs import PURPOSES
+from ..run_manifest import kept_measurements
 
 __all__ = [
     "REFUSE_NO_LADDER",

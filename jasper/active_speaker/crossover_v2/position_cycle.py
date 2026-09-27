@@ -18,9 +18,10 @@ from jasper.atomic_io import atomic_write_text
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER
+from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
-from .record_index import Measurement, bundle_measurements, kept_measurements
+from .record_index import Measurement, bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
