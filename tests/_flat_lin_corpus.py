@@ -115,11 +115,11 @@ def sweep_anchored_global_offset(captured: np.ndarray, segment: Any) -> int:
     A single-segment reader wants :func:`sweep_anchor` (the sweep's absolute
     position). A reader that hands the capture to
     ``program_analysis.analyze_program_capture`` needs the offset that
-    function's own ``_global_offset`` would have produced, because every
+    function's own ``locate_global_offset`` would have produced, because every
     segment is then located as ``global_offset + segment.start_sample``.
 
     Those two are not the same hazard, and the difference is large. Production
-    ``_global_offset`` locates the program's FIRST STIMULUS SEGMENT and
+    ``locate_global_offset`` locates the program's FIRST STIMULUS SEGMENT and
     subtracts its schedule position — and 2026-07-27's courtesy-tone move
     (#1771, ``_insert_courtesy_prelude``) relocated the prelude from the head
     of the program to just ahead of the first sweep, which moves the PILOT

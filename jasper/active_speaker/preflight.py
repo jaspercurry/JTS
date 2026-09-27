@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
-from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
+from jasper.audio_measurement.program_analysis.check import ambient_rows_in_band, clears_snr_floor
 from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
@@ -327,8 +327,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                 if (isinstance(ambient, Mapping) and band is not None
                         and any(pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops)):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
-                    rows = _ambient_rows_in_band(band, ambient.get("bands") or ())
-                    if rows and not _snr_floor_ok(ambient, pilot_dbfs, [band]):
+                    rows = ambient_rows_in_band(band, ambient.get("bands") or ())
+                    if rows and not clears_snr_floor(ambient, pilot_dbfs, [band]):
                         lo, hi, noise_dbfs = max(rows, key=lambda row: row[2])
                         code = REASON_RUN_LEVEL_PILOTS_UNDER_AMBIENT
                         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message, blocking=False), evidence={

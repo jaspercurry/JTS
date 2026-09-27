@@ -785,8 +785,8 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     write_manifest(bundle, program=purpose, groups=[group])
     mark_state(bundle, "applied")
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
-    deconvolve = Mock(wraps=gate_sweep._deconvolve_window)
-    monkeypatch.setattr(gate_sweep, "_deconvolve_window", deconvolve)
+    deconvolve = Mock(wraps=gate_sweep.deconvolve_window)
+    monkeypatch.setattr(gate_sweep, "deconvolve_window", deconvolve)
     banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping,
                         **_ssot(tmp_path, present=False))
     assert deconvolve.call_count == 1

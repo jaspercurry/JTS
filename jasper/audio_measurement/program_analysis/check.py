@@ -81,7 +81,7 @@ def _ambient_from_capture(
     not the clamped start — sliding forward would read whatever the
     schedule put AFTER the window (on the shipped CHECK program, the
     courtesy beep) as if it were room floor, 39.5 dB hot on a 0.6 s late
-    start. That number feeds BOTH `_snr_floor_ok` and `_solve_gain_plan`.
+    start. That number feeds BOTH `clears_snr_floor` and `_solve_gain_plan`.
 
     Below :data:`AMBIENT_MIN_USABLE_FRACTION` of the window this degrades
     the same honest way `_pilot_ambient_samples` does: ``None`` samples
@@ -513,7 +513,7 @@ def _bands_overlap(
     return hi_a > lo_b and lo_a < hi_b
 
 
-def _ambient_rows_in_band(
+def ambient_rows_in_band(
     band_hz: tuple[float, float],
     ambient_bands: Sequence[Any],
 ) -> list[tuple[float, float, float]]:
@@ -605,7 +605,7 @@ def _solve_role_gain(
     The result is clamped by ``flat_target_gain_db``: this solve can only
     make MEASURE quieter than the level-only figure, never louder.
     """
-    rows = _ambient_rows_in_band(band_hz, ambient_bands) if band_hz else []
+    rows = ambient_rows_in_band(band_hz, ambient_bands) if band_hz else []
     if not rows:
         # Disclosed fallback: no ambient evidence to solve against.
         return RoleGainSolve(
@@ -739,7 +739,7 @@ def _solve_gain_plan(
     # Deliberately judged at `target_capture_dbfs`, NOT the solved level —
     # this is the room-quality gate ("is this room quiet enough at all"),
     # a different question from the per-driver solve above.
-    snr_floor_ok = _snr_floor_ok(
+    snr_floor_ok = clears_snr_floor(
         ambient_report, target,
         [solve.band_hz for solve in solves.values() if solve.band_hz is not None],
     )
@@ -798,7 +798,7 @@ def alignment_snr_gain_adjustment(
     return adjusted, evidence
 
 
-def _snr_floor_ok(
+def clears_snr_floor(
     ambient_report: Mapping[str, Any], target_capture_dbfs: float,
     pilot_bands_hz: Sequence[tuple[float, float]],
 ) -> bool:
@@ -807,5 +807,5 @@ def _snr_floor_ok(
     if not bands:
         return False
     worst = max((level for band in pilot_bands_hz
-                 for _lo, _hi, level in _ambient_rows_in_band(band, bands)), default=None)
+                 for _lo, _hi, level in ambient_rows_in_band(band, bands)), default=None)
     return worst is not None and (target_capture_dbfs - worst) >= DRIVER.snr_ok_db

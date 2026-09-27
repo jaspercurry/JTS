@@ -11,25 +11,25 @@ from dataclasses import replace
 import numpy as np
 
 from .check import _pilot_verdicts
-from .drift import _estimate_drift
+from .drift import estimate_drift
 from .model import MeasurementGeometry, ProgramAnalysis
-from .response import _deconvolve_window, _driver_response, _n_fft_for, _radiated_band_hz, recorded_impulse
+from .response import deconvolve_window, driver_response, n_fft_for, _radiated_band_hz, recorded_impulse
 
 
 def analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
                      geometry=MeasurementGeometry()):
-    drift = _estimate_drift(program, capture, sample_rate, locations)
+    drift = estimate_drift(program, capture, sample_rate, locations)
     epsilon = drift.epsilon_ppm / 1e6
     segments = [program.segment(name) for name in ("sweep_w", "sweep_t", "sweep_verify")]
-    impulses = [_deconvolve_window(capture, seg, global_offset + seg.start_sample,
+    impulses = [deconvolve_window(capture, seg, global_offset + seg.start_sample,
                                   sample_rate, epsilon=epsilon) for seg in segments]
-    n_fft = _n_fft_for(*(ir for ir, _ in impulses))
+    n_fft = n_fft_for(*(ir for ir, _ in impulses))
     responses = []
     records = []
     for seg, (ir, pre) in zip(segments, impulses):
         role = seg.role or "summed"
         shift = epsilon * seg.start_sample
-        response = _driver_response(
+        response = driver_response(
             role, ir, sample_rate, calibration=calibration, ambient_report=None,
             fc_hz=priors.crossover_fc_hz, n_fft=n_fft,
             radiated_band_hz=_radiated_band_hz(seg), preserve_timing=True,

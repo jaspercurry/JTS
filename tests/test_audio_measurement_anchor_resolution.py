@@ -5,7 +5,7 @@
 """Timeline-anchor resolution (issue #2093): a knife-edge peak gate must not
 fabricate ``locate_failed`` on a pristine capture.
 
-``_global_offset`` pins the WHOLE capture timeline on the program's first
+``locate_global_offset`` pins the WHOLE capture timeline on the program's first
 stimulus, which for the v2 programs is the deliberately QUIETEST thing in
 them (VERIFY's ``pilot_summed_lo``, 10 dB under ``pilot_summed_hi``).
 ``_earliest_strong_peak``'s "earliest lag within 0.6x of the max" gate is
@@ -116,8 +116,8 @@ from jasper.audio_measurement.program_analysis import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     MeasurementPriors,
-    _global_offset,
-    _locate_segments,
+    locate_global_offset,
+    locate_segments,
     analyze_program_capture,
 )
 from jasper.audio_measurement.program_analysis.check import _band_rms_dbfs
@@ -225,14 +225,14 @@ def _coarse_peak(program, capture) -> int:
 
 
 def _located_arrival(program, capture) -> int:
-    """The refined arrival sample, read back out of ``_global_offset``'s own
+    """The refined arrival sample, read back out of ``locate_global_offset``'s own
     return values (offset + the anchor it chose) rather than re-implementing
     its coarse/refine pair here -- a copy of that would drift.
 
     The fix changed only which SEGMENT this sample is taken to be, never the
     sample, so this is also exactly the pre-#2093 arrival.
     """
-    offset, anchor, _stimuli, _amb = _global_offset(program, capture, SR)
+    offset, anchor, _stimuli, _amb = locate_global_offset(program, capture, SR)
     return offset + anchor.start_sample
 
 
@@ -247,7 +247,7 @@ def _witness_chosen_for(program) -> str:
     level = log.level
     log.setLevel(logging.INFO)
     try:
-        _global_offset(program, _pristine(program), SR)
+        locate_global_offset(program, _pristine(program), SR)
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
@@ -317,13 +317,13 @@ def test_pre_fix_offset_would_have_failed_this_capture():
     first = prog.segment("pilot_summed_lo")
     pre_fix_offset = _located_arrival(prog, cap) - first.start_sample
 
-    locations = _locate_segments(prog, cap, SR, pre_fix_offset, {})
+    locations = locate_segments(prog, cap, SR, pre_fix_offset, {})
     confidence = min(loc.confidence for loc in locations
                      if loc.kind == KIND_SUMMED_SWEEP)
     assert confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR
 
     # And the repaired offset on the SAME capture is a different timeline.
-    repaired_offset, anchor, _stimuli, _amb = _global_offset(prog, cap, SR)
+    repaired_offset, anchor, _stimuli, _amb = locate_global_offset(prog, cap, SR)
     assert repaired_offset != pre_fix_offset
     assert anchor.segment_id == "pilot_summed_hi"
 
@@ -342,9 +342,9 @@ def test_low_shelf_preserves_witness_corroboration_and_offset(monkeypatch, shelf
     # A 12.5 ms low-band echo competes outside the ±5 ms main lobe.
     ir = (_band_impulse(1000, 30.0, 6000.0, 1.0)
           + _band_impulse(1600, 30.0, 180.0, 1.1))
-    baseline, _, _, _ = _global_offset(prog, _pristine(prog, ir=ir), SR)
+    baseline, _, _, _ = locate_global_offset(prog, _pristine(prog, ir=ir), SR)
     cap = _pristine(prog, ir=_low_shelf(ir, shelf_db))
-    offset, _, _, anchor = _global_offset(prog, cap, SR)
+    offset, _, _, anchor = locate_global_offset(prog, cap, SR)
 
     assert anchor.corroborated is True
     assert offset == baseline
@@ -357,7 +357,7 @@ def test_low_shelf_preserves_witness_corroboration_and_offset(monkeypatch, shelf
             locate_mod, "_locate_in_window",
             lambda *args, band_hz=None, **kwargs: locate(*args, **kwargs),
         )
-        _, _, _, raw_anchor = _global_offset(prog, cap, SR)
+        _, _, _, raw_anchor = locate_global_offset(prog, cap, SR)
         assert raw_anchor.corroborated is False
 
 
@@ -393,8 +393,8 @@ def test_repaired_anchor_puts_the_sweep_back_at_its_true_position():
     """
     prog = _verify_program()
     cap = _knife_edge(prog)
-    offset, _anchor, stimuli, _amb = _global_offset(prog, cap, SR)
-    locations = _locate_segments(prog, cap, SR, offset, stimuli)
+    offset, _anchor, stimuli, _amb = locate_global_offset(prog, cap, SR)
+    locations = locate_segments(prog, cap, SR, offset, stimuli)
     sweep = next(loc for loc in locations if loc.kind == KIND_SUMMED_SWEEP)
     true_start = GLOBAL_OFFSET + prog.segment(sweep.segment_id).start_sample
     assert abs(sweep.located_start - true_start) < 0.030 * SR
@@ -415,7 +415,7 @@ def test_garbage_capture_still_fails_and_the_anchor_does_not_move():
     garbage = np.random.default_rng(4).normal(
         0.0, 1e-2, prog.total_samples + GLOBAL_OFFSET + 20_000
     )
-    offset, anchor, _stimuli, _amb = _global_offset(prog, garbage, SR)
+    offset, anchor, _stimuli, _amb = locate_global_offset(prog, garbage, SR)
 
     assert anchor.segment_id == "pilot_summed_lo"
     assert offset == _located_arrival(prog, garbage) - anchor.start_sample
@@ -450,7 +450,7 @@ def test_witness_that_never_played_cannot_move_the_anchor():
     cap = np.concatenate([np.zeros(500), pcm[:, 0], np.zeros(5000)])
     cap = cap + np.random.default_rng(5).normal(0.0, 3e-5, cap.size)
 
-    _offset, anchor, _stimuli, _amb = _global_offset(chk, cap, SR)
+    _offset, anchor, _stimuli, _amb = locate_global_offset(chk, cap, SR)
     assert anchor.segment_id == "pilot_woofer_lo"
 
 
@@ -511,7 +511,7 @@ def test_program_without_shape_siblings_is_left_exactly_alone():
     prog = _verify_program(with_pilots=False)
     first = next(s for s in prog.segments if s.kind == KIND_SUMMED_SWEEP)
 
-    offset, anchor, _stimuli, _amb = _global_offset(prog, _pristine(prog), SR)
+    offset, anchor, _stimuli, _amb = locate_global_offset(prog, _pristine(prog), SR)
     assert anchor.segment_id == first.segment_id
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
 
@@ -529,7 +529,7 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
     (the margin), and whether the choice moved."""
     prog = _verify_program()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
-        _global_offset(prog, _knife_edge(prog), SR)
+        locate_global_offset(prog, _knife_edge(prog), SR)
     fields = event_fields(caplog, "program_analysis.anchor")
     assert fields["anchor"] == "pilot_summed_hi"
     assert fields["witness"] == "sweep_verify"
@@ -548,7 +548,7 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
-        _global_offset(prog, _pristine(prog), SR)
+        locate_global_offset(prog, _pristine(prog), SR)
     fields = event_fields(caplog, "program_analysis.anchor")
     assert fields["anchor"] == "pilot_summed_lo"
     assert fields["corrected"] == "false"
@@ -559,7 +559,7 @@ def test_anchor_decision_is_logged_with_its_margin(caplog):
 def test_no_anchor_event_when_there_is_nothing_to_arbitrate(caplog):
     prog = _verify_program(with_pilots=False)
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
-        _global_offset(prog, _pristine(prog), SR)
+        locate_global_offset(prog, _pristine(prog), SR)
     assert event_records(caplog, "program_analysis.anchor") == []
 
 
@@ -654,7 +654,7 @@ def _anchor_separation(program, capture) -> float:
     level = log.level
     log.setLevel(logging.INFO)
     try:
-        _global_offset(program, capture, SR)
+        locate_global_offset(program, capture, SR)
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
@@ -849,7 +849,7 @@ def test_the_band_limited_locate_puts_the_whole_timeline_back():
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=INCIDENT_TONE_RMS)
 
-    _offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
+    _offset, segment, _stimuli, anchor = locate_global_offset(prog, cap, SR)
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False
     assert _anchor_separation(prog, cap) > 100.0
@@ -910,7 +910,7 @@ def test_a_genuinely_miswired_capture_still_gets_the_wiring_verdict(miswired):
     cap = np.concatenate([np.zeros(GLOBAL_OFFSET), mono, np.zeros(20_000)])
     cap = cap + _band_noise(cap.size, 20.0, 20_000.0, 2e-4, seed=3)
 
-    _offset, segment, _stimuli, anchor = _global_offset(program, cap, SR)
+    _offset, segment, _stimuli, anchor = locate_global_offset(program, cap, SR)
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False, "a mis-wired capture is not an un-attributed one"
 
@@ -972,7 +972,7 @@ def test_ambiguity_needs_BOTH_readings_corroborated(
         ),
     )
     prog = _incident_program()
-    _offset, _anchor, _stimuli, anchor = _global_offset(
+    _offset, _anchor, _stimuli, anchor = locate_global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
     assert anchor.ambiguous is ambiguous
@@ -1118,7 +1118,7 @@ def test_the_guard_compares_a_ratio_and_not_a_difference(
         ),
     )
     prog = _incident_program()
-    _offset, _anchor, _stimuli, anchor = _global_offset(
+    _offset, _anchor, _stimuli, anchor = locate_global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
     assert anchor.ambiguous is ambiguous
@@ -1248,7 +1248,7 @@ def test_a_corrected_anchor_can_also_be_ambiguous(monkeypatch):
         ),
     )
     prog = _incident_program()
-    _offset, segment, _stimuli, anchor = _global_offset(
+    _offset, segment, _stimuli, anchor = locate_global_offset(
         prog, _incident_room(prog, tone_rms=QUIET_TONE_RMS), SR
     )
     assert segment.segment_id == "pilot_woofer_hi", "the LATER candidate must win"
@@ -1272,7 +1272,7 @@ def test_the_anchor_event_reports_the_ambiguity_it_found(monkeypatch):
     level = log.level
     log.setLevel(logging.INFO)
     try:
-        _global_offset(prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR)
+        locate_global_offset(prog, _incident_room(prog, tone_rms=INCIDENT_TONE_RMS), SR)
     finally:
         log.removeHandler(handler)
         log.setLevel(level)
@@ -1387,7 +1387,7 @@ def test_the_peakedness_margin_prefers_the_EMPTY_window(monkeypatch, caplog):
     )
     prog = _measure_program()
     with caplog.at_level(logging.INFO, logger=_ANALYSIS_LOGGER):
-        offset, segment, _stimuli, anchor = _global_offset(
+        offset, segment, _stimuli, anchor = locate_global_offset(
             prog, _measure_room(prog), SR
         )
 
@@ -1433,7 +1433,7 @@ def test_a_measure_capture_with_both_pilots_present_keeps_its_timeline():
     prog = _measure_program()
     cap = _measure_room(prog)
 
-    offset, segment, _stimuli, anchor = _global_offset(prog, cap, SR)
+    offset, segment, _stimuli, anchor = locate_global_offset(prog, cap, SR)
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is False
     assert abs(offset - GLOBAL_OFFSET) < 0.030 * SR
@@ -1471,7 +1471,7 @@ def test_a_capture_that_really_started_late_is_still_re_anchored():
     lo = prog.segment("pilot_woofer_lo")
     late = full[GLOBAL_OFFSET + lo.start_sample + lo.n_samples:]
 
-    offset, segment, stimuli, anchor = _global_offset(prog, late, SR)
+    offset, segment, stimuli, anchor = locate_global_offset(prog, late, SR)
     assert segment.segment_id == "pilot_woofer_hi", "the correction must still fire"
     assert anchor.ambiguous is False
     assert _anchor_separation(prog, late) > ANCHOR_DISCRIMINATION_RATIO * 3
@@ -1482,7 +1482,7 @@ def test_a_capture_that_really_started_late_is_still_re_anchored():
     assert _dispatch._sweep_schedule_ok(analysis, SR) is True
     # The timeline it declined to keep really was broken by that spacing: the
     # pre-#2093 offset puts every sweep far outside the gate.
-    pre_fix = _locate_segments(prog, late, SR, offset - spacing, dict(stimuli))
+    pre_fix = locate_segments(prog, late, SR, offset - spacing, dict(stimuli))
     worst = max(abs(loc.residual_samples) for loc in pre_fix
                 if loc.kind == KIND_SWEEP)
     assert worst / SR * 1000.0 > _dispatch.SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
@@ -1581,7 +1581,7 @@ def test_measure_analysis_carries_anchor_and_drift_evidence(monkeypatch, confide
 
     monkeypatch.setattr(locate_mod, "_locate_in_window", witness)
     monkeypatch.setattr(
-        "jasper.audio_measurement.program_analysis.dispatch._estimate_drift",
+        "jasper.audio_measurement.program_analysis.dispatch.estimate_drift",
         lambda *args, **kwargs: DriftEstimate(
             -3106.0, 1066.7, True, discontinuity_samples=step,
         ),
@@ -1701,7 +1701,7 @@ def _anchor_pair(program):
 def _script_witness(monkeypatch, program, capture, readings, witness_id):
     """Pin the two readings' witness scores by where each reading looks for it."""
     locate = locate_mod._locate_in_window
-    offset, _, _, _ = _global_offset(program, capture, SR)
+    offset, _, _, _ = locate_global_offset(program, capture, SR)
     lo, hi = _anchor_pair(program)
     witness = program.segment(witness_id)
     slots = dict(zip((offset + witness.start_sample,
@@ -1797,7 +1797,7 @@ def test_check_keeps_the_witness_only_guard_where_its_witness_has_a_twin(monkeyp
     near-tie hundreds of times over; the twin keeps the witness-only guard."""
     prog = _incident_program()
     cap = _incident_room(prog, tone_rms=QUIET_TONE_RMS)
-    offset, lo, stimuli, _ = _global_offset(prog, cap, SR)
+    offset, lo, stimuli, _ = locate_global_offset(prog, cap, SR)
     hi = prog.segment("pilot_woofer_hi")
     readings = ((0.8, 0.29), (0.316, 0.0145))
     (lo_confidence, lo_presence), (hi_confidence, hi_presence) = readings
@@ -1808,7 +1808,7 @@ def test_check_keeps_the_witness_only_guard_where_its_witness_has_a_twin(monkeyp
     assert pair[0] > pair[1] * ANCHOR_DISCRIMINATION_RATIO
     _script_witness(monkeypatch, prog, cap, readings, "pilot_tweeter_lo")
 
-    _, segment, _, anchor = _global_offset(prog, cap, SR)
+    _, segment, _, anchor = locate_global_offset(prog, cap, SR)
     assert segment.segment_id == "pilot_woofer_lo"
     assert anchor.ambiguous is True
     assert anchor.pair_presence is None

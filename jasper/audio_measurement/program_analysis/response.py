@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
 
-def _deconvolve_window(
+def deconvolve_window(
     capture: np.ndarray,
     segment: ProgramSegment,
     anchor: int,
@@ -144,7 +144,7 @@ def _sweep_over_ambient_db(
     is the 40 ms before an onset that noise alone can place, and this needs a scheduled silence.
     """
     tail = round(DEFAULT_VERIFY_TAIL_S * sample_rate)
-    room, _ = _deconvolve_window(np.resize(ambient, origin_index + segment.n_samples + tail),
+    room, _ = deconvolve_window(np.resize(ambient, origin_index + segment.n_samples + tail),
                                  segment, origin_index, sample_rate)
     band = _above_modal_tails_hz(segment)
     if band is not None:
@@ -193,7 +193,7 @@ def _raw_sweep_segment(
     capture: np.ndarray, segment: ProgramSegment, anchor: int,
 ) -> np.ndarray:
     """The raw captured samples of one sweep segment, at the SAME schedule
-    anchor :func:`_deconvolve_window` uses.
+    anchor :func:`deconvolve_window` uses.
 
     Deliberately the scheduled window rather than the located one: the SNR
     verdict describes the response this anchor produced, so a level read
@@ -300,7 +300,7 @@ def _driver_snr_block(
     return block
 
 
-def _driver_response(
+def driver_response(
     role: str,
     full_ir: np.ndarray,
     sample_rate: int,
@@ -406,7 +406,7 @@ def _aligned_branch_tf(
     :func:`deconv.direct_arrival_window` places each branch's direct peak at
     the same fixed offset inside the window (bulk delay removed) without a
     circular roll, which would inject a spurious echo. The windowed IR then
-    runs through the SAME adaptive reflection gate :func:`_driver_response`
+    runs through the SAME adaptive reflection gate :func:`driver_response`
     applies — a fixed window alone bakes a room reflection into the
     predicted sum that VERIFY's measured sum has already gated out (traced
     once to a 15 cm desk-bounce producing a spurious ~1125 Hz null).
@@ -975,6 +975,6 @@ def solve_ripple_optimal_trim(
     return best_trim, best_ripple, seed_trim_db
 
 
-def _n_fft_for(*irs: np.ndarray) -> int:
+def n_fft_for(*irs: np.ndarray) -> int:
     longest = max(ir.size for ir in irs)
     return max(8192, 1 << (max(longest, 1) - 1).bit_length())
