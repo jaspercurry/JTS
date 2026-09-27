@@ -227,9 +227,10 @@ def test_crossover_preview_prefers_manual_settings_over_imported_research() -> N
             _research(),
             manual_settings={
                 "drivers": [
-                    {"role": "woofer", "model": "Manual woofer"},
+                    {"role": "woofer", "target_id": "mono:woofer", "model": "Manual woofer"},
                     {
                         "role": "tweeter",
+                        "target_id": "mono:tweeter",
                         "model": "Manual tweeter",
                         "do_not_test_below_hz": 1800,
                     },

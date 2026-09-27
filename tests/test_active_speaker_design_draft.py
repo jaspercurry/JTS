@@ -23,7 +23,6 @@ from jasper.active_speaker.design_draft import (
     normalise_manual_settings,
     _normalise_candidate,
     design_draft_view,
-    declared_driver_sensitivities,
     declared_driver_spacing_m,
     declared_effective_driver_sensitivities,
 )
@@ -256,7 +255,7 @@ def test_driver_research_notes_remain_bounded():
 def test_manual_driver_notes_use_same_bound():
     manual_settings = {
         "drivers": [
-            {"role": "tweeter", "notes": "x" * 2048},
+            {"role": "tweeter", "target_id": "mono:tweeter", "notes": "x" * 2048},
         ],
         "crossover_candidates": [],
     }
@@ -309,7 +308,7 @@ def test_research_requires_model_while_manual_driver_does_not() -> None:
         manual_settings={
             "drivers": [
                 {
-                    "role": "woofer",
+                    "role": "woofer", "target_id": "mono:woofer",
                     "notes": "operator knows the installed driver",
                     "sources": ["https://example.test/not-retained"],
                 }
@@ -330,12 +329,12 @@ def test_manual_crossover_settings_can_replace_ai_research():
         manual_settings={
             "drivers": [
                 {
-                    "role": "woofer",
+                    "role": "woofer", "target_id": "mono:woofer",
                     "model": "Epique E150HE-44",
                     "sensitivity_db_2v83_1m": 83.3,
                 },
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "Eminence F110M-8",
                     "sensitivity_db_2v83_1m": 108.0,
                     "do_not_test_below_hz": 1800,
@@ -373,7 +372,7 @@ def test_ui_suggested_gain_provenance_survives_normalisation():
         manual_settings={
             "drivers": [
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "F110M-8",
                     "gain_offset_db": -24.7,
                     "gain_offset_db_provenance": "sensitivity_estimate",
@@ -725,94 +724,6 @@ def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
     assert "delay_target_role" not in candidate
 
 
-# --- declared_driver_sensitivities: the declaration is the sensitivity SSOT ----
-#
-# W6.5 (2026-07-19 gate): sensitivity is a declared physical property whose one
-# owner is the declaration (manual_settings) — the confirmed safety profile
-# never carries a second copy, and JTS3's persisted draft (83.3 / 108.5 under
-# sensitivity_db_2v83_1m) makes the derived HF ceiling fire with no migration.
-
-
-def test_declared_driver_sensitivities_reads_the_declaration():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-                {"role": "mid"},  # declared but no sensitivity — omitted
-            ],
-            "crossover_candidates": [],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {
-        "woofer": 83.3,
-        "tweeter": 108.5,
-    }
-
-
-def test_declared_driver_sensitivities_fails_soft_on_absent_or_malformed():
-    assert declared_driver_sensitivities(None) == {}
-    assert declared_driver_sensitivities({}) == {}
-    assert declared_driver_sensitivities({"manual_settings": None}) == {}
-    assert declared_driver_sensitivities(
-        {"manual_settings": {"drivers": "not-a-list"}}
-    ) == {}
-    # Non-numeric / boolean / non-finite values are skipped, not raised on —
-    # this reader runs inside the conductor-context resolution.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": "loud"},
-                {"role": "mid", "sensitivity_db_2v83_1m": True},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": float("nan")},
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {}
-
-
-def test_declared_driver_sensitivities_drops_conflicting_role_rows():
-    # Two rows for one role with DISAGREEING values (e.g. stereo declarations
-    # that drifted apart): ambiguity derives nothing for that role, failing
-    # toward the conservative class-default ceiling. Agreeing duplicates keep
-    # the value.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "tweeter", "target_id": "left:tweeter",
-                 "sensitivity_db_2v83_1m": 108.5},
-                {"role": "tweeter", "target_id": "right:tweeter",
-                 "sensitivity_db_2v83_1m": 95.0},
-                {"role": "woofer", "target_id": "left:woofer",
-                 "sensitivity_db_2v83_1m": 83.3},
-                {"role": "woofer", "target_id": "right:woofer",
-                 "sensitivity_db_2v83_1m": 83.3},
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {"woofer": 83.3}
-
-
-def test_declared_sensitivities_survive_the_normalised_persisted_draft():
-    # End-to-end through the REAL normaliser + draft builder: what
-    # resolve_conductor_context reads is the persisted draft's
-    # manual_settings, so pin the values' survival through that path.
-    payload = build_design_draft(
-        _topology(),
-        manual_settings={
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-            "crossover_candidates": [],
-        },
-    )
-    assert declared_driver_sensitivities(payload) == {
-        "woofer": 83.3,
-        "tweeter": 108.5,
-    }
-
-
 # --- #1864: declared woofer<->tweeter acoustic-center spacing -------------
 
 
@@ -859,9 +770,9 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
         _topology(),
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114},
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 114},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "B",
                     "driver_class": "compression_horn",
                     "nominal_impedance_ohm": 8,
@@ -905,7 +816,7 @@ def test_driver_class_accepts_every_hoisted_value():
         payload = build_design_draft(
             _topology(),
             manual_settings={
-                "drivers": [{"role": "woofer", "model": "A", "driver_class": value}],
+                "drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "A", "driver_class": value}],
                 "crossover_candidates": [],
             },
         )
@@ -933,7 +844,7 @@ def test_pasted_research_refuses_unknown_fields(shape):
 def test_extra_manual_keys_are_ignored(tmp_path):
     manual = {
         "typo": True,
-        "drivers": [{"role": "woofer", "model": "A", "typo": True,
+        "drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "A", "typo": True,
                      "cabinet": {"enclosure_kind": "sealed", "typo": True},
                      "level_duration_limits": {"max_sweep_duration_s": 4, "typo": True}}],
         "crossover_candidates": [{"between_roles": ["woofer", "tweeter"],
@@ -957,7 +868,7 @@ def test_radiating_diameter_mm_must_be_positive():
         _topology(),
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114}
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 114}
             ],
             "crossover_candidates": [],
         },
@@ -969,7 +880,7 @@ def test_radiating_diameter_mm_must_be_positive():
             _topology(),
             manual_settings={
                 "drivers": [
-                    {"role": "woofer", "model": "A", "radiating_diameter_mm": 0}
+                    {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 0}
                 ],
                 "crossover_candidates": [],
             },
@@ -979,7 +890,7 @@ def test_radiating_diameter_mm_must_be_positive():
 
 def test_pad_error_propagates_through_design_draft():
     driver = {
-        "role": "tweeter",
+        "role": "tweeter", "target_id": "mono:tweeter",
         "model": "B",
         "nominal_impedance_ohm": 8,
         "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
@@ -1025,9 +936,9 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
         topology,
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A"},
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A"},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "B",
                     "nominal_impedance_ohm": 8,
                     "sensitivity_db_2v83_1m": 108.0,
@@ -1074,79 +985,66 @@ def test_research_and_manual_drivers_share_the_new_fields_too():
 
 
 # --- declared_effective_driver_sensitivities: sensitivity with pad folded in -
+#
+# Sensitivity is a declared physical property whose one owner is the declaration
+# (manual_settings); the computed safety profile never carries a second copy.
+
+
+def _declared(topology: OutputTopology, *drivers: dict) -> dict:
+    return {"topology": topology.to_dict(), "manual_settings": {"drivers": list(drivers), "crossover_candidates": []}}
 
 
 def test_declared_effective_driver_sensitivities_folds_the_pad():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {
-                    "role": "tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-            ],
-            "crossover_candidates": [],
+    draft = _declared(
+        _topology(),
+        {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
+        {
+            "role": "tweeter", "target_id": "mono:tweeter",
+            "sensitivity_db_2v83_1m": 108.0,
+            "pad": {"kind": "direct_db", "attenuation_db": -14.4},
         },
-    }
+    )
     assert declared_effective_driver_sensitivities(draft) == {
         "woofer": 83.3,
         "tweeter": pytest.approx(93.6),
     }
-    # Without folding, the tweeter would still read 108.0 -- confirm the two
-    # readers genuinely disagree once a pad is declared.
-    assert declared_driver_sensitivities(draft)["tweeter"] == 108.0
-
-
-def test_declared_effective_driver_sensitivities_matches_naked_reader_without_a_pad():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-        },
-    }
-    assert declared_effective_driver_sensitivities(draft) == declared_driver_sensitivities(
-        draft
-    )
 
 
 def test_declared_effective_driver_sensitivities_fails_soft_on_absent_or_malformed():
+    rows = {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3}]}
     assert declared_effective_driver_sensitivities(None) == {}
     assert declared_effective_driver_sensitivities({}) == {}
-    assert declared_effective_driver_sensitivities({"manual_settings": None}) == {}
-    assert (
-        declared_effective_driver_sensitivities(
-            {"manual_settings": {"drivers": "not-a-list"}}
-        )
-        == {}
+    assert declared_effective_driver_sensitivities({"manual_settings": rows}) == {}
+    topology = _topology().to_dict()
+    assert declared_effective_driver_sensitivities({"topology": topology, "manual_settings": None}) == {}
+    assert declared_effective_driver_sensitivities(
+        {"topology": topology, "manual_settings": {"drivers": "not-a-list"}}
+    ) == {}
+    # Skipped, not raised on: this reader runs inside the conductor-context resolution.
+    draft = _declared(
+        _topology(),
+        {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": "loud"},
+        {"role": "tweeter", "target_id": "mono:tweeter", "sensitivity_db_2v83_1m": float("nan")},
     )
-
-
-def test_declared_effective_driver_sensitivities_drops_conflicting_pad_rows():
-    # Same naked sensitivity, but the pads disagree -- the EFFECTIVE figure is
-    # ambiguous even though the naked reader (declared_driver_sensitivities)
-    # would see no conflict at all.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {
-                    "role": "tweeter", "target_id": "left:tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-                {
-                    "role": "tweeter", "target_id": "right:tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -6.0},
-                },
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {"tweeter": 108.0}
     assert declared_effective_driver_sensitivities(draft) == {}
+
+
+def test_declared_effective_driver_sensitivities_drops_a_role_whose_outputs_disagree():
+    from tests.test_active_speaker_driver_safety import _stereo_topology
+
+    tweeter_pad = {"kind": "direct_db", "attenuation_db": -14.4}
+    draft = _declared(
+        _stereo_topology(),
+        {"role": "woofer", "target_id": "left:woofer", "sensitivity_db_2v83_1m": 83.3},
+        {"role": "woofer", "target_id": "right:woofer", "sensitivity_db_2v83_1m": 83.3},
+        {"role": "tweeter", "target_id": "left:tweeter", "sensitivity_db_2v83_1m": 108.0, "pad": tweeter_pad},
+        {"role": "tweeter", "target_id": "right:tweeter", "sensitivity_db_2v83_1m": 108.0,
+         "pad": {"kind": "direct_db", "attenuation_db": -6.0}},
+    )
+    assert declared_effective_driver_sensitivities(draft) == {"woofer": 83.3}
+    draft["manual_settings"]["drivers"][3] = {**draft["manual_settings"]["drivers"][2], "target_id": "right:tweeter",
+                                              "sensitivity_db_2v83_1m": 95.0}
+    assert declared_effective_driver_sensitivities(draft) == {"woofer": 83.3}
 
 
 def test_declared_effective_driver_sensitivities_survives_the_normalised_persisted_draft():
@@ -1154,9 +1052,9 @@ def test_declared_effective_driver_sensitivities_survives_the_normalised_persist
         _topology(),
         manual_settings={
             "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "sensitivity_db_2v83_1m": 108.0,
                     "nominal_impedance_ohm": 8,
                     "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},

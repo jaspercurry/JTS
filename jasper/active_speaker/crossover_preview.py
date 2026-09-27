@@ -476,11 +476,6 @@ def build_crossover_preview(
         )
     primary_inputs = {"drivers": [driver for driver in (design_inputs or {}).get("drivers", [])
                                   if not str(driver.get("target_id", "")).endswith(":rear")]}
-    primary_inputs["drivers"] = [
-        {key: value for key, value in driver.items()
-         if key != "target_id" or (design_inputs or {}).get("bindings", {}).get(driver["target_id"]) == "explicit"}
-        for driver in primary_inputs["drivers"]
-    ]
     drivers, driver_issues = _driver_map(primary_inputs)
     issues.extend(driver_issues)
     if topology is not None:

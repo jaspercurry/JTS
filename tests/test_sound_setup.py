@@ -2338,7 +2338,7 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_setup._active_speaker_design_draft_save_payload({
-        "manual_settings": {"drivers": [{"role": "woofer", "model": "Test woofer"}], **spacing},
+        "manual_settings": {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "Test woofer"}], **spacing},
     })
     loaded = load_design_draft(topology=topology, path=paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
     expected = spacing.get("driver_spacing_mm")
@@ -6605,7 +6605,9 @@ def test_setup_opens_refused_research_where_it_is_fixed(tmp_path, monkeypatch, f
     (False, {'role': 'woofer', 'target_id': 'gone:woofer', 'gain_offset_db': -2}, 'manual_target_unknown', ['mono:woofer']),
     (False, {'role': 'mid', 'gain_offset_db': -2}, 'manual_role_unknown', ['mono:woofer']),
     (True, {'role': 'woofer', 'gain_offset_db': -2}, 'manual_target_missing', ['left:woofer', 'right:woofer']),
-], ids=['unknown_target', 'role_unknown', 'role_only_row_for_several_outputs'])
+    (False, {'role': 'tweeter', 'recommended_highpass_hz': 3500, 'gain_offset_db': -6}, 'manual_target_missing',
+     ['mono:tweeter']),
+], ids=['unknown_target', 'role_unknown', 'role_only_row_for_several_outputs', 'role_only_row_for_one_output'])
 def test_setup_shows_the_values_of_a_row_it_cannot_place(tmp_path, monkeypatch, stereo, row, code, cards):
     setup, topology, inputs, _research, path = _stored_setup(tmp_path, monkeypatch, stereo=stereo)
     _store(path, rows=[row])

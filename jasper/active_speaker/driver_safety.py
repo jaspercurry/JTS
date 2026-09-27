@@ -20,7 +20,7 @@ from ._common import (
     MANUAL_DRIVER_FIELDS,
     blocker_issue,
 )
-from .design_inputs import resolve_design_inputs
+from .design_inputs import drivers_by_target, resolve_design_inputs
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -111,9 +111,7 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
 
 
 def _resolved_target_values(topology, manual_settings, driver_research):
-    resolved = resolve_design_inputs(topology, manual_settings, driver_research)
-    return {key: value for key, value in _manual_by_target(resolved).items()
-            if resolved["bindings"][key] != "ambiguous"}
+    return drivers_by_target(resolve_design_inputs(topology, manual_settings, driver_research))
 
 
 def driver_protection_policy_view(
@@ -142,26 +140,14 @@ def driver_protection_policy_view(
     view whose whole contract is that it gets re-stamped.
     """
 
-    manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
-    targets = driver_research_targets(topology)
-    role_counts: dict[str, int] = {}
-    for target in targets:
-        role = str(target.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
     entries: list[dict[str, Any]] = []
-    for target in targets:
+    for target in driver_research_targets(topology):
         target_id = str(target["target_id"])
         role = str(target.get("role") or "")
         style = _topology_driver_style(topology, target_id)
         policy = driver_protection_profile(role, driver_style=style)
-        visible, _ = _visible_values_for_target(
-            target_id=target_id,
-            role=role,
-            manual_by_target=manual_by_target,
-            manual_by_role=manual_by_role,
-            role_counts=role_counts,
-        )
+        visible = manual_by_target.get(target_id, {})
         low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
         entries.append({
             "target_id": target_id,
@@ -176,33 +162,6 @@ def driver_protection_policy_view(
         "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
         "targets": entries,
     }
-
-
-def _visible_values_for_target(
-    *,
-    target_id: str,
-    role: str,
-    manual_by_target: Mapping[str, Mapping[str, Any]],
-    manual_by_role: Mapping[str, Mapping[str, Any]],
-    role_counts: Mapping[str, int],
-) -> tuple[Mapping[str, Any], bool]:
-    """The operator-visible values bound to one physical target, and how.
-
-    One owner for the binding rule — target-specific values first, then the
-    legacy per-role entry when that role appears exactly once — so the page
-    cannot explain one number while the profile stores another. The second
-    element is ``True`` only for the legacy per-role read, which is what
-    ``target_values_binding`` records.
-    """
-
-    explicit = manual_by_target.get(target_id)
-    if explicit is not None:
-        return explicit, False
-    if role_counts.get(role) == 1:
-        legacy = manual_by_role.get(role)
-        if legacy is not None:
-            return legacy, True
-    return {}, False
 
 
 def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
@@ -602,7 +561,7 @@ def build_driver_research_context(
                 model, f"operator_inputs.target_models.{target_id}", required=True, max_chars=160,
             ),
         })
-    declared = _manual_by_target(manual_settings)
+    declared = drivers_by_target(manual_settings)
     for target in targets:
         driver = declared.get(target["target_id"], {})
         physical = {key: driver[key] for key in ("pad", "installation") if driver.get(key)}
@@ -784,18 +743,6 @@ def finalise_research_result(
     return dict(result)
 
 
-def _research_by_target(
-    driver_research: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(driver_research, Mapping):
-        return {}
-    return {
-        str(driver.get("target_id")): driver
-        for driver in driver_research.get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
-
-
 # What a refused manual row lists, in declaration order; the stamps no driver card enters are left out.
 _LISTED_ROW_FIELDS = tuple(key for key in MANUAL_DRIVER_FIELDS
                            if key not in ("target_id", "role", "source", "gain_offset_db_provenance"))
@@ -824,7 +771,7 @@ def validate_manual_target_bindings(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None,
 ) -> None:
-    """Refuse ambiguous or contradictory physical-target driver rows."""
+    """Refuse a driver row that does not name exactly one current physical target."""
 
     if not isinstance(manual_settings, Mapping):
         return
@@ -832,9 +779,7 @@ def validate_manual_target_bindings(
     by_id = {str(target["target_id"]): target for target in targets}
     by_role: dict[str, list[str]] = {}
     for physical_target in targets:
-        by_role.setdefault(str(physical_target["role"]), []).append(
-            str(physical_target["target_id"])
-        )
+        by_role.setdefault(str(physical_target["role"]), []).append(str(physical_target["target_id"]))
     resolved_targets: set[str] = set()
     for index, driver in enumerate(manual_settings.get("drivers") or []):
         if not isinstance(driver, Mapping):
@@ -852,31 +797,25 @@ def validate_manual_target_bindings(
             f"manual_settings.drivers[{index}].target_id",
             max_chars=160,
         )
-        matches = by_role.get(role, [])
-        if target_id:
-            target = by_id.get(target_id)
-            if target is None:
-                raise _unplaced_row(index, driver, role, matches, f"names output {target_id}, which this layout does not have",
-                                    "manual_target_unknown")
-            if role != target.get("role"):
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}] role does not match target_id",
-                    code="manual_target_role_mismatch",
-                )
-            if target_id in resolved_targets:
-                raise _unplaced_row(index, driver, role, [target_id], f"names output {target_id} a second time",
-                                    "manual_target_bound_twice")
-            resolved_targets.add(target_id)
-            continue
-        if not matches:
-            raise _unplaced_row(index, driver, role, matches, f"names no output, and this layout has no {role} output",
-                                "manual_role_unknown")
-        if len(matches) > 1:
-            raise _unplaced_row(index, driver, role, matches, "names no output", "manual_target_missing")
-        if matches[0] in resolved_targets:
-            raise _unplaced_row(index, driver, role, matches, f"is a second row for output {matches[0]}",
+        outputs = by_role.get(role, [])
+        if not target_id:
+            if not outputs:
+                raise _unplaced_row(index, driver, role, outputs, f"names no output, and this layout has no {role} output",
+                                    "manual_role_unknown")
+            raise _unplaced_row(index, driver, role, outputs, "names no output", "manual_target_missing")
+        target = by_id.get(target_id)
+        if target is None:
+            raise _unplaced_row(index, driver, role, outputs, f"names output {target_id}, which this layout does not have",
+                                "manual_target_unknown")
+        if role != target.get("role"):
+            raise DriverSafetyProfileError(
+                f"manual_settings.drivers[{index}] role does not match target_id",
+                code="manual_target_role_mismatch",
+            )
+        if target_id in resolved_targets:
+            raise _unplaced_row(index, driver, role, [target_id], f"names output {target_id} a second time",
                                 "manual_target_bound_twice")
-        resolved_targets.add(matches[0])
+        resolved_targets.add(target_id)
 
 
 def _normalise_profile_manual_settings(
@@ -935,34 +874,6 @@ def _normalise_profile_manual_settings(
     # The raw rows, so a refusal lists every value the row declares.
     validate_manual_target_bindings(topology, manual_settings)
     return {"drivers": drivers, "crossover_candidates": []}
-
-
-def _manual_by_role(
-    manual_settings: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(manual_settings, Mapping):
-        return {}
-    return {
-        str(driver.get("role")): driver
-        for driver in manual_settings.get("drivers", [])
-        if (
-            isinstance(driver, Mapping)
-            and driver.get("role")
-            and not driver.get("target_id")
-        )
-    }
-
-
-def _manual_by_target(
-    manual_settings: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(manual_settings, Mapping):
-        return {}
-    return {
-        str(driver.get("target_id")): driver
-        for driver in manual_settings.get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
 
 
 def _band_subset(inner: Sequence[float], outer: Sequence[float]) -> bool:
@@ -1058,14 +969,9 @@ def compute_driver_safety_profile(
 ) -> dict[str, Any]:
     """Compute limits, provenance and issues from the current declaration."""
     manual_settings = _normalise_profile_manual_settings(topology, manual_settings)
-    manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
-    research_by_target = _research_by_target(driver_research)
+    research_by_target = drivers_by_target(driver_research)
     physical_targets = active_driver_targets(topology)
-    role_counts: dict[str, int] = {}
-    for physical in physical_targets:
-        role = str(physical.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
     driver_styles = {
         channel.target_id(group.id): channel.driver_style
         for group in topology.speaker_groups
@@ -1077,13 +983,7 @@ def compute_driver_safety_profile(
     for physical in physical_targets:
         target_id = str(physical["target_id"])
         role = str(physical["role"])
-        visible, used_legacy_role_value = _visible_values_for_target(
-            target_id=target_id,
-            role=role,
-            manual_by_target=manual_by_target,
-            manual_by_role=manual_by_role,
-            role_counts=role_counts,
-        )
+        visible = manual_by_target.get(target_id, {})
         research = research_by_target.get(target_id, {})
 
         provenance: dict[str, Any] = {}
@@ -1163,13 +1063,7 @@ def compute_driver_safety_profile(
             "speaker_group_mode": str(physical["speaker_group_mode"]),
             "role": role,
             "driver_style": style,
-            "target_values_binding": (
-                "explicit_target"
-                if target_id in manual_by_target
-                else "unique_legacy_role"
-                if used_legacy_role_value
-                else "missing"
-            ),
+            "target_values_binding": "explicit_target" if target_id in manual_by_target else "missing",
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
