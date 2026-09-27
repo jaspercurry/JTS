@@ -28,7 +28,7 @@ from jasper.json_fields import finite_float
 
 from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS
-from ._prescription_common import BlendPrescriptionRefused, _finite_number, _read_artifacts
+from ._prescription_common import BlendPrescriptionRefused, finite_number, read_artifacts
 from .corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
     FC_REJECT_BELOW_DECLARED_FLOOR,
@@ -245,7 +245,7 @@ def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_FC_INVALID, "a prescription must state fc_hz",
         )
-    fc_hz = _finite_number(raw["fc_hz"], reason=TOPOLOGY_FC_INVALID, field="fc_hz")
+    fc_hz = finite_number(raw["fc_hz"], reason=TOPOLOGY_FC_INVALID, field="fc_hz")
     if fc_hz <= 0.0:
         raise TopologyPrescriptionRefused(
             TOPOLOGY_FC_INVALID, f"fc_hz must be above zero, got {fc_hz!r}",
@@ -264,7 +264,7 @@ def _parse_prescription(raw: Mapping[str, Any]) -> TopologyPrescription:
     return TopologyPrescription(
         fc_hz=fc_hz,
         order=_read_order(raw["order"]),
-        basis_artifacts=_read_artifacts(raw.get("basis_artifacts")),
+        basis_artifacts=read_artifacts(raw.get("basis_artifacts")),
         basis_note=note if isinstance(note, str) else "",
         authority=authority,
         checked_against_floor_hz=finite_float(raw.get("checked_against_floor_hz")),

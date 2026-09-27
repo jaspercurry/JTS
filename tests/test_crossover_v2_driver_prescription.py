@@ -1269,7 +1269,7 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     {"tweeter": float("inf")},
     # A legal JSON number, a legal Python int, and `float()` RAISES on it — so
     # it escapes an isinstance-then-float check as an OverflowError rather than
-    # a refusal, which is the shape `_finite_number`'s own docstring records
+    # a refusal, which is the shape `finite_number`'s own docstring records
     # having already escaped this family once.
     {"tweeter": 10 ** 400},
     # Positive is the hearing-relevant one: the emitted graph refuses a positive
