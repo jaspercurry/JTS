@@ -839,8 +839,8 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
 
 
 def test_system_instruction_includes_transit_nudge_when_unconfigured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", transit_configured=False)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", transit_configured=False)
     assert "jts.local/assistant/transit/" in prompt
     # Conditional framing per CLAUDE.md guidance — "if the user asks…"
     # rather than absolute "never".
@@ -848,14 +848,14 @@ def test_system_instruction_includes_transit_nudge_when_unconfigured():
 
 
 def test_system_instruction_omits_transit_nudge_when_configured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", transit_configured=True)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", transit_configured=True)
     assert "jts.local/assistant/transit/" not in prompt
 
 
 def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(
         location="",
         travel_routes_configured=False,
         hostname="jts2.local",
@@ -866,14 +866,14 @@ def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
 
 
 def test_system_instruction_omits_travel_routes_nudge_when_configured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", travel_routes_configured=True)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", travel_routes_configured=True)
     assert "Travel time isn't set up yet" not in prompt
 
 
 def test_system_instruction_transit_configured_defaults_to_true():
     """Backwards-compat: callers not passing the new arg must NOT get
     the nudge. The signature default is `True`."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     assert "jts.local/assistant/transit/" not in prompt

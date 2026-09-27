@@ -16,8 +16,8 @@ iterated via voice-eval. See the rationale block in jasper/voice/prompt.py.
 
 
 def _build(**kw):
-    from jasper.voice.prompt import _build_system_instruction
-    return _build_system_instruction(location="Sunset Park, Brooklyn", **kw)
+    from jasper.voice.prompt import build_system_instruction
+    return build_system_instruction(location="Sunset Park, Brooklyn", **kw)
 
 
 def test_openai_and_grok_use_base_verbatim():

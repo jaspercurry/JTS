@@ -71,7 +71,7 @@ SYSTEM_INSTRUCTION = (
     "matching tool without asking for confirmation.\n"
     # The "home_assistant tool isn't available → tell the user
     # smart-home isn't set up + don't misroute to other tools" guard
-    # lives in _build_system_instruction's HA addendum (only added
+    # lives in build_system_instruction's HA addendum (only added
     # when ha_configured=False) with the hostname-aware URL. Keeping
     # the guidance there rather than here keeps the static prompt
     # the same length whether HA is configured or not.
@@ -211,7 +211,7 @@ _PROVIDER_AUGMENTATION: dict[str, str] = {
 }
 
 
-def _build_system_instruction(
+def build_system_instruction(
     location: str = "",
     *,
     google_accounts: list[str] | None = None,

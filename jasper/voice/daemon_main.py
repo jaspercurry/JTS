@@ -77,7 +77,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
-from ..voice.prompt import _build_system_instruction
+from ..voice.prompt import build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
@@ -824,7 +824,7 @@ def _open_live_session(
     against it rather than opening new WebSockets. Its release is registered
     later, at the escalation-callback site (see `_wire_wake_loop`). The
     prompt is a callable, not a rendered string, so the time injection
-    inside `_build_system_instruction` stays accurate across context resets
+    inside `build_system_instruction` stays accurate across context resets
     and reconnects — the connection re-renders it on every fresh open. The
     location and the linked Google accounts are snapshotted instead:
     changing either needs a jasper-voice restart, which the wizards trigger.
@@ -851,7 +851,7 @@ def _open_live_session(
     connect = partial(
         connection.start,
         registry,
-        lambda: _build_system_instruction(
+        lambda: build_system_instruction(
             cfg.weather_prompt_location,
             google_accounts=google_account_names,
             default_google_account=google_default_account,

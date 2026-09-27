@@ -38,10 +38,10 @@ from jasper.tools.packs import ToolDeps, register_packs
 from jasper.usage import UsageStore, load_pricing_overrides, pricing_for_model
 from jasper.voice.daemon_main import (
     _build_router,
-    _build_system_instruction,
     _make_connection,
     _wire_billable_activity_meter,
 )
+from jasper.voice.prompt import build_system_instruction
 from jasper.voice.session import LiveTurn, TurnCapture, TurnUsage
 from jasper.voice.turn_playback import play_responses
 from jasper.volume_coordinator import VolumeCoordinator
@@ -443,10 +443,8 @@ class VoiceEvalHarness:
             )
             await connection.start(
                 wrapped,
-                # Mirror the daemon: pass the active provider so a per-provider
-                # eval (e.g. Gemini) actually exercises that provider's
-                # augmentation, not just the shared base.
-                lambda: _build_system_instruction(
+                # Exercise the active provider's prompt augmentation.
+                lambda: build_system_instruction(
                     self.cfg.weather_prompt_location,
                     provider=self.cfg.voice_provider,
                 ),
