@@ -154,10 +154,10 @@ from jasper.audio_measurement.program_analysis import (
     summed_model_residual_delay_us,
 )
 from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
     crossover_response_complex,
     radiating_band_hz,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (

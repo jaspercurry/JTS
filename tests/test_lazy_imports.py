@@ -790,6 +790,12 @@ def test_voice_daemon_import_does_not_require_declared_leaf_dependencies() -> No
             "jasper.active_speaker.measurement_document",
             ("scipy", "jasper.audio_measurement.program_analysis"), id="measurements-page",
         ),
+        # crossover_v2's package init re-exports only this module, and
+        # measure_spec copies its vocabulary, because it is the light one.
+        pytest.param(
+            "jasper.active_speaker.crossover_v2.contracts", ("numpy",),
+            id="crossover-v2-contracts",
+        ),
     ],
 )
 def test_resident_daemon_import_leaves_oneshot_subsystems_out(

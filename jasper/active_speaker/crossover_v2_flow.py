@@ -16,7 +16,7 @@ from typing import (
 )
 
 from jasper.active_speaker import baseline_profile
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan

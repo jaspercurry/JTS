@@ -24,7 +24,6 @@ from jasper.active_speaker.branch_chain import (
     _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
-    CrossoverSection,
     _GRID_EDGE_HI_HZ,
     _GRID_EDGE_LO_HZ,
     _PEAK_EPS_DB,
@@ -42,6 +41,7 @@ from jasper.active_speaker.branch_chain import (
     rear_branch_sum_headroom_db,
     rear_stage_chain_response,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # The runtime re-proof's own float slack, imported rather than restated so the
 # migration corpus asserts the condition the contract actually applies.

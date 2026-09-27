@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
@@ -45,8 +45,7 @@ from ..profile import (
 )
 from ..test_signal_plan import protective_tweeter_highpass_frequency_hz
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .devices import _finite_float
 from .ledger import (
     MAX_PROGRAM_HEADROOM_DB,

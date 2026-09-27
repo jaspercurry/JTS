@@ -26,6 +26,8 @@ from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
     chain_response,
+    crossover_response_db,
+    _evaluation_grid,
 )
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2.blend_prescription import (
@@ -77,6 +79,7 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from tests.test_crossover_v2_blend_prescription import _bundle
+from jasper.active_speaker.crossover_section import CrossoverSection
 
 #: The CLI tests here build a packet from a live session bundle with no
 #: --drivers/--applied-profile, so none may read this machine's own.
@@ -2124,9 +2127,6 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     """
     import numpy as np
 
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, _evaluation_grid, crossover_response_db,
-    )
     from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 
     grid = np.unique(np.concatenate([
@@ -2367,7 +2367,6 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 
 
 def test_the_span_clause_is_what_makes_the_bound_sound():
-    from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, _evaluation_grid
     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 
     role_filters = [
@@ -2777,8 +2776,6 @@ def test_a_cut_at_every_corner_of_the_envelope_is_a_stable_biquad_at_48_khz(
     import math
 
     import numpy as np
-
-    from jasper.active_speaker.branch_chain import chain_response
 
     fs = 48_000.0
     amplitude = 10.0 ** (gain_db / 40.0)

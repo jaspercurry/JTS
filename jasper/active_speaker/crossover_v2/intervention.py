@@ -16,7 +16,8 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from ..branch_chain import CrossoverSection, radiating_band_hz, sections_by_role
+from ..branch_chain import radiating_band_hz, sections_by_role
+from ..crossover_section import CrossoverSection
 from ..branch_target import branch_target
 from ..linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,

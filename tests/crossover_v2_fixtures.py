@@ -76,6 +76,8 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
+from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.branch_chain import crossover_response_db, sections_by_role
 
 SESSION = "cap_test_session_1"
 
@@ -472,8 +474,6 @@ def _capture() -> WiredCaptureAnswer:
 def _candidate_sections(conductor, fc_hz: float) -> dict:
     from dataclasses import replace
 
-    from jasper.active_speaker.branch_chain import sections_by_role
-
     return {
         role: tuple(replace(section, fc_hz=float(fc_hz)) for section in sections)
         for role, sections in sections_by_role(
@@ -601,10 +601,6 @@ def _resp_with_repeats(role: str, n_repeats: int) -> DriverResponse:
 
 
 def _fixture_branch_db() -> tuple[np.ndarray, np.ndarray]:
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db,
-    )
-
     freqs = _LINEARIZABLE_FREQS_HZ
     woofer_db = np.clip(-1.5 * np.log2(np.maximum(freqs, 1.0) / 1600.0), -6.0, 6.0)
     woofer_db = woofer_db - 6.0 * np.exp(

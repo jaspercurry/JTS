@@ -45,6 +45,7 @@ from ..camilla_names import (
     sub_lowpass_name as _sub_lowpass_name,
     sub_startup_limiter_name as _sub_startup_limiter_name,
 )
+from ..crossover_section import CrossoverSection
 from ..graph_evidence import filter_params as _filter_params, filter_type as _filter_type
 from ..graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
@@ -638,7 +639,7 @@ def _linearization_chain_peak_db(
     A trim that is absent or unreadable is treated as 0 dB, which over-states
     the peak — the safe direction for a proof.
     """
-    from ..branch_chain import CrossoverSection, branch_chain_peak  # lazy: import cost (numpy)
+    from ..branch_chain import branch_chain_peak  # lazy: import cost (numpy)
 
     sections: list[CrossoverSection] = []
     for direction, name in crossovers:

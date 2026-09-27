@@ -40,7 +40,8 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPES,
     MeasureSpec,
 )
-from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_names import driver_baseline_gain_name
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph

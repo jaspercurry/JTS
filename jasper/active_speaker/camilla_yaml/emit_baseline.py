@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -21,8 +21,7 @@ from ..camilla_names import blend_correction_name, room_peq_name
 from ..graph_safety import view_from_yaml_dict
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .decorate_dynamic_bass import _dynamic_bass_graph, _with_dynamic_bass
 from .decorate_protection import _add_baseline_protection
 from .decorate_rear import (

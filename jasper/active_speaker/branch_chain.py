@@ -16,7 +16,6 @@ both load on a 1 GB Pi).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -24,6 +23,8 @@ import numpy as np
 from jasper.biquad import (
     RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
 )
+
+from .crossover_section import CrossoverSection
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB
@@ -150,17 +151,6 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
             else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
         )
     return out
-
-
-@dataclass(frozen=True)
-class CrossoverSection:
-    """One Linkwitz-Riley section a branch runs through. ``order`` is the LR order the graph
-    emits (:data:`jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`).
-    """
-
-    fc_hz: float
-    order: int
-    highpass: bool
 
 
 def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection, ...]]:

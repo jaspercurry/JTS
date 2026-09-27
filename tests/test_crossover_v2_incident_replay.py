@@ -22,9 +22,9 @@ import pytest
 
 
 from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
     crossover_response_db,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand

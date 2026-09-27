@@ -31,13 +31,13 @@ from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_SAMPLE_RATE
 
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
-    CrossoverSection,
     branch_chain_peak_db,
     _GRID_EDGE_HI_HZ,
     _GRID_EDGE_LO_HZ,
     _evaluation_grid,
     chain_response,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import (
     boost_headroom_by_role,
     LINEARIZATION_BIQUAD_TYPES,

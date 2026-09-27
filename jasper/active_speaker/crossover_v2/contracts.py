@@ -21,7 +21,7 @@ from jasper.audio_measurement.evidence_identity import (
 )
 from jasper.json_fields import finite_float
 
-from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 
 __all__ = [
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",

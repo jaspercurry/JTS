@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
@@ -25,8 +25,7 @@ from ..camilla_names import output_commission_mute_name, program_protection_name
 from ..graph_safety import TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .decorate_rear import _mute_unfitted_rear_outputs
 from .devices import (
     _assert_ring_playback_width,
