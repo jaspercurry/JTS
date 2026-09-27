@@ -343,7 +343,7 @@ def _nearfield_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
     takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)]
-    write_manifest(bundle, program="nearfield/woofer", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+    write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
     return ["nearfield", str(bundle)]
 
 

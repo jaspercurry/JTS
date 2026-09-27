@@ -934,9 +934,9 @@ def test_program_choices_include_rear():
 
 @pytest.mark.parametrize("argv,reason,detail", [
     (["--program", "baseline/full"], "measurement_program_retired",
-     {"retired": "baseline/full", "purpose": "speaker", "preset": "speaker/mark", "layout": "baseline_full", "driver": ""}),
+     {"retired": "baseline/full", "purpose": "speaker", "preset": "speaker/mark", "layout": "baseline_full"}),
     (["--program", "rear", "--poses", "rear/pair_mark"], "measurement_program_retired",
-     {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark", "driver": ""}),
+     {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark"}),
     (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
      {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
     (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",

@@ -244,12 +244,11 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 
 
 class RetiredProgram(NamedTuple):
-    """What a retired id's banked rounds read as, and the preset, layout and driver
-    that replace it for a new run; no preset when nothing does."""
+    """What a retired id's banked rounds read as, and the preset and layout that
+    replace it for a new run; no preset when nothing does."""
     purpose: str
     preset: str = ""
     layout: str = ""
-    driver: str = ""
 
 
 #: The retired rows' ids a round may have banked, keyed by the full banked id, with its
@@ -280,12 +279,6 @@ RETIRED_PROGRAMS = MappingProxyType({
     "bass/custom": RetiredProgram(PURPOSE_BASS, "bass/axis", CUSTOM_SIZE),
     "close/spot": RetiredProgram(PURPOSE_REFERENCE),
     "close/custom": RetiredProgram(PURPOSE_REFERENCE),
-    "nearfield/woofer": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer", "woofer"),
-    "nearfield/rear": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer", "woofer:rear"),
-    "nearfield/cardioid": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer"),
-    "nearfield/custom": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", CUSTOM_SIZE),
-    "drivers/cardioid": RetiredProgram(PURPOSE_REFERENCE, "drivers/each", "drivers_each"),
-    "drivers/custom": RetiredProgram(PURPOSE_REFERENCE, "drivers/each", CUSTOM_SIZE),
 })
 PROGRAM_RETIRED = "measurement_program_retired"
 LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"

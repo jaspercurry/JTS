@@ -910,7 +910,7 @@ def test_a_near_field_round_moves_no_tuning_reader(tmp_path):
     group = manifest_set(_banked(store, records))
     for take, (driver, _mm) in zip(group["takes"], layout):
         take["role"] = driver
-    write_manifest(near, program="nearfield/cardioid", groups=[group])
+    write_manifest(near, program="nearfield/each", groups=[group])
 
     def readers():
         session_dir = round_inputs(pair).session_dir

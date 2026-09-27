@@ -401,8 +401,8 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
     ]
 
 
-#: Every registry id a round may have banked before the fold, and the purpose its banked
-#: rounds read as (ADR-0366 §6).
+#: The registry ids at ``2eeeaf4be``, before the fold, that a banked round still reads
+#: as its purpose (ADR-0366 §6); the folded near-field rows no longer read (#2902).
 _BANKED_BEFORE_THE_FOLD = {
     "speaker/mark": "speaker", "baseline/full": "speaker", "baseline/express": "speaker",
     "tournament/full": "speaker", "tournament/express": "speaker", "branches/express": "speaker",
@@ -410,9 +410,7 @@ _BANKED_BEFORE_THE_FOLD = {
     "rear/behind": "rear", "rear/pair": "rear", "rear/pair_mark": "rear", "rear/pair_behind": "rear",
     "seat/cloud": "room", "seat/cube": "room", "seat/express": "room", "room/cloud": "room",
     "room/arm": "room", "room/seat": "room", "bass/axis": "bass", "bass/cloud": "bass", "bass/quick": "bass",
-    "bass/nearfield": "bass", "close/spot": "reference", "nearfield/woofer": "reference",
-    "nearfield/rear": "reference", "nearfield/cardioid": "reference", "drivers/each": "reference",
-    "drivers/cardioid": "reference",
+    "bass/nearfield": "bass", "close/spot": "reference",
 }
 
 

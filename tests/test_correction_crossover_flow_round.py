@@ -56,13 +56,11 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
 
 @pytest.mark.parametrize("link,opened", [
     ("seat/cube", "room/seat@seat_cube"), ("rear/pair_mark", "rear/pair@speaker_mark"),
-    ("seat/express", "room/seat"), ("nearfield/cardioid", "nearfield/each"), ("drivers/cardioid", "drivers/each"),
-    ("close/spot", None), ("bass/custom", None), ("nearfield/rear", None),
+    ("seat/express", "room/seat"), ("close/spot", None), ("bass/custom", None),
 ])
 def test_a_retired_id_link_opens_the_choice_that_replaces_it(monkeypatch, link, opened):
     """A link banked before the fold (ADR-0366 §6) opens its preset at its layout, or is
-    refused on its own row when nothing on the page replaces it, as for a row that
-    played one driver where its preset plays each declared one."""
+    refused on its own row when nothing on the page replaces it."""
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
     choices = measurement_view.round_choices({}, link)
     default, = (c for c in choices if c["default"])
@@ -92,13 +90,14 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
 
 
 
-@pytest.mark.parametrize("selected", ["nearfield/rear", "nearfield/nope"])
+@pytest.mark.parametrize("selected", ["front_rear/express", "nearfield/nope"])
 def test_a_program_the_speaker_does_not_offer_is_refused_on_its_row(monkeypatch, selected):
-    """A link naming a program this speaker does not offer, such as a rear
-    woofer's near-field row on a 2-way, is refused on its own row instead of
+    """A link naming a program this speaker does not offer, such as the front
+    and rear woofer pair on a 2-way, is refused on its own row instead of
     silently selecting another program."""
-    monkeypatch.setattr(coordinator, "load_commissioning_view",
-                        lambda: {**_VIEW, "near_field_drivers": ("tweeter", "woofer")})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
+        **_VIEW, "programs": tuple(name for name in RUNNABLE_PROGRAMS if name != "rear"),
+        "near_field_drivers": ("tweeter", "woofer")})
     choices = measurement_view.round_choices({}, selected)
     refused = next(c for c in choices if c["id"] == selected)
     assert (refused["code"], refused["default"], "action" in refused) == (

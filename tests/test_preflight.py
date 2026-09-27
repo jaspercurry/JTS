@@ -167,7 +167,7 @@ def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
     assert report.price["captures"] == 1
 
 
-@pytest.mark.parametrize("program_id,banks", [("nearfield/woofer", True), ("nearfield", True), ("nearfield/mark", False)])
+@pytest.mark.parametrize("program_id,banks", [("nearfield/each", True), ("nearfield", True), ("nearfield/mark", False)])
 def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks):
     """A round banks under its program id, so a plan naming one the registry
     does not hold is refused before it plays, whichever door it came through
