@@ -105,8 +105,6 @@ from jasper.aec.bridge_config import (
     REF_SOURCE,
     UnsupportedReferenceSource,
     UsbMicUnavailable,
-    _chip_aec_primary_leg,
-    _chip_beam_plan,
     env_bool,
     leg_default_port,
     resolve_usb_mic_source,
@@ -155,6 +153,30 @@ _STATS_IDENTITY = StatsIdentity(
     reference_endpoint=f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}",
 )
 _bridge_stats = BridgeStats(_STATS_IDENTITY)
+
+
+def _chip_beam_plan() -> _mic_profile.ChipBeamPlan | None:
+    return _mic_profile.chip_beam_plan_from_env(os.environ)
+
+
+def _chip_aec_primary_leg(
+    plan: _mic_profile.ChipBeamPlan | None,
+) -> str:
+    allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
+    fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
+    value = os.environ.get(
+        _mic_profile.CHIP_AEC_PRIMARY_LEG_ENV, fallback,
+    ).strip()
+    if value in allowed:
+        return value
+    log_event(
+        logger,
+        "aec.primary_leg_invalid",
+        value=repr(value),
+        fallback=fallback,
+        level=logging.WARNING,
+    )
+    return fallback
 
 
 def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:

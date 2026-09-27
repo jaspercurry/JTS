@@ -59,7 +59,7 @@ def observe(values: Mapping[str, str], asound_root: Path, outputd_socket: str, l
             continue
         channels[card] = (
             mic.capture_channels if mic and card == mic.alsa_card_name
-            else xvf3800._capture_channels_for_card(card, asound_root=asound_root)
+            else xvf3800.capture_channels_for_card(card, asound_root=asound_root)
         )
         usb_id = read_card_usb_id(asound_root / card)
         if usb_id:
