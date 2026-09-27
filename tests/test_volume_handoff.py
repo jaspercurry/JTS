@@ -40,7 +40,6 @@ def carrier(tmp_path):
         persisted_carrier=lambda: persistence.load().main_volume_db,
         write_guard=AsyncMock(side_effect=write_guard),
         push_source=AsyncMock(return_value=True),
-        camilla_locked=AsyncMock(return_value=False),
         write_level=AsyncMock(side_effect=write_level),
         handoff_settle_sec=0.0,
         push_settle_sec=0.0,
@@ -150,26 +149,24 @@ async def test_handoff_push_failure_keeps_camilla_guarded(carrier):
 
 @pytest.mark.parametrize("source", [Source.SPOTIFY, Source.BLUETOOTH])
 @pytest.mark.parametrize(
-    "level,live_db,saved_db,muted,include_live,locked,write_ok,expected,writes",
+    "level,live_db,saved_db,muted,include_live,write_ok,expected,writes",
     [
-        (0, 0.0, 0.0, False, False, False, True, (True, True), [percent_to_db(0)]),
-        (50, 0.0, 0.0, False, True, False, True, (True, False), []),
-        (50, -20.0, 0.0, False, False, False, True, (True, False), []),
-        (50, -20.0, 0.0, False, True, False, True, (True, True), [0.0]),
-        (50, 0.0, -20.0, False, False, False, True, (True, True), [0.0]),
-        (50, 0.0, 0.0, True, False, False, True, (True, True), [0.0]),
-        (50, -20.0, -20.0, False, True, True, True, (False, False), []),
-        (50, -20.0, -20.0, False, True, False, False, (False, False), [0.0]),
+        (0, 0.0, 0.0, False, False, True, (True, True), [percent_to_db(0)]),
+        (50, 0.0, 0.0, False, True, True, (True, False), []),
+        (50, -20.0, 0.0, False, False, True, (True, False), []),
+        (50, -20.0, 0.0, False, True, True, (True, True), [0.0]),
+        (50, 0.0, -20.0, False, False, True, (True, True), [0.0]),
+        (50, 0.0, 0.0, True, False, True, (True, True), [0.0]),
+        (50, -20.0, -20.0, False, True, False, (False, False), [0.0]),
     ],
 )
 async def test_push_confirmation_reports_only_completed_carrier_changes(
     carrier, source, level, live_db, saved_db, muted, include_live,
-    locked, write_ok, expected, writes,
+    write_ok, expected, writes,
 ):
     owner, cam, persistence = carrier
     cam.db, cam.muted = live_db, muted
     persistence.save_now(saved_db)
-    owner._camilla_locked.return_value = locked
     owner._set_camilla_db.side_effect = None
     owner._set_camilla_db.return_value = write_ok
 

@@ -1404,10 +1404,7 @@ class WakeLoop:
         jasper-control clients can render correct state without polling
         the spend-cap or connection state separately.
 
-        ``camilla_volume_locked`` is the authoritative cross-daemon signal
-        for whether a remote/web-slider Camilla write must be deferred. Fan-in
-        can duck program audio while leaving this false, so ``duck_active``
-        remains user-facing session telemetry rather than a volume lock.
+        ``duck_active`` is session telemetry, not a volume lock (ADR-0376).
         """
         # Legs whose consumer loop is alive right now, not merely
         # configured — /aec reports configured intent from aec_mode.env.
@@ -1451,10 +1448,6 @@ class WakeLoop:
             "mic_muted": self._mic_muted,
             "measurement_active": self._measurement_active.is_set(),
             "duck_active": self._ducker.is_ducked,
-            "camilla_volume_locked": bool(
-                self._ducker.is_ducked
-                and getattr(self._ducker, "locks_camilla_volume", True)
-            ),
             "assistant_output": {
                 "active": self._output_gate.is_active,
                 "kind": self._output_gate.active_kind,

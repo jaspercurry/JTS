@@ -76,11 +76,6 @@ class FanInDucker:
     def is_ducked(self) -> bool:
         return self._ducked
 
-    @property
-    def locks_camilla_volume(self) -> bool:
-        """Fan-in ducking leaves Camilla available as the master volume."""
-        return False
-
     async def duck(self) -> None:
         if self._ducked:
             return
@@ -672,9 +667,7 @@ class AssistantOutput:
     ) -> None:
         await self.prepare_loudness()
         await self.tts.pause_content_meter()
-        self.volume_coordinator.note_voice_session(
-            True, camilla_volume_locked=getattr(self.ducker, "locks_camilla_volume", True),
-        )
+        self.volume_coordinator.note_voice_session(True)
         if feedback is not None:
             self.start_turn_feedback(episode, feedback())
         await self.ducker.duck()
