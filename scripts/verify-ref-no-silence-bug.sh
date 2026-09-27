@@ -49,10 +49,7 @@ echo "     Spotify, BT). It doesn't matter what; we just need the"
 echo "     bridge's ref pipeline to have content flowing through it."
 echo ""
 
-if ! ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" true; then
-    echo "ERROR: cannot reach ${PI_USER}@${PI_HOST}" >&2
-    exit 1
-fi
+ssh_remote true || die "ERROR: cannot reach ${PI_USER}@${PI_HOST}"
 
 aec_debug_record_capture "$OUT_REMOTE" 5 "$DURATION" keep \
     "Capturing ${DURATION}s now." 2>&1 | tee "$OUT_LOCAL/run.log"

@@ -64,10 +64,10 @@ if ! [[ "$NEW_BASE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
 fi
 
 SSH_TARGET="${PI_USER}@${PI_HOST}"
-# ConnectTimeout=8 (default 5 elsewhere): also probes NEW_TARGET, a not-yet-
-# claimed mDNS name whose resolution can take longer to fail than an
-# established host's.
-SSH_OPTS=("${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=8)
+# ConnectTimeout=8, ahead of the shared set's 5 (ssh keeps the first value of
+# a repeated -o): also probes NEW_TARGET, a not-yet-claimed mDNS name whose
+# resolution can take longer to fail than an established host's.
+SSH_OPTS=(-o ConnectTimeout=8 "${SSH_BATCH_OPTS[@]}")
 
 remote() {
     ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$@"
@@ -81,9 +81,9 @@ echo "==> Renaming ${PI_HOST} → ${NEW_FQDN}"
 # Preflight: current target answers, with passwordless sudo (the same
 # posture deploy-to-pi.sh requires — see docs/bringup.md Phase 2.5).
 remote_sudo "true" >/dev/null 2>&1 \
-    || { echo "rename-speaker: cannot reach ${SSH_TARGET} with passwordless sudo" >&2; exit 1; }
+    || die "rename-speaker: cannot reach ${SSH_TARGET} with passwordless sudo"
 remote_sudo "test -r /usr/local/lib/jasper/jasper-env-file.sh" >/dev/null 2>&1 \
-    || { echo "rename-speaker: ${SSH_TARGET} is missing the shared env-file lib — run bash scripts/deploy-to-pi.sh first" >&2; exit 1; }
+    || die "rename-speaker: ${SSH_TARGET} is missing the shared env-file lib — run bash scripts/deploy-to-pi.sh first"
 
 OLD_BASE="$(remote "hostname" | tr -d '[:space:]')"
 if [[ "$OLD_BASE" == "$NEW_BASE" ]]; then
@@ -98,9 +98,8 @@ RESOLVED_IP="$(remote "avahi-resolve-host-name -4 ${NEW_FQDN} 2>/dev/null" \
 if [[ -n "$RESOLVED_IP" ]]; then
     OWN_IPS="$(remote "hostname -I" || true)"
     if ! grep -qw "$RESOLVED_IP" <<<"$OWN_IPS"; then
-        echo "rename-speaker: ${NEW_FQDN} already resolves to ${RESOLVED_IP}" \
-             "(not this speaker) — pick a different name" >&2
-        exit 1
+        die "rename-speaker: ${NEW_FQDN} already resolves to ${RESOLVED_IP}" \
+            "(not this speaker) — pick a different name"
     fi
 fi
 

@@ -32,7 +32,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 
-ssh "${PI_USER}@${PI_HOST}" 'sudo systemctl restart shairport-sync nqptp
+ssh_remote 'sudo systemctl restart shairport-sync nqptp
 sleep 1
 echo "shairport-sync: $(systemctl is-active shairport-sync)"
 echo "nqptp:          $(systemctl is-active nqptp)"

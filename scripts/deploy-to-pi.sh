@@ -61,10 +61,6 @@ DEPLOY_DIRECTION=""
 
 cd "$REPO_ROOT"
 
-ssh_remote() {
-    ssh "${SSH_BATCH_OPTS[@]}" "$SSH_TARGET" "$@"
-}
-
 ssh_remote_tty() {
     ssh -tt "${SSH_BATCH_OPTS[@]}" "$SSH_TARGET" "$@"
 }

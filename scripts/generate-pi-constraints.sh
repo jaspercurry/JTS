@@ -59,8 +59,7 @@ echo "==> reading resolved dependency set from ${PI_USER}@${PI_HOST}:${PI_PIP}"
 # provenance facts (python/pip versions, deployed build). `pip freeze`
 # already excludes pip/setuptools/wheel; install.sh pins those two
 # explicitly and separately.
-remote_out="$(ssh -o ConnectTimeout=10 "${PI_USER}@${PI_HOST}" \
-    "set -e
+remote_out="$(ssh_remote "set -e
      echo \"PY: \$(/opt/jasper/.venv/bin/python --version 2>&1)\"
      echo \"PIP: \$(${PI_PIP} --version)\"
      echo \"BUILD: \$(sudo cat /var/lib/jasper/build.txt 2>/dev/null | tr '\n' ' ' || echo unknown)\"
@@ -83,10 +82,7 @@ pins="$(
         | LC_ALL=C sort -f || true
 )"
 
-if [[ -z "${pins}" ]]; then
-    echo "error: pip freeze on ${PI_HOST} produced no name==version pins" >&2
-    exit 1
-fi
+[[ -n "${pins}" ]] || die "error: pip freeze on ${PI_HOST} produced no name==version pins"
 
 {
     echo "# deploy/constraints-pi.pins — Pi-generated pip constraints."
