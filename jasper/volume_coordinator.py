@@ -66,9 +66,14 @@ from .volume_echo import (
 )
 from .volume_owner import VolumeClaimRefused, VolumeOwner
 from .volume_scales import native_to_listening_level
-from .volume_curve import percent_to_db
+from .volume_curve import (
+    guard_in_effect,
+    main_mute_for_db,
+    main_mute_for_level,
+    percent_to_db,
+)
 from .volume_floor import RECONCILE_DRIFT_DB
-from .volume_handoff import VolumeHandoff, main_mute_for_level
+from .volume_handoff import VolumeHandoff
 from .volume_state import VolumeState, OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
@@ -92,7 +97,6 @@ _measurement_monotonic = time.monotonic
 CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
-MUTE_DB_EPSILON = 1e-6
 # The hold is read inside `_reconcile_write_lock`, which MEASURE_PAUSE's
 # `note_measurement_active` must take within the voice daemon's setup budget
 # (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`, 2.25 s);
@@ -347,7 +351,7 @@ class VolumeCoordinator:
             # Spotify and Bluetooth carry listening_level on their own
             # protocol surfaces. Push-mode 0% is the exception: still
             # assert Camilla main_mute as the content/music mute guarantee.
-            if await self._camilla_carries_level(source):
+            if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                 await self._set_camilla(target_level)
             else:
                 pin_db = 0.0 if target_level > 0 else percent_to_db(0)
@@ -771,7 +775,7 @@ class VolumeCoordinator:
                     return False
                 self._refresh_from_disk()
                 if level == self._level and self._pre_mute_level is None:
-                    if await self._camilla_carries_level(source):
+                    if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                         publish_needed = await self._sync_camilla_observed_level(
                             source, level,
                         )
@@ -798,7 +802,7 @@ class VolumeCoordinator:
                     self._persistence.save_mute_state(None, None)
                     self._confirmed_push_mute_tokens.pop(source, None)
                     self._persistence.save_listening_level(level)
-                    if await self._camilla_carries_level(source):
+                    if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                         await self._sync_camilla_observed_level(source, level)
                     else:
                         await self._handoff.confirm_push_mode_carrier(
@@ -958,7 +962,7 @@ class VolumeCoordinator:
     ) -> None:
         """Called by the observer when active_renderers reports a
         source-state change. Single point that touches camilla
-        across the boundary, driven by `_camilla_carries_level`:
+        across the boundary, driven by each source's `volume_mode`:
 
         - camilla-master → push-mode (AirPlay/idle → Spotify/BT):
           push the effective level to the new renderer,
@@ -982,8 +986,8 @@ class VolumeCoordinator:
             return
         if prev_source == current_source:
             return
-        prev_carries = await self._camilla_carries_level(prev_source)
-        curr_carries = await self._camilla_carries_level(current_source)
+        prev_carries = volume_mode(prev_source) == VolumeMode.CAMILLA_MASTER
+        curr_carries = volume_mode(current_source) == VolumeMode.CAMILLA_MASTER
         async with self._mutation():
             # The verdict was resolved before the cross-daemon lease. Re-check
             # source ownership at the ordering point, as
@@ -1165,7 +1169,7 @@ class VolumeCoordinator:
                 )
             if current_db is None:
                 source = await self._active_source()
-                if await self._camilla_carries_level(source):
+                if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                     downstream_db = percent_to_db(state.effective_percent)
                 else:
                     downstream_db = self._push_carrier_target_db(
@@ -1355,7 +1359,7 @@ class VolumeCoordinator:
         self._refresh_from_disk()
         effective_level = self._effective_level()
         source = await self._active_source()
-        if await self._camilla_carries_level(source):
+        if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
             return percent_to_db(effective_level)
         muted = main_mute_for_level(effective_level)
         return self._push_carrier_target_db(
@@ -1367,7 +1371,7 @@ class VolumeCoordinator:
         # Preserve content mute and failed-push attenuation through duck release.
         if muted:
             return percent_to_db(0)
-        if persisted_db is not None and persisted_db < -RECONCILE_DRIFT_DB:
+        if guard_in_effect(persisted_db):
             return persisted_db
         return 0.0
 
@@ -1420,7 +1424,7 @@ class VolumeCoordinator:
             source = source if source is not None else await self._active_source()
         except Exception:  # noqa: BLE001
             return
-        if not await self._camilla_carries_level(source):
+        if volume_mode(source) != VolumeMode.CAMILLA_MASTER:
             return
         expected_level = self._effective_level()
         expected_db = percent_to_db(expected_level)
@@ -1456,7 +1460,7 @@ class VolumeCoordinator:
                     source = await self._active_source()
                 except Exception:  # noqa: BLE001
                     return
-                if not await self._camilla_carries_level(source):
+                if volume_mode(source) != VolumeMode.CAMILLA_MASTER:
                     return
                 self._refresh_from_disk()
                 expected_level = self._effective_level()
@@ -1632,24 +1636,6 @@ class VolumeCoordinator:
             return Source.USBSINK
         return Source.IDLE
 
-    async def _camilla_carries_level(self, source: Source) -> bool:
-        """Whether camilla.main_volume IS the user-facing master volume
-        for `source`, vs. delegating to a downstream slider.
-
-        True (camilla-as-master): camilla tracks listening_level. Used
-        for IDLE, AIRPLAY, and USBSINK — these camilla-master modes either
-        can't reliably mirror receiver-side volume back to the
-        controlling client (AirPlay 2 modern senders) or have no
-        downstream slider to push to (the gadget's host-side slider
-        is one-way input we observe, not a target we write).
-
-        False (push-mode): the source's own slider carries
-        listening_level and Camilla is pinned at 0 dB except for the
-        explicit 0% content-mute floor. Used for SPOTIFY (Web API) and
-        BLUETOOTH (AVRCP).
-        """
-        return volume_mode(source) == VolumeMode.CAMILLA_MASTER
-
     async def _camilla_locked(self) -> bool | None:
         if self._camilla_volume_locked:
             return True
@@ -1660,10 +1646,6 @@ class VolumeCoordinator:
         except Exception as e:  # noqa: BLE001
             logger.warning("duck_active_probe raised %s; treating as unknown", e)
             return None
-
-    @staticmethod
-    def _main_mute_for_db(db: float) -> bool:
-        return float(db) <= percent_to_db(0) + MUTE_DB_EPSILON
 
     async def _read_camilla_volume_and_mute(
         self,
@@ -1725,7 +1707,7 @@ class VolumeCoordinator:
         with its own two writers, and folding it into a level claim would give
         the owner a second question to answer.
         """
-        target_mute = self._main_mute_for_db(db)
+        target_mute = main_mute_for_db(db)
         if target_mute:
             mute_ok = await self._set_camilla_main_mute(
                 True, context=context,
@@ -1754,7 +1736,7 @@ class VolumeCoordinator:
         """
         camilla_locked = await self._camilla_locked()
         if camilla_locked is True:
-            target_mute = self._main_mute_for_db(db)
+            target_mute = main_mute_for_db(db)
             if target_mute:
                 mute_ok = await self._set_camilla_main_mute(
                     True, context=context,
