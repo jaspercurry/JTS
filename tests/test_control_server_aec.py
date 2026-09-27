@@ -44,7 +44,7 @@ def test_aec_leg_restarts_reconciler(monkeypatch, tmp_path, server_with_coordina
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
 
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(aec_endpoints, "aec_full_status", lambda: {"mode": "auto"})
     calls = _record_broker(monkeypatch)
 
@@ -82,7 +82,7 @@ def test_aec_profile_restarts_reconciler(
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
 
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(mode_file))
     monkeypatch.setattr(aec_endpoints, "aec_full_status", lambda: {"profile": profile})
     calls = _record_broker(monkeypatch)
 
@@ -151,7 +151,7 @@ def test_aec_restart_502s_when_the_broker_refuses(
     base, _ = server_with_coordinator
     mode_file = tmp_path / "aec_mode.env"
     mode_file.write_text("JASPER_AEC_MODE=auto\n")
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(mode_file))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(mode_file))
     model_file = tmp_path / "wake_model.env"
     model_file.write_text("JASPER_WAKE_MODEL=hey_jasper\n")
     monkeypatch.setattr(aec_endpoints, "_WAKE_MODEL_FILE", str(model_file))
@@ -334,7 +334,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
         lambda: pytest.fail("source selection must not recompose the gadget"),
     )
     monkeypatch.setattr(
-        aec_endpoints,
+        aec_routes,
         "_kick_aec_reconciler",
         lambda **_kw: pytest.fail("source selection must not run the reconciler"),
     )

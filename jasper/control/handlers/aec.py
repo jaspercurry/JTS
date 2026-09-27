@@ -12,7 +12,12 @@ import time
 from typing import Any, cast
 
 from ... import enhanced_aec, wake_models
-from ...audio_profile_state import normalize_audio_input_profile
+from ...audio_profile_state import (
+    WAKE_LEG_DEFAULTS,
+    normalize_audio_input_profile,
+    profile_env_updates,
+)
+from ...atomic_io import locked_update_env_file
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
 from ...usb_mic import (
@@ -33,6 +38,78 @@ _usb_mic_leg_apply_pending: tuple[str, float] | None = None
 # ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
 # probe before either start lands.
 _aec_commission_start_lock = threading.Lock()
+
+
+_AEC_MODE_ENV_OWNER = "JTS /aec mode control"
+# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
+# chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
+# "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
+# production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);
+# the two per-beam toggles below only add extra wake detectors.
+_TOGGLE_TO_TOKEN = {
+    "raw": ("off",),
+    "dtln": ("dtln",),
+    "chip_aec_150": ("chip_aec_150",),
+    "chip_aec_210": ("chip_aec_210",),
+}
+_TOGGLE_TO_ENV_KEY = {
+    name.removeprefix("leg_"): key
+    for name, key, _ in WAKE_LEG_DEFAULTS
+    if name != "leg_chip_aec"
+}
+
+
+
+def _write_aec_leg(leg: str, enabled: bool) -> None:
+    """Atomic write of one wake-leg boolean, preserving every other key
+    in aec_mode.env (mode, the other leg).
+
+    Caller is responsible for kicking the reconciler — this just
+    persists the user's intent. Restart blast-radius lives in the
+    reconciler since it has the actual mode + presence context."""
+    if leg not in _TOGGLE_TO_TOKEN:
+        raise ValueError(f"invalid leg: {leg!r}")
+    locked_update_env_file(
+        aec_endpoints.AEC_MODE_FILE,
+        {
+            _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
+            "JASPER_AUDIO_INPUT_PROFILE": "custom",
+        },
+        owner=_AEC_MODE_ENV_OWNER,
+    )
+
+
+
+def _write_audio_input_profile(profile: str) -> None:
+    """Write a canonical audio input profile plus rollback-safe leg keys."""
+
+    normalized = normalize_audio_input_profile(profile, default="")
+    if not normalized or normalized == "custom":
+        raise ValueError(f"invalid profile: {profile!r}")
+    locked_update_env_file(
+        aec_endpoints.AEC_MODE_FILE,
+        profile_env_updates(normalized),
+        mode=0o644,
+        owner=_AEC_MODE_ENV_OWNER,
+    )
+
+
+
+def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
+    """Apply a persisted AEC-mode/leg change through the reconciler.
+
+    Use `restart`, not `start`: the reconciler is a Type=oneshot unit, so a
+    `start` issued while the previous reconcile is still active is a no-op
+    and would leave runtime env one click behind the UI.
+    """
+    return restart_broker.manage_units(
+        "jasper-aec-reconcile.service",
+        verb="restart",
+        reason=reason,
+        no_block=True,
+        timeout=5.0,
+    )
+
 
 
 def _commission_start_body(*, running: bool) -> dict[str, Any]:
@@ -81,11 +158,11 @@ class AecRoutes(ControlHandlerMixin):
         body = self._read_json()
         leg = body.get("leg")
         enabled_val = body.get("enabled")
-        if leg not in aec_endpoints._TOGGLE_TO_TOKEN:
+        if leg not in _TOGGLE_TO_TOKEN:
             self._send_json(
                 {
                     "error": "leg must be one of: "
-                    + ", ".join(sorted(aec_endpoints._TOGGLE_TO_TOKEN))
+                    + ", ".join(sorted(_TOGGLE_TO_TOKEN))
                 },
                 status=400,
             )
@@ -97,14 +174,14 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            aec_endpoints._write_aec_leg(leg, enabled_val)
+            _write_aec_leg(leg, enabled_val)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
                 status=502,
             )
             return
-        kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
+        kick = _kick_aec_reconciler(reason="aec_leg")
         if not kick.get("ok"):
             self._send_refused(
                 error=(
@@ -142,14 +219,14 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            aec_endpoints._write_audio_input_profile(profile)
+            _write_audio_input_profile(profile)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
                 status=400 if isinstance(e, ValueError) else 502,
             )
             return
-        kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
+        kick = _kick_aec_reconciler(reason="aec_profile")
         if not kick.get("ok"):
             self._send_refused(
                 error=(

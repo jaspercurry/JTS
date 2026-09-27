@@ -2,17 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the per-leg + threshold helpers in
-jasper.control.aec_endpoints. These are the Python-side counterpart to
-tests/test_aec_reconcile.py (which covers the bash mapping from
-the same aec_mode.env state file to /etc/jasper/jasper.env).
-
-The HTTP endpoints (/aec, /aec/leg, /aec/threshold) are exercised
-end-to-end by test_control_server.py via the live ThreadingHTTPServer
-fixture — that file is the right place to add route-level tests if
-the endpoint behavior changes. Here we pin the helpers themselves
-so a regression in parse/write logic surfaces fast.
-"""
+"""AEC status reads and profile-intent writes. HTTP cases live in test_control_server_aec."""
 from __future__ import annotations
 
 import json
@@ -32,6 +22,7 @@ from jasper.chip_aec.policy import (
 )
 from jasper.cli.doctor import aec
 from jasper.control import aec_endpoints
+from jasper.control.handlers import aec as aec_routes
 from jasper.mics import xvf3800
 from jasper.web import wake_setup
 
@@ -97,10 +88,10 @@ def test_batched_probe_spawns_once_and_falls_back_on_an_unresolved_unit(monkeypa
 
 @pytest.fixture
 def aec_mode_file(tmp_path: Path, monkeypatch):
-    """Redirect _AEC_MODE_FILE at a tmp path so the helpers don't
+    """Redirect AEC_MODE_FILE at a tmp path so the helpers don't
     touch the real /var/lib/jasper/aec_mode.env."""
     path = tmp_path / "aec_mode.env"
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(path))
     return path
 
 
@@ -228,7 +219,7 @@ def test_write_aec_leg_preserves_other_keys(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    aec_endpoints._write_aec_leg("dtln", True)
+    aec_routes._write_aec_leg("dtln", True)
     body = aec_mode_file.read_text()
     assert "JASPER_AEC_MODE=disabled" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
@@ -241,7 +232,7 @@ def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
     seed the file must still succeed — write_env_file creates the
     file path's parent if needed."""
     assert not aec_mode_file.exists()
-    aec_endpoints._write_aec_leg("raw", False)
+    aec_routes._write_aec_leg("raw", False)
     state = aec_endpoints._read_aec_state()
     assert state["leg_raw"] is False
     assert state["profile"] == "custom"
@@ -249,7 +240,7 @@ def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
 
 def test_write_aec_leg_rejects_invalid_leg(aec_mode_file):
     with pytest.raises(ValueError, match="invalid leg"):
-        aec_endpoints._write_aec_leg("not-a-leg", True)
+        aec_routes._write_aec_leg("not-a-leg", True)
 
 
 def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
@@ -257,7 +248,7 @@ def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
     bash reconciler's normalize_bool reads these on the next pass
     and "" would silently default to the type default rather than
     the operator's explicit choice."""
-    aec_endpoints._write_aec_leg("dtln", False)
+    aec_routes._write_aec_leg("dtln", False)
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_DTLN=0" in body
     assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
@@ -269,7 +260,7 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=1\n"
     )
-    aec_endpoints._write_audio_input_profile("xvf_chip_aec")
+    aec_routes._write_audio_input_profile("xvf_chip_aec")
     body = aec_mode_file.read_text()
     assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in body
     assert "JASPER_AEC_MODE=auto" in body
@@ -282,7 +273,7 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
 
 def test_write_audio_input_profile_rejects_custom(aec_mode_file):
     with pytest.raises(ValueError, match="invalid profile"):
-        aec_endpoints._write_audio_input_profile("custom")
+        aec_routes._write_audio_input_profile("custom")
 
 
 def test_aec_mode_interleaved_writers_preserve_each_others_keys(
@@ -310,13 +301,13 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
 
     def write_raw_off():
         try:
-            aec_endpoints._write_aec_leg("raw", False)
+            aec_routes._write_aec_leg("raw", False)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
     def write_dtln_on():
         try:
-            aec_endpoints._write_aec_leg("dtln", True)
+            aec_routes._write_aec_leg("dtln", True)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
@@ -404,16 +395,16 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     because one UI affordance can eventually map to several concrete legs."""
     from jasper.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
-    for toggle, tokens in aec_endpoints._TOGGLE_TO_TOKEN.items():
+    for toggle, tokens in aec_routes._TOGGLE_TO_TOKEN.items():
         for token in tokens:
             assert token in wake_tokens, (
                 f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
             )
     # The collision the map exists to document: operator "raw" == "off".
-    assert aec_endpoints._TOGGLE_TO_TOKEN["raw"] == ("off",)
+    assert aec_routes._TOGGLE_TO_TOKEN["raw"] == ("off",)
     assert by_token("off").udp_port == 9877
-    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
-    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
+    assert aec_routes._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
+    assert aec_routes._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
 
 
 # ---------- _write_wake_threshold ------------------------------------------
@@ -1476,7 +1467,7 @@ def test_write_aec_leg_chip_aec_150_writes_boolean(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    aec_endpoints._write_aec_leg("chip_aec_150", True)
+    aec_routes._write_aec_leg("chip_aec_150", True)
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved

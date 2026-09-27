@@ -1540,7 +1540,7 @@ def test_aec_mode_file_readers_share_one_parser(
     if body is not None:
         path.write_text(body)
     monkeypatch.setattr(aec, "DEFAULT_AEC_MODE_PATH", path)
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(path))
 
     assert (
         aec._aec_mode_setting(),

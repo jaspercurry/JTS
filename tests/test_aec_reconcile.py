@@ -2043,7 +2043,7 @@ def test_ensure_mode_file_backfills_around_a_concurrent_leg_write(
 ) -> None:
     """jasper-control and this backfill write aec_mode.env at the same time.
 
-    The holder is aec_endpoints._write_aec_leg's shape: take the advisory lock,
+    The holder takes the advisory lock,
     read, write the whole file back. An unlocked `grep -q || printf >>` backfill
     reads absence before that write-back and appends after it, so its defaults
     are either discarded (the whole file is republished from the older snapshot)
