@@ -1168,14 +1168,8 @@ def reason_message(
     evidence-keyed code means adding a branch HERE; a caller that renders
     ``spec.message`` directly re-opens the gap.
 
-    Exhaustion is state-aware: :meth:`authorize_begin` keeps the diagnosis
-    selected here but replaces retry advice with the terminal outcome. The
-    observation must agree across surfaces; an action that is no longer
-    available must not survive.
-
     ``spec`` is passed in rather than looked up so each caller keeps its own
-    existence guard — ``REASON_REGISTRY[code]`` raising ``KeyError`` on an
-    unregistered code is load-bearing in :meth:`_refuse`.
+    existence guard.
 
     Facts are keyword-only and default to "not established", so a caller
     holding none of them gets the registry's own renderings.
@@ -1193,24 +1187,10 @@ def reason_message(
     return message
 
 
-def reason_diagnosis(
-    code: str,
-    spec: ReasonSpec,
-    *,
-    pilot_heard: bool | None = None,
-    reflection_measured: bool | None = None,
-) -> str:
-    """The observation inside any retryable reason, without retry advice.
-
-    The two evidence-keyed reasons select their diagnosis from this capture's
-    facts; every literal reason reads the diagnosis stored in its
-    :class:`RetryableReasonCopy`, which also composes the registry's full
-    retryable ``message``/``banner``.
+def reason_diagnosis(spec: ReasonSpec) -> str:
+    """The observation inside a retryable reason, without retry advice: the
+    diagnosis its :class:`RetryableReasonCopy` stores, ``""`` for a row with none.
     """
-    if code == REASON_LOCATE_FAILED:
-        return locate_failed_diagnosis(pilot_heard)
-    if code == REASON_VERIFY_INCONCLUSIVE:
-        return verify_inconclusive_diagnosis(reflection_measured)
     return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
 
 
@@ -1247,17 +1227,6 @@ class PhaseVerdict:
     accepted: bool
     code: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
-    # Whether THIS capture's leading pilot pair cleared the room's own in-band
-    # floor — ``analysis.pilot_snr_ok``, carried verbatim including its
-    # ``None`` (no pilot evidence). The fact ``locate_failed``'s copy branches
-    # on. Carried on the verdict rather than dug out of ``payload`` because it
-    # is decided at the gate, where the analysis is in hand.
-    pilot_heard: bool | None = None
-    # VERIFY's gate discriminator for ``verify_inconclusive``, on the verdict
-    # for the same reason: terminal exhaustion must repeat this capture's
-    # diagnosis, not the registry's evidence-unknown fallback.
-    reflection_measured: bool | None = None
-
     evidence: dict[str, float | bool | str] = field(default_factory=dict)
 
     capabilities: dict[str, bool] = field(default_factory=dict)

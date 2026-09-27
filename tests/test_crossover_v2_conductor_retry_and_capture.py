@@ -36,7 +36,7 @@ def test_every_retriable_reason_has_one_structured_diagnosis_source():
     for code, spec in retriable.items():
         assert spec.retry_copy is not None, code
         assert (spec.message or spec.banner) == spec.retry_copy.message, code
-        assert refusal_copy.reason_diagnosis(code, spec), code
+        assert refusal_copy.reason_diagnosis(spec), code
 
 
 def test_a_vertical_seat_states_its_elevation_and_still_banks_no_bearing():
