@@ -143,7 +143,7 @@ def _compute_grouping_runtime(cfg: object) -> dict:
     # `derive_grouping_runtime` ignores it otherwise.
     stream_clients = None
     if cfg.role == "leader":
-        # The stream-client probe adds the 2026-06-11 silent-bond classes
+        # The stream-client probe detects silent bonds
         # (stale group→stream binding / muted client / leader's own client
         # absent); RPC failure maps to an explicit unreachable verdict, same
         # as /state — the doctor and the dashboard must tell one story.
@@ -891,14 +891,10 @@ def check_grouping_channel_pick() -> CheckResult:
 def check_grouping_tts_lane() -> CheckResult:
     """A bonded passive member's assistant TTS must route to its OWN outputd
     (member-local, instant), not ride the synced stream (delayed by the sync
-    buffer + audible on every bonded speaker — the retired Increment 5 PR-1
-    interim behavior). Active endpoints are the crossover safety exception.
+    buffer + audible on every bonded speaker). Active endpoints are the
+    crossover safety exception.
     The route matrix wires grouping-voice.env and grouping-outputd.env so the
-    voice socket, voice park flag, and outputd TTS server state agree.
-
-    (Replaces ``check_grouping_tts_interim``, the standing bonded warn
-    that existed while TTS still mixed in fanin pre-stream — Increment 5
-    PR-2 closed that gap.)"""
+    voice socket, voice park flag, and outputd TTS server state agree."""
     # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
     from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
@@ -1125,8 +1121,8 @@ def check_grouping_household_credential() -> CheckResult:
     """A BONDED member must hold the household credential — the device-to-device
     secret that authenticates the cross-device ``/grouping/set`` fan-out.
 
-    A bonded member with NO secret is the recovery shape (the 2026-05-23
-    ext4-loss class, or an adopt that never landed): its ``/grouping/set`` is
+    A bonded member with NO secret is the recovery shape after filesystem
+    loss or an incomplete adopt: its ``/grouping/set`` is
     fail-safe-OPEN to any LAN caller until it re-pairs, and this is the only
     place that loss is visible. A solo speaker needs no credential (absence =
     not-yet-paired), so it reads ``ok``. Strictly secret-free — it reports only
