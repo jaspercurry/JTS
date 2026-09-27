@@ -148,13 +148,14 @@ def test_shutdown_retry_accepts_loop_that_closed_after_join_timeout(
 def test_begin_session_sets_id_and_member(backend) -> None:
     sid = backend.begin_session("jasper")
     assert sid is not None
-    assert backend.session_id() == sid
-    assert backend.member() == "jasper"
+    snap = backend.status_snapshot()
+    assert snap["session_id"] == sid
+    assert snap["member"] == "jasper"
 
 
 def test_begin_session_sanitizes_member(backend) -> None:
     backend.begin_session("Jasper Curry!")
-    assert backend.member() == "jaspercurry"
+    assert backend.status_snapshot()["member"] == "jaspercurry"
 
 
 def test_begin_session_rejects_empty_member(backend) -> None:
@@ -391,7 +392,7 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     metadata_path, data = _session_metadata(tmp_path)
     assert metadata_path.name.startswith("enroll_jasper_")
     assert data["member"] == "jasper"
-    assert data["session_id"] == backend.session_id()
+    assert data["session_id"] == backend.status_snapshot()["session_id"]
     assert len(data["clips"]) == 1
     assert data["clips"][0]["clip_id"] == clip.clip_id
     assert data["clips"][0]["condition"] == "quiet"
@@ -882,7 +883,9 @@ async def test_recording_task_stop_idempotent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_recovery_loads_recent_session(tmp_path: Path) -> None:
+def test_recovery_loads_recent_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """A fresh backend on a corpus dir with a recent metadata file
     must load the session into memory so the UI can pick up where
     the operator left off after a crash."""
@@ -913,20 +916,17 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
         "session_id": "20260525T120000Z",
     }))
 
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.session_id() == "20260525T120000Z"
-        assert b.member() == "jasper"
+    with _started_backend(monkeypatch, tmp_path) as b:
+        snap = b.status_snapshot()
+        assert snap["session_id"] == "20260525T120000Z"
+        assert snap["member"] == "jasper"
         clips = b.list_clips()
         assert len(clips) == 1
         assert clips[0].clip_id == "abc-123"
-    finally:
-        b.shutdown()
 
 
 def test_recovery_ignores_recent_session_without_active_marker(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """Recent metadata alone is historical, not an append target.
 
@@ -942,16 +942,15 @@ def test_recovery_ignores_recent_session_without_active_marker(
         "ports": {}, "clips": [],
     }))
 
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.session_id() is None
-        assert b.member() is None
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        snap = b.status_snapshot()
+        assert snap["session_id"] is None
+        assert snap["member"] is None
 
 
-def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
+def test_recovery_ignores_stale_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """An active marker older than RESUME_WINDOW_SEC must NOT be
     loaded — operator opens the UI tomorrow shouldn't see clips
     from a session they abandoned overnight."""
@@ -969,16 +968,15 @@ def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
     os.utime(md_file, (old_mtime, old_mtime))
     os.utime(marker, (old_mtime, old_mtime))
 
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.session_id() is None
-        assert b.member() is None
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        snap = b.status_snapshot()
+        assert snap["session_id"] is None
+        assert snap["member"] is None
 
 
-def test_recovery_ignores_corrupt_json(tmp_path: Path) -> None:
+def test_recovery_ignores_corrupt_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """A corrupt metadata file must not crash startup — just skip
     recovery + log + start with a fresh state."""
     out = tmp_path / "out"
@@ -986,26 +984,20 @@ def test_recovery_ignores_corrupt_json(tmp_path: Path) -> None:
     md_dir.mkdir(parents=True)
     (md_dir / "enroll_jasper_corrupt.json").write_text("{not json")
 
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.session_id() is None
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        assert b.status_snapshot()["session_id"] is None
 
 
-def test_recovery_handles_missing_metadata_dir(tmp_path: Path) -> None:
+def test_recovery_handles_missing_metadata_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """No metadata dir → no crash, no session loaded."""
-    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
-    b.start()
-    try:
-        assert b.session_id() is None
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        assert b.status_snapshot()["session_id"] is None
 
 
 def test_begin_session_after_recovery_starts_fresh(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """After recovery, calling begin_session() with a different (or
     same) member must replace the recovered state with a fresh
@@ -1021,18 +1013,14 @@ def test_begin_session_after_recovery_starts_fresh(
         "session_id": "recovered",
     }))
 
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
+    with _started_backend(monkeypatch, tmp_path) as b:
         # Recovery loaded the old session
-        assert b.session_id() == "recovered"
+        assert b.status_snapshot()["session_id"] == "recovered"
         # Beginning a new session replaces it
         new_id = b.begin_session("brittany")
         assert new_id != "recovered"
-        assert b.member() == "brittany"
+        assert b.status_snapshot()["member"] == "brittany"
         assert b.list_clips() == []
-    finally:
-        b.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -1110,8 +1098,9 @@ def test_begin_session_refuses_while_recording_start_is_reserved(
             match="initialization in progress",
         ):
             backend.begin_session("brittany")
-        assert backend.session_id() == original_session_id
-        assert backend.member() == "jasper"
+        snap = backend.status_snapshot()
+        assert snap["session_id"] == original_session_id
+        assert snap["member"] == "jasper"
     finally:
         release.set()
         thread.join(timeout=2)
@@ -1796,7 +1785,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
             match="initialization in progress",
         ):
             backend.begin_session("brittany")
-        assert backend.session_id() == original_session_id
+        assert backend.status_snapshot()["session_id"] == original_session_id
     finally:
         release.set()
         thread.join(timeout=2)

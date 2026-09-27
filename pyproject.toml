@@ -354,7 +354,6 @@ module = [
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.wake_corpus.recording_backend",
     "jasper.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",

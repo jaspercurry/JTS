@@ -25,6 +25,7 @@ from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
     _block_recording_task_start,
     _patch_udp,
+    _started_backend,
 )
 
 _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
@@ -83,20 +84,17 @@ def test_list_sessions_returns_summaries_newest_first(
     assert sessions[0]["conditions"] == {"ambient": 1}
 
 
-def test_list_sessions_marks_active(tmp_path: Path) -> None:
+def test_list_sessions_marks_active(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """The session currently loaded in memory is flagged is_active so
     the UI can render the row differently (and disable Load)."""
-    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out")
-    b.start()
-    try:
-        b.begin_session("jasper")
-        active_id = b.session_id()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        active_id = b.begin_session("jasper")
         sessions = b.list_sessions()
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == active_id
         assert sessions[0]["is_active"] is True
-    finally:
-        b.shutdown()
 
 
 @pytest.mark.parametrize("bad_data", [
@@ -151,15 +149,12 @@ def test_list_sessions_survives_delete_race_after_glob(
 def test_load_session_switches_active(
     backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    backend.begin_session("jasper", include_raw_mic_0=True)
-    first_id = backend.session_id()
+    first_id = backend.begin_session("jasper", include_raw_mic_0=True)
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     backend.stop_recording()
 
-    backend.begin_session("jasper")  # creates a 2nd session (sleeps to differ ts)
-    time.sleep(0.05)
-    second_id = backend.session_id()
+    second_id = backend.begin_session("jasper")
     assert first_id != second_id
 
     metadata = tmp_path / "out" / "metadata" / f"enroll_jasper_{first_id}.json"
@@ -177,8 +172,9 @@ def test_load_session_switches_active(
     assert result["include_raw_mic_0"] is True
     assert result["include_dtln"] is True
     assert result["include_usb_dtln"] is False
-    assert backend.session_id() == first_id
-    assert backend.include_raw_mic_0() is True
+    snap = backend.status_snapshot()
+    assert snap["session_id"] == first_id
+    assert snap["include_raw_mic_0"] is True
     # And the loaded session's clips are now visible
     assert len(backend.list_clips()) == 1
 
@@ -227,7 +223,7 @@ def test_session_transition_refuses_while_recording_start_is_reserved(
                 backend.unload_session()
             else:
                 backend.delete_session(active_session_id)
-        assert backend.session_id() == active_session_id
+        assert backend.status_snapshot()["session_id"] == active_session_id
         active_metadata = (
             tmp_path / "out" / "metadata" / f"enroll_brittany_{active_session_id}.json"
         )
@@ -286,11 +282,10 @@ def test_delete_session_removes_wavs_and_json(
 ) -> None:
     """delete_session hard-removes the WAV files and the JSON
     sidecar. The session is no longer listable."""
-    backend.begin_session("jasper")
+    sid = backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     clip = backend.stop_recording()
-    sid = backend.session_id()
 
     # WAVs and JSON present
     assert all(Path(p).is_file() for p in clip.files.values())
@@ -311,30 +306,29 @@ def test_delete_active_session_clears_in_memory_state(
     """When the operator deletes the session they have open in
     memory, the in-memory active state must be cleared so the UI
     doesn't show 'phantom' clips with broken WAV links."""
-    backend.begin_session("jasper")
+    sid = backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     backend.stop_recording()
-    sid = backend.session_id()
 
     backend.delete_session(sid)
-    assert backend.session_id() is None
-    assert backend.member() is None
     assert backend.list_clips() == []
-    assert backend.include_raw_mic_0() is False
-    assert backend.include_dtln() is False
-    assert backend.include_usb_dtln() is False
+    snap = backend.status_snapshot()
+    assert snap["session_id"] is None
+    assert snap["member"] is None
+    assert snap["include_raw_mic_0"] is False
+    assert snap["include_dtln"] is False
+    assert snap["include_usb_dtln"] is False
 
 
 def test_unload_session_clears_state_but_keeps_metadata(
     backend, tmp_path: Path,
 ) -> None:
     """Unload is the non-destructive end-of-session operation."""
-    backend.begin_session("jasper", include_raw_mic_0=True)
+    sid = backend.begin_session("jasper", include_raw_mic_0=True)
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     backend.stop_recording()
-    sid = backend.session_id()
     md_dir = tmp_path / "out" / "metadata"
     md_path = md_dir / f"enroll_jasper_{sid}.json"
     marker = md_dir / active_session.ACTIVE_SESSION_MARKER
@@ -345,16 +339,16 @@ def test_unload_session_clears_state_but_keeps_metadata(
 
     assert md_path.is_file()
     assert not marker.exists()
-    assert backend.session_id() is None
-    assert backend.member() is None
     assert backend.list_clips() == []
-    assert backend.include_raw_mic_0() is False
+    snap = backend.status_snapshot()
+    assert snap["session_id"] is None
+    assert snap["member"] is None
+    assert snap["include_raw_mic_0"] is False
 
 
 def test_delete_session_refuses_during_recording(backend) -> None:
-    backend.begin_session("jasper")
+    sid = backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    sid = backend.session_id()
     try:
         with pytest.raises(recording_backend.StateError):
             backend.delete_session(sid)

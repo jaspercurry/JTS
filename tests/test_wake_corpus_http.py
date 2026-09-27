@@ -270,8 +270,7 @@ def test_api_session_load_round_trip(
     the target so we don't need a separate disk fixture."""
     import http.client
 
-    backend.begin_session("jasper", include_raw_mic_0=True)
-    first_id = backend.session_id()
+    first_id = backend.begin_session("jasper", include_raw_mic_0=True)
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     backend.stop_recording()
@@ -292,7 +291,7 @@ def test_api_session_load_round_trip(
     finally:
         conn.close()
     # Backend's active session swapped
-    assert backend.session_id() == first_id
+    assert backend.status_snapshot()["session_id"] == first_id
     marker = tmp_path / "out" / "metadata" / active_session.ACTIVE_SESSION_MARKER
     assert json.loads(marker.read_text())["session_id"] == first_id
 
@@ -300,8 +299,7 @@ def test_api_session_load_round_trip(
 def test_api_session_unload_round_trip(backend, running_server_port: int) -> None:
     import http.client
 
-    backend.begin_session("jasper")
-    sid = backend.session_id()
+    sid = backend.begin_session("jasper")
 
     conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
     conn.request(
@@ -316,17 +314,16 @@ def test_api_session_unload_round_trip(backend, running_server_port: int) -> Non
         assert body["unloaded_session"] == sid
     finally:
         conn.close()
-    assert backend.session_id() is None
+    assert backend.status_snapshot()["session_id"] is None
 
 
 def test_api_session_delete_round_trip(backend, running_server_port: int) -> None:
     import http.client
 
-    backend.begin_session("jasper")
+    sid = backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     time.sleep(0.05)
     backend.stop_recording()
-    sid = backend.session_id()
 
     conn = http.client.HTTPConnection("127.0.0.1", running_server_port, timeout=2)
     conn.request(
@@ -341,7 +338,7 @@ def test_api_session_delete_round_trip(backend, running_server_port: int) -> Non
     finally:
         conn.close()
     # Active state cleared
-    assert backend.session_id() is None
+    assert backend.status_snapshot()["session_id"] is None
 
 
 def test_api_status_includes_include_raw_mic_0(
@@ -1061,7 +1058,6 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
     import http.client
 
     backend.begin_session("jasper", include_usb_mic=True)
-    sid = backend.session_id()
     _use_tmp_bridge_env(
         monkeypatch,
         tmp_path,
@@ -1103,8 +1099,7 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
         assert restarts == ["restart"]
     finally:
         conn.close()
-    assert backend.session_id() is None
-    assert sid is not None
+    assert backend.status_snapshot()["session_id"] is None
 
 
 def test_voice_start_can_disable_bridge_outputs_first(
@@ -1215,7 +1210,7 @@ def test_api_session_offers_bridge_enable_for_missing_outputs(
         assert body["missing_bridge_outputs"] == [
             "dtln", "ref", "usb", "usb_dtln",
         ]
-        assert backend.session_id() is None
+        assert backend.status_snapshot()["session_id"] is None
     finally:
         conn.close()
 

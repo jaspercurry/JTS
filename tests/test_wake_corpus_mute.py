@@ -45,7 +45,7 @@ def test_begin_session_refused_while_muted(
     _write_mute(mute_path, True)
     with pytest.raises(recording_backend.MicMutedError, match="muted"):
         mute_backend.begin_session("jasper")
-    assert mute_backend.session_id() is None
+    assert mute_backend.status_snapshot()["session_id"] is None
     assert event_records(caplog, "wake_corpus.mute_refused")
 
 
