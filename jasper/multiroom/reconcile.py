@@ -77,7 +77,6 @@ from .grouping_env import (
     voice_grouping_env,
 )
 from .reconcile_plan import (
-    ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
     ARGS_FILE,
     SNAPSERVER_UNIT,
     ReconcilePlan,
