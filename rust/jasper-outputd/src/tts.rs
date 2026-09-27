@@ -17,7 +17,7 @@
 //! This is the protocol-compatible twin of `rust/jasper-fanin/src/tts.rs`
 //! (whose own header states the match is intentional "so Python can keep
 //! one playout implementation"): newline-framed text commands (GAIN /
-//! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO n + raw S16_LE bytes /
+//! VOLUME_CONTEXT / PREPARE_ASSISTANT / SEGMENT_START / AUDIO32 n + raw S32_LE bytes /
 //! SEGMENT_END / PROGRAM_DUCK_* / CONTENT_METER_* / FLUSH_SYNC /
 //! CLOSE) with a one-line JSON ack for FLUSH_SYNC. `jasper-voice`'s
 //! `tts_playout.py` speaks it unchanged — the reconciler only flips the
@@ -73,7 +73,7 @@ use jasper_tts_protocol::{
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
 /// Default pending-audio budget: 2 s of queued-but-unplayed assistant
-/// audio. Beyond it, new AUDIO drops (counted) — bounding both memory
+/// audio. Beyond it, new AUDIO32 drops (counted) — bounding both memory
 /// and how stale a reply can get.
 pub const DEFAULT_MAX_PENDING_FRAMES: u64 = jasper_tts_protocol::SAMPLE_RATE as u64 * 2;
 
@@ -398,6 +398,7 @@ impl TtsBridge {
             if queued.epoch != self.active_epoch && !is_restore {
                 continue; // pre-flush stale command
             }
+            let incoming = queued.command.audio_frames();
             match queued.command {
                 // Retained as an accepted legacy wire command. Per-segment
                 // loudness context is now the sole gain authority, so there is
@@ -480,12 +481,7 @@ impl TtsBridge {
                         core.start_assistant_segment_with_profile(provider_item_id, kind, profile);
                     self.open_segment = Some(id);
                 }
-                // Both payload verbs, one body. Spelled out rather than
-                // guarded on `is_audio()` so the compiler's exhaustiveness
-                // check — which ignores guards — still forces a future third
-                // payload verb to be handled here.
-                command @ (TtsCommand::Audio(_) | TtsCommand::AudioWide(_)) => {
-                    let incoming = command.audio_frames();
+                TtsCommand::AudioWide(samples) => {
                     if core.pending_assistant_frames().saturating_add(incoming)
                         > self.metrics.max_pending_frames
                     {
@@ -502,18 +498,13 @@ impl TtsBridge {
                     let id = match self.open_segment {
                         Some(id) => id,
                         None => {
-                            // Legacy GAIN+AUDIO path (cues): open an
+                            // Legacy GAIN+AUDIO32 path (cues): open an
                             // implicit Assistant segment until the next
                             // boundary (SEGMENT_START / flush).
                             let id = core.start_assistant_segment(None, SegmentKind::Assistant);
                             self.open_segment = Some(id);
                             id
                         }
-                    };
-                    // Cannot be None inside this arm: the same two patterns
-                    // select it.
-                    let Some(samples) = command.into_audio_samples() else {
-                        continue;
                     };
                     core.append_assistant_audio_with_segment_gain(id, samples);
                 }
@@ -535,9 +526,6 @@ impl TtsBridge {
 mod tests {
     use crate::types::ProgramSample;
 
-    /// One S16 sample at the program spine's scale. The TTS WIRE stays S16
-    /// (`TtsCommand::Audio` carries `Vec<i16>` and is shared with jasper-fanin);
-    /// only the CONTENT the core mixes against is spine-width.
     fn w(sample: i16) -> ProgramSample {
         jasper_resampler::widen_i16_to_i32(sample)
     }
@@ -590,12 +578,10 @@ mod tests {
                 profile: None,
             },
         );
-        send(&tx, 0, TtsCommand::Audio(vec![1000i16; 8])); // one 4-frame period
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(1000); 8])); // one 4-frame period
         send(&tx, 0, TtsCommand::SegmentEnd);
         bridge.drain(&mut core);
 
-        // Content pushes are PROGRAM (spine-width) samples; the TTS wire above
-        // stays S16. `w()` writes the S16 value at the spine's scale.
         core.push_content_period(vec![w(100); 8]);
         let report = core.step();
         assert_eq!(report.clipped_samples, 0);
@@ -650,7 +636,7 @@ mod tests {
                 profile: None,
             },
         );
-        send(&tx, 0, TtsCommand::Audio(vec![4000i16; 8]));
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(4000); 8]));
         bridge.drain(&mut core);
         assert_eq!(core.current_volume_context(), None);
 
@@ -666,7 +652,7 @@ mod tests {
     fn bridge_implicit_segment_for_legacy_gain_audio_cues() {
         let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
         send(&tx, 0, TtsCommand::GainDb(-9.0));
-        send(&tx, 0, TtsCommand::Audio(vec![2000i16; 8]));
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(2000); 8]));
         bridge.drain(&mut core);
         assert!(core.pending_assistant_frames() > 0);
         assert!(bridge.open_segment.is_some());
@@ -790,7 +776,7 @@ mod tests {
             },
         );
         // 3 periods queued; play ONE before the flush.
-        send(&tx, 0, TtsCommand::Audio(vec![3000i16; 24]));
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(3000); 24]));
         bridge.drain(&mut core);
         core.push_content_period(vec![0 as ProgramSample; 8]);
         core.step();
@@ -828,7 +814,7 @@ mod tests {
             ack: None,
         })
         .unwrap();
-        send(&tx, 0, TtsCommand::Audio(vec![1i16; 8])); // stale
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(1); 8])); // stale
         send(&tx, 0, TtsCommand::ProgramDuckOff); // stale but exempt
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 0);
@@ -861,8 +847,8 @@ mod tests {
         let mut bridge = TtsBridge::new(rx, flush_rx, metrics.clone(), -12.0);
         let mut core = OutputCore::new(4);
         let _ = flush_tx;
-        send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 frames: fits
-        send(&tx, 0, TtsCommand::Audio(vec![1i16; 16])); // 8 more: over budget
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(1); 16])); // 8 frames: fits
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(1); 16])); // 8 more: over budget
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 8);
         assert_eq!(metrics.counters.dropped_audio_frames(), 8);
@@ -886,7 +872,7 @@ mod tests {
                 profile: None,
             },
         );
-        send(&tx, 0, TtsCommand::Audio(vec![5i16; 8])); // a flushed segment
+        send(&tx, 0, TtsCommand::AudioWide(vec![w(5); 8])); // a flushed segment
         bridge.drain(&mut core);
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         ftx.send(QueuedFlush {
@@ -911,17 +897,8 @@ mod tests {
         }
     }
 
-    /// C-SF4: A REAL `AUDIO32` PAYLOAD THROUGH THE OUTPUTD TTS PATH.
-    ///
-    /// outputd is the bonded-multiroom assistant route, and it accepts the wide
-    /// verb by consuming the SAME shared parser fan-in does — but nothing here
-    /// exercised it, so `TtsCommand::AudioWide` reaching `OutputCore` was
-    /// argued rather than tested. This enqueues a genuine `Vec<i32>` and pins
-    /// that it lands at the SAME level as the S16 payload carrying the same
-    /// signal, which is the whole claim: outputd's spine is already i32, so a
-    /// wide payload is the identity where a narrow one is `widen_i16_to_i32`.
     #[test]
-    fn a_wide_audio_payload_mixes_at_the_same_level_as_its_narrow_twin() {
+    fn audio_payload_preserves_sub_i16_precision() {
         let render = |command: TtsCommand| -> Vec<ProgramSample> {
             let (mut bridge, mut core, tx, _ftx) = bridge_with_core();
             send(
@@ -959,23 +936,9 @@ mod tests {
             core.dac().periods[0].clone()
         };
 
-        // The same signal, offered at both widths. `w()` is the promotion the
-        // narrow route applies internally, so the wide payload is what an
-        // `AUDIO32` writer sends for that sample.
-        let narrow = render(TtsCommand::Audio(vec![4000i16; 8]));
         let wide = render(TtsCommand::AudioWide(vec![w(4000); 8]));
 
-        assert!(
-            narrow.iter().any(|&s| s != 0),
-            "the narrow render must produce audio for this comparison to mean anything",
-        );
-        assert_eq!(
-            wide, narrow,
-            "a promoted narrow payload and its AUDIO32 twin must render identically",
-        );
-
-        // And a payload carrying detail BELOW the S16 grid survives — the thing
-        // the narrow route structurally cannot deliver here.
+        assert!(wide.iter().any(|&s| s != 0));
         let sub_lsb = render(TtsCommand::AudioWide(vec![w(4000) + 0x4000; 8]));
         assert_ne!(
             sub_lsb, wide,

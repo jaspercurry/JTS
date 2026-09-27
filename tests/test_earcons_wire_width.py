@@ -2,20 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generated earcons bake at the box's wire width (U2 PR-2, #2223).
-
-An earcon is rendered in float and then quantized once. Before this, that
-quantization was always S16 — so the recipe's float detail was flattened onto
-the 16-bit grid at BAKE time, before the resampler and long before the wide
-wire could have carried it. A wide box now bakes at the wire's own grid.
-
-Same two bars as ``tests/test_tts_wire_width.py``:
-
-* the narrow bake is frozen, pinned against hashes captured by running
-  ``origin/main``'s ``jasper/`` tree;
-* the wide bake carries sub-S16-LSB detail, asserted as a contrast with what
-  the narrow bake did with the same recipe.
-"""
+"""The S16 earcon bake stays stable; the S32 bake preserves sub-S16 detail."""
 
 from __future__ import annotations
 

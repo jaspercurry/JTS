@@ -56,8 +56,7 @@ _CONTEXT = EffectiveVolumeContext(
     (wire.tts_program_duck(False), "PROGRAM_DUCK_OFF"),
     (wire.tts_gain(-12.0), "GAIN -12.000"),
     (wire.tts_gain(0.12345), "GAIN 0.123"),
-    (wire.tts_audio(wire.TTS_AUDIO_NARROW, 960), "AUDIO 960"),
-    (wire.tts_audio(wire.TTS_AUDIO_WIDE, 1920), "AUDIO32 1920"),
+    (wire.tts_audio(1920), "AUDIO32 1920"),
     (wire.tts_segment_start("speech", "item-7", None), "SEGMENT_START speech item-7"),
     (
         wire.tts_segment_start("speech", "item-7", ("openai", "gpt", "cedar")),
@@ -120,8 +119,7 @@ def test_unmuted_volume_context_carries_the_zero_token():
     (wire.tts_program_duck(True), TTS_PROTOCOL_RS),
     (wire.tts_program_duck(False), TTS_PROTOCOL_RS),
     (wire.tts_gain(0.0), TTS_PROTOCOL_RS),
-    (wire.tts_audio(wire.TTS_AUDIO_NARROW, 0), TTS_PROTOCOL_RS),
-    (wire.tts_audio(wire.TTS_AUDIO_WIDE, 0), TTS_PROTOCOL_RS),
+    (wire.tts_audio(0), TTS_PROTOCOL_RS),
     (wire.tts_segment_start("k", "i", None), TTS_PROTOCOL_RS),
     (wire.tts_volume_context(_CONTEXT), TTS_PROTOCOL_RS),
     (
@@ -151,8 +149,5 @@ def test_every_verb_is_still_handled_by_its_reader(command, reader):
     if reader is _CONTROL_VERBS:
         assert verb in reader
         return
-    # The reader spells a bare verb `"VERB"` and an argument-taking one
-    # `"VERB `; requiring that boundary keeps AUDIO from being satisfied by
-    # AUDIO32's arm.
     handled = re.search(rf'"{re.escape(verb)}[" ]', reader.read_text())
     assert handled, f"{reader.name} no longer handles {verb}"

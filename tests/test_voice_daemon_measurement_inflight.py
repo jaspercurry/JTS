@@ -32,6 +32,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import numpy as np
 import pytest
 
 import jasper.tts_playout as tts_mod
@@ -280,13 +281,11 @@ def _playout(**kwargs) -> TtsPlayout:
 
 
 def _mute_click_rig(on_write) -> tuple[WakeLoop, TtsPlayout]:
-    """A real playout whose mute click is `_CUE_PCM`. The width is STATED:
-    those 10 bytes cannot frame on an S32 wire, and an undeclared box is WIDE
-    (#3655)."""
-    tts = _playout(drain_tail_sec=1.0, on_write=on_write, wire_wide=False)
+    tts = _playout(drain_tail_sec=1.0, on_write=on_write)
     wl = wake_loop_for_tests(tts=tts)
-    wl._assistant_output._earcon_wide = False
-    wl._assistant_output._mute_click_on_pcm = _CUE_PCM
+    wl._assistant_output._mute_click_on_pcm = (
+        np.frombuffer(_CUE_PCM, dtype=np.int16).astype(np.int32) * tts_mod._SPINE_SCALE
+    ).tobytes()
     return wl, tts
 
 

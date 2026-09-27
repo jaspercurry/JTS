@@ -393,12 +393,7 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
 
     tts = FakeTts()
 
-    # STATED, not inherited: the earcon bake width comes from
-    # `tts_wire_is_wide()`, which reads the box's own fanin.env — absent on a
-    # test runner, and an undeclared box is WIDE since #3655. `pcm_wide` below
-    # asserts this value, so the test declares it.
     wl = wake_loop_for_tests(tts=tts)
-    wl._assistant_output._earcon_wide = False
     wl._assistant_output._chirp_on_pcm = b"wake"
     profile = object()
     wl._assistant_output._chirp_on_profile = profile
@@ -413,6 +408,6 @@ async def test_listening_chirp_writes_inside_turn_episode() -> None:
             "pcm": b"wake",
             "segment_kind": "chirp",
             "source_profile": profile,
-            "pcm_wide": False,
+            "pcm_wide": True,
         }
     ]
