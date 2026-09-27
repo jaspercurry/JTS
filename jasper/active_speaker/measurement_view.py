@@ -8,8 +8,8 @@ from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, MeasurementProgram,
-    available_programs, plan_poses, program, run_program,
+    BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, Preset,
+    available_presets, plan_poses, preset, run_preset,
 )
 from .round_copy import round_lines, packet_lines, round_verdict
 from .wizard_client import CAPTURE_CANCEL_PATH
@@ -41,14 +41,13 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     return {**result, "capture": None, "pending": {**held, "actions": actions} if live else None, "busy": live}
 
 
-def _choice_id(preset: MeasurementProgram, layout: str) -> str:
+def _choice_id(row: Preset, layout: str) -> str:
     """A page choice: the preset id at its default layout, ``preset@layout`` at another."""
-    preset_id = f"{preset.program_id}/{preset.size}"
-    return preset_id if layout == preset.layout else f"{preset_id}@{layout}"
+    return row.preset if layout == row.layout else f"{row.preset}@{layout}"
 
 
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
-    from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
+    from .angle_capture import REGIME_BRANCHES, request_for_preset  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
     from .crossover_v2.refusal_copy import (  # lazy: measurement planning
         CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
@@ -61,16 +60,15 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     view = load_commissioning_view()
     programs = view["programs"]
     targets = view["near_field_drivers"]
-    presets = [program(name, size) for name, size in available_programs()]
-    plans = {_choice_id(preset, layout): run_program(f"{preset.program_id}/{preset.size}", layout)
-             for preset in presets for layout in preset.layouts}
+    rows = [preset(name) for name in available_presets()]
+    plans = {_choice_id(row, layout): run_preset(row.preset, layout) for row in rows for layout in row.layouts}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
                      or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
-    default = program(view["next_action"].get("program") or programs[0])
+    default = preset(view["next_action"].get("program") or programs[0])
     refused = bool(selected_id) and selected_id not in plans
-    default_id = selected_id or f"{default.program_id}/{default.size}"
+    default_id = selected_id or default.preset
     choices = []
     for plan_id, plan in plans.items():
         walked = replace(plan, poses=plan_poses(plan, targets))
@@ -90,7 +88,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                     # raisers pass; some carry no code.
                     choice.update(code=exc.code or None, lines=[str(exc)])
                 else:
-                    request = request_for_program(plan, mover=plan.mover or "human", targets=targets)
+                    request = request_for_preset(plan, mover=plan.mover or "human", targets=targets)
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
                     facts = preview_schedule(request, captures, context)
                     choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",

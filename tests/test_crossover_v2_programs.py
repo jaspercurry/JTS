@@ -47,8 +47,8 @@ from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
-from jasper.active_speaker.angle_capture import request_for_program
-from jasper.active_speaker.measurement_programs import program as measurement_program, run_program
+from jasper.active_speaker.angle_capture import request_for_preset
+from jasper.active_speaker.measurement_programs import preset, run_preset
 from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -595,8 +595,8 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
     ("bass", "seat_cloud"),
 ])
 def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, poses):
-    layout = run_program(purpose, poses)
-    request = request_for_program(layout, mover=layout.mover or "human")
+    layout = run_preset(purpose, poses)
+    request = request_for_preset(layout, mover=layout.mover or "human")
     _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000,
                                              max_sweep_duration_s=4)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
@@ -645,7 +645,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
     excitation = SessionExcitation(
         roles=roles, caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB, fc_hz=FC_HZ,
         sweep_duration_limits_s={"woofer": 4.0, "tweeter": 4.0})
-    request = request_for_program(measurement_program(row), candidates=("trial",))
+    request = request_for_preset(preset(row), candidates=("trial",))
     captures = [capture for capture in prepare_plan_captures(request, roles_bands=roles)
                 if capture.spec.graph_scope == "candidate_branches"]
     assert captures

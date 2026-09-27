@@ -81,28 +81,17 @@
     "drivers_each": [{"azimuth_deg": 0, "elevation_deg": 0, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}],
     "rear_behind": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
-  "programs": [
-    {"id": "speaker", "size": "mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purpose": "speaker", "regime": "per_driver", "room_sweep": true},
-    {"id": "tournament", "size": "express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purpose": "speaker", "regime": "per_driver"},
-    {"id": "branches", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},
-    {"id": "front_rear", "size": "express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches", "branch_pair": "front_rear"},
-    {"id": "rear", "size": "express", "layout": "rear_express", "layouts": ["rear_express", "rear_wide", "rear_behind"], "purpose": "rear", "regime": "summed"},
-    {"id": "rear", "size": "seat", "layout": "seat_express", "purpose": "rear", "co_purposes": ["room"], "regime": "summed"},
-    {"id": "rear", "size": "pair", "layout": "rear_express", "layouts": ["rear_express", "speaker_mark", "rear_behind"], "purpose": "rear", "regime": "branches", "branch_pair": "front_rear"},
-    {"id": "room", "size": "seat", "layout": "seat_express", "layouts": ["seat_express", "seat_cloud", "seat_cube", "room_quick"], "purpose": "room", "regime": "summed"},
-    {"id": "bass", "size": "axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
-    {"id": "nearfield", "size": "each", "layout": "nearfield_woofer", "purpose": "reference", "regime": "near_field"},
-    {"id": "drivers", "size": "each", "layout": "drivers_each", "purpose": "reference", "regime": "per_driver"}
-  ],
-  "default_sizes": {
-    "speaker": "mark",
-    "tournament": "express",
-    "branches": "express",
-    "front_rear": "express",
-    "rear": "express",
-    "room": "seat",
-    "bass": "axis",
-    "nearfield": "each",
-    "drivers": "each"
-  }
+  "presets": [
+    {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purpose": "speaker", "regime": "per_driver", "room_sweep": true},
+    {"preset": "tournament/express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purpose": "speaker", "regime": "per_driver"},
+    {"preset": "branches/express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches"},
+    {"preset": "front_rear/express", "layout": "tournament_express", "purpose": "speaker", "regime": "branches", "branch_pair": "front_rear"},
+    {"preset": "rear/express", "layout": "rear_express", "layouts": ["rear_express", "rear_wide", "rear_behind"], "purpose": "rear", "regime": "summed"},
+    {"preset": "rear/seat", "layout": "seat_express", "purpose": "rear", "co_purposes": ["room"], "regime": "summed"},
+    {"preset": "rear/pair", "layout": "rear_express", "layouts": ["rear_express", "speaker_mark", "rear_behind"], "purpose": "rear", "regime": "branches", "branch_pair": "front_rear"},
+    {"preset": "room/seat", "layout": "seat_express", "layouts": ["seat_express", "seat_cloud", "seat_cube", "room_quick"], "purpose": "room", "regime": "summed"},
+    {"preset": "bass/axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purpose": "bass", "regime": "summed", "levels": "auto", "stimulus": "bass"},
+    {"preset": "nearfield/each", "layout": "nearfield_woofer", "purpose": "reference", "regime": "near_field"},
+    {"preset": "drivers/each", "layout": "drivers_each", "purpose": "reference", "regime": "per_driver"}
+  ]
 }

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_poses, run_program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_poses, run_preset
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
@@ -20,7 +20,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     refusal_copy_for,
 )
 from jasper.web import correction_crossover_flow as flow
-from jasper.active_speaker.measurement_programs import available_programs
+from jasper.active_speaker.measurement_programs import available_presets
 from tests.crossover_v2_fixtures import _roles
 
 
@@ -38,16 +38,15 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
         planned.append(request.program), preview(request, *args))[1])
-    visible = [(f"{name}/{size}", layout) for name, size in available_programs()
-               for layout in run_program(f"{name}/{size}").layouts]
+    visible = [(preset_id, layout) for preset_id in available_presets() for layout in run_preset(preset_id).layouts]
     choices = measurement_view.round_choices({}, "room/seat@seat_cube")
     assert planned == ["room/seat"]
     assert [c["id"] for c in choices] == [
-        preset if layout == run_program(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
+        preset if layout == run_preset(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
     assert [c["id"] for c in choices if c["default"]] == ["room/seat@seat_cube"]
     walked = [replace(row, poses=plan_poses(row, _VIEW["near_field_drivers"]))
-              for row in (run_program(preset, layout) for preset, layout in visible)]
+              for row in (run_preset(preset, layout) for preset, layout in visible)]
     assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
     selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
     plan = selected["action"]["body"]["plan"]
@@ -112,7 +111,7 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
 
     assert code == 200
     choices = {c["id"]: c for c in envelope["round_choices"]}
-    assert len(choices) == sum(len(run_program(f"{name}/{size}").layouts) for name, size in available_programs())
+    assert len(choices) == sum(len(run_preset(preset_id).layouts) for preset_id in available_presets())
     selected = choices["speaker/mark"]
     assert selected["code"] == REASON_MEASUREMENT_TARGETS_MISSING
     assert "action" not in selected

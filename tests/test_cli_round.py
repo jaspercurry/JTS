@@ -45,7 +45,7 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import run_program
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -504,7 +504,7 @@ def test_trial_runs_the_program_its_document_states(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program, layout)
+    expected = run_preset(program, layout)
     assert (plan.program, plan.layout, plan.mover, plan.candidates) == (program, layout, mover, ("base", fingerprint))
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
         (pose.place, candidate, "summed")
@@ -631,7 +631,7 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
     argv = ["run", "--program", program, flag, value]
     if program.startswith("rear"):
         argv += ["--candidates", bank_trial({"rear_calibration": "document"})]
-    selected = run_program(program, **{flag.removeprefix("--"): value})
+    selected = run_preset(program, **{flag.removeprefix("--"): value})
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
     code, _ = _run(argv, opener, monkeypatch, capsys)
@@ -663,7 +663,7 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
     code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0 and body["dry_run"] is True and body["issues"] == []
     assert not opener.requests
-    poses = run_program("rear", "rear_behind").poses
+    poses = run_preset("rear", "rear_behind").poses
     assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
         (pose.place, name): repeats or 1 for pose in poses for name in names}
     assert {row["regime"] for row in body["schedule"]} == {"summed"}
@@ -953,7 +953,7 @@ def test_a_pose_set_reads_the_same_spaced_or_joined(poses, azimuths):
     spaced = cli.build_parser().parse_args(["run", "--program", "rear", "--poses", poses])
     joined = cli.build_parser().parse_args(["run", "--program", "rear", f"--poses={poses}"])
     assert spaced.poses == joined.poses == poses
-    program = run_program("rear", poses=spaced.poses)
+    program = run_preset("rear", poses=spaced.poses)
     assert program.layout == "custom"
     assert tuple(pose.azimuth_deg for pose in program.poses) == azimuths
 

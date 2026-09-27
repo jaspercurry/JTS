@@ -50,7 +50,7 @@ from .measurement_programs import (
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
     cleared_layers,
-    MeasurementProgram,
+    Preset,
     plan_poses,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -119,7 +119,7 @@ __all__ = [
     "design_axis_spec",
     "stop_specs",
     "default_run_level",
-    "request_for_program",
+    "request_for_preset",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -762,7 +762,7 @@ def both_at(
 
 
 def default_run_level(
-    program: MeasurementProgram | AngleCaptureRequest,
+    program: Preset | AngleCaptureRequest,
     *,
     state_path: str | Path | None = None,
 ) -> tuple[LevelPolicy, str]:
@@ -773,8 +773,8 @@ def default_run_level(
     return LevelPolicy(), "program_default"
 
 
-def request_for_program(
-    program: MeasurementProgram,
+def request_for_preset(
+    preset: Preset,
     *,
     candidates: tuple[str, ...] = (),
     mover: str = MOVER_HUMAN,
@@ -792,11 +792,11 @@ def request_for_program(
     ``targets`` are the outputs this speaker declares for a pose to play alone; a
     preset's driver role expands to them, and ``driver`` narrows the run to one
     (:func:`~.measurement_programs.plan_poses`)."""
-    if program.mover is not None and program.mover != mover:
-        raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
-    if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
+    if preset.mover is not None and preset.mover != mover:
+        raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{preset.preset} requires mover={preset.mover}")
+    if preset.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
-    room_sweep = program.room_sweep and not candidates
+    room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
             replace(
@@ -804,16 +804,16 @@ def request_for_program(
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
-                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else program.purpose,
+                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else preset.purpose,
                 headline=pose.headline, detail=pose.detail,
-                stimulus=program.stimulus,
-                branch_pair=program.branch_pair,
+                stimulus=preset.stimulus,
+                branch_pair=preset.branch_pair,
             )
-            for pose in plan_poses(program, targets, driver)
+            for pose in plan_poses(preset, targets, driver)
             for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
-                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
+                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
                           kind=pose.kind, distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
-                          purpose=program.purpose, driver=pose.driver),))
+                          purpose=preset.purpose, driver=pose.driver),))
             for _ in range(1 if room_sweep and stop.plays_summed else pose.repeats)
             for candidate in (candidates or (BASE_CANDIDATE,))
         ),
@@ -822,8 +822,8 @@ def request_for_program(
         candidates=candidates,
         level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
-        program=f"{program.program_id}/{program.size}",
-        layout=program.layout,
+        program=preset.preset,
+        layout=preset.layout,
     )
 
 

@@ -19,7 +19,7 @@ from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_programs,
+    RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_presets,
 )
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
@@ -162,7 +162,7 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.candidate_bank import (  # lazy: trial-only candidate imports
         CandidateBankRefusal, find_banked_candidate,
     )
-    from jasper.active_speaker.measurement_programs import trial_program  # lazy: trial-only
+    from jasper.active_speaker.measurement_programs import trial_preset  # lazy: trial-only
 
     try:
         banked = find_banked_candidate(args.fingerprint)
@@ -170,12 +170,12 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.code, exc.detail, code=exc.code)
     sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
                       if source in ("document", "cleared"))
-    selected = trial_program(sections, args.mover, args.layout)
+    selected = trial_preset(sections, args.mover, args.layout)
     if selected is None:
         run = f"jasper-round run --program <program> --candidates base,{banked.fingerprint}"
         return failed(EXIT_REFUSED, "trial_program_unknown", {"fingerprint": banked.fingerprint, "sections": sections},
                       code="trial_program_unknown", next_action={"id": "run_program", "label": f"name the program: {run}"})
-    args.program = f"{selected.program_id}/{selected.size}"
+    args.program = selected.preset
     args.layout = args.layout or (None if args.poses else selected.layout)
     args.candidates = args.candidates or f"base,{banked.fingerprint}"
     return _cmd_run(client, args)
@@ -382,8 +382,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_args.add_argument("--mover", choices=MOVERS)
     run_args.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
-    presets = ", ".join(f"{name}/{size}" for name, size in available_programs())
-    run.add_argument("--program", help=f"a preset ({presets}); a program name runs its default preset")
+    presets = ", ".join(available_presets())
+    run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
     run.set_defaults(func=_cmd_run)
     trial_help = ("Test a banked candidate with the program its document states; --mover picks that program's "

@@ -115,21 +115,21 @@ def test_program_table_projections(site):
     ("bass/axis", "bass_axis", 1, 1, 1),
 ])
 def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures: int) -> None:
-    row = mp.run_program(preset, layout)
+    row = mp.run_preset(preset, layout)
 
-    assert (f"{row.program_id}/{row.size}", row.layout) == (preset, layout)
+    assert (row.preset, row.layout) == (preset, layout)
     assert len(row.poses) == poses
     assert row.mic_move_count == moves
     assert row.capture_count == captures
     assert row.room_sweep is (preset == "speaker/mark")
 
 
-@pytest.mark.parametrize("program_id,size", mp.available_programs())
-def test_shipped_run_purposes(program_id, size):
-    row = mp.program(program_id, size)
-    expected = ("rear", "room") if (program_id, size) == ("rear", "seat") else (row.purpose,)
-    assert mp.run_purposes(f"{program_id}/{size}") == expected
-    assert mp.run_purpose(f"{program_id}/{size}") == expected[0]
+@pytest.mark.parametrize("preset_id", mp.available_presets())
+def test_shipped_run_purposes(preset_id):
+    row = mp.preset(preset_id)
+    expected = ("rear", "room") if preset_id == "rear/seat" else (row.purpose,)
+    assert mp.run_purposes(preset_id) == expected
+    assert mp.run_purpose(preset_id) == expected[0]
     assert row.co_purposes == expected[1:]
 
 
@@ -175,12 +175,12 @@ def test_rear_co_purpose_banks_the_room_views_in_order():
 
 @pytest.mark.parametrize("preset,expected", [("rear/seat", ("room",)), ("room/seat", ()), ("bass/axis", ())])
 def test_a_seat_layout_carries_its_presets_co_purposes(preset, expected):
-    assert mp.run_program(preset, "seat_express").co_purposes == expected
+    assert mp.run_preset(preset, "seat_express").co_purposes == expected
 
 
 @pytest.mark.parametrize("preset,pair", [("branches/express", "drivers"), ("front_rear/express", "front_rear")])
 def test_a_branch_preset_is_a_speaker_run_that_keeps_its_pair(preset, pair):
-    row = mp.run_program(preset)
+    row = mp.run_preset(preset)
 
     assert (row.purpose, row.regime, row.branch_pair, row.room_sweep) == (
         mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, pair, False)
@@ -194,8 +194,8 @@ def test_a_branch_preset_is_a_speaker_run_that_keeps_its_pair(preset, pair):
     ("rear/pair", "speaker_mark", None),
 ])
 def test_a_layout_runs_under_its_preset_with_its_own_mover(preset, layout, mover):
-    row, default = mp.run_program(preset, layout), mp.run_program(preset)
-    assert (f"{row.program_id}/{row.size}", row.layout, row.mover) == (preset, layout, mover)
+    row, default = mp.run_preset(preset, layout), mp.run_preset(preset)
+    assert (row.preset, row.layout, row.mover) == (preset, layout, mover)
     assert (row.purpose, row.regime, row.branch_pair, row.co_purposes) == (
         default.purpose, default.regime, default.branch_pair, default.co_purposes)
 
@@ -203,15 +203,15 @@ def test_a_layout_runs_under_its_preset_with_its_own_mover(preset, layout, mover
 @pytest.mark.parametrize("preset,layout", [("speaker", "seat_cloud"), ("rear/express", "speaker_mark"), ("room", "bass_axis")])
 def test_a_layout_its_preset_does_not_offer_refuses_by_name(preset, layout):
     with pytest.raises(mp.LayoutNotOfferedError) as excinfo:
-        mp.run_program(preset, layout)
-    default = mp.run_program(preset)
+        mp.run_preset(preset, layout)
+    default = mp.run_preset(preset)
     assert (excinfo.value.reason, excinfo.value.detail) == (mp.LAYOUT_NOT_OFFERED, {
-        "preset": f"{default.program_id}/{default.size}", "layout": layout, "offered": list(default.layouts)})
+        "preset": default.preset, "layout": layout, "offered": list(default.layouts)})
 
 
 def test_a_layout_passed_as_poses_refuses_by_name():
     with pytest.raises(mp.PosesNameALayoutError) as excinfo:
-        mp.run_program("room", poses="seat_express")
+        mp.run_preset("room", poses="seat_express")
     assert (excinfo.value.reason, excinfo.value.detail) == (
         mp.POSES_NAME_A_LAYOUT, {"poses": "seat_express", "use": "--layout"})
 
@@ -220,13 +220,13 @@ def test_the_bass_handoff_names_a_layout_a_person_can_walk():
     """The default bass layout pins the arm, so the prompt names the hand one (#5632 F4)."""
     preset, layout, mover = re.search(r"--program (\S+) --layout (\S+) --mover (\S+)",
                                       th.build_tuning_handoff_prompt({}, "bass")).groups()
-    assert (mp.run_program(preset).mover, mp.run_program(preset, layout).mover, mover) == ("arm", "human", "human")
+    assert (mp.run_preset(preset).mover, mp.run_preset(preset, layout).mover, mover) == ("arm", "human", "human")
 
 
 def test_the_rear_handoff_names_the_pair_model_its_previews_read():
     """The seat loop previews rear documents against the front/rear pair take (#5632 F11)."""
     preset, layout = re.search(r"--program (\S+) --layout (\S+) --wait", th.build_tuning_handoff_prompt({}, "rear")).groups()
-    row = mp.run_program(preset, layout)
+    row = mp.run_preset(preset, layout)
     assert (row.regime, row.branch_pair) == (mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
 
 
@@ -235,52 +235,49 @@ def test_run_help_names_every_registry_pose_set(capsys):
     with pytest.raises(SystemExit):
         round_cli.main(["run", "--help"])
     words = set(re.split(r"[\s,()]+", capsys.readouterr().out))
-    assert {f"{name}/{size}" for name, size in mp.available_programs()} <= words
+    assert set(mp.available_presets()) <= words
 
 
 def test_express_geometry() -> None:
-    row = mp.run_program("speaker", "baseline_express")
+    row = mp.run_preset("speaker", "baseline_express")
 
     assert {p.azimuth_deg for p in row.poses} == {0, -20, 20}
     assert {p.elevation_deg for p in row.poses} == {0, -10, 10}
     assert [
         p.repeats for p in row.poses if (p.azimuth_deg, p.elevation_deg) == (0, 0)
-    ] == [mp.run_program("speaker", "baseline_full").poses[0].repeats]
+    ] == [mp.run_preset("speaker", "baseline_full").poses[0].repeats]
 
 
-@pytest.mark.parametrize("program_id,size", [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")])
-def test_unknown_lookup_names_the_valid_choices(program_id: str, size: str) -> None:
-    lookups = [lambda: mp.program(program_id, size)]
-    if program_id:
-        lookups.append(lambda: mp.run_purposes(f"{program_id}/{size}"))
+@pytest.mark.parametrize("name", ["baseline/medium", "tournament/medium", "spot/express", "spot", ""])
+def test_unknown_lookup_names_the_valid_choices(name: str) -> None:
+    lookups = [lambda: mp.preset(name)]
+    if name:
+        lookups.append(lambda: mp.run_purposes(name))
     for lookup in lookups:
-        with pytest.raises(mp.UnknownProgramError) as excinfo:
+        with pytest.raises(mp.UnknownPresetError) as excinfo:
             lookup()
-        assert excinfo.value.choices == mp.available_programs()
-        assert (excinfo.value.program_id, excinfo.value.size) == (program_id, size)
+        assert (excinfo.value.preset, excinfo.value.choices) == (name, mp.available_presets())
 
 
-def test_available_programs_is_the_sorted_registry() -> None:
-    choices = mp.available_programs()
+def test_available_presets_is_the_sorted_registry() -> None:
+    choices = mp.available_presets()
 
     assert choices == (
-        ("bass", "axis"), ("branches", "express"), ("drivers", "each"), ("front_rear", "express"),
-        ("nearfield", "each"), ("rear", "express"), ("rear", "pair"), ("rear", "seat"), ("room", "seat"),
-        ("speaker", "mark"), ("tournament", "express"),
+        "bass/axis", "branches/express", "drivers/each", "front_rear/express", "nearfield/each", "rear/express",
+        "rear/pair", "rear/seat", "room/seat", "speaker/mark", "tournament/express",
     )
-    rows = [mp.program(program_id, size) for program_id, size in choices]
-    assert tuple((row.program_id, row.size) for row in rows) == choices
-    assert {(row.program_id, row.branch_pair) for row in rows
-            if row.regime == mp.REGIME_BRANCHES} == {
-        ("branches", mp.BRANCH_PAIR_DRIVERS), ("front_rear", mp.BRANCH_PAIR_FRONT_REAR),
-        ("rear", mp.BRANCH_PAIR_FRONT_REAR),
+    rows = [mp.preset(preset_id) for preset_id in choices]
+    assert tuple(row.preset for row in rows) == choices
+    assert {(row.preset, row.branch_pair) for row in rows if row.regime == mp.REGIME_BRANCHES} == {
+        ("branches/express", mp.BRANCH_PAIR_DRIVERS), ("front_rear/express", mp.BRANCH_PAIR_FRONT_REAR),
+        ("rear/pair", mp.BRANCH_PAIR_FRONT_REAR),
     }
 
 
 
 _WOOFER_STEP = (("woofer", 0.015), ("woofer", 0.03))
 _TWO_WAY, _CARDIOID = ("tweeter", "woofer"), ("tweeter", "woofer", "woofer:rear")
-_NEARFIELD, _DRIVERS = mp.run_program("nearfield"), mp.run_program("drivers")
+_NEARFIELD, _DRIVERS = mp.run_preset("nearfield"), mp.run_preset("drivers")
 
 
 @pytest.mark.parametrize("row,targets,driver,walked", [
@@ -292,7 +289,7 @@ _NEARFIELD, _DRIVERS = mp.run_program("nearfield"), mp.run_program("drivers")
     (_DRIVERS, _CARDIOID, "tweeter", (("tweeter", None),)),
     (replace(_DRIVERS, poses=tuple(mp.ProgramPose(0, 0, driver=driver) for driver in ("woofer:rear", "tweeter"))),
      _CARDIOID, "", (("woofer:rear", None), ("tweeter", None))),
-    (mp.run_program("nearfield", poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", '
+    (mp.run_preset("nearfield", poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", '
                                        '"distance_m": 0.02, "driver": "woofer"}]'), _CARDIOID, "", (("woofer", 0.02),)),
 ])
 def test_a_presets_driver_role_plays_each_declared_output(row, targets, driver, walked) -> None:
@@ -300,20 +297,20 @@ def test_a_presets_driver_role_plays_each_declared_output(row, targets, driver, 
     it, one output's placements after the other's; a pose naming one output, or an inline
     pose, plays what it names; an undeclared role keeps its name for preflight to refuse;
     --driver narrows to one output (ADR-0366 §6)."""
-    request = ac.request_for_program(row, targets=targets, driver=driver)
+    request = ac.request_for_preset(row, targets=targets, driver=driver)
     assert tuple((stop.driver, stop.distance_m) for stop in request.stops) == walked
 
 
 @pytest.mark.parametrize("row,targets,driver,offered", [
     (_NEARFIELD, _TWO_WAY, "woofer:rear", ["woofer"]),
     (_NEARFIELD, _CARDIOID, "tweeter", ["woofer", "woofer:rear"]),
-    (mp.run_program("speaker"), _CARDIOID, "woofer", []),
+    (mp.run_preset("speaker"), _CARDIOID, "woofer", []),
 ])
 def test_a_driver_the_preset_does_not_play_alone_refuses_naming_the_ones_it_does(row, targets, driver, offered) -> None:
     with pytest.raises(mp.DriverNotOfferedError) as excinfo:
         mp.plan_poses(row, targets, driver)
     assert (excinfo.value.reason, excinfo.value.detail) == (
-        mp.DRIVER_NOT_OFFERED, {"preset": row.preset_id, "driver": driver, "offered": offered})
+        mp.DRIVER_NOT_OFFERED, {"preset": row.preset, "driver": driver, "offered": offered})
 
 
 @pytest.mark.parametrize("program_id,layout,poses,resolved", [
@@ -330,11 +327,11 @@ def test_a_near_field_run_resolves_as_reference_evidence(program_id, layout, pos
     refused (ADR-0360)."""
     if resolved is None:
         with pytest.raises(ValueError):
-            mp.run_program(program_id, layout, poses)
+            mp.run_preset(program_id, layout, poses)
         return
-    row = mp.run_program(program_id, layout, poses)
+    row = mp.run_preset(program_id, layout, poses)
     assert (row.layout, tuple((pose.driver, pose.distance_m) for pose in row.poses)) == resolved
-    assert (row.purpose, row.regime, mp.run_purpose(f"{row.program_id}/{row.size}")) == (
+    assert (row.purpose, row.regime, mp.run_purpose(row.preset)) == (
         mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.PURPOSE_REFERENCE)
 
 
@@ -365,15 +362,15 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
 def test_counts_split_moves_from_captures(
     poses: tuple[object, ...], moves: int, captures: int
 ) -> None:
-    row = mp.MeasurementProgram(program_id="t", size="t", poses=poses)
+    row = mp.Preset(preset="t/t", poses=poses)
 
     assert row.mic_move_count == moves
     assert row.capture_count == captures
 
 
 def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
-    cube = mp.run_program("room", "seat_cube")
-    express = mp.run_program("room", "seat_express")
+    cube = mp.run_preset("room", "seat_cube")
+    express = mp.run_preset("room", "seat_express")
 
     assert {p.kind for p in cube.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cube.poses} == {(0, 0, 1)}
@@ -392,7 +389,7 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
 
 
 def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
-    cloud = mp.run_program("room", "seat_cloud")
+    cloud = mp.run_preset("room", "seat_cloud")
 
     assert {p.kind for p in cloud.poses} == {mp.POSE_KIND_SEAT}
     assert {(p.azimuth_deg, p.elevation_deg, p.repeats) for p in cloud.poses} == {(0, 0, 1)}
@@ -409,31 +406,24 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
     "speaker/express"])
 def test_a_retired_preset_id_refuses_as_an_unknown_preset(retired: str) -> None:
     """No retired id is kept for a new run or a banked round (ADR-0377)."""
-    name, _, size = retired.partition("/")
-    for resolve in (mp.run_program, mp.run_purpose):
-        with pytest.raises(mp.UnknownProgramError) as excinfo:
+    for resolve in (mp.run_preset, mp.run_purpose):
+        with pytest.raises(mp.UnknownPresetError) as excinfo:
             resolve(retired)
-        assert (excinfo.value.program_id, excinfo.value.size) == (name, size)
+        assert excinfo.value.preset == retired
 
 
-def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
-    assert {
-        program_id: mp.program(program_id).size
-        for program_id in ("tournament", "branches", "room", "rear")
-    } == {
-        "tournament": "express",
-        "branches": "express",
-        "room": "seat",
-        "rear": "express",
-    }
+def test_a_program_name_resolves_to_its_first_preset() -> None:
+    assert {name: mp.preset(name).preset for name in ("tournament", "branches", "room", "rear", "nearfield")} == {
+        "tournament": "tournament/express", "branches": "branches/express", "room": "room/seat",
+        "rear": "rear/express", "nearfield": "nearfield/each"}
 
 
 @pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
 def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
-    cloud = mp.run_program(program, "seat_cloud")
-    quick = mp.run_program(program, "room_quick")
+    cloud = mp.run_preset(program, "seat_cloud")
+    quick = mp.run_preset(program, "room_quick")
 
-    assert cloud.poses is mp.run_program("room", "seat_cloud").poses
+    assert cloud.poses is mp.run_preset("room", "seat_cloud").poses
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in quick.poses] == [
         (0, 0), (-20, 0), (20, 0),
     ]
@@ -447,7 +437,7 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> 
     ("rear_wide", [(0, 2), (-20, 1), (20, 1), (-45, 1), (45, 1)]),
 ])
 def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(layout, poses) -> None:
-    row = mp.run_program("rear", layout)
+    row = mp.run_preset("rear", layout)
 
     assert row.purpose == mp.PURPOSE_REAR and row.regime == mp.REGIME_SUMMED
     assert row.mover is None
@@ -486,7 +476,7 @@ def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, support
 
 
 def _program_with(purpose, regime, kind, distance_m, driver):
-    return mp.MeasurementProgram("t", "t", (mp.ProgramPose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
+    return mp.Preset("t/t", (mp.ProgramPose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
                                  purpose=purpose, regime=regime)
 
 
@@ -527,15 +517,15 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
     """A driver's pose plays the neutral drivers graph, so ``--candidates``
     cannot stamp its takes with a candidate or repeat its poses (ADR-0360)."""
     if accepted:
-        row = mp.program("nearfield")
-        assert len(ac.request_for_program(row, candidates=candidates).stops) == len(row.poses)
+        row = mp.preset("nearfield")
+        assert len(ac.request_for_preset(row, candidates=candidates).stops) == len(row.poses)
     else:
         with pytest.raises(CrossoverV2FlowError):
-            ac.request_for_program(mp.program("nearfield"), candidates=candidates)
+            ac.request_for_preset(mp.preset("nearfield"), candidates=candidates)
 
 
 @pytest.mark.parametrize("stops,expected", [
-    (mp.run_program("drivers"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)), ("lateral", ("tweeter",))]),
+    (mp.run_preset("drivers"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)), ("lateral", ("tweeter",))]),
     ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
       ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
      [("check", ()), ("entry_baseline", ()), ("measure", ()), ("lateral", ("woofer",))]),
@@ -544,7 +534,7 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     """A stop naming its driver plays it alone in the far field on MEASURE's
     sweep, with no CHECK or timing take for it; a stop that plays every driver
     keeps both (#5696, ADR-0366)."""
-    request = (ac.request_for_program(stops, targets=_CARDIOID) if isinstance(stops, mp.MeasurementProgram)
+    request = (ac.request_for_preset(stops, targets=_CARDIOID) if isinstance(stops, mp.Preset)
                else ac.AngleCaptureRequest(stops=stops))
     captures = prepare_plan_captures(request)
     assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected
@@ -566,13 +556,13 @@ def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
     """The pair take is the rear express geometry, played as two branches
     (issue #5330). Naming it leaves the default rear size alone."""
-    row = mp.run_program("rear/pair")
+    row = mp.run_preset("rear/pair")
 
     assert (row.purpose, row.regime, row.branch_pair) == (
         mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
-    assert row.poses is mp.program("rear", "express").poses
+    assert row.poses is mp.preset("rear/express").poses
     assert row.mover is None and row.room_sweep is False
-    assert mp.program("rear").size == "express"
+    assert mp.preset("rear").preset == "rear/express"
 
 
 @pytest.mark.parametrize("preset,regime,pair", [
@@ -580,7 +570,7 @@ def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_p
     ("rear/express", mp.REGIME_SUMMED, mp.BRANCH_PAIR_DRIVERS),
 ])
 def test_rear_behind_places_the_microphone_behind_the_cabinet(preset, regime, pair) -> None:
-    row = mp.run_program(preset, "rear_behind")
+    row = mp.run_preset(preset, "rear_behind")
     assert (row.layout, row.purpose, row.regime, row.branch_pair, row.mover) == (
         "rear_behind", mp.PURPOSE_REAR, regime, pair, "human")
     assert [(pose.azimuth_deg, pose.elevation_deg, pose.kind, pose.distance_m, pose.repeats)
@@ -596,14 +586,14 @@ def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
     assert mp.validated_pose(mp.POSE_KIND_BEHIND, None, 0.1) == (None, 0.1)
 
 
-def test_run_program_resolves_rear_layouts_and_custom_bearings() -> None:
-    assert (mp.run_program("rear").program_id, mp.run_program("rear").size) == ("rear", "express")
-    wide = mp.run_program("rear", "rear_wide")
-    assert (wide.program_id, wide.size, wide.layout) == ("rear", "express", "rear_wide")
-    custom = mp.run_program("rear", poses="0,-45,45")
+def test_run_preset_resolves_rear_layouts_and_custom_bearings() -> None:
+    assert mp.run_preset("rear").preset == "rear/express"
+    wide = mp.run_preset("rear", "rear_wide")
+    assert (wide.preset, wide.layout) == ("rear/express", "rear_wide")
+    custom = mp.run_preset("rear", poses="0,-45,45")
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in custom.poses] == [(0, 0), (-45, 0), (45, 0)]
-    assert (custom.size, custom.layout, custom.purpose, custom.regime) == (
-        "express", mp.CUSTOM_SIZE, mp.PURPOSE_REAR, mp.REGIME_SUMMED)
+    assert (custom.preset, custom.layout, custom.purpose, custom.regime) == (
+        "rear/express", mp.CUSTOM_LAYOUT, mp.PURPOSE_REAR, mp.REGIME_SUMMED)
 
 
 @pytest.mark.parametrize(
@@ -636,10 +626,10 @@ def test_shared_layout_can_change_to_two_positions_without_code(tmp_path: Path) 
     config = _bundled_config()
     config["layouts"]["seat_express"]["poses"] = config["layouts"]["seat_express"]["poses"][:2]  # type: ignore[index]
 
-    programs = mp.load_programs(_write_config(tmp_path, config))
+    presets = mp.load_presets(_write_config(tmp_path, config))
 
-    assert len(programs[("room", "seat")].poses) == 2
-    assert programs[("rear", "seat")].poses is programs[("room", "seat")].poses
+    assert len(presets["room/seat"].poses) == 2
+    assert presets["rear/seat"].poses is presets["room/seat"].poses
 
 
 def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
@@ -647,9 +637,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     pose = config["layouts"]["bass_axis"]["poses"][0]  # type: ignore[index]
     pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
 
-    programs = mp.load_programs(_write_config(tmp_path, config))
-
-    loaded = programs[("bass", "axis")].poses[0]
+    loaded = mp.load_presets(_write_config(tmp_path, config))["bass/axis"].poses[0]
     assert (loaded.headline, loaded.detail) == (
         "Measure the main seat", "Hold the mic at ear height.",
     )
@@ -662,22 +650,22 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken.startswith("co_"):
-        config["programs"][0].update(purpose="rear", regime="summed", room_sweep=False, co_purposes={
+        config["presets"][0].update(purpose="rear", regime="summed", room_sweep=False, co_purposes={
             "co_unknown": ["unknown"], "co_primary": ["rear"], "co_regime": ["room"],
             "co_not_list": "room", "co_duplicate": ["room", "room"], "co_not_text": [None],
         }[broken])
         if broken == "co_regime":
-            config["programs"][0]["regime"] = "branches"
+            config["presets"][0]["regime"] = "branches"
     elif broken == "levels":
-        config["programs"][0]["levels"] = "-28,-18"
+        config["presets"][0]["levels"] = "-28,-18"
     elif broken == "offers_unknown":
-        config["programs"][0]["layouts"].append("no_such_layout")  # type: ignore[index]
+        config["presets"][0]["layouts"].append("no_such_layout")  # type: ignore[index]
     elif broken == "offers_without_default":
-        config["programs"][0]["layouts"] = ["baseline_full"]  # type: ignore[index]
+        config["presets"][0]["layouts"] = ["baseline_full"]  # type: ignore[index]
     elif broken == "branch_pair":
-        config["programs"][0].update(regime="branches", room_sweep=False, branch_pair="both")
+        config["presets"][0].update(regime="branches", room_sweep=False, branch_pair="both")
     elif broken == "branch_pair_regime":
-        config["programs"][0]["branch_pair"] = "front_rear"
+        config["presets"][0]["branch_pair"] = "front_rear"
     elif broken == "empty":
         config["layouts"]["room_quick"] = []  # type: ignore[index]
     elif broken == "repeats":
@@ -687,24 +675,24 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     elif broken == "mover":
         config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
     elif broken == "room_sweep":
-        config["programs"][0]["room_sweep"] = "yes"
+        config["presets"][0]["room_sweep"] = "yes"
     elif broken == "room_sweep_mode":
-        config["programs"][0].update(purpose="room", regime="summed", room_sweep=True)
+        config["presets"][0].update(purpose="room", regime="summed", room_sweep=True)
     elif broken == "purpose":
-        config["programs"][0]["purpose"] = "other"  # type: ignore[index]
+        config["presets"][0]["purpose"] = "other"  # type: ignore[index]
     elif broken == "regime":
-        config["programs"][0]["regime"] = "other"  # type: ignore[index]
+        config["presets"][0]["regime"] = "other"  # type: ignore[index]
     else:
-        config["programs"][0].update({"purpose": "room", "regime": "per_driver"})  # type: ignore[index]
+        config["presets"][0].update({"purpose": "room", "regime": "per_driver"})  # type: ignore[index]
 
     with pytest.raises(ValueError):
-        mp.load_programs(_write_config(tmp_path, config))
+        mp.load_presets(_write_config(tmp_path, config))
 
 
 @pytest.mark.parametrize("layout", ["bass_axis", "seat_cloud", "room_quick", "seat_express"])
 def test_a_bass_run_keeps_its_stimulus_and_ladder_on_any_layout(layout):
-    run = mp.run_program("bass", layout)
-    assert (run.stimulus, run.levels) == (mp.program("bass").stimulus, "auto")
+    run = mp.run_preset("bass", layout)
+    assert (run.stimulus, run.levels) == (mp.preset("bass").stimulus, "auto")
 
 
 @pytest.mark.parametrize("stimuli,reference", [
@@ -715,6 +703,6 @@ def test_a_bass_run_keeps_its_stimulus_and_ladder_on_any_layout(layout):
 def test_invalid_registry_stimulus_is_a_value_error(tmp_path, stimuli, reference):
     config = _bundled_config()
     config["stimuli"] = stimuli
-    next(row for row in config["programs"] if row["id"] == "bass")["stimulus"] = reference
+    next(row for row in config["presets"] if row["preset"] == "bass/axis")["stimulus"] = reference
     with pytest.raises(ValueError):
-        mp.load_programs(_write_config(tmp_path, config))
+        mp.load_presets(_write_config(tmp_path, config))

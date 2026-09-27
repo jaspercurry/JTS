@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Named measurement programs loaded from the bundled measurement plan."""
+"""The tuning programs, and the measurement presets loaded from the bundled measurement plan."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ class CandidateField:
 
 
 @dataclass(frozen=True)
-class ProgramDefinition:
+class TuningProgram:
     purpose: str
     sections: tuple[PrescriptionSection, ...]
     candidate_fields: tuple[CandidateField, ...]
@@ -86,7 +86,7 @@ class ProgramDefinition:
 
 # Row order is the tuning order; stored documents retain their existing orders.
 _PROGRAM_SECTIONS = (
-    ProgramDefinition(
+    TuningProgram(
         PURPOSE_SPEAKER,
         (PrescriptionSection("driver", "jts_crossover_driver_prescription", 0, 6),
          PrescriptionSection("blend", "jts_crossover_blend_prescription", 1, 1),
@@ -99,21 +99,21 @@ _PROGRAM_SECTIONS = (
         "Driver linearization", "Measure each driver and refine its response and crossover.",
         "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend")),
     ),
-    ProgramDefinition(
+    TuningProgram(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
         "Measure the rear woofer", "rear", trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
     ),
-    ProgramDefinition(
+    TuningProgram(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         trial=(("bass/axis", "bass_axis"), ("bass/axis", "seat_express")), graph_evidence=True,
         clears=("room_correction",), base_clears_own=True,
     ),
-    ProgramDefinition(
+    TuningProgram(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
@@ -138,7 +138,7 @@ _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if r
 # A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The layout a run banks when its poses are its own inline list, not a named layout's.
-CUSTOM_SIZE = "custom"
+CUSTOM_LAYOUT = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 #: Each program's own candidate layer: the names a take may play cleared (ADR-0370).
 CANDIDATE_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER)
@@ -248,22 +248,21 @@ POSES_NAME_A_LAYOUT = "measurement_poses_name_a_layout"
 DRIVER_NOT_OFFERED = "measurement_driver_not_offered"
 
 
-def run_purpose(run_program: str | None) -> str:
-    """The purpose behind a run manifest's program id: a preset (``speaker/mark``)
-    or a bare program (``speaker``); any other id refuses as an unknown preset."""
-    name, _, size = str(run_program or "").partition("/")
-    if not size and (not name or name in PURPOSES):
-        return name
-    return program(name, size or None).purpose
+def run_purpose(banked: str | None) -> str:
+    """The purpose behind a run manifest's preset id (``speaker/mark``) or bare program
+    name (``speaker``); any other id refuses as an unknown preset."""
+    banked = str(banked or "")
+    if not banked or banked in PURPOSES:
+        return banked
+    return preset(banked).purpose
 
 
-def run_purposes(run_program: str) -> tuple[str, ...]:
-    """The primary purpose and co-purposes of a run manifest's program."""
-    name, _, size = run_program.partition("/")
+def run_purposes(banked: str) -> tuple[str, ...]:
+    """The primary purpose and co-purposes of a run manifest's preset."""
     try:
-        row = program(name, size or None)
-    except UnknownProgramError:
-        return (run_purpose(run_program),)
+        row = preset(banked)
+    except UnknownPresetError:
+        return (run_purpose(banked),)
     return (row.purpose, *row.co_purposes)
 
 
@@ -362,10 +361,10 @@ class ProgramPose:
 
 
 @dataclass(frozen=True)
-class MeasurementProgram:
-    """One named menu item: an ordered pose list and capture purpose."""
-    program_id: str
-    size: str
+class Preset:
+    """One registry row: its id (``speaker/mark``), what plays, and its poses at a layout it
+    offers (ADR-0366 §6)."""
+    preset: str
     poses: tuple[ProgramPose, ...]
     purpose: str = PURPOSE_SPEAKER
     regime: str = REGIME_PER_DRIVER
@@ -377,12 +376,12 @@ class MeasurementProgram:
     branch_pair: str = BRANCH_PAIR_DRIVERS
     co_purposes: tuple[str, ...] = ()
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
-    #: or :data:`CUSTOM_SIZE` for an inline list (ADR-0366 §6).
+    #: or :data:`CUSTOM_LAYOUT` for an inline list (ADR-0366 §6).
     layouts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.poses:
-            raise ValueError("a measurement program must contain at least one pose")
+            raise ValueError("a measurement preset must contain at least one pose")
         validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
         for purpose in self.co_purposes:
             if purpose not in PURPOSES or purpose == self.purpose or self.co_purposes.count(purpose) > 1:
@@ -394,11 +393,6 @@ class MeasurementProgram:
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
-
-    @property
-    def preset_id(self) -> str:
-        """The id a run names and banks, ``program_id/size`` (ADR-0366 §6)."""
-        return f"{self.program_id}/{self.size}"
 
     @property
     def mic_move_count(self) -> int:
@@ -442,21 +436,13 @@ class DriverNotOfferedError(ValueError):
         super().__init__(f"{preset} cannot play {driver} alone here")
 
 
-class UnknownProgramError(ValueError):
-    """No such ``(program_id, size)``. ``choices`` carries the valid pairs."""
+class UnknownPresetError(ValueError):
+    """No such preset id or program name. ``choices`` carries the preset ids."""
 
-    def __init__(
-        self,
-        program_id: str,
-        size: str | None,
-        choices: tuple[tuple[str, str], ...],
-    ) -> None:
-        self.program_id = program_id
-        self.size = size
+    def __init__(self, preset: str, choices: tuple[str, ...]) -> None:
+        self.preset = preset
         self.choices = choices
-        offered = ", ".join(f"{pid}/{sz}" for pid, sz in choices) or "(none)"
-        requested = size if size is not None else "<default>"
-        super().__init__(f"no measurement program {program_id}/{requested}; choose one of: {offered}")
+        super().__init__(f"no measurement preset {preset}; choose one of: {', '.join(choices) or '(none)'}")
 
 
 def validated_angle(value: object) -> int:
@@ -489,14 +475,13 @@ def _config_text(path: str | Path | None) -> str:
     return resources.files(__package__).joinpath("measurement_plans.json").read_text(encoding="utf-8")
 
 
-def _load_programs(
+def _load_presets(
     path: str | Path | None = None,
-) -> tuple[Mapping[tuple[str, str], MeasurementProgram], Mapping[str, str],
-           Mapping[str, tuple[tuple[ProgramPose, ...], str | None]]]:
+) -> tuple[Mapping[str, Preset], Mapping[str, tuple[tuple[ProgramPose, ...], str | None]]]:
     raw = json.loads(_config_text(path))
     if not isinstance(raw, dict):
         raise ValueError("measurement plan must be an object")
-    unknown = set(raw) - {"layouts", "programs", "default_sizes", "stimuli"}
+    unknown = set(raw) - {"layouts", "presets", "stimuli"}
     if unknown:
         raise ValueError(f"measurement plan has unknown fields: {sorted(unknown)}")
 
@@ -529,46 +514,43 @@ def _load_programs(
             raise ValueError(f"layout {name!r} must contain at least one pose")
         layouts[name] = tuple(_pose(value, name, index) for index, value in enumerate(values))
 
-    rows = raw.get("programs")
+    rows = raw.get("presets")
     if not isinstance(rows, list) or not rows:
-        raise ValueError("measurement plan programs must be a nonempty list")
-    programs: dict[tuple[str, str], MeasurementProgram] = {}
+        raise ValueError("measurement plan presets must be a nonempty list")
+    presets: dict[str, Preset] = {}
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
-            raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "layouts", "purpose", "regime", "levels", "stimulus",
+            raise ValueError(f"preset {index} must be an object")
+        unknown = set(row) - {"preset", "layout", "layouts", "purpose", "regime", "levels", "stimulus",
                               "room_sweep", "branch_pair", "co_purposes"}
         if unknown:
-            raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
+            raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
-            program_id = _text(row["id"], f"program {index} id")
-            size = _text(row["size"], f"program {index} size")
-            layout = _text(row["layout"], f"program {index} layout")
+            preset_id = _text(row["preset"], f"preset {index} id")
+            layout = _text(row["layout"], f"preset {index} layout")
         except KeyError as exc:
-            raise ValueError(f"program {index} is missing {exc.args[0]}") from None
+            raise ValueError(f"preset {index} is missing {exc.args[0]}") from None
         offered = row.get("layouts", [layout])
         if not isinstance(offered, list) or layout not in offered:
-            raise ValueError(f"program {program_id}/{size} must offer its default layout {layout!r}")
+            raise ValueError(f"preset {preset_id} must offer its default layout {layout!r}")
         for name in offered:
             if name not in layouts:
-                raise ValueError(f"program {program_id}/{size} names unknown layout {name!r}")
+                raise ValueError(f"preset {preset_id} names unknown layout {name!r}")
         stimulus = row.get("stimulus")
         if stimulus is not None:
-            _text(stimulus, f"program {program_id}/{size} stimulus")
+            _text(stimulus, f"preset {preset_id} stimulus")
             if stimulus not in stimuli:
-                raise ValueError(f"program {program_id}/{size} names unknown stimulus {stimulus!r}")
-        key = (program_id, size)
-        if key in programs:
-            raise ValueError(f"measurement plan repeats program {program_id}/{size}")
+                raise ValueError(f"preset {preset_id} names unknown stimulus {stimulus!r}")
+        if preset_id in presets:
+            raise ValueError(f"measurement plan repeats preset {preset_id}")
         levels = row.get("levels")
         if levels not in (None, "auto"):
-            raise ValueError(f"program {program_id}/{size} levels must be 'auto', got {levels!r}")
+            raise ValueError(f"preset {preset_id} levels must be 'auto', got {levels!r}")
         co_purposes = row.get("co_purposes", [])
         if not isinstance(co_purposes, list):
             raise ValueError("co_purposes must be a list")
-        programs[key] = MeasurementProgram(
-            program_id,
-            size,
+        presets[preset_id] = Preset(
+            preset_id,
             layouts[layout],
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
@@ -579,32 +561,16 @@ def _load_programs(
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
             co_purposes=tuple(_text(value, "co-purpose") for value in co_purposes),
         )
-
-    defaults_raw = raw.get("default_sizes")
-    if not isinstance(defaults_raw, dict):
-        raise ValueError("measurement plan default_sizes must be an object")
-    program_ids = {program_id for program_id, _size in programs}
-    if set(defaults_raw) != program_ids:
-        raise ValueError("measurement plan must name one default size for every program id")
-    defaults: dict[str, str] = {}
-    for program_id, size in defaults_raw.items():
-        program_id = _text(program_id, "default program id")
-        size = _text(size, f"default size for {program_id}")
-        if (program_id, size) not in programs:
-            raise ValueError(f"default {program_id}/{size} is not a program")
-        defaults[program_id] = size
     named = {name: (poses, movers.get(name)) for name, poses in layouts.items()}
-    return MappingProxyType(programs), MappingProxyType(defaults), MappingProxyType(named)
+    return MappingProxyType(presets), MappingProxyType(named)
 
-def load_programs(
-    path: str | Path | None = None,
-) -> Mapping[tuple[str, str], MeasurementProgram]:
+
+def load_presets(path: str | Path | None = None) -> Mapping[str, Preset]:
     """Load and validate the bundled plan, or a plan at ``path``."""
+    return _load_presets(path)[0]
 
-    return _load_programs(path)[0]
 
-
-_PROGRAMS, _DEFAULT_SIZES, _LAYOUTS = _load_programs()
+_PRESETS, _LAYOUTS = _load_presets()
 
 
 def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
@@ -612,31 +578,29 @@ def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
     return tuple(section.name for row in _PROGRAM_SECTIONS
                  if purpose is None or row.purpose == purpose for section in row.sections if section.reset)
 
-def available_programs() -> tuple[tuple[str, str], ...]:
-    """The ``(program_id, size)`` pairs a menu may offer, sorted."""
-    return tuple(sorted(_PROGRAMS))
+def available_presets() -> tuple[str, ...]:
+    """The preset ids a menu may offer, sorted."""
+    return tuple(sorted(_PRESETS))
 
 
-def program(program_id: str, size: str | None = None) -> MeasurementProgram:
-    """Return a named program, using its configured size when omitted."""
-    requested_size = size
-    if size is None:
-        size = _DEFAULT_SIZES.get(program_id)
-    try:
-        return _PROGRAMS[(program_id, size)]  # type: ignore[index]
-    except KeyError:
-        raise UnknownProgramError(program_id, requested_size, available_programs()) from None
+def preset(name: str) -> Preset:
+    """The preset with this id (``rear/pair``); a bare program name (``rear``) is the
+    first of its presets in registry order."""
+    found = _PRESETS.get(name) or next(
+        (row for preset_id, row in _PRESETS.items() if preset_id.partition("/")[0] == name), None)
+    if found is None:
+        raise UnknownPresetError(name, available_presets())
+    return found
 
 
-def run_program(program_id: str, layout: str | None = None, poses: str | None = None) -> MeasurementProgram:
-    """Resolve a run's preset (a bare program id is its default preset) at a named
+def run_preset(name: str, layout: str | None = None, poses: str | None = None) -> Preset:
+    """Resolve a run's preset (a bare program name is its first preset) at a named
     layout it offers, or at an inline JSON pose list or bearing list (ADR-0298,
     ADR-0366 §6)."""
-    name, _, size = program_id.partition("/")
-    selected = program(name, size or None)
+    selected = preset(name)
     if layout is not None:
         if layout not in selected.layouts:
-            raise LayoutNotOfferedError(f"{selected.program_id}/{selected.size}", layout, selected.layouts)
+            raise LayoutNotOfferedError(selected.preset, layout, selected.layouts)
         layout_poses, mover = _LAYOUTS[layout]
         selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
     if poses is None:
@@ -645,26 +609,26 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
         raise PosesNameALayoutError(poses)
     rows = json.loads(poses) if poses.lstrip().startswith("[") else [
         {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
-    return replace(selected, layout=CUSTOM_SIZE, poses=tuple(
-        _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(rows)))
+    return replace(selected, layout=CUSTOM_LAYOUT, poses=tuple(
+        _pose(value, CUSTOM_LAYOUT, index) for index, value in enumerate(rows)))
 
 
-def plan_poses(program: MeasurementProgram, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
+def plan_poses(preset: Preset, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
     """The poses a run walks on this speaker. A named layout's pose that names a bare
     driver role (``woofer``) plays each declared output of that role (``targets``), one
     output's poses after the other's, so a cardioid's rear woofer follows its front one
     (ADR-0366 §6); a role with no declared output keeps its name for preflight to refuse.
     A pose that names one output (``woofer:rear``), and every inline pose, plays what it
     names. ``driver`` narrows the run to that one output."""
-    runs = [(named, tuple(run)) for named, run in groupby(program.poses, key=lambda pose: pose.driver)]
+    runs = [(named, tuple(run)) for named, run in groupby(preset.poses, key=lambda pose: pose.driver)]
     poses = tuple(replace(pose, driver=output) for named, run in runs
-                  for output in (_outputs(named, targets) if program.layout != CUSTOM_SIZE else (named,))
+                  for output in (_outputs(named, targets) if preset.layout != CUSTOM_LAYOUT else (named,))
                   for pose in run)
     if not driver:
         return poses
     narrowed = tuple(pose for pose in poses if pose.driver == driver)
     if driver not in targets or not narrowed:
-        raise DriverNotOfferedError(program.preset_id, driver,
+        raise DriverNotOfferedError(preset.preset, driver,
                                     tuple(dict.fromkeys(pose.driver for pose in poses if pose.driver in targets)))
     return narrowed
 
@@ -675,9 +639,9 @@ def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:
     return tuple(target for target in targets if measurement_target_parts(target)[0] == named) or (named,)
 
 
-def trial_program(
+def trial_preset(
     sections: Collection[str], mover: str | None = None, layout: str | None = None,
-) -> MeasurementProgram | None:
+) -> Preset | None:
     """The first program the document states of rear, bass, room, speaker (reverse document
     order): its first trial preset that offers ``layout``, else its first trial layout
     ``mover`` can walk; ``None`` when it states none."""
@@ -685,7 +649,7 @@ def trial_program(
                 if any(section.name in sections for section in row.sections)), None)
     if row is None:
         return None
-    trials = [run_program(preset, trial_layout) for preset, trial_layout in row.trial]
+    trials = [run_preset(trial, trial_layout) for trial, trial_layout in row.trial]
     return next((trial for trial in trials if layout in trial.layouts), None) or next(
         (trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
 

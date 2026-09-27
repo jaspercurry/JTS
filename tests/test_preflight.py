@@ -10,14 +10,14 @@ from unittest.mock import Mock
 
 import pytest
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_program
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
-from jasper.active_speaker.measurement_programs import program, run_program
+from jasper.active_speaker.measurement_programs import preset, run_preset
 from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
@@ -98,8 +98,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     roles = tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
                   if t.get("output_variant", "primary") == "primary")
     candidate = _room_candidate(tuning_profile)
-    selected = run_program(preset, poses)
-    plan = request_for_program(selected, mover=selected.mover or "human",
+    selected = run_preset(preset, poses)
+    plan = request_for_preset(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=topology, roles_bands=roles, role_targets=role_targets,
@@ -172,7 +172,7 @@ def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks
     """A round banks under its program id, so a plan naming one the registry
     does not hold is refused before it plays, whichever door it came through
     (ADR-0277)."""
-    plan = replace(request_for_program(run_program("nearfield")), program=program_id)
+    plan = replace(request_for_preset(run_preset("nearfield")), program=program_id)
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer", "woofer:rear")))
     assert [issue.code for issue in report.issues if issue.code == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED] == (
         [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
@@ -207,7 +207,7 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
 def test_preflight_per_driver_layout(layout):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
-    plan = request_for_program(program("speaker", "mark"), mover="human")
+    plan = request_for_preset(preset("speaker/mark"), mover="human")
     program_ids = Mock(return_value=("fixture-sweep",))
     report = preflight(plan, ready_facts(
         plan, program_ids_for=program_ids,
@@ -294,7 +294,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
-    plan = request_for_program(program("branches", "express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = request_for_preset(preset("branches/express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
