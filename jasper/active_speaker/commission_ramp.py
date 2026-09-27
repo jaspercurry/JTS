@@ -624,6 +624,7 @@ async def ramp_audible_step(
             result="arm_failed",
             group=group_id,
             role=role,
+            current_db=current_gain_db,
             next_db=next_gain_db,
         )
         issue = _issue(
@@ -632,9 +633,7 @@ async def ramp_audible_step(
             "could not arm the operator-confirmation session; the driver "
             "was NOT made audible",
         )
-        return _payload(
-            "blocked", [issue], next_gain_db=next_gain_db, gate=gate, load=None
-        )
+        return _payload("blocked", [issue], **step, load=None)
 
     if replaced_pending is not None and not _pending_step_still_current(
         replaced_pending,
@@ -690,6 +689,7 @@ async def ramp_audible_step(
             result="load_failed",
             group=group_id,
             role=role,
+            current_db=current_gain_db,
             next_db=next_gain_db,
         )
         issue = _issue(
@@ -700,8 +700,7 @@ async def ramp_audible_step(
         return _payload(
             "load_failed",
             [issue],
-            next_gain_db=next_gain_db,
-            gate=gate,
+            **step,
             load=load_payload,
         )
 

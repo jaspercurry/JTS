@@ -905,6 +905,35 @@ def test_ramp_step_fails_closed_when_session_cannot_arm(monkeypatch, tmp_path):
     assert cam.loaded_paths == [str(tmp_path / "commission.yml")]
 
 
+@pytest.mark.parametrize(
+    "break_step, expected_status",
+    [("arm_failed", "blocked"), ("load_failed", "load_failed")],
+)
+def test_ramp_step_refusals_carry_gain(
+    monkeypatch, tmp_path, break_step, expected_status
+):
+    # Both fail-closed refusals must report the same current/next gain the
+    # gate saw, not just the "loaded" path (#5929).
+    if break_step == "arm_failed":
+        monkeypatch.setattr(
+            commission_ramp_mod, "_ensure_safe_session_armed", lambda **kwargs: False
+        )
+    else:
+
+        async def _failed_load(*args, **kwargs):
+            return {"preflight": None, "load": {"status": "failed"}}
+
+        monkeypatch.setattr(
+            commission_ramp_mod, "load_driver_commissioning_config", _failed_load
+        )
+
+    step, *_ = _ramp_step(tmp_path, monkeypatch, role="woofer")
+
+    assert step["status"] == expected_status
+    assert step["current_gain_db"] == STARTUP_MUTE_GAIN_DB
+    assert step["next_gain_db"] == MIN_TEST_LEVEL_DBFS
+
+
 def test_operator_ack_too_loud_aborts_to_staged(monkeypatch, tmp_path):
     step, cam, staged_path, state_path, _ = _ramp_step(
         tmp_path, monkeypatch, role="woofer"
