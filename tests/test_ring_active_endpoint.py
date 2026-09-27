@@ -32,6 +32,7 @@ from .transport_camilla_fixtures import (
 )
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
+from jasper.audio_hardware import reconcile_outputd_lane
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -71,7 +72,6 @@ from jasper.output_topology_store import save_output_topology
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
 OUTPUTD_CONFIG_RS = REPO / "rust/jasper-outputd/src/config.rs"
-HARDWARE_RECONCILE = REPO / "jasper/audio_hardware/reconcile.py"
 
 
 # --------------------------------------------------------------------------
@@ -397,7 +397,7 @@ def test_the_active_device_name_is_spelled_identically_everywhere():
     assert ring_conf.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
     assert OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE == RING_ACTIVE_PLAYBACK_DEVICE
     assert (
-        audio_hardware_reconcile.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        reconcile_outputd_lane.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
         == RING_ACTIVE_PLAYBACK_DEVICE
     )
     # The Rust side names the PATH, not the PCM (it never resolves ALSA names).
@@ -417,9 +417,7 @@ def test_the_active_ring_path_is_spelled_identically_everywhere():
 
 def test_the_endpoint_marker_key_is_spelled_identically_in_both_languages():
     rust = OUTPUTD_CONFIG_RS.read_text(encoding="utf-8")
-    reconciler = HARDWARE_RECONCILE.read_text(encoding="utf-8")
     assert f'env_bool("{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}", false)' in rust
-    assert OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR in reconciler
 
 
 @pytest.mark.parametrize(
@@ -631,11 +629,11 @@ def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
         lambda cap: (False, "active_graph_missing") if endpoint is None
         else (True, ("2", endpoint)),
     )
-    assert run.apply_audio_runtime_env()
+    assert reconcile_outputd_lane.apply_audio_runtime_env(run)
     values = read_env_file(target)
     assert values["JASPER_OUTPUTD_ACTIVE_LANE"] == lane
     assert values[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
-    assert not run.apply_audio_runtime_env()
+    assert not reconcile_outputd_lane.apply_audio_runtime_env(run)
 
 
 # --------------------------------------------------------------------------
@@ -1351,7 +1349,7 @@ def test_the_ring_doctor_checks_are_still_registered():
             f"{func.__name__} is no longer a registered doctor check"
         )
     # ...and the private helper must NOT have been swept in.
-    assert audio_runtime_fanin._requires_roleful_graph.__name__ not in registered
+    assert audio_runtime_fanin.requires_roleful_graph.__name__ not in registered
 
 
 def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypatch):
@@ -1375,12 +1373,12 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     # land in the same REASON_RING_FLOOR_NOT_DECLARED branch) — not a
     # structured field, so it is not pinned here per AGENTS.md/ADR-0233 rule 3;
     # the branch itself (why the check reads ok) is.
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
 
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
@@ -1411,12 +1409,12 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     # As above: roleful-vs-passive is an additive prose note, not a distinct
     # reason (both are REASON_RING_FLOOR_RENDERED) — pin the branch, not the
     # note (AGENTS.md/ADR-0233 rule 3).
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: True)
     roleful = audio_runtime_ring.check_ring_conf_floor_render()
     assert roleful.status == "ok"
     assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
 
-    monkeypatch.setattr(audio_runtime_ring, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_ring.check_ring_conf_floor_render()
     assert passive.status == "ok"
     assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_RENDERED
@@ -1437,7 +1435,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1460,7 +1458,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
 
     # A PASSIVE box keeps the plain expectation and the plain remedy — the
     # honest phrasing is scoped to the case where the stereo ring is forbidden.
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: False)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: False)
     passive = audio_runtime_fanin.check_fanin_coupling()
     assert passive.status == "warn"
     assert passive.reason == audio_runtime_fanin.REASON_COUPLING_GRAPH_NOT_RING
@@ -1484,7 +1482,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     from jasper.cli.doctor._evidence import evidence
     from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: True)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
         "jasper.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1563,7 +1561,6 @@ def test_the_emitters_default_to_todays_literals_byte_for_byte():
         active_camilla_yaml.emit_active_speaker_commissioning_config,
         active_camilla_yaml.emit_active_speaker_program_config,
         active_camilla_yaml.emit_active_speaker_baseline_config,
-        active_camilla_yaml.emit_active_speaker_driver_domain_config,
     )
     for emit in emitters:
         kwargs = _emitter_required_kwargs(emit)
@@ -1650,23 +1647,7 @@ def test_an_active_ring_emit_refuses_a_width_the_ring_cannot_carry(monkeypatch):
 
 
 def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
-    """...and it is WIRED IN, not merely correct in isolation.
-
-    The assertion above exercises the helper directly, which proves the rule and
-    nothing about whether any emitter calls it — neutering the helper's body
-    left the whole suite green. This drives a REAL emit through
-    ``emit_active_speaker_startup_config`` (one of the five call sites) and
-    requires the emitter to refuse.
-
-    The emitter derives ``output_count`` from the preset, and no legal preset
-    lands outside 2..8, so the ring's own upper bound is narrowed for the
-    duration instead. Everything on the emit path stays real — real preset, real
-    derived width, real guard — and only the accept-set boundary moves, which is
-    the one value a fixture cannot otherwise reach.
-
-    The other four call sites are held by the source walk below: one live emit
-    proves the wiring exists, the walk proves none of the five lost it.
-    """
+    """Exercise the ring width guard and pin every remaining emit call site."""
     import re as _re
 
     from jasper.active_speaker.camilla_yaml import ActiveSpeakerConfigError
@@ -1694,15 +1675,15 @@ def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
     )
 
-    # All five emitters still call it. A count, because the number is the claim:
+    # Every remaining active emitter must check the ring width:
     # every active emitter that can name a ring must ask.
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in sorted(Path(active_camilla_yaml.__file__).parent.rglob("*.py"))
     )
     call_sites = _re.findall(r"^\s+_assert_ring_playback_width\(", source, _re.M)
-    assert len(call_sites) == 5, (
-        f"expected 5 emitter call sites of _assert_ring_playback_width, found "
+    assert len(call_sites) == 4, (
+        f"expected 4 emitter call sites of _assert_ring_playback_width, found "
         f"{len(call_sites)} — a new active emitter must ask, or an existing one "
         "stopped asking"
     )

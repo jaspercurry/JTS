@@ -36,7 +36,7 @@ from .path_safety import (
     _normalise_issue,
     _staged_config_path,
     _topology_blockers,
-    evaluate_path_safety_evidence,
+    read_path_safety_evidence,
     software_guard_ready_for_startup,
     staged_target_signature,
     topology_target_signature,
@@ -342,55 +342,6 @@ def _candidate_payload(
     return payload
 
 
-def _path_safety_payload(path: str | Path | None) -> dict[str, Any]:
-    if path is None:
-        return {
-            "provided": False,
-            "status": "missing",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_missing",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_missing",
-                    "active-speaker path-safety evidence was not provided",
-                )
-            ],
-        }
-    try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
-        report = evaluate_path_safety_evidence(raw)
-    except (OSError, ValueError) as exc:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "invalid",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_invalid",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_invalid",
-                    f"active-speaker path-safety evidence is invalid: {type(exc).__name__}",
-                )
-            ],
-        }
-    report["provided"] = True
-    report["path"] = str(path)
-    report["evidence_mode"] = raw.get("evidence_mode")
-    report["scope"] = raw.get("scope")
-    report["provenance"] = (
-        raw.get("provenance") if isinstance(raw.get("provenance"), dict) else {}
-    )
-    report["raw_evidence"] = raw
-    report["issues"] = [
-        _normalise_issue(issue)
-        for issue in report.get("issues", [])
-        if isinstance(issue, dict)
-    ]
-    return report
-
-
 def _tone_playback_idle(safe_session: dict[str, Any]) -> bool:
     playback = safe_session.get("playback") if isinstance(safe_session, dict) else {}
     if not isinstance(playback, dict):
@@ -428,10 +379,10 @@ def build_startup_load_preflight(
         topology,
         staged,
     )
-    path_safety = _path_safety_payload(path_safety_evidence_path)
-    if isinstance(path_safety.get("raw_evidence"), dict):
+    path_safety, raw_evidence = read_path_safety_evidence(path_safety_evidence_path)
+    if raw_evidence is not None:
         path_safety_binding = validate_startup_load_evidence_binding(
-            path_safety["raw_evidence"],
+            raw_evidence,
             topology,
             staged_config=staged,
             current_config_path=current_config_path,

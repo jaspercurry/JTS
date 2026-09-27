@@ -433,13 +433,8 @@ HIFIBERRY_DAC8X = DacProfile(
     # default (Camilla 1024/2048, outputd 1024/3072), 30 at Camilla 256/1536
     # alone, then 30 at the full floor, on the live active 2-way with real
     # program material. Every window: zero DAC xruns, zero CamillaDSP clipped
-    # samples, zero DAC-clock unlock and zero fan-in xrun delta. The content
-    # lane's counters at the full floor were indistinguishable from the
-    # baseline window's own rate (1 xrun / 2 empty / <=2 partial / 1 eagain per
-    # 30 minutes, against this box's ~3.4 content-xruns/hour steady state), so
-    # the 128-frame period costs the content capture nothing measurable here
-    # even though it multiplies that lane's wakeups. DAC presentation latency
-    # 63.833 ms -> 5.167 ms, a 58.67 ms reduction.
+    # samples, zero DAC-clock unlock and zero fan-in xrun delta. DAC
+    # presentation latency 63.833 ms -> 5.167 ms, a 58.67 ms reduction.
     #
     # The (256, 1536) pair keeps a 6x cushion instead of the validator's 4x
     # minimum, and this profile DECLINES TO RE-TEST the exact-4x (256, 1024)

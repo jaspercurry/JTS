@@ -207,6 +207,52 @@ cleanup_remote_capture() {
         || echo "WARN: could not remove remote capture directory $remote_dir" >&2
 }
 
+# aec_debug_record_capture REMOTE_DIR WARMUP_SEC CAPTURE_SEC VOICE CUE
+# Record the AEC bridge's mic_ch1/aec_output/ref WAVs into REMOTE_DIR on
+# PI_HOST: a runtime drop-in sets JASPER_AEC_DEBUG_RECORD_DIR (read by
+# jasper/cli/aec_bridge.py) and the bridge restarts into it. CUE prints after
+# WARMUP_SEC; the window then stays open CAPTURE_SEC. VOICE=stop holds
+# jasper-voice down so a wake cannot open a paid session or play TTS into the
+# capture; VOICE=keep leaves it alone. Refuses, touching nothing, when the
+# bridge is not active: the AEC reconciler stops it where it must not run.
+# The EXIT trap restores the bridge (and voice). SIGPIPE is ignored because
+# a dropped ssh session otherwise kills the shell inside that trap. The
+# program reaches ssh through printf, not a here-document: a here-document
+# into an external command can block forever on a loaded macOS host.
+aec_debug_record_capture() {
+    local program='set -euo pipefail
+trap "" PIPE
+out="$1" warmup="$2" duration="$3" voice="$4" cue="$5"
+dropin=/run/systemd/system/jasper-aec-bridge.service.d/debug-record.conf
+if ! systemctl is-active --quiet jasper-aec-bridge.service; then
+    echo "ERROR: jasper-aec-bridge.service is not active; start it first" >&2
+    exit 1
+fi
+mkdir -p "$out" "${dropin%/*}"
+chmod 0777 "$out"
+printf "[Service]\nEnvironment=JASPER_AEC_DEBUG_RECORD_DIR=%s\n" "$out" > "$dropin"
+cleanup() {
+    set +e
+    echo "Cleanup: restoring production state ..."
+    rm -f "$dropin"
+    rmdir "${dropin%/*}" 2>/dev/null
+    systemctl daemon-reload
+    systemctl restart jasper-aec-bridge.service
+    if [[ "$voice" == stop ]]; then systemctl start jasper-voice.service; fi
+}
+trap cleanup EXIT
+if [[ "$voice" == stop ]]; then systemctl stop jasper-voice.service; fi
+systemctl daemon-reload
+systemctl restart jasper-aec-bridge.service
+echo "Bridge in debug-record mode. Warmup ${warmup}s ..."
+sleep "$warmup"
+printf "\n  %s\n\n" "$cue"
+sleep "$duration"
+echo "Capture done."'
+    printf '%s\n' "$program" \
+        | ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "sudo bash -s $(quote_args "$@")"
+}
+
 # remote_env_file_set_cmd FILE KEY VALUE FILE_MODE DIR_MODE
 # Print the remote command that upserts KEY into FILE via the installed
 # jasper-env-file.sh lib (locked, atomic) — the one laptop-side Pi env-file
@@ -374,13 +420,9 @@ build_manifest_value() {
 #               NOT a clean "no"
 #
 # Echoes one of yes|no|error. The bare-`if` form treats exit >1 the same
-# as exit 1, so a transient git failure reads as a real "not an ancestor"
-# answer: on 2026-07-02 a deploy from a fresh worktree printed "diverged
-# histories" for an installed commit that was the direct PARENT of local
-# HEAD — a plain "forward" — because the ancestry probe hit a transient
-# error; re-running seconds later with identical inputs returned "forward".
-# Callers map the `error` token to their own can't-compare outcome instead
-# of guessing a topology.
+# as exit 1, so a transient git failure would read as a real "not an
+# ancestor" answer. Callers map the `error` token to their own
+# can't-compare outcome instead of guessing a topology.
 #
 # set -e-safe: the `|| rc=$?` capture keeps the non-zero git exit from
 # aborting a sourcing script under `set -euo pipefail`, and the function
@@ -407,9 +449,7 @@ _is_ancestor() {
 #   same               redeploying the installed commit
 #   forward            installed is an ancestor of local — normal upgrade
 #   downgrade          local is an ancestor of installed — this deploy
-#                      would REVERT commits the Pi already runs (the
-#                      2026-06-11 JTS3 incident: a stale parallel
-#                      checkout silently reverted same-day fixes)
+#                      would REVERT commits the Pi already runs
 #   diverged           histories split — neither contains the other
 #                      (two branches deploying to one Pi)
 #   unknown_installed  installed SHA not in this checkout's history
@@ -436,8 +476,8 @@ classify_deploy_direction() {
     fi
     # A git error (exit >1) on either ancestry probe must NOT fall through
     # to "diverged" — that mislabels a transient failure as a real split
-    # history (the 2026-07-02 spurious-diverged incident). Treat it as
-    # can't-compare so the caller's fetch-and-retry path runs instead.
+    # history. Treat it as can't-compare so the caller's fetch-and-retry
+    # path runs instead.
     case "$(_is_ancestor "$installed_sha" "$local_sha")" in
         yes) echo "forward"; return 0 ;;
         error) echo "unknown_installed"; return 0 ;;

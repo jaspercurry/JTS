@@ -11,8 +11,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
-from jasper.active_speaker.commissioning_experiment import commissioning_candidate
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
 from jasper.active_speaker.crossover_declaration import (
     CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
 )
@@ -58,7 +57,7 @@ async def apply_candidate(
                 selected = banked.candidate
             if selected is None:
                 selected = (candidate_from_applied_profile(topology, incumbent) if incumbent is not None
-                             else commissioning_candidate(topology, draft))
+                             else candidate_from_design_draft(topology, draft))
             expected = selected.fingerprint
             assert_crossover_honours_declared_floor(candidate_on_declaration(selected, declaration.preset).source_preset)
             preference_filters, trim_db = sound_settings.saved_sound_layers()
@@ -89,7 +88,7 @@ async def apply_candidate(
             baseline_apply.apply_started(topology, prepared)
             async with baseline_apply.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
                     load_config=load_config, get_current_config_path=get_current_config_path) as (applied, profile):
-                with v2state._state_lock:
+                with v2state.v2_state_locked():
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=incumbent,
                         previous_candidate_fingerprint=((incumbent or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)
                     update: dict[str, Any] = {"status": "unchanged"}

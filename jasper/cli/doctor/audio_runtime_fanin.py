@@ -847,7 +847,7 @@ def check_fanin_sched_policy() -> CheckResult:
     return CheckResult(name, "ok", policy)
 
 
-def _requires_roleful_graph() -> bool:
+def requires_roleful_graph() -> bool:
     """Does the saved topology need a per-driver (crossover) graph?
 
     NOT a ``@doctor_check`` — a plain helper, and it must stay above the next
@@ -926,7 +926,7 @@ def check_fanin_coupling() -> CheckResult:
     # jts_ring_playback is a FORBIDDEN token for every active emitter, so naming
     # it as expected would send an operator to a device the emitters refuse to
     # write. Such a box is mid-arm, and the remedy is the ladder, not a re-arm.
-    roleful = _requires_roleful_graph()
+    roleful = requires_roleful_graph()
     capture_device = devices.get("capture_device")
     playback_device = devices.get("playback_device")
     ring_mismatches: list[str] = []

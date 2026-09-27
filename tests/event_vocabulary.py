@@ -2,11 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frozen `event=` vocabulary snapshots read by test_log_event_conventions.
-
-Three exception tables, each recorded so the guard fails on a NEW deviation
-while the ones already in the tree are worked off. None of them may grow.
-"""
+"""Frozen event names; package owners track code moves."""
 from __future__ import annotations
 
 # Event names with no `domain.action` dot — the sole exception to the shape
@@ -16,7 +12,6 @@ from __future__ import annotations
 FLAT_EVENT_NAMES: tuple[str, ...] = (
     "active_speaker_baseline_config_written",
     "active_speaker_commissioning_config_written",
-    "active_speaker_driver_domain_config_written",
     "active_speaker_program_bake_config_written",
     "active_speaker_program_config_written",
     "active_speaker_startup_config_written",
@@ -24,8 +19,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "correction_bundle_manifest_entry_dropped",
     "correction_bundle_manifest_reset",
     "correction_calibration_lookup",
-    "correction_calibration_sign_migrated",
-    "correction_calibration_sign_migration",
 )
 
 # Top-level event prefixes emitted from more than one package, mapped to the
@@ -40,6 +33,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "aec_bridge": ("aec", "cli"),
     "airplay": ("jasper",),
     "assistant_loudness": ("jasper", "voice"),
+    "audio_validation": ("cli", "jasper"),
     "barge": ("jasper", "voice"),
     "bluetooth": ("bluetooth", "jasper", "web"),
     "correction": ("active_speaker", "audio_measurement", "jasper", "web"),
@@ -48,7 +42,6 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "ha": ("control", "jasper", "tools", "web"),
     "household_credential": ("control", "web"),
     "http": ("control", "web"),
-    "install_profile": ("control", "jasper"),
     "local_sources": ("local_sources",),
     "manual_mic": ("jasper", "voice"),
     "measurement": ("control", "voice"),
@@ -61,7 +54,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "source": ("control", "jasper", "local_sources"),
     "source_intent": ("jasper", "local_sources"),
     "spotify": ("jasper", "voice", "web"),
-    "transit": ("jasper", "tools", "transit", "web"),
+    "transit": ("tools", "transit", "web"),
     "tts_flush": ("jasper", "voice"),
     "tts_write": ("jasper",),
     "turn": ("jasper", "voice"),
@@ -69,7 +62,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "usbsink": ("jasper", "usbsink"),
     "voice": ("jasper", "voice", "web"),
     "volume": ("control", "jasper", "tools"),
-    "wake": ("control", "jasper", "voice", "web"),
+    "wake": ("jasper", "voice", "web"),
     "wake_corpus": ("wake_corpus", "web"),
     "weather": ("jasper", "web"),
 }

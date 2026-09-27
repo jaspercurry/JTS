@@ -21,8 +21,6 @@ poses and refusals, the session host tags indexes with a phase.
 from __future__ import annotations
 
 import math
-from collections import Counter
-from itertools import groupby
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -36,9 +34,8 @@ from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import V2PlanShape, room_sweep_band_hz, stage1_base_entries
+from .crossover_v2.capture_plan import room_sweep_band_hz
 from .crossover_v2.contracts import (
-    REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
@@ -52,6 +49,7 @@ from .measurement_programs import (
     BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
+    cleared_layers,
     MeasurementProgram,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
@@ -87,7 +85,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     position_angle_deg,
     remote_position_prompt,
     stage1_plan_max_attempts,
-    wall_clock_ceiling_s,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
@@ -121,7 +118,6 @@ __all__ = [
     "stop_specs",
     "default_run_level",
     "request_for_program",
-    "walk_price",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -234,7 +230,7 @@ class AngleStop:
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     ``branch_pair`` is which two targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
-    a near-field stop plays alone (ADR-0360).
+    a stop plays alone (ADR-0366).
     """
 
     angle_deg: int
@@ -263,8 +259,7 @@ class AngleStop:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
             validated_branch_pair(self.branch_pair, self.regime)
-            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose,
-                                  kind=self.kind, distance_m=distance)
+            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
@@ -276,7 +271,7 @@ class AngleStop:
     def plays_summed(self) -> bool:
         """Whether this stop plays a summed graph (the scope a summed sweep
         rides); a stop naming its driver plays that driver alone instead."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD) and not self.driver
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.driver
 
     @property
     def place(self) -> tuple[object, ...]:
@@ -716,7 +711,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
+            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
@@ -817,37 +812,8 @@ def request_for_program(
         candidates=candidates,
         level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
-        # ``spot`` carries caller geometry rather than a registry row, so its
-        # size names nothing an operator chose.
-        program=(
-            program.program_id
-            if program.program_id == "spot"
-            else f"{program.program_id}/{program.size}"
-        ),
+        program=f"{program.program_id}/{program.size}",
     )
-
-
-def walk_price(
-    request: AngleCaptureRequest, *, plan_shape: V2PlanShape | None = None,
-) -> dict[str, int | float | None]:
-    """What this walk costs the person holding the microphone. ``ceiling_min`` prices the
-    SESSION (base entries plus these captures), rounded UP to whole minutes.
-    ``plan_shape`` is ``None`` for a surface pricing a walk before any tier is chosen.
-    """
-    takes = Counter(candidate_identity(stop.candidate_id) for stop in request.stops)
-    captures = sum(takes[candidate] for candidate in set(request.candidates or (BASE_CANDIDATE,))) * request.repeats
-    return {
-        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
-        "captures": captures,
-        "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(stage1_base_entries(plan_shape) + request.repeats - 1 + captures) / 60
-        ),
-        "stimulus_s": (
-            None if request.template.sweep_s is None
-            else captures * request.template.sweep_s
-            * max(1, len(request.template.level_ladder_dbfs))
-        ),
-    }
 
 
 # --------------------------------------------------------------------------- #

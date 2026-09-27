@@ -14,8 +14,9 @@ import logging
 import math
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_text
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
@@ -123,7 +124,14 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
         )
 
 
-def _persist_execution_result(session_id: str, **result: Any) -> None:
+@contextmanager
+def v2_state_locked() -> Iterator[None]:
+    """Hold the state lock across a read-modify-write that spans other writes."""
+    with _state_lock:
+        yield
+
+
+def persist_execution_result(session_id: str, **result: Any) -> None:
     with _state_lock:
         state = load_v2_state()
         if not state or state.get("session_id") != session_id:
@@ -146,7 +154,7 @@ def clear_v2_state() -> None:
             )
 
 
-def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
+def attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
     """The store-owned floor and current model-error count for one conductor.
 
     The host performs the I/O at conductor construction; the conductor
@@ -279,7 +287,7 @@ def review_declined(state: Mapping[str, Any] | None) -> bool:
     return str(decision.get("candidate_fingerprint") or "") == current
 
 
-def _resolve_measurement_level_trims(
+def resolve_measurement_level_trims(
     spec: Any, *, preset: Any, topology: Any,
 ) -> tuple[dict[str, float], str]:
     """This box's own per-driver level match, and which evidence answered.
@@ -399,7 +407,7 @@ def persist_conductor_state(
         )
 
 
-def _persist_terminal_failure(
+def persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (), detail: str = "",
 ) -> bool:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
@@ -433,7 +441,7 @@ def _persist_terminal_failure(
         and prior_outcome in {"pass", "fail", "inconclusive"}
         and (prior or {}).get("session_id") == session_id
     ):
-        _persist_execution_result(session_id, cleanup_fault_code=code)
+        persist_execution_result(session_id, cleanup_fault_code=code)
         # consume() persists VERIFY before publishing capture_result. Later
         # trouble is a cleanup fault, not a commissioning verdict.
         log_event(

@@ -28,7 +28,9 @@ from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
-from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
+from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
+from jasper.cli import crossover_prescriber
 from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
@@ -279,13 +281,15 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
     assert packet["entry_baseline"]["available"] is True
-    assert packet["identity"]["calibration"] == (calibration if snapshot else {})
-    assert packet["verify"]["available"] is False
     assert ("state.json" in banked.provenance["missing"]) is not snapshot
+
+    def banked_calibration():
+        state = round_inputs(banked.path).state_path
+        return json.loads(state.read_text())["evidence"]["calibration"] if state else {}
+
+    assert banked_calibration() == (calibration if snapshot else {})
     (banked.path / "state.json").write_text(state_path.read_text())
-    reread = load_banked_round(banked.path).packet
-    assert reread["identity"]["calibration"] == (calibration if snapshot else {})
-    assert reread["verify"]["available"] is False
+    assert banked_calibration() == (calibration if snapshot else {})
 
 SR = 48000
 
@@ -605,9 +609,12 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
             assert len(take["bands"]) == len(saved["bands"]) > 0
             assert [band["fundamental_qualified"] for band in take["bands"]] == [
                 band["fundamental_qualified"] for band in saved["bands"]]
+    candidates = {group["set_id"]: group["candidate_id"] for group in packet["sets"]}
+    assert all(candidates.values())
     assert len(packet["series"]) == (14 if purpose == "room" else 1)
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"]
+        assert series["candidate_id"] == candidates[series["set_id"]]
         assert series["stats"]["flatness_rms_db"]["value"] < 0.5
         assert abs(series["stats"]["tilt_db_per_decade"]["value"]) < 0.5
         assert series["stats"]["band_means_db"] and series["stats"]["low_end_means_db"]
@@ -619,10 +626,34 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
         assert len(limits["bounds"]["cut_floor_db"]) == len(limits["bounds"]["freqs_hz"])
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
     assert f"Fingerprint: {packet['packet_fingerprint']}" in index
+    for series in packet["series"]:
+        assert any(f"candidate {series['candidate_id']}; set {series['set_id']}; take {series['take_id']}" in line for line in index)
     heads = ("Measured:", "Applied:", "Result:", "## Decisions", "decision:", "gate ", "series ",
              "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize("stored_evidence", [True, False], ids=["stored", "banked-before-stored"])
+def test_a_round_answers_with_the_fingerprint_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
+    """A round banked beside it later moves what a rebuild reads (ADR-0371)."""
+    session, state = _live_session(tmp_path)
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
+    path = banked.path / "packet.json"
+    packet = json.loads(path.read_text())
+    if stored_evidence:
+        monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", Mock(side_effect=AssertionError))
+    else:
+        path.write_text(json.dumps({key: value for key, value in packet.items() if key != EVIDENCE_KEY}))
+    later = bank_measure_round(tmp_path / "campaigns", name="r2-later")
+    artifacts, _ = round_artifact_dir(round_inputs(later).session_dir)
+    (artifacts / "candidate.json").write_text(json.dumps({"alignment": {"delay_us": 125.0}}))
+
+    assert crossover_prescriber.main(["status", str(banked.path)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["packet_fingerprint"] == packet["packet_fingerprint"] is not None
+    if stored_evidence:
+        assert status["contracts"] == packet[EVIDENCE_KEY]["contracts"]
 
 
 @pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])

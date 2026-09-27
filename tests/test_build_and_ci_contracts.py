@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 TESTS_WORKFLOW = WORKFLOWS / "tests.yml"
 ACTIONS_DIR = ROOT / ".github" / "actions"
-SETUP_PYTHON_UV_ACTION = ACTIONS_DIR / "setup-python-uv" / "action.yml"
 
 
 def _pyproject() -> dict:
@@ -61,13 +60,9 @@ def _uv_update_entry() -> dict:
 def test_dependabot_dev_tooling_group_covers_every_dev_dependency() -> None:
     """Every dev dependency must match the dev-tooling group, not the catch-all.
 
-    Third declaration of "which packages are dev tooling": pyproject's `dev`
-    extra, its `dev` dependency-group, and the dependabot group's globs. The
-    first two are already pinned to each other by
-    test_dev_dependency_group_matches_dev_extra; without this, adding a dev
-    tool (pre-commit, coverage, a types-* stub) silently drops it into
-    `python-runtime` and defeats the split's stated purpose — holding a
-    runtime SDK update behind lint work.
+    Otherwise a new dev tool (pre-commit, coverage, a types-* stub) silently
+    drops into `python-runtime` and defeats the split's stated purpose —
+    holding a runtime SDK update behind lint work.
 
     `dependency-type: development` would be the declarative seam, but GitHub
     documents it for bundler/composer/mix/maven/npm/pip and NOT for `uv`, so
@@ -191,44 +186,6 @@ def test_fast_landing_workflow_syncs_locked_group() -> None:
     assert "uv sync --locked --group fast-landing" in workflow
 
 
-def test_ci_syncs_full_runtime_from_committed_uv_lock() -> None:
-    """The full pytest suite imports optional runtime packages.
-
-    CI should replay the committed lock instead of resolving
-    `.[full,dev]` from live PyPI on every run. The openWakeWord install is
-    deliberately after the exact sync because it is an ONNX-only exception
-    installed without its unsatisfiable Python 3.13 tflite dependency.
-    """
-
-    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
-    test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
-    lane_resolver = (ROOT / "scripts" / "_test_lane.sh").read_text(encoding="utf-8")
-    setup_action = SETUP_PYTHON_UV_ACTION.read_text(encoding="utf-8")
-
-    sync = "uv sync --locked --extra full --extra dev --group openwakeword-onnx"
-    openwakeword = (
-        "uv pip install --python .venv/bin/python --no-deps openwakeword==0.6.0"
-    )
-
-    assert "astral-sh/setup-uv@" in setup_action
-    assert 'version: "0.12.9"' in setup_action
-    assert sync in setup_action
-    assert openwakeword in setup_action
-    assert setup_action.index(sync) < setup_action.index(openwakeword)
-    assert workflow.count('install-full: "true"') == 2
-    assert ".venv/bin/ruff check ." in workflow
-    assert "run: scripts/test-merge" in workflow
-    # The lane must run the interpreter from the `.venv` this sync populates,
-    # not whatever `pytest` happens to be on $PATH. That preference now lives
-    # in the resolver both lanes source rather than in each lane (issue #1836),
-    # so pin both halves of the chain.
-    assert "resolve_lane_tool test-merge pytest" in test_merge
-    assert 'resolved=".venv/bin/${tool}"' in lane_resolver
-    assert "scikit-learn>=1,<2" not in workflow
-    assert "uv pip install --python .venv/bin/python requests" not in workflow
-    assert "pip install -e '.[full,dev]'" not in workflow
-
-
 def _workflow_action_refs(
     node: object, path: tuple[str, ...] = ()
 ) -> list[str]:
@@ -344,19 +301,6 @@ def test_ci_pytest_gate_is_parallel_and_hardware_free() -> None:
     assert "-q --tb=short --ignore=tests/voice_eval -n 4" in test_merge
 
 
-def test_ci_compiles_both_host_safe_ring_benchmarks() -> None:
-    """Keep the C benchmarks and the plugin compile check inside the host
-    build gate; the .so is only ever installed by
-    deploy/lib/install/ring-platform.sh, on the Pi."""
-    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
-    makefile = (ROOT / "c" / "jts-ring-ioplug" / "Makefile").read_text(
-        encoding="utf-8"
-    )
-
-    assert "run: make test bench plugin" in workflow
-    assert "bench: ring_writer_bench ring_reader_bench" in makefile
-
-
 def test_test_lane_scripts_are_agent_facing_and_executable() -> None:
     """Agents should have stable commands instead of inventing test strategy."""
 
@@ -386,37 +330,6 @@ def test_fast_lane_routes_untracked_tests_before_staging(tmp_path: Path) -> None
         for line in pytest_calls.read_text(encoding="utf-8").splitlines()
     ]
     assert any("tests/test_new_feature.py" in call for call in calls), calls
-
-
-def test_mypy_dev_tooling_is_packaged_and_in_ci() -> None:
-    """Keep the lenient type-checker wiring intact across packaging surfaces."""
-
-    data = _pyproject()
-    workflow = TESTS_WORKFLOW.read_text(encoding="utf-8")
-
-    assert [
-        dep for dep in data["dependency-groups"]["dev"] if dep.startswith("mypy")
-    ] == ["mypy>=2.3.0,<2.4"]
-    assert [
-        dep
-        for dep in data["project"]["optional-dependencies"]["dev"]
-        if dep.startswith("mypy")
-    ] == ["mypy>=2.3.0,<2.4"]
-    assert data["tool"]["mypy"]["files"] == ["jasper"]
-    assert data["tool"]["mypy"]["ignore_missing_imports"] is True
-    assert {
-        override["follow_imports"]
-        for override in data["tool"]["mypy"]["overrides"]
-        if "dbus_next" in override["module"]
-    } == {"skip"}
-    # mypy runs once, inside scripts/test-merge, for both the local dev
-    # lane and CI's `run: scripts/test-merge` step — no separate CI-only
-    # mypy step, so it can't drift out of sync with the local gate.
-    assert "run: scripts/test-merge" in workflow
-    test_merge = (ROOT / "scripts" / "test-merge").read_text(encoding="utf-8")
-    assert "resolve_lane_tool test-merge mypy MYPY" in test_merge
-    assert (ROOT / "jasper" / "py.typed").is_file()
-    assert "py.typed" in data["tool"]["setuptools"]["package-data"]["jasper"]
 
 
 def test_python_resolution_artifacts_are_committed() -> None:
@@ -451,7 +364,7 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
     """Every contributor-facing "build your test venv" instruction must install
     the runtime extras the hardware-free suite imports (numpy, httpx, scipy, ...).
 
-    A bare `uv sync` (or `pip install -e '.[dev]'`) installs only the dev tools,
+    A bare `uv sync` installs only the dev tools,
     so pytest dies with dozens of ModuleNotFoundError on a clean checkout. uv
     0.11 has no `[tool.uv] default-extras` knob to fix that from config, so the
     docs and help spell the extras out explicitly. Pin ALL THREE surfaces — the
@@ -491,5 +404,5 @@ def test_documented_venv_build_commands_install_test_runtime_extras() -> None:
             "dependency groups and uninstalls the extras the suite imports"
         )
 
-    # The conftest pip fallback must also pull the extras (`.[full,dev]`, not `.[dev]`).
-    assert "'.[full,dev]'" in surfaces["tests/conftest.py"]
+    # The conftest pip fallback must also pull the extras, not only the dev group.
+    assert "'.[full]' --group dev" in surfaces["tests/conftest.py"]

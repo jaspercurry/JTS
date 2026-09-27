@@ -4,7 +4,8 @@ Description=Silently restore commissioned XVF3800 chip-AEC alignment
 # oneshot samples that live queue, resolves K-minus-median SYS_DELAY, and
 # applies the fixed volatile profile before the bridge/voice path can start.
 # It never plays a tone, resets the chip, or writes XVF flash.
-After=sound.target dev-snd-controlC4.device jasper-outputd.service
+# A late-enumerating chip restarts this unit via 99-jasper-aec-reconcile.rules.
+After=sound.target jasper-outputd.service
 Before=jasper-aec-bridge.service jasper-camilla.service
 Requires=sound.target
 Wants=jasper-outputd.service

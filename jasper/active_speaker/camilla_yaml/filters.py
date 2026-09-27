@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
@@ -16,6 +16,7 @@ from jasper.speaker_layout import SUB_CROSSOVER_ORDER
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
     bass_management_hp_name,
+    blend_correction_name,
     driver_baseline_gain_name,
     driver_baseline_limiter_name,
     driver_delay_name,
@@ -23,13 +24,17 @@ from ..camilla_names import (
     driver_linearization_peak_name,
     driver_linearization_shelf_name,
     driver_linearization_taper_name,
+    driver_mute_name,
     name_token,
     output_commission_mute_name,
+    program_protection_name,
     protective_tweeter_hp_name,
+    room_peq_name,
     sub_baseline_gain_name,
     sub_baseline_limiter_name,
     sub_lowpass_name,
     sub_startup_limiter_name,
+    sub_startup_mute_name,
 )
 from ..profile import (
     ActiveSpeakerConfigError,
@@ -40,8 +45,7 @@ from ..profile import (
 )
 from ..test_signal_plan import protective_tweeter_highpass_frequency_hz
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .devices import _finite_float
 from .ledger import (
     MAX_PROGRAM_HEADROOM_DB,
@@ -102,22 +106,6 @@ def _crossover_filter_name(
     return f"as_{name_token(role)}_{name_token(region.id)}_{suffix}"
 
 
-def _driver_mute_name(role: str) -> str:
-    return f"as_{name_token(role)}_startup_mute"
-
-
-def _room_peq_name(index: int) -> str:
-    return f"room_peq_{index}"
-
-
-def _program_protection_name(role: str, index: int) -> str:
-    return f"as_{name_token(role)}_program_protection_{index}"
-
-
-def _sub_startup_mute_name() -> str:
-    return "as_sub_startup_mute"
-
-
 def crossover_highpass_for_role(
     preset: ActiveSpeakerPreset, role: str
 ) -> tuple[str, float, int] | None:
@@ -173,7 +161,7 @@ def _emit_filter_definitions(
             ))
         lines.extend(_emit_delay_filter(driver_delay_name(role)))
         lines.extend(emit_gain_filter(
-            _driver_mute_name(role),
+            driver_mute_name(role),
             STARTUP_MUTE_GAIN_DB,
             mute=True,
         ))
@@ -362,10 +350,6 @@ MAX_BLEND_CORRECTION_FILTERS = 2
 MAX_BLEND_CORRECTION_GAIN_DB = 0.0
 
 _BLEND_CORRECTION_BIQUAD_TYPES = frozenset({"Peaking"})
-
-
-def _blend_correction_name(index: int) -> str:
-    return f"as_blend_{index}"
 
 
 def _validated_blend_correction(
@@ -611,7 +595,7 @@ def _emit_sub_startup_definitions(
             clip_limit_db=limiter_clip_limit_db,
             soft_clip=True,
         ),
-        *emit_gain_filter(_sub_startup_mute_name(), STARTUP_MUTE_GAIN_DB, mute=True),
+        *emit_gain_filter(sub_startup_mute_name(), STARTUP_MUTE_GAIN_DB, mute=True),
     ]
 
 
@@ -687,7 +671,7 @@ def _emit_baseline_filter_definitions(
     for i, peq in enumerate(room_peqs, start=1):
         lines.extend(
             emit_peaking_biquad(
-                _room_peq_name(i),
+                room_peq_name(i),
                 freq=peq.freq,
                 q=peq.q,
                 gain=peq.gain,
@@ -704,7 +688,7 @@ def _emit_baseline_filter_definitions(
     for i, entry in enumerate(blend_correction, start=1):
         lines.extend(
             emit_peaking_biquad(
-                _blend_correction_name(i),
+                blend_correction_name(i),
                 freq=float(entry["freq"]),
                 q=float(entry["q"]),
                 gain=float(entry["gain"]),
@@ -829,7 +813,7 @@ def _emit_commissioning_filter_definitions(
     for role in required_driver_roles(preset.way_count):
         for index, section in enumerate((protection_sections_by_role or {}).get(role, ())):
             lines.extend(emit_linkwitz_riley(
-                _program_protection_name(role, index),
+                program_protection_name(role, index),
                 highpass=section.highpass,
                 freq_hz=section.fc_hz,
                 order=section.order,

@@ -30,9 +30,9 @@ This doc holds **sequence and rationale**. It does not hold definitions,
 architecture, or campaign state, all of which have owners:
 
 - **D1–D8 gating decisions and the PR-G ladder** —
-  [`gating-v2-plan.md`](../gating-v2-plan.md) (issue #1790)
+  [`gating-v2-plan.md`](gating-v2-plan.md) (issue #1790)
 - **Room tiers, the room-boundary ceiling, the two-instrument boundary** —
-  [`room-correction-regime-plan.md`](../room-correction-regime-plan.md)
+  [`room-correction-regime-plan.md`](room-correction-regime-plan.md)
   (issue #1791)
 - **Commission flow grading** —
   [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); **architecture
@@ -278,7 +278,7 @@ first.
 Post-run. This is the deliberate deeper investment named in the ethos, and
 it is largely the probabilistic posture made concrete — mostly by executing
 the adopted-but-unstarted gating-v2 ladder
-([`gating-v2-plan.md`](../gating-v2-plan.md)). Three pieces are this
+([`gating-v2-plan.md`](gating-v2-plan.md)). Three pieces are this
 roadmap's own rather than the plan's: item 7's prominence-margin
 persistence, item 10's distance prior, and item 11's placement
 recommendation.
@@ -351,7 +351,7 @@ swap**: the shipped `2.5/T` is a binary disclosed floor that never gates,
 while D4's `2/T` is the endpoint of a confidence taper. The proposal is to
 keep D4's taper and put its full-authority endpoint at the shipped `2.5/T`,
 so the system carries two ratios rather than three. If ratified, amend
-[`gating-v2-plan.md`](../gating-v2-plan.md)'s D4 in the same change.
+[`gating-v2-plan.md`](gating-v2-plan.md)'s D4 in the same change.
 
 ### Skipped, with reasons
 

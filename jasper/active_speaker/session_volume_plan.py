@@ -34,10 +34,8 @@ per-step lease does not:
 * a PER-STIMULUS re-proof of the volume it opened
   (:meth:`SessionVolumePlan.hold_measurement_volume`, #2925). "Held for the
   whole session" is the intent; whether the fader actually stayed there is a
-  separate fact, and the graph swap around each stimulus used to answer no —
-  its duck released to the household level rather than the declared one
-  (#2929; wave 6d then stopped the measurement swap ducking at all, and the
-  bound that defect broke lives in :func:`jasper.volume_owner.duck_release_target_db`).
+  separate fact: a writer that releases to the household level rather than
+  the declared one moves the fader under the session (ADR-0004 constraint 2).
   A per-step lease never needed this because it re-set the volume every step.
   The re-proof stays as the tripwire that would catch the next such writer.
 

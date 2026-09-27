@@ -54,46 +54,8 @@ if ! ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" true
     exit 1
 fi
 
-# Use the bridge's existing JASPER_AEC_DEBUG_RECORD_DIR mode. Inject
-# via a transient systemd drop-in, restart bridge, capture, clean up.
-ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/run.log"
-set -euo pipefail
-DURATION="$1"
-OUT="$2"
-
-state="$(systemctl is-active jasper-aec-bridge.service 2>/dev/null || true)"
-if [[ "$state" != "active" ]]; then
-    echo "ERROR: jasper-aec-bridge.service is '$state' — start it first" >&2
-    exit 1
-fi
-
-mkdir -p "$OUT"; chmod 0777 "$OUT"
-
-OVERRIDE_DIR=/run/systemd/system/jasper-aec-bridge.service.d
-mkdir -p "$OVERRIDE_DIR"
-cat > "$OVERRIDE_DIR/debug-record.conf" <<EOF
-[Service]
-Environment=JASPER_AEC_DEBUG_RECORD_DIR=$OUT
-EOF
-
-cleanup() {
-    rm -f "$OVERRIDE_DIR/debug-record.conf"
-    rmdir "$OVERRIDE_DIR" 2>/dev/null || true
-    systemctl daemon-reload
-    systemctl restart jasper-aec-bridge.service
-}
-trap cleanup EXIT
-
-systemctl daemon-reload
-systemctl restart jasper-aec-bridge.service
-
-echo "Bridge restarted with debug record. Warmup 5s + capture ${DURATION}s ..."
-sleep 5
-echo "Capturing now."
-sleep "$DURATION"
-sleep 1
-echo "Capture done."
-REMOTE_SCRIPT
+aec_debug_record_capture "$OUT_REMOTE" 5 "$DURATION" keep \
+    "Capturing ${DURATION}s now." 2>&1 | tee "$OUT_LOCAL/run.log"
 
 # Pull the captured ref.wav
 rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/ref.wav" "$OUT_LOCAL/" >&2

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from jasper.log_event import log_event
 
 from .audio_buffer import AudioBuffer
-from .mic_capture import InputDeviceUnavailable
+from .mic_capture import InputDeviceUnavailable, MicCapture
 from .tts_playout import TtsPlayout
 from .wake_events import WakeEventStore
 from .cues import AudioCueManager
@@ -96,13 +96,8 @@ VOICE_MIC_UNAVAILABLE_EXIT = 66
 # round trip. A refusal outlives that either way: it cues first.
 PAUSED_CONNECTION_WAIT_SEC = 1.2
 
-# Pre-roll: when wake fires, replay the most recent ~560 ms of mic
-# audio into the turn so the first phoneme of the user's command
-# isn't lost. openWakeWord fires when the END of "Hey Jarvis" passes
-# its window — by that point the user is already 200-400 ms into
-# their command. Without pre-roll we throw those frames away.
-# 7 × 80 ms = 560 ms covers the wake-word tail + the start of the
-# command for fast speakers.
+# Wake fires at the end of "Hey Jarvis". Keep 7 × 80 ms of pre-roll so
+# a fast speaker's command onset survives that detection delay.
 PRE_ROLL_FRAMES = 7
 
 
@@ -1109,6 +1104,7 @@ class WakeLoop:
             await self._turns.end()
 
     async def _handle_manual_session_frame(self, frame, *, captured_at: float | None = None) -> None:
+        self._turns.manual_frames += 1
         now = time.monotonic() if captured_at is None else captured_at
         if self._push_to_talk.hold_cap_exceeded(
             now - self._turns.started_at_loop, self._cfg.idle_timeout_sec,
@@ -1161,7 +1157,9 @@ class WakeLoop:
             self._turns.speech.silence_started_at = 0.0
         elif self._turns.user_speech_seen:
             if self._turns.speech.silence_started_at == 0.0:
-                self._turns.speech.silence_started_at = now
+                self._turns.speech.silence_started_at = (
+                    now - MicCapture.OUTPUT_FRAME_SAMPLES / MicCapture.OUTPUT_RATE
+                )
                 self._turn_timeline.stamp("speech_end", first=False)
             elif now - self._turns.speech.silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
                 await self._end_session_input("end-of-utterance")
@@ -1253,10 +1251,10 @@ class WakeLoop:
         wake does: the user-deliberate stop-listening signals
         (mic-mute, room-correction measurement window), spend cap, and
         connection-paused. Returns one of
-        OK / BUSY / MUTED / MEASURING / CAP / PAUSED / UNKNOWN_SOURCE /
-        NO_ROOM_MIC / ERROR for the caller's logging.
+        OK / BUSY / MUTED / MEASURING / CAP / NOT_READY / PAUSED /
+        UNKNOWN_SOURCE / NO_ROOM_MIC / ERROR for the caller's logging.
         """
-        if source and source not in self._push_to_talk.sources:
+        if source and not self._push_to_talk.known(source):
             log_event(
                 logger,
                 "session.manual_refused",
@@ -1309,6 +1307,20 @@ class WakeLoop:
             )
             self._spawn_manual_refusal_cue("spend_cap_reached")
             return "CAP"
+        if source and (not_ready := self._push_to_talk.not_ready(source)):
+            # A remote waking from sleep is back by the next press, which is
+            # what the cue asks for (issue #3346). One registered but not
+            # armed is cued here too (ADR-0372).
+            log_event(
+                logger,
+                "manual_mic.hold_failed",
+                source=source,
+                reason="not_ready",
+                link=not_ready,
+                level=logging.WARNING,
+            )
+            self._spawn_manual_refusal_cue(INTERNAL_ERROR_CUE_SLUG)
+            return "NOT_READY"
         self._push_to_talk.active_source = source
         self._frozen_pre_roll = () if source else tuple(self._pre_roll)
         self._input_admit_after = time.monotonic()
@@ -1375,6 +1387,15 @@ class WakeLoop:
             return "NO_SESSION"
         if self._turns.input_ended:
             return "OK"
+        if self._turns.manual_endpoint_this_turn and not self._turns.manual_frames:
+            # The remote delivered nothing. Close input against late frames
+            # and end the turn off this reply, whose caller times out at 5 s;
+            # the teardown names the failure and cues it.
+            self._turns.input_ended = True
+            self._create_fire_and_forget_task(
+                self._turns.end(), name="manual-hold-no-frames",
+            )
+            return "OK"
         await self._end_session_input("push-to-talk release")
         return "OK"
 
@@ -1439,7 +1460,7 @@ class WakeLoop:
                 "kind": self._output_gate.active_kind,
                 "epoch": self._output_gate.epoch,
             },
-            "manual_mic_sources": sorted(self._push_to_talk.sources),
+            "push_to_talk": self._push_to_talk.status(),
             "active_manual_mic_source": self._push_to_talk.active_source,
             # This speaker has no room mic of its own: zero wake legs, every
             # turn opened by an accessory button. Surfaced because it is a

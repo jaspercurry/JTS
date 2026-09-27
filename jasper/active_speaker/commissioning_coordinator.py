@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The declaration, protected experiment, and apply steps for a new speaker."""
+"""The layout, research and profile steps for a new speaker, and the next program to run once it is applied."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import finite_float, parse_utc_iso
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
+from .calibration_level import load_calibration_level_state
+from .crossover_preview import build_crossover_preview
+from .design_draft import load_design_draft
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology
 from .measurement_programs import (
@@ -71,7 +74,6 @@ def build_commissioning_view(
     calibration_level: Mapping[str, Any] | None = None,
     applied_profile: Mapping[str, Any] | None = None,
     applied_profile_verdict: str = "",
-    first_experiment: Mapping[str, Any] | None = None,
     recent_rounds: Mapping[str, Mapping[str, Any]] | None = None,
     programs: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
@@ -88,8 +90,6 @@ def build_commissioning_view(
     values_ready = design_ready and preview_ready and safety_ready
     profile_applied = applied_profile is not None and applied_profile_verdict != APPLIED_PROFILE_DISPLACED
     applied = applied_identity(applied_profile) or {}
-    experiment = dict(first_experiment or {})
-    experiment_complete = bool(experiment.get("candidate_fingerprint"))
     review_ready = bool((review.get("permissions") or {}).get("may_compile"))
     disclosures = []
     if applied_profile is not None:
@@ -133,7 +133,6 @@ def build_commissioning_view(
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
         "steps": steps, "current_step": current, "next_action": action, "programs": programs,
         "near_field_drivers": near_field_drivers(topology),
-        "first_experiment": {**experiment, "complete": experiment_complete}, "combined_groups": [],
         "applied_profile": {
             "stands": profile_applied, "verdict": applied_profile_verdict if profile_applied else "",
             "exists": applied_profile is not None,
@@ -162,12 +161,8 @@ def load_commissioning_view(
     """
     from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: import cost (graph compilation)
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.commissioning_experiment import commissioning_candidate, commissioning_experiment_summary  # lazy: candidate imports baseline
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.startup_load import load_startup_load_state
+    from jasper.active_speaker.startup_load import load_startup_load_state  # lazy: import cost (runtime_contract, staging)
 
     if topology is None:
         topology = load_output_topology()
@@ -178,12 +173,6 @@ def load_commissioning_view(
     baseline = compile_commissioning_profile(
         applied_profile=applied, topology=topology, design_draft=design_draft, crossover_preview=preview,
     )
-    experiment = {}
-    if applied is None:
-        try:
-            experiment = commissioning_experiment_summary(commissioning_candidate(topology, design_draft))
-        except (OSError, ValueError, LookupError):
-            pass
     programs = programs_for_topology(topology)
     return build_commissioning_view(
         topology,
@@ -196,7 +185,6 @@ def load_commissioning_view(
         applied_profile=applied,
         recent_rounds=latest_banked_rounds(applied_identity(applied) or {}, programs=programs),
         programs=programs,
-        first_experiment=experiment,
         applied_profile_verdict=read_applied_profile_verdict(applied),
     )
 

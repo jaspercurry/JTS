@@ -2,26 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""On a push-to-talk turn the button owns end-of-input — not local Silero.
-
-Press calls ``manual_session_start``; release calls ``manual_session_end``,
-which sets ``_input_ended`` and calls ``end_input()``. That is the exact
-operation the Silero end-of-utterance detector performs, so running Silero
-on the same turn makes it a *second writer of the same fact* — and the
-faster of the two wins. Before this bypass, a user holding the button
-through a 0.8 s thinking pause had their input closed underneath them, and
-a user who held the button for 5 s before speaking had the turn ended
-outright.
-
-Each guard below is written as a mutation: the same inputs are replayed
-with the guard's condition flipped, and the pre-fix behaviour is asserted
-to come back. If a branch is ever deleted, these fail.
-"""
+"""The button ends manual input; the silence clock ends wake input."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -287,7 +274,8 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     deliberately-exploding `acquire_turn` stub. The decision is made
     before that point, so reaching the explosion with the flag already
     set is the evidence; a stale opposite value is seeded first so a
-    no-op would fail.
+    no-op would fail. The previous hold's frame count goes with it, or a
+    silent hold after a good one would never read as delivering nothing.
     """
 
     async def _noop(*_a, **_k) -> None:
@@ -301,6 +289,7 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     wl._tts.pause_content_meter = _noop
     wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
     wl._turns.manual_endpoint_this_turn = not manual  # stale value from before
+    wl._turns.manual_frames = 5
 
     # `match=` stands: the stub raises a bare AssertionError, which carries
     # no code or structured attribute naming which stub it came from.
@@ -308,6 +297,7 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
         await wl._begin_turn()
 
     assert wl._turns.manual_endpoint_this_turn is manual
+    assert wl._turns.manual_frames == 0
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +385,7 @@ class _TeardownTurn:
         turn_lost: bool = False,
         server_turn_complete: bool = False,
         dropped: int = 0,
+        bytes_sent: int = 4096,
     ) -> None:
         self.end_input_calls = 0
         self.release_calls = 0
@@ -402,6 +393,7 @@ class _TeardownTurn:
         self._turn_lost = turn_lost
         self._server_turn_complete = server_turn_complete
         self._dropped = dropped
+        self._bytes_sent = bytes_sent
 
     def last_chunk_at(self) -> float:
         return 0.0
@@ -419,7 +411,10 @@ class _TeardownTurn:
         return self._server_turn_complete
 
     def bytes_sent(self) -> int:
-        return 4096
+        return self._bytes_sent
+
+    async def send_audio(self, data: bytes) -> None:
+        self._bytes_sent += len(data)
 
     def chunks_received(self) -> int:
         return self._chunks
@@ -460,6 +455,8 @@ async def _torn_down_mid_hold(
     reason: str = "test",
     paused: bool = False,
     dropped: int = 0,
+    bytes_sent: int = 4096,
+    frames: int | None = None,
     wl=None,
 ) -> _TeardownTurn:
     """Run the REAL `_end_turn_inner` on a turn where nothing else in the
@@ -476,6 +473,7 @@ async def _torn_down_mid_hold(
         turn_lost=turn_lost,
         server_turn_complete=server_turn_complete,
         dropped=dropped,
+        bytes_sent=bytes_sent,
     )
     wl._turns.turn = turn
     wl._turns.playback_report = PlaybackReport(accepted_audio=chunks > 0)
@@ -485,6 +483,9 @@ async def _torn_down_mid_hold(
     wl._turns.input_ended = input_ended
     wl._turns.user_speech_seen = user_speech
     wl._turns.manual_endpoint_this_turn = manual
+    # Audio the provider took came from delivered frames; a test overrides
+    # this to model frames the provider refused.
+    wl._turns.manual_frames = int(bytes_sent > 0) if frames is None else frames
 
     await wl._turns._end_turn_inner(reason)
     # The teardown must have completed, or "end_input was called" would be
@@ -602,6 +603,108 @@ async def test_a_turn_with_no_answer_is_heard_and_counted(
     assert int(fields["bytes_sent"]) == 4096
     assert int(fields["count"]) == counted
     assert fields["reason"] == event_reason
+
+
+@pytest.mark.parametrize(
+    ("manual", "frames", "reason", "cue", "event"),
+    [
+        (True, 0, "test", "internal_error", "manual_mic.hold_failed"),
+        (True, 0, "stopping", None, "manual_mic.hold_failed"),
+        (True, 3, "test", None, "turn.silent_response"),
+        (False, 0, "test", None, "turn.silent_response"),
+    ],
+    ids=["button", "button_shutdown", "provider_took_none", "wake"],
+)
+async def test_a_button_turn_that_carried_no_audio_is_one_typed_failure(
+    manual, frames, reason, cue, event, caplog,
+):
+    """A hold whose remote delivered no frames — the release, the idle
+    watchdog or anything else ending it — says so once and cues it (issue
+    #3346), unless the ending was the daemon's own. Frames the provider then
+    refused (its turn lost) are the provider's failure, not the remote's, and
+    keep their silent-response line. A wake turn always sends its pre-roll,
+    so the same shape there stays an uncued journal line."""
+    wl = _teardown_loop()
+    wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(
+            wl=wl, manual=manual, chunks=0, bytes_sent=0, frames=frames,
+            reason=reason, turn_lost=bool(frames),
+        )
+
+    assert wl._cues.played == ([cue] if cue else [])
+    fields = event_fields(caplog, event)
+    if event == "manual_mic.hold_failed":
+        assert (fields["source"], fields["reason"]) == ("wiim_remote_2", "no_frames")
+        assert fields.get("suppressed") == (None if cue else reason)
+    else:
+        assert fields["reason"] == "no_audio_sent"
+        assert fields["turn_lost"] == ("true" if frames else "false")
+        assert not event_records(caplog, "manual_mic.hold_failed")
+
+
+async def test_a_release_that_carried_no_audio_fails_at_once_and_the_next_press_opens(
+    monkeypatch, caplog,
+):
+    """The release ends a hold that delivered nothing at once, rather than
+    leaving it to the model or the idle watchdog, and the speaker is ready
+    for the next press. A frame landing between the release and the
+    teardown must not turn the failure into an uncued silent turn."""
+    from jasper.accessories import status as accessory_status
+    from jasper.voice.turn_lifecycle import State
+    from tests._manual_mics import remote_mic
+
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": {"wiim_remote_2": {
+            "restarts": 0, "last_error": None,
+            "link": {"connected": True, "subscribed": True},
+        }}},
+    )
+    wl = wake_loop_for_tests(cues=_SpyCues(), manual_mics=[remote_mic()])
+    wl._cfg.active_voice_model = "test-model"
+    wl._wake_telemetry.store = None
+    wl._turns.state = State.SESSION
+    turn = _TeardownTurn(chunks=0, bytes_sent=0)
+    wl._turns.turn = turn
+    wl._turns.playback_report = PlaybackReport()
+    wl._turns.bg_tasks = set()
+    wl._turns.session_id = "sess-release"
+    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.started_at_loop = asyncio.get_event_loop().time()
+    wl._push_to_talk.active_source = "wiim_remote_2"
+
+    with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
+        assert await wl.manual_session_end() == "OK"
+        await wl._handle_session_frame(silent_frame())
+        await asyncio.gather(*tuple(wl._fire_and_forget))
+        await wl._turns.pending_release
+
+    assert wl._cues.played == ["internal_error"]
+    assert event_fields(caplog, "manual_mic.hold_failed")["reason"] == "no_frames"
+    assert wl._turns.state is State.WAKE
+
+    opened = []
+
+    async def begin_turn(**kwargs) -> None:
+        opened.append(kwargs)
+
+    wl._begin_turn = begin_turn
+    assert await wl.manual_session_start("wiim_remote_2") == "OK"
+    assert opened == [{"pre_roll": False, "listening_feedback": True}]
+
+
+async def test_a_release_after_delivered_audio_asks_the_model():
+    """Control for the release above: one delivered frame is a hold, so the
+    release closes input on the model and waits for its answer."""
+    wl = _session_loop(manual=True)
+
+    await wl._handle_session_frame(silent_frame())
+    assert await wl.manual_session_end() == "OK"
+
+    assert wl._turns.turn.send_audio_calls == 1
+    assert wl._turns.turn.end_input_calls == 1
+    assert not wl._fire_and_forget
 
 
 async def test_a_capped_pre_response_turn_ends_as_itself(caplog):
@@ -1041,3 +1144,19 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
 
     assert wl._vad is None
     assert wl._turns.manual_endpoint_this_turn is True
+
+
+@pytest.mark.parametrize("capture_timestamp", [False, True])
+async def test_silence_window_includes_the_first_silent_frame(monkeypatch, capture_timestamp):
+    wl = _session_loop(manual=False)
+    wl._turns.started_at_loop = 100.0
+    wl._turns.user_speech_seen = True
+    now = 100.08
+    monkeypatch.setattr("jasper.voice_daemon.time", SimpleNamespace(monotonic=lambda: now))
+
+    for frame_end, expected_closes in ((100.08, 0), (100.799, 0), (100.801, 1)):
+        now = frame_end + (5.0 if capture_timestamp else 0.0)
+        await wl._handle_session_frame(
+            silent_frame(), captured_at=frame_end if capture_timestamp else None,
+        )
+        assert wl._turns.turn.end_input_calls == expected_closes

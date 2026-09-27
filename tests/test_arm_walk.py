@@ -696,7 +696,7 @@ def test_the_park_runs_once(failure_code, failures, attempts, parked):
         return _Proc(json.dumps({"ok": True, "result": {"offset_degrees": 0.0}}))
 
     clock, trail = FakeWalkClock(), _RecordingTrail()
-    mover = aw.TurntableMover(attest_rig_clear=True, run=run, sleep=clock.sleep)
+    mover = aw.TurntableMover(run=run, sleep=clock.sleep)
     session = FakeSession([_QUIET])
     walk = _walk(mover, session, clock=clock, trail=trail, idle_ceiling_s=10.0)
     walk.run()
@@ -741,7 +741,7 @@ def test_no_adapter_verb_this_module_emits_can_redefine_zero():
     assert "detect" in aw._TOOL_SUBCOMMANDS
     assert "set-zero" not in aw._TOOL_SUBCOMMANDS
     with pytest.raises(AssertionError):
-        aw.TurntableMover(attest_rig_clear=True)._invoke("set-zero")
+        aw.TurntableMover()._invoke("set-zero")
 
 
 def test_a_whole_walk_emits_only_the_allowed_verbs():
@@ -760,7 +760,7 @@ def test_a_whole_walk_emits_only_the_allowed_verbs():
             payload = {"ok": True, "result": {}}
         return _Proc(json.dumps(payload))
 
-    mover = aw.TurntableMover(attest_rig_clear=True, run=fake_run)
+    mover = aw.TurntableMover(run=fake_run)
     session = FakeSession([_pending(1, 22), _pending(2, -7), _COMPLETE])
     assert _walk(mover, session, idle_ceiling_s=10.0).run() == aw.EXIT_OK
     verbs = [argv[3] for argv in recorded]
@@ -772,19 +772,6 @@ def test_a_whole_walk_emits_only_the_allowed_verbs():
 # --------------------------------------------------------------------------- #
 # the attestation
 # --------------------------------------------------------------------------- #
-
-
-def test_the_attestation_becomes_both_adapter_confirmations():
-    recorded: list[list[str]] = []
-
-    def fake_run(argv, **_):
-        recorded.append(list(argv))
-        return _Proc(json.dumps({"ok": True, "result": {}}))
-
-    assert aw.TurntableMover(attest_rig_clear=True, run=fake_run).move_to(-22)
-    argv = recorded[1]
-    assert argv[3:5] == ["position", "-22"]
-    assert "--confirm-rig-clear" in argv and "--confirm-zero-valid" in argv
 
 
 def test_every_emitted_argv_is_one_the_adapter_actually_accepts():
@@ -799,7 +786,7 @@ def test_every_emitted_argv_is_one_the_adapter_actually_accepts():
         recorded.append(list(argv))
         return _Proc(json.dumps({"ok": True, "result": {"offset_degrees": 0.0}}))
 
-    mover = aw.TurntableMover(attest_rig_clear=True, run=fake_run)
+    mover = aw.TurntableMover(run=fake_run)
     mover.move_to(-22)
     mover.power()
     mover.offset_deg()
@@ -810,14 +797,6 @@ def test_every_emitted_argv_is_one_the_adapter_actually_accepts():
     assert all(p.json for p in parsed)
     assert parsed[1].degrees == -22.0
     assert parsed[1].confirm_rig_clear and parsed[1].confirm_zero_valid
-
-
-def test_without_the_attestation_nothing_moves():
-    def fake_run(argv, **_):  # pragma: no cover - must never be reached
-        raise AssertionError("a move was issued without an attestation")
-
-    with pytest.raises(aw.ArmWalkRefused):
-        aw.TurntableMover(run=fake_run).move_to(7)
 
 
 def test_serve_requires_the_attestation():
@@ -833,7 +812,7 @@ def test_a_failed_stop_never_sends_a_position(payload, code):
         verbs.append(argv[3])
         return _Proc(payload, code)
 
-    mover = aw.TurntableMover(attest_rig_clear=True, run=run)
+    mover = aw.TurntableMover(run=run)
     assert mover.move_to(7) is False
     assert verbs == ["stop"]
     assert mover.offset_deg() is None
@@ -850,7 +829,7 @@ def test_vendor_failure_fields_reach_the_log_and_move_trail(caplog, retried):
     ])
 
     trail = _RecordingTrail()
-    mover = aw.TurntableMover(attest_rig_clear=True, run=lambda *_, **__: next(responses))
+    mover = aw.TurntableMover(run=lambda *_, **__: next(responses))
     walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
     assert walk._serve(aw.Pending(1, 1, 7, "onax")) == aw.EXIT_MOVE_FAILED
 
@@ -902,11 +881,7 @@ def test_transient_vendor_failure_retries_once(
         responses.append(_Proc(good))
 
     sleeps = []
-    mover = aw.TurntableMover(
-        attest_rig_clear=True,
-        run=lambda *_, **__: responses.pop(0),
-        sleep=sleeps.append,
-    )
+    mover = aw.TurntableMover(run=lambda *_, **__: responses.pop(0), sleep=sleeps.append)
     trail = _RecordingTrail()
     walk = _walk(mover, FakeSession([_QUIET]), trail=trail)
 
@@ -954,7 +929,7 @@ def test_an_adapter_that_cannot_be_launched_is_a_failed_move():
     def boom(argv, **_):
         raise OSError("no such file")
 
-    mover = aw.TurntableMover(attest_rig_clear=True, run=boom)
+    mover = aw.TurntableMover(run=boom)
     assert mover.move_to(7) is False
     assert not mover.power().clean
 

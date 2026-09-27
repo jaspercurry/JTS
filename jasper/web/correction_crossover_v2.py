@@ -209,7 +209,7 @@ def prepare_v2_session(
 
     stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
     engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}
-    engine_level_trims, _ = v2state._resolve_measurement_level_trims(
+    engine_level_trims, _ = v2state.resolve_measurement_level_trims(
         request.template, preset=context.preset, topology=context.topology,
     )
     if request.template.level_matched and not engine_level_trims:
@@ -330,7 +330,6 @@ def prepare_v2_session(
         return rc
 
     async def _run(pi_session: Any) -> None:
-        """Close the evidence bundle after the worker releases the speaker."""
         if held is None:
             raise RuntimeError(
                 "the v2 measurement session was run before it was opened"
@@ -348,7 +347,7 @@ def prepare_v2_session(
                 and restored in {
                     SessionVolumeRestoreResult.EXACT_RESTORED,
                     SessionVolumeRestoreResult.EMERGENCY_ATTENUATED,
-                    SessionVolumeRestoreResult.ALREADY_RESOLVED,
+                    SessionVolumeRestoreResult.ALREADY_RESOLVED, "not_opened",
                 }
             ):
                 closed = mark_state(Path(evidence_store.bundle_dir), "closed")

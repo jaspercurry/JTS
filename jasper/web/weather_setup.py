@@ -28,6 +28,8 @@ import logging
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from .. import location_state
 from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
@@ -41,7 +43,6 @@ from ._common import (
     dispatch_get,
     dispatch_post,
     form_guarded,
-    restart_voice_daemon,
     send_html_response,
     send_rejected_form,
     send_see_other,
@@ -474,6 +475,5 @@ def make_server(
     state_path: str = WEATHER_ENV_PATH,
     transit_path: str = TRANSIT_ENV_PATH,
 ) -> ThreadingHTTPServer:
-    from ..platform import systemd
     cfg = {"state_path": state_path, "transit_path": transit_path}
     return systemd.make_http_server(target, _make_handler(cfg))

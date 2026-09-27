@@ -192,11 +192,6 @@ def test_the_run_builder_hands_the_provider_its_extras(monkeypatch):
     assert built["signals"] is signals
 
 
-# 3. the wired runner (fake conductor)
-
-# 5. hosting: the local kind + the completion endpoint
-
-
 def _fake_handler(body: bytes = b"{}"):
     from email.message import Message
 
@@ -545,7 +540,7 @@ def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp
     v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0,
                           "verify": {"outcome": "pass", "code": "verified"}})
     assert v2state.load_v2_state()["updated_at"] == 200.0
-    assert v2state._persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
+    assert v2state.persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
     state = v2state.load_v2_state()
     assert state["verify"] == {"outcome": "pass", "code": "verified"}
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
@@ -587,8 +582,8 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     conductor = _conductor(flow)
     control = signals or plan_run.RunSignals()
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
     request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
@@ -658,7 +653,7 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
     manifest.reason, manifest.detail = reason, detail
     monkeypatch.setattr(plan_run, "run_plan", AsyncMock(return_value=manifest))
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         asyncio.run(runner(session))
     envelope = refusal_envelope(caught.value)
@@ -671,11 +666,11 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
 @pytest.mark.parametrize("step,code", [("capture", "internal_error"), ("compose", "program_not_composed"),
                                       ("analysis", "internal_error")])
 async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, tmp_path, box, step, code):
-    persist, terminal = v2state.persist_conductor_state, v2state._persist_terminal_failure
+    persist, terminal = v2state.persist_conductor_state, v2state.persist_terminal_failure
     runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(v2state, "persist_conductor_state", persist)
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", terminal)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", terminal)
     failure = Mock(side_effect=ValueError("x"))
     if step == "compose":
         monkeypatch.setattr(fakes.play, "run", ProgramPlaybackTransaction(compose=failure, session_volume_plan=None).run)
@@ -691,17 +686,19 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert fakes.graph.restores == 1
 
 
-async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path):
+@pytest.mark.parametrize("opened", [False, True])
+async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, tmp_path, opened):
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     conductor = _conductor(FlowSeams())
     v2state.save_v2_state({"session_id": conductor.session_id, "execution": {"volume_restore": "stale"}})
-    door = SimpleNamespace(opened=None)
+    door = SimpleNamespace(isolation=None)
 
     async def execute(*args, **kwargs):
         try:
             raise RuntimeError("x")
         finally:
-            door.opened = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
+            if opened:
+                door.isolation = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
 
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door, signals=RunSignals(), ceiling_s=30,
@@ -712,7 +709,7 @@ async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, 
     state = v2state.load_v2_state()
     assert state["failure"]["code"] == "internal_error"
     assert state["failure"]["detail"] == "RuntimeError: x"
-    assert state["execution"]["volume_restore"] == "exact_restored"
+    assert state["execution"]["volume_restore"] == ("exact_restored" if opened else "not_opened")
 
 
 @pytest.mark.parametrize("repeats", [1, 3])
@@ -824,7 +821,7 @@ def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_pa
     })
     monkeypatch.setattr(correction_capture, "_capture_stop_request", signals.request_stop)
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(CaptureStopped):
         asyncio.run(runner(session))
     assert manifest.records.snapshots[-1]["reason"] == code
@@ -1131,7 +1128,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     session = SimpleNamespace(session_id=manifest.run_id)
     door = _run_door(tmp_path, box, fakes, manifest, records)
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,

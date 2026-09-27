@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Any, Callable, Iterable
 
+from jasper.control.service_restart import RestartOutcome, restart_voice_daemon
 from ...audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
     apply_requested_converter,
@@ -44,7 +45,6 @@ from ...local_sources import (
 )
 from ...log_event import log_event
 from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
-from .. import aec_endpoints
 from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker
@@ -71,6 +71,16 @@ _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_started_at: float | None = None
 
 
+def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
 def _diagnostics_unit_in_flight() -> bool:
     """Is the doctor oneshot still running? Asked of systemd, not inferred from
     the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
@@ -81,7 +91,7 @@ def _diagnostics_unit_in_flight() -> bool:
     per request. A `oneshot` reads `activating` while it runs.
     """
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
         )
     except (subprocess.SubprocessError, OSError):
@@ -117,7 +127,7 @@ def _start_diagnostics_refresh(
     with _diagnostics_refresh_lock:
         _diagnostics_refresh_started_at = now
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "--no-block", "start", "jasper-doctor-json.service",
         )
         error = "" if proc.returncode == 0 else (
@@ -694,24 +704,23 @@ class SystemRoutes(ControlHandlerMixin):
         restart_units: list[str] = []
         try_restart_units: list[str] = []
         if self.path == "/system/restart/voice":
-            if parked:
-                # The dumb-follower profile keeps voice disabled
-                # while paired — a dashboard restart would boot
-                # 240 MB of models that jasper-aec-reconcile
-                # re-parks. Refuse with the story, never silently.
-                self._send_json(
-                    {
-                        "error": "voice is parked while this speaker "
-                        "is in a stereo pair — the assistant "
-                        "runs on the pair leader"
-                    },
-                    status=409,
-                )
-                return
             units = [JASPER_VOICE_SERVICE]
-            restart_units = units
             action = "restart-voice"
-        elif self.path == "/system/restart/audio":
+            log_event(logger, "system.action", action=action, units=",".join(units), client=self.address_string())
+            outcome = restart_voice_daemon()
+            if outcome is RestartOutcome.REFUSED:
+                self._send_refused(error="The restart could not be scheduled.", code="system_restart_failed",
+                    action=action, units=units, failed_verb="restart", accepted_units=[], skipped_units=[],
+                    failed_units=units)
+            elif outcome is RestartOutcome.SKIPPED:
+                self._send_json({"error": "The assistant is not active on this speaker; no restart was sent.",
+                    "code": "voice_restart_skipped", "action": action, "restart": outcome.value,
+                    "units": units, "accepted_units": [], "skipped_units": units, "failed_units": []}, status=409)
+            else:
+                self._send_accepted(action=action, units=units, restart=outcome.value,
+                    accepted_units=units, skipped_units=[], failed_units=[])
+            return
+        if self.path == "/system/restart/audio":
             restart_units = list(CORE_AUDIO_RESTART_UNITS)
             try_restart_units = list(LOCAL_SOURCE_AUDIO_REFRESH_UNITS)
             if parked:

@@ -16,10 +16,18 @@ from jasper.audio_measurement.alignment import (
     cross_correlation_alignment,
     parabolic_peak,
 )
-from .model import CLIP_ABS_THRESHOLD, CLIP_RUN_SAMPLES, DBFS_FLOOR
+from jasper.audio_measurement.program import ProgramSegment
+from .model import CLIP_ABS_THRESHOLD, CLIP_RUN_SAMPLES, DBFS_FLOOR, WITNESS_BAND_FLOOR_HZ
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
+
+
+def _above_modal_tails_hz(sweep: ProgramSegment) -> tuple[float, float] | None:
+    """A sweep's band above :data:`WITNESS_BAND_FLOOR_HZ`; ``None`` when it stops below it."""
+    assert sweep.f1_hz is not None and sweep.f2_hz is not None
+    low = max(WITNESS_BAND_FLOOR_HZ, sweep.f1_hz)
+    return (low, sweep.f2_hz) if low < sweep.f2_hz else None
 
 
 def _peak_dbfs(x: np.ndarray) -> float:

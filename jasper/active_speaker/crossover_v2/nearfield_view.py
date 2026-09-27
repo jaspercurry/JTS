@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict
 from itertools import combinations
 from types import MappingProxyType
 from typing import Any
@@ -26,24 +27,22 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
+from jasper.audio_measurement.level import piston_step_db
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
+from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
 from jasper.speaker_layout import measurement_target_parts
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
+from ..measurement_programs import gate_exemption
+from .spatial import MARK_DISTANCE_M
 
-#: Where the distance step is read: above a port, below cone breakup (#5684).
+#: Where the distance step is read: above a port, below cone breakup (#5684),
+#: and inside both placements' trusted bands (ADR-0366).
 STEP_BAND_HZ = (35.0, 400.0)
 #: The piston runs 0.15-0.3 dB short of jts3's measured 15 -> 30 mm step (#5684).
 STEP_TOLERANCE_DB = 0.4
-
-
-def piston_step_db(near_m: float, far_m: float, radius_m: float) -> float:
-    """How far a rigid piston's on-axis level falls from ``near_m`` to ``far_m``,
-    in its low-frequency limit, dB (negative moving away)."""
-    def reach(distance_m: float) -> float:
-        return math.hypot(distance_m, radius_m) - distance_m
-    return 20.0 * math.log10(reach(far_m) / reach(near_m))
 
 
 def played_path_db(config: Mapping[str, Any], freqs_hz: np.ndarray) -> np.ndarray | None:
@@ -77,8 +76,19 @@ def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
     return sweeps[:, (freqs >= band_hz[0]) & (freqs < band_hz[1])]
 
 
+def _inside(band_hz: tuple[float, float], trusted: TrustedBand) -> bool:
+    return (trusted.low_hz or 0.0) <= band_hz[0] and band_hz[1] <= (trusted.high_hz or math.inf)
+
+
+def _step_band(*trusted: TrustedBand) -> tuple[float, float] | None:
+    """:data:`STEP_BAND_HZ` inside every placement's trusted band; ``None`` when none is left."""
+    low = max(STEP_BAND_HZ[0], *(band.low_hz or 0.0 for band in trusted))
+    high = min(STEP_BAND_HZ[1], *(band.high_hz or math.inf for band in trusted))
+    return (low, high) if low < high else None
+
+
 def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
-          swept_hz: tuple[float, float]) -> dict[str, Any] | None:
+          swept_hz: tuple[float, float], trusted: TrustedBand) -> dict[str, Any] | None:
     within = _within(freqs, sweeps, band_hz, swept_hz)
     if not within.size:
         return None
@@ -89,21 +99,24 @@ def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
         rms = float(np.sqrt(np.mean((within[-1] - within[-2]) ** 2)))
         if rms > 0.0:
             row["snr_db"] = round(20.0 * math.log10(20.0 / math.log(10.0) / rms), 1)
-            row["trusted"] = row["snr_db"] >= DRIVER.snr_warn_db
+            row["trusted"] = row["snr_db"] >= DRIVER.snr_warn_db and _inside(band_hz, trusted)
     return row
 
 
 def nearfield_view(
     takes: Iterable[Mapping[str, Any]], *, radiating_diameter_mm_by_role: Mapping[str, float],
-    played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
+    room: DeclaredGeometry | None = None, played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
 ) -> dict[str, Any]:
     """The kept near-field takes of a round's run manifest, band by band, and
-    each driver's placements, raw curves and distance steps. ``played_graphs``
-    is each take's played CamillaDSP config by take id; a take without a
-    graph the walker can model, without its fader, or on another frequency
-    grid than its placement's first stays out of the raw curve."""
+    each driver's placements, raw curves and distance steps. Each placement
+    states its trusted band from its distance, the declared cone and ``room``,
+    the round's declared room (ADR-0366). ``played_graphs`` is each take's
+    played CamillaDSP config by take id; a take without a graph the walker can
+    model, without its fader, or on another frequency grid than its
+    placement's first stays out of the raw curve."""
     rows: list[dict[str, Any]] = []
-    step_levels: list[float | None] = []
+    reads: list[tuple[np.ndarray, np.ndarray, tuple[float, float]]] = []
+    take_bands: list[TrustedBand] = []
     raw_rows: list[tuple[np.ndarray, np.ndarray] | None] = []
     placed: dict[str, dict[float, list[int]]] = {}
     for take in takes:
@@ -111,24 +124,37 @@ def nearfield_view(
             continue
         freqs, sweeps = _sweeps(take["curve"])
         swept = take["curve"]["band_hz"]
-        step = _within(freqs, sweeps, STEP_BAND_HZ, swept)
+        driver, stated_m = take["pose"]["driver"], take["pose"].get("distance_m")
+        # A pose at the mark banks no distance of its own.
+        distance_m = MARK_DISTANCE_M if stated_m is None else float(stated_m)
+        trusted = trusted_band(
+            distance_m=distance_m, driver=driver, room=room,
+            gated=gate_exemption(take.get("purpose"), driver=driver, distance_m=distance_m) is None,
+            diameters_mm=(radiating_diameter_mm_by_role.get(measurement_target_parts(driver)[0]),))
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
         path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
         # The first sweep can catch an amplifier still waking (#5684).
         raw_rows.append(None if path_db is None else
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
-        row = {"take_id": take["take_id"], "driver": take["pose"]["driver"],
-               "distance_mm": round(float(take["pose"]["distance_m"]) * 1000.0, 1),
+        row = {"take_id": take["take_id"], "driver": driver, "distance_mm": round(distance_m * 1000.0, 1),
                "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
-                         if (band := _band(freqs, sweeps, edges, swept)) is not None]}
+                         if (band := _band(freqs, sweeps, edges, swept, trusted)) is not None]}
         placed.setdefault(row["driver"], {}).setdefault(row["distance_mm"], []).append(len(rows))
         rows.append(row)
-        step_levels.append(power_mean_db(step) if step.size else None)
+        reads.append((freqs, sweeps, swept))
+        take_bands.append(trusted)
+
+    def level_over(indexes: list[int], band_hz: tuple[float, float]) -> float | None:
+        """A placement's level over ``band_hz``, from its takes that swept all of it."""
+        heard = [power_mean_db(within) for freqs, sweeps, swept in (reads[index] for index in indexes)
+                 if (within := _within(freqs, sweeps, band_hz, swept)).size]
+        return power_mean_db(np.asarray(heard)) if heard else None
+
     drivers = []
     for driver, at in sorted(placed.items()):
         diameter = radiating_diameter_mm_by_role.get(measurement_target_parts(driver)[0])
-        placements, step_level_at = [], {}
+        placements = []
         for distance_mm, indexes in sorted(at.items()):
             levels = [[band["level_db"] for band in rows[index]["bands"]] for index in indexes]
             spread = (np.ptp(np.asarray(levels), axis=0).round(2).tolist()
@@ -139,25 +165,28 @@ def nearfield_view(
                    "freqs_hz": unplayed[0][1].round(3).tolist(),
                    "level_db": power_mean_across_db(np.vstack([db for _, _, db in unplayed])).round(3).tolist(),
                    } if unplayed else None
-            placements.append({"distance_mm": distance_mm, "take_ids": [rows[index]["take_id"] for index in indexes],
+            placements.append({"distance_mm": distance_mm, "trusted_band": asdict(take_bands[indexes[0]]),
+                               "take_ids": [rows[index]["take_id"] for index in indexes],
                                "reseat_spread_db": spread, "raw": raw})
-            heard = [level for index in indexes if (level := step_levels[index]) is not None]
-            step_level_at[distance_mm] = power_mean_db(np.asarray(heard)) if heard else None
         steps = []
         for near_mm, far_mm in combinations(sorted(at), 2):
-            near, far = step_level_at[near_mm], step_level_at[far_mm]
-            if near is None or far is None:
+            # With no band left inside both placements' trusted bands, the step is stated, never graded.
+            step_band = _step_band(take_bands[at[near_mm][0]], take_bands[at[far_mm][0]])
+            near, far = ((level_over(at[near_mm], step_band), level_over(at[far_mm], step_band))
+                         if step_band else (None, None))
+            if step_band and (near is None or far is None):
                 continue
-            measured = round(far - near, 2)
+            measured = None if near is None or far is None else round(far - near, 2)
             piston = (round(piston_step_db(near_mm / 1000.0, far_mm / 1000.0, diameter / 2000.0), 2)
                       if diameter else None)
-            steps.append({"near_mm": near_mm, "far_mm": far_mm, "step_db": measured, "piston_db": piston,
-                          "verdict": "not_evaluated" if piston is None else
+            steps.append({"near_mm": near_mm, "far_mm": far_mm, "step_band_hz": list(step_band) if step_band else None,
+                          "step_db": measured, "piston_db": piston,
+                          "verdict": "not_evaluated" if piston is None or measured is None else
                           "pass" if abs(measured - piston) <= STEP_TOLERANCE_DB else "fail"})
         drivers.append({"driver": driver, "radiating_diameter_mm": diameter, "placements": placements,
                         "steps": steps})
     return {
         "parameters": {"ladder": "near_field", "trusted_snr_db": DRIVER.snr_warn_db,
-                       "step_band_hz": list(STEP_BAND_HZ), "step_tolerance_db": STEP_TOLERANCE_DB},
+                       "step_tolerance_db": STEP_TOLERANCE_DB},
         "takes": rows, "drivers": drivers,
     }

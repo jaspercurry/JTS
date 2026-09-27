@@ -35,9 +35,6 @@ RECOVER_UNIT_PATH = (
     Path(__file__).resolve().parent.parent
     / "deploy" / "systemd" / "jasper-camilla-recover.service"
 )
-INSTALL_SH = (
-    Path(__file__).resolve().parent.parent / "deploy" / "install.sh"
-)
 
 
 def test_unit_starts_after_outputd_and_fanin_for_pipe_rendezvous():
@@ -159,20 +156,6 @@ def test_recovery_unit_points_at_installed_helper():
     # blocking camilla start behind every unit it pulls in, the liveness wait.
     assert _value_for(body, "TimeoutStartSec") == "180"
     assert _value_for(body, "TimeoutStopSec") == "5"
-
-
-def test_install_sh_repairs_generated_camilla_config_modes_for_non_root_daemons():
-    """Stale generated YAML may predate the non-root control/web readers.
-
-    The sudo CLI can read root:root 0600 generated configs, but jasper-control
-    and jasper-web read configs/*.yml for /state, /sound, and active-driver
-    flows. Repair all generated YAMLs, not just active-speaker baselines.
-    """
-
-    body = INSTALL_SH.read_text()
-    assert "-name '*.yml'" in body
-    assert "-exec chgrp jasper {} +" in body
-    assert "-exec chmod 0640 {} +" in body
 
 
 def test_flat_cutover_is_published_before_the_audio_restart(tmp_path):

@@ -6,19 +6,15 @@
 from __future__ import annotations
 
 import contextlib
-import logging
 import math
 import os
-import subprocess
 import threading
 import time
 from dataclasses import replace
 from typing import Any, Iterator
 
-from jasper.log_event import log_event
 
 from ..chip_aec import record as commission_record
-from .. import enhanced_aec
 from ..aec.bridge_telemetry import read_bridge_stats
 from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
@@ -30,17 +26,15 @@ from ..audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
     RuntimeAecEnv,
-    WAKE_LEG_DEFAULTS,
     audio_profile_status,
     infer_audio_input_profile,
     intent_from_env,
     normalize_audio_input_profile,
     probe_xvf_mic,
-    profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
-from ..atomic_io import locked_update_env_file, read_json_mapping
+from ..atomic_io import read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
@@ -53,181 +47,29 @@ from ..chip_aec.policy import (
     combine_mic_availability,
     effective_chip_aec_dac_gate,
 )
-from ..wake_models import WAKE_MODEL_ENV_OWNER, WAKE_MODEL_FILE
+from ..wake_models import WAKE_MODEL_FILE, read_wake_threshold
 from .. import systemd_probe
-from . import restart_broker
 
-logger = logging.getLogger(__name__)
 
-_AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
-_AEC_MODE_ENV_OWNER = "JTS /aec mode control"
+AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
-_XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
-_ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
-_AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
-_AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
-_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
+XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
+AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
+AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 # /aec is polled every 3 s; a wedged manager must not hold a worker.
 _PROBE_TIMEOUT_SEC = 2.0
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
-_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
-_usb_mic_leg_apply_lock = threading.Lock()
-_usb_mic_leg_apply_pending: tuple[str, float] | None = None
-# Serializes POST /aec/commission's check-then-start across
-# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
-# probe before either start lands.
-_aec_commission_start_lock = threading.Lock()
-
-
-def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["systemctl", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=5.0,
-    )
-
-
-# These kicks (and jasper.control.handlers.aec's AEC-bridge restart) answer a
-# POST jasper-web proxies with a `proxy_post` timeout
-# (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC, 15 s) sized to clear two
-# broker legs at this bound plus the broker's client socket margin
-# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
-# A `--no-block` systemctl call itself returns in ms regardless of this
-# bound; keep it small so raising the proxy timeout does not have to chase a
-# larger one here.
-_ONESHOT_KICK_TIMEOUT_SEC = 2.0
-
-
-def _reset_then_schedule(
-    unit: str,
-    verb: str,
-    *,
-    reason: str,
-    event_prefix: str,
-    reset: bool = True,
-    extra_fields: dict[str, Any] | None = None,
-) -> bool:
-    """No-block start/restart one maintenance oneshot through the broker,
-    observably.
-
-    ``reset`` (default True) resets systemd's failure/start-rate state via
-    :func:`restart_broker.reset_then_manage` first, discarding a reset
-    failure (a bare oneshot with no RemainAfterExit is normally GC'd between
-    runs, and reset-failed against an already-unloaded unit routinely exits
-    nonzero — #3237), so each explicit user action gets a fresh, bounded
-    retry budget. Pass False for a unit the broker's allowlist denies
-    reset-failed anyway — a START_ONLY oneshot has no crash budget to
-    protect (mirrors jasper.fanin.coupling_reconcile's identical gate on
-    :data:`restart_broker.START_ONLY_UNITS`). Either way the call applies
-    the broker's unit/verb allowlist. ``event_prefix`` is ``<owner>.<action>``:
-    the failure/scheduled events are ``<event_prefix>_failed`` /
-    ``<event_prefix>_scheduled``. ``extra_fields`` ride on the scheduled
-    event only.
-    """
-    if reset:
-        resp = restart_broker.reset_then_manage(
-            unit,
-            verb=verb,
-            reason=reason,
-            no_block=True,
-            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
-            reset_timeout=_ONESHOT_KICK_TIMEOUT_SEC,
-        )
-    else:
-        resp = restart_broker.manage_units(
-            unit,
-            verb=verb,
-            reason=reason,
-            no_block=True,
-            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
-        )
-    if not resp.get("ok"):
-        log_event(
-            logger,
-            f"{event_prefix}_failed",
-            unit=unit,
-            phase="enqueue",
-            error=str(resp.get("error") or f"rc={resp.get('rc')}"),
-            level=logging.ERROR,
-        )
-        return False
-    log_event(
-        logger,
-        f"{event_prefix}_scheduled",
-        unit=unit,
-        **(extra_fields or {}),
-    )
-    return True
-
-
-def _schedule_usb_gadget_recompose() -> bool:
-    """Hand delayed, debounced apply to systemd before returning to the client.
-
-    Restarting an already-running oneshot cancels its 350 ms grace sleep and
-    begins it again, so rapid switch changes naturally debounce.  Unlike an
-    in-process Timer, the durable intent's apply job survives jasper-control
-    exiting after this request.
-    """
-
-    return _reset_then_schedule(
-        _USB_MIC_APPLY_UNIT,
-        "restart",
-        reason="usb_mic_recompose",
-        event_prefix="usb_mic.recompose",
-        extra_fields={"grace_ms": 350, "max_attempts": 4},
-    )
-
-
-def _aec_commission_running() -> bool:
-    return _unit_active(_AEC_COMMISSION_SERVICE)
-
-
-def _start_aec_commission() -> bool:
-    """Hand the audible re-commissioning run to systemd before returning.
-
-    ``--no-block``: the run takes minutes and the browser only needs the job
-    accepted — the /aec poll's ``commission.running`` probe tracks the rest.
-    No reset-failed leg: ``jasper-aec-commission.service`` is a START_ONLY
-    broker unit (no crash budget of its own to protect), and the broker
-    denies ``reset-failed`` against it anyway.
-    """
-    return _reset_then_schedule(
-        _AEC_COMMISSION_SERVICE,
-        "start",
-        reason="aec_commission_start",
-        event_prefix="aec_commission.start",
-        reset=False,
-    )
 
 
 _PROFILE_DEFAULT = "custom"
-
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
-# chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
-# "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
-# production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);
-# the two per-beam toggles below only add extra wake detectors.
-_TOGGLE_TO_TOKEN = {
-    "raw": ("off",),
-    "dtln": ("dtln",),
-    "chip_aec_150": ("chip_aec_150",),
-    "chip_aec_210": ("chip_aec_210",),
-}
-_TOGGLE_TO_ENV_KEY = {
-    name.removeprefix("leg_"): key
-    for name, key, _ in WAKE_LEG_DEFAULTS
-    if name != "leg_chip_aec"
-}
 
 
 def _read_aec_state() -> dict:
     """Full aec_mode.env state; missing keys take the documented defaults
     so a partial file from a pre-leg-toggle deploy still parses sanely
     (the reconciler's ensure_mode_file appends them on its next run)."""
-    env_file = read_env_file_state(_AEC_MODE_FILE)
+    env_file = read_env_file_state(AEC_MODE_FILE)
     values = env_file.values
     intent = replace(intent_from_env(values), mode=values.get(AEC_MODE_ENV) or "auto")
     state: dict[str, Any] = {
@@ -248,25 +90,6 @@ def _read_aec_state() -> dict:
     else:
         state["profile"] = "auto"
     return state
-
-
-def _write_aec_leg(leg: str, enabled: bool) -> None:
-    """Atomic write of one wake-leg boolean, preserving every other key
-    in aec_mode.env (mode, the other leg).
-
-    Caller is responsible for kicking the reconciler — this just
-    persists the user's intent. Restart blast-radius lives in the
-    reconciler since it has the actual mode + presence context."""
-    if leg not in _TOGGLE_TO_TOKEN:
-        raise ValueError(f"invalid leg: {leg!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        {
-            _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-        owner=_AEC_MODE_ENV_OWNER,
-    )
 
 
 def _leg_status(
@@ -291,54 +114,6 @@ def _leg_status(
         "disabled_reason": disabled_reason if not available else "",
         "status": status,
     }
-
-
-def _write_audio_input_profile(profile: str) -> None:
-    """Write a canonical audio input profile plus rollback-safe leg keys."""
-
-    normalized = normalize_audio_input_profile(profile, default="")
-    if not normalized or normalized == "custom":
-        raise ValueError(f"invalid profile: {profile!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        profile_env_updates(normalized),
-        mode=0o644,
-        owner=_AEC_MODE_ENV_OWNER,
-    )
-
-
-def _read_wake_threshold() -> float:
-    """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
-    (the /assistant/wake/ wizard's home) with the daemon's compiled-in default
-    (0.3) as fallback. Same precedence the daemon uses on startup."""
-    val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
-    if not val:
-        val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
-    try:
-        # Mirror the daemon's compiled-in default (in jasper/config.py:
-        # `wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3)`, also
-        # shipped in .env.example) so the slider + /state show what's
-        # actually live. A higher fallback here would make a Save at the
-        # displayed value silently raise the real threshold.
-        return float(val) if val else 0.3
-    except ValueError:
-        return 0.3
-
-
-def _write_wake_threshold(value: float) -> None:
-    """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
-    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed by the
-    /assistant/wake/ page (model picker writes JASPER_WAKE_MODEL via the form
-    save; sensitivity slider posts to /assistant/wake/sensitivity which lands
-    here)."""
-    if not 0.0 <= value <= 1.0:
-        raise ValueError(f"threshold out of range: {value}")
-    locked_update_env_file(
-        _WAKE_MODEL_FILE,
-        {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
-        mode=0o644,
-        owner=WAKE_MODEL_ENV_OWNER,
-    )
 
 
 _probe_memo = threading.local()
@@ -371,17 +146,17 @@ def _memoized_unit_state(unit: str) -> str | None:
 
 def _aec_bridge_active() -> bool:
     """True if jasper-aec-bridge.service is currently active."""
-    state = _memoized_unit_state(_AEC_BRIDGE_SERVICE)
+    state = _memoized_unit_state(AEC_BRIDGE_SERVICE)
     if state is not None:
         return systemd_probe.state_is_live(state, activating_is_live=False)
     return systemd_probe.unit_active(
-        _AEC_BRIDGE_SERVICE,
+        AEC_BRIDGE_SERVICE,
         timeout=_PROBE_TIMEOUT_SEC,
         activating_is_live=False,
     )
 
 
-def _unit_active(unit: str) -> bool:
+def unit_active(unit: str) -> bool:
     """Whether a foreground maintenance unit is live or starting.
 
     ``systemctl is-active`` reports a long-running ``Type=oneshot`` as
@@ -409,7 +184,7 @@ def _commission_status() -> dict[str, Any]:
     for the wake page instead of dying in the journal."""
     last = commission_record.read(commission_record.OUTCOME_PATH)
     outcome = last if last is not None else commission_record.CommissionOutcome()
-    return outcome.to_public(running=_unit_active(_AEC_COMMISSION_SERVICE))
+    return outcome.to_public(running=unit_active(AEC_COMMISSION_SERVICE))
 
 
 def _xvf_firmware_update_status() -> dict[str, Any]:
@@ -418,7 +193,7 @@ def _xvf_firmware_update_status() -> dict[str, Any]:
         profile = xvf3800.detect_runtime_profile()
         return xvf3800.firmware_update_status(
             profile,
-            service_active=_unit_active(_XVF_FIRMWARE_UPDATE_SERVICE),
+            service_active=unit_active(XVF_FIRMWARE_UPDATE_SERVICE),
             last_update=_read_xvf_firmware_update_state(),
         )
     except (ImportError, OSError, RuntimeError, ValueError) as exc:
@@ -440,33 +215,7 @@ def _xvf_firmware_update_status() -> dict[str, Any]:
         }
 
 
-def _start_xvf_firmware_update() -> None:
-    subprocess.run(
-        ["systemctl", "start", "--no-block", _XVF_FIRMWARE_UPDATE_SERVICE],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=5.0,
-    )
-
-
-def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
-    """Apply a persisted AEC-mode/leg change through the reconciler.
-
-    Use `restart`, not `start`: the reconciler is a Type=oneshot unit, so a
-    `start` issued while the previous reconcile is still active is a no-op
-    and would leave runtime env one click behind the UI.
-    """
-    return restart_broker.manage_units(
-        "jasper-aec-reconcile.service",
-        verb="restart",
-        reason=reason,
-        no_block=True,
-        timeout=5.0,
-    )
-
-
-def _fresh_jasper_env() -> dict[str, str]:
+def fresh_jasper_env() -> dict[str, str]:
     """Fresh view of /etc/jasper/jasper.env.
 
     jasper-control is long-lived while the AEC reconciler mutates this
@@ -525,35 +274,11 @@ def _chip_aec_gate(
     return payload
 
 
-def _enhanced_aec_status(
-    *,
-    aec_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Optional-engine status using this domain's applied AEC truth."""
-
-    if aec_payload is None:
-        aec_payload = _aec_full_status()
-    audio_profile = aec_payload.get("audio_profile")
-    active_profile = (
-        str(audio_profile.get("active") or "")
-        if isinstance(audio_profile, dict)
-        else ""
-    )
-    chip_active = active_profile in {
-        PROFILE_XVF_CHIP_AEC,
-        PROFILE_XVF_CHIP_AEC_TESTING,
-    }
-    return enhanced_aec.status(
-        chip_aec_active=chip_active,
-        service_active=_unit_active(_ENHANCED_AEC_INSTALL_SERVICE),
-    )
-
-
-def _aec_full_status() -> dict:
+def aec_full_status() -> dict:
     with _batched_unit_probes(
-        _AEC_BRIDGE_SERVICE,
-        _XVF_FIRMWARE_UPDATE_SERVICE,
-        _AEC_COMMISSION_SERVICE,
+        AEC_BRIDGE_SERVICE,
+        XVF_FIRMWARE_UPDATE_SERVICE,
+        AEC_COMMISSION_SERVICE,
     ):
         return _build_aec_full_status()
 
@@ -574,7 +299,7 @@ def _build_aec_full_status() -> dict:
     /assistant/wake/ toggle stays disabled when the connected geometry has no plan."""
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
-    env = _fresh_jasper_env()
+    env = fresh_jasper_env()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
     mic_probe = probe_xvf_mic()
     chip_gate = _chip_aec_gate(
@@ -715,7 +440,7 @@ def _build_aec_full_status() -> dict:
                 ),
             ),
         },
-        "threshold": _read_wake_threshold(),
+        "threshold": read_wake_threshold(),
         "wake_word": _read_wake_word_status(),
         "chip_aec_gate": chip_gate,
         "audio_profile": profile_status["audio_profile"],

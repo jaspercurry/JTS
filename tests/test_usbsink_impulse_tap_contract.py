@@ -2,25 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pin the Python-side contract with the Rust ingress tap that this package
-does NOT own or edit.
-
-Since the single-USB-pipeline convergence (2026-07-10) the ONE ingress tap lives
-in `jasper-fanin` (`rust/jasper-fanin/src/impulse_tap.rs`): fan-in DIRECT-captures
-`hw:UAC2Gadget` and taps the impulse there. The old usbsink-bridge HTTP tap
-(`127.0.0.1:8781`) was removed with the aloop solo capture path, so its
-`TapClient` + arm/disarm HTTP contract are gone.
-
-This file pins the two halves of the boundary this package's Python code still
-consumes:
-
-  * the JSONL event schema (`jasper.route_latency.tap_client.read_tap_events`
-    must parse exactly the pinned shape — the SAME shape the fan-in tap emits,
-    including malformed-tail tolerance for a file read mid-write), and
-  * the health-counter leaf names the route-health verdict and a take's
-    playback-fault log read out of the fanin + outputd Rust status serializers
-    (a Rust-side rename must fail loudly here, not silently make them vacuous).
-"""
+"""Cross-language pins for ingress tap events and live route-health counters."""
 from __future__ import annotations
 
 import json
@@ -190,6 +172,10 @@ _SURFACE_SOURCES = {
 
 
 def test_known_health_counter_names_exist_in_rust_status_json():
+    snapshots = (_REPO / "tests/fixtures/outputd-snapshots.jsonl").read_text().splitlines()
+    for snapshot in snapshots:
+        content = json.loads(snapshot)["content"]
+        assert not {"xrun_count", "xrun_rate_per_hour", "last_xrun_age_ms"} & content.keys()
     sources = {name: path.read_text(encoding="utf-8") for name, path in _SURFACE_SOURCES.items()}
     for path in (*KNOWN_HEALTH_COUNTER_PATHS, *TAKE_FAULT_COUNTER_PATHS):
         surface = path[0]

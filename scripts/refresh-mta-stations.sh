@@ -13,7 +13,7 @@
 #   stop_id,stop_name,borough,lines,lat,lon,north_label,south_label
 #
 # Two consumers:
-#   - jasper/subway.py uses {stop_id, stop_name, borough, lines,
+#   - jasper/transit/subway.py uses {stop_id, stop_name, borough, lines,
 #     north_label, south_label} for voice-direction labelling
 #   - jasper/transit/providers/nyc_subway.py uses {stop_id, stop_name,
 #     lat, lon, lines} for nearest-stop discovery from a user's coords
@@ -95,7 +95,7 @@ HEADER_COMMENT = """\
 #                 Edit by hand to make voice aliasing snappier.
 #
 # Two consumers:
-#   - jasper/subway.py  → voice-direction labelling for arrivals tool
+#   - jasper/transit/subway.py  → voice-direction labelling for arrivals tool
 #   - jasper/transit/providers/nyc_subway.py
 #                       → nearest-stop discovery from user's coords
 """

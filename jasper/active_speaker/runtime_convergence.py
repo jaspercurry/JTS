@@ -18,6 +18,7 @@ from jasper.sound import runtime as sound_runtime
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
+from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.log_event import log_event
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
@@ -109,9 +110,12 @@ def converge_boot_statefile(
     if flat_config_path is not None:
         kwargs["flat_config_path"] = flat_config_path
     decision = safe_graph_for_current_topology(topology, **kwargs)
+    # The selector's refusal of a graph whose headroom charge stopped proving; a re-emit re-charges it (#2847).
+    headroom_regressed = decision.status == "blocked" and {
+        issue["code"] for issue in decision.issues} == {LINEARIZATION_HEADROOM_UNPROVEN_CODE}
     if (
         write_statefile and consider_applied_baseline
-        and decision.status in (PARKED_MUTED_STATUS, "select_active_startup")
+        and (decision.status in (PARKED_MUTED_STATUS, "select_active_startup") or headroom_regressed)
         and decision.current_graph is not None and not decision.current_graph.allowed
         and decision.preferred_graph is not None and not decision.preferred_graph.allowed
     ):
@@ -123,9 +127,11 @@ def converge_boot_statefile(
                 if (reproved.status in ("preserve_current", "select_active_baseline")
                         and reproved.selected_config_path == str(report.path)):
                     decision = reproved
-                log_event(logger, "active_speaker.baseline_reemit", decision=decision.status)
+                # WARNING so the install transcript shows it: runtime-safe-graph configures no logging.
+                log_event(logger, "active_speaker.baseline_reemit", level=logging.WARNING, decision=decision.status)
         except (CandidateBankRefusal, OSError, RuntimeError, ValueError, TypeError) as exc:
-            log_event(logger, "active_speaker.baseline_reemit", decision=decision.status, error=str(exc))
+            log_event(logger, "active_speaker.baseline_reemit", level=logging.WARNING,
+                      decision=decision.status, error=str(exc))
     if not (write_statefile and decision.ok):
         return StatefileConvergenceResult(decision, topology, False)
     try:

@@ -60,45 +60,6 @@ def test_push_to_talk_only_is_the_single_derivation_its_consumers_read():
     assert other.only is False
 
 
-def _daemon_heartbeat_stale_threshold() -> float:
-    """The stale threshold the DAEMON actually runs with.
-
-    Read from `jasper/voice/daemon_main.py`'s own `Heartbeat(...)` call, not
-    from the constructor's signature default: those two happen to be the same
-    number today, so a guard that read the signature would be correct only by
-    coincidence and would keep passing if the daemon started asking for a
-    tighter threshold. Parsed with `ast` rather than by line number so a
-    refactor moves it for free (AGENTS.md documentation rule 5).
-    """
-    import ast
-    import inspect
-    from pathlib import Path
-
-    import jasper
-    from jasper.watchdog import Heartbeat
-
-    source = (
-        Path(jasper.__file__).parent / "voice" / "daemon_main.py"
-    ).read_text(encoding="utf-8")
-    calls = [
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "Heartbeat"
-    ]
-    assert len(calls) == 1, (
-        f"expected exactly one Heartbeat(...) construction in daemon_main.py, "
-        f"found {len(calls)} — this guard must read the live one"
-    )
-    for kw in calls[0].keywords:
-        if kw.arg == "stale_threshold_sec":
-            return float(ast.literal_eval(kw.value))
-    # No explicit value: the daemon runs on the constructor default.
-    return float(
-        inspect.signature(Heartbeat).parameters["stale_threshold_sec"].default
-    )
-
-
 def test_ptt_keepalive_stays_inside_heartbeat_stale_threshold():
     """Load-bearing relationship: with no mic frames to bump the progress
     sentinel, the keepalive tick IS the liveness proof. If its interval ever
@@ -106,7 +67,9 @@ def test_ptt_keepalive_stays_inside_heartbeat_stale_threshold():
     patting systemd and WatchdogSec=30s reaps a perfectly healthy daemon."""
     from jasper.voice.push_to_talk import PTT_KEEPALIVE_INTERVAL_SEC
 
-    stale = _daemon_heartbeat_stale_threshold()
+    from jasper.voice.daemon_main import HEARTBEAT_STALE_THRESHOLD_SEC
+
+    stale = HEARTBEAT_STALE_THRESHOLD_SEC
     assert PTT_KEEPALIVE_INTERVAL_SEC < stale, (
         f"keepalive {PTT_KEEPALIVE_INTERVAL_SEC}s must stay under the "
         f"{stale}s heartbeat stale threshold jasper-voice constructs with"

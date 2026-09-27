@@ -4,9 +4,6 @@
 """Level with the room/bass summed sweep and the watch's loudest half-second.
 
 See ADR-0309 for the statistic shared with measurement takes.
-The mic's ``Sens Factor`` is quoted at its maximum capture volume.
-Confirm ``amixer -c <card>`` shows the capture control at 100% before trusting
-any absolute SPL this prints.
 """
 from __future__ import annotations
 
@@ -22,6 +19,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.arm_walk import TurntableMover
+from jasper.active_speaker.anchor_provenance import graph_provenance, read_pose
 from jasper.active_speaker.auto_level import VOLUME_CONFIRM_TIMEOUT_S, START_FADER_DB, LevelResult, level_to
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
@@ -36,7 +35,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.seat_level_sweep import SweepLevelReader, watchdog_seconds
 from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.camilla import primary_controller
+from jasper.camilla import CamillaUnavailable, primary_controller
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.seat_level_reference import (
@@ -90,12 +89,6 @@ class _OperatorStopped(Exception):
 
 
 async def _stoppable(pass_coro: Any) -> LevelResult:
-    """Run the leveling pass with SIGINT wired to its own cancellation.
-
-    Stopping must be possible at ANY moment, and it must stop the stimulus and
-    give the household its volume back — which is the pass's own teardown, not
-    a second one here.
-    """
     loop = asyncio.get_running_loop()
     task = asyncio.ensure_future(pass_coro)
     stopped = False
@@ -160,8 +153,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             playback_device=context.playback_device,
             protection_sections_by_role=confirmed_protection_sections(context.safety_profile, context.role_targets),
         )
-    except (OSError, RuntimeError, ValueError, LookupError) as exc:
-        code = getattr(exc, "code", REFUSE_CEILING_UNDERIVABLE)
+    except (CamillaUnavailable, OSError, RuntimeError, ValueError, LookupError) as exc:
+        code = getattr(exc, "code", "measurement_graph_unavailable" if isinstance(exc, CamillaUnavailable) else REFUSE_CEILING_UNDERIVABLE)
         if code == "composition_saved_tune_unavailable":
             code = "applied_baseline_snapshot_unavailable"
         return _refused(code, str(exc))
@@ -190,6 +183,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     graph = bind_measurement_graph(
         profile, camilla_factory=lambda: cam, config_dir=DEFAULT_CAMILLA_CONFIG_DIR, candidate=candidate,
     )
+
+    pose = read_pose(arm_offset_deg=TurntableMover(timeout_s=5.0).offset_deg())
 
     async def _restore() -> None:
         nonlocal restored
@@ -254,8 +249,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         return _refused("seat_level_watchdog_expired", "Leveling timed out", restored=restored)
     except _OperatorStopped:
         return _refused(REFUSE_INTERRUPTED, "Stopped by the operator", restored=restored)
-    except (OSError, RuntimeError, ValueError) as exc:
-        return _refused(getattr(exc, "code", getattr(exc, "reason", "ramp_error")), str(exc), restored=restored)
+    except (CamillaUnavailable, OSError, RuntimeError, ValueError) as exc:
+        return _refused(getattr(exc, "code", getattr(exc, "reason", "measurement_graph_unavailable" if isinstance(exc, CamillaUnavailable) else "ramp_error")), str(exc), restored=restored)
     log_event(logger, "active_speaker.seat_level_result", status=result.status, reason=result.reason,
               gain_db=result.gain_db, leveled_db_spl=result.leveled_db_spl,
               ambient_db_spl=result.ambient_db_spl, readings=len(result.readings))
@@ -266,7 +261,8 @@ async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         assert reader is not None and reader.provenance is not None
         write_seat_level_reference(reference_volume_db=result.gain_db, measured_db_spl=result.leveled_db_spl,
             target=target, sensitivity=sensitivity.to_dict(), max_main_volume_db=ceiling_db,
-            stimulus=reader.provenance, ambient_report=result.ambient_report)
+            stimulus=reader.provenance, ambient_report=result.ambient_report,
+            graph=graph_provenance(candidate.fingerprint, graph.level_reference_yaml), pose=pose)
         detail = f"reference {result.gain_db:.2f} dB measured {result.leveled_db_spl:.1f} dB SPL"
     else:
         reason_spec = REASON_REGISTRY.get(str(result.reason))
@@ -280,18 +276,13 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Play the room/bass summed measurement sweep and adjust the fader "
             "until the calibrated mic's loudest half-second (loudest_half_second_db_spl) "
-            "reads the target; bank the session gain. "
-            "PRECONDITION: `amixer -c <card>` shows "
-            "the mic's capture control at 100%, where its Sens Factor is "
-            "quoted, or every absolute SPL is wrong by the shortfall."
+            "reads the target; bank the session gain."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "WHEN NOT TO USE\n"
             "  - a reference is already banked for this session and you are\n"
             "    not deliberately re-leveling\n"
-            "  - the mic capture control is not confirmed at 100% (see the\n"
-            "    PRECONDITION above) -- level first, then re-run this\n"
             "\n"
             "EXAMPLE\n"
             "  jasper-seat-level\n"

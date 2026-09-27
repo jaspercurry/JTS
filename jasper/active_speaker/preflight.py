@@ -9,15 +9,18 @@ from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis.check import _ambient_rows_in_band, _snr_floor_ok
-from jasper.audio_measurement.program import RoleBand
+from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.biquad import PeqFilter
 from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
+from .capture_schedule import walk_price
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
     AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
-    REGIME_BRANCHES, walk_price,
+    REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import branch_target_ids_for
@@ -33,12 +36,12 @@ from .measured_crossover_candidate import (
 from .movers import MOVER_ARM
 from .measurement_programs import (
     BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD, UnknownProgramError,
-    candidate_identity, run_purposes,
+    candidate_identity, cleared_layers, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
     AnchorFacts, LevelUnresolved, RungMeasurementUnavailable, check_target_capture_dbfs, resolve_anchor_level,
-    measured_rung_admission, predicted_rung_admission, stimulus_mismatch,
+    measured_rung_admission, predicted_rung_admission, rise_without_room_db, stimulus_mismatch,
 )
 
 # Rechecked at participation; a dry run reserves none of these resources.
@@ -81,9 +84,11 @@ class PreflightFacts:
     issues: tuple[PreflightIssue, ...] = ()
     summed_pilot_band_hz: tuple[float, float] | None = None
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
+    #: ``None`` when an applied profile's room layer could not be read.
+    applied_room_peqs: tuple[PeqFilter, ...] | None = ()
     program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
-    #: The drivers a near-field pose may play here; read only for a plan naming one.
+    #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
@@ -134,6 +139,19 @@ class PreflightReport:
         }
 
 
+def _room_off_rise_db(plan: AngleCaptureRequest, room_peqs: Sequence[PeqFilter] | None) -> float | None:
+    """The largest rise a summed take clearing the room layer plays over the
+    anchor's graph, across a band holding its stimulus's (ADR-0370); ``None``
+    when no take clears it. Raises ``ValueError`` when one does and the applied
+    room layer could not be read."""
+    bands = [(ROOM_FLOOR_HZ, float((stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ))
+             for stop in plan.stops
+             if stop.plays_summed and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id)]
+    if bands and room_peqs is None:
+        raise ValueError("the applied room layer could not be read, so a take clearing it has no known rise")
+    return max((rise_without_room_db(room_peqs or (), band) for band in bands), default=None)
+
+
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: bool = False,
               previous_rung: Sequence[Mapping[str, Any]] | None = None) -> PreflightReport:
     issues = list(facts.issues)
@@ -180,7 +198,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
         pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
-                 for capture in plan.stops if capture.regime == REGIME_BRANCHES}
+                 for capture in plan.stops if capture.regime == REGIME_BRANCHES and not capture.driver}
         if any(capture.purpose == PURPOSE_REAR for capture in plan.stops):
             pairs.add(branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, facts.roles_bands))
         missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
@@ -296,7 +314,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                 if bass_extensions and not defer_rung and (previous_rung is None or held is not None):
                     try:
                         admission.update(predicted_rung_admission(fader, anchor, bass_extensions,
-                            applied=facts.applied_bass_extension, ceiling_db_spl=stop, tolerance_db=tolerance))
+                            applied=facts.applied_bass_extension, ceiling_db_spl=stop, tolerance_db=tolerance,
+                            room_off_rise_db=_room_off_rise_db(plan, facts.applied_room_peqs)))
                     except (TypeError, ValueError) as exc:
                         admission.update(status="blocked", admitted_db_spl=None)
                         add(WALK_LEVEL_POLICY_INVALID, str(exc))
@@ -324,10 +343,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     schedule = tuple(
         ScheduledCapture(index + 1, pose.place,
                          candidate_identity(pose.candidate_id), repeat,
-                         ("candidate_branches" if pose.regime == REGIME_BRANCHES else
+                         ("candidate_branches" if pose.regime == REGIME_BRANCHES and not pose.driver else
                           scopes.get(pose.candidate_id) if pose.candidate_id else
                           "candidate" if pose.plays_summed else "drivers"), pose.regime)
         for index, (pose, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
-    price = walk_price(plan) if valid_shape else {}
+    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.driver or facts.roles_bands
+                                    for stop in plan.stops)
+    price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
     return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)

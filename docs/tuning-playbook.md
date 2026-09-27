@@ -12,10 +12,14 @@ once, asks analysis views for missing answers, and writes one prescription.
 It does not direct an active measurement.
 
 `packet.json` holds the numbers. `index.md` names them and the commands.
-`frequency.png` shows the response. Read `result` and `reason`, then `applied`
-identity and `layers`, then the program evidence. Speaker evidence is in
-`fits`; room and bass evidence is in `packet["room"]` and `packet["bass"]`,
-one entry per set. Artifact paths remain as fallbacks for failed views. A
+`frequency.png` shows the response. `evidence` is the round's evidence packet,
+built once when the round was banked; `packet_fingerprint` names it, and every
+candidate composed against the round records it (ADR-0371). Read `result` and
+`reason`, then `applied` identity and `layers`, then the program evidence.
+Speaker evidence is in `fits`; room and bass evidence is in `packet["room"]`
+and `packet["bass"]`, one entry per set. A room view run after the bank is not
+the round's evidence; the room contract of a round that banked none answers
+`room_not_banked`. Artifact paths remain as fallbacks for failed views. A
 joined bass ladder adds `bass_table`. Read `alignment` per pair. After the
 timing block, read each fit's `verdict` and `crossover_band_spread`,
 each filter's `position_variance`, and the per-pose null ceiling in
@@ -164,8 +168,8 @@ One seat cannot show which features persist. Seek at least three
 positions before a room claim; three is the boost-admission minimum, not a
 rule that makes smaller clouds unreadable. A boost needs presence at 70% of
 positions (`ROOM_BOOST_MIN_POSITIONS`, `ROOM_BOOST_PRESENCE_MIN_FRACTION` in
-`jasper/audio_measurement/room_limits.py`; design basis in
-`docs/room-correction-regime-plan.md`, D5). The views still answer with the
+`jasper/audio_measurement/room_limits.py`, whose docstring holds the boost
+rule). The views still answer with the
 available count and spread. State what that evidence supports.
 
 Read each `packet["room"]` entry's `set_id`, `median`, `ceiling.hz` and
@@ -188,7 +192,7 @@ The cut floor varies by frequency with the cross-position sigma. A large
 spread supports less correction. A boost is admitted only where seats agree
 on a dip with enough width and bounded depth. The current room boost cap is
 6 dB; a dip deeper than 10 dB is not filled (`ROOM_MAX_FILTER_BOOST_DB`,
-`ROOM_BOOST_MAX_DIP_DB`, `room_limits.py`; regime-plan D5). These are current
+`ROOM_BOOST_MAX_DIP_DB`, `room_limits.py`). These are current
 implementation limits, not universal audibility thresholds. Read the per-bin
 cap before spending the full allowance.
 
@@ -251,7 +255,10 @@ corner reaches the owner limiter without making the boost give way. Go lower
 only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
 100 Hz).
 Unqualified boosted bands are disclosed on the document, and the room
-layer, fitted through bass, absorbs the residual tail.
+layer, fitted through bass, absorbs the residual tail. A bass section written
+before any bass round is admitted, and its `unqualified_boost_bands_hz` lists
+every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`
+(the 20–30 Hz band when none does).
 A tune stored before ADR-0359 (`low_boost_db`, `reference_level_db`) still
 loads and plays its full boost at every volume; a new document uses the form
 above.
@@ -444,7 +451,7 @@ This is the hand loop of record for a cardioid box. Keep the cabinet at its wall
 1. At the mark, run `jasper-round run --program speaker --poses speaker/mark --wait`.
    Fit, trial and apply the speaker there, then bank the model:
    `jasper-round run --program rear --poses rear/pair_mark --wait`.
-2. Write the rear seed and preview variants from that pair round:
+2. Write the rear seed (`contract --section rear` carries one as `seed`) and preview variants from that pair round:
    `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
    Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
    `jasper-crossover-prescriber compose <doc> --round <pair-round>`.

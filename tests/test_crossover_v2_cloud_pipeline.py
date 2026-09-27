@@ -10,7 +10,7 @@ from __future__ import annotations
 from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
 from jasper.active_speaker.crossover_v2.programs import measurement_band_hz
 from jasper.active_speaker.crossover_v2.spatial import _geometry_guidance_copy
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 
 

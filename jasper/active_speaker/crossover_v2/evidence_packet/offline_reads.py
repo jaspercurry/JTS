@@ -38,8 +38,8 @@ LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
 
 #: The three phases a finding set was banked under, each at its own
 #: ``findings_{phase}.json``: the two cloud-group closes and the level-frame
-#: gate's own MEASURE-phase set. No writer remains; reading them keeps the
-#: packet's shape, and so a banked round's fingerprint, unchanged (#5668).
+#: gate's own MEASURE-phase set. No writer remains; reading them keeps a
+#: rebuilt packet's shape, and so its fingerprint, unchanged (#5668).
 _FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 
 #: The phases whose banked set came from carve-out promotion, which read only
@@ -353,7 +353,7 @@ def derived_view_path(beside: Path, evidence_dir: Path | None, name: str) -> tup
     return beside, False
 
 
-def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
+def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[str, Any]:
     """The classification and H2/H3 views, read where
     :func:`derived_view_path` finds them. ``legacy_view_files_in_evidence``
     says one came from a copy inside the round's evidence (``round_dir``)."""

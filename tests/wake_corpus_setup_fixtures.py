@@ -22,6 +22,7 @@ import asyncio
 import json
 import shutil
 import threading
+from contextlib import contextmanager
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -31,7 +32,13 @@ import pytest
 
 from jasper import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
-from jasper.wake_corpus import clip_capture, recording_backend, runtime_probe
+from jasper.wake_corpus import (
+    active_session,
+    clip_capture,
+    clip_recording,
+    recording_backend,
+    runtime_probe,
+)
 from jasper.wake_corpus.capture_plan import PlanConformance
 from jasper.mics import xvf3800
 from jasper.web import wake_corpus_setup
@@ -106,17 +113,18 @@ def _page_css() -> str:
 
 
 def _allow_capture_plan_conformance(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        recording_backend,
-        "validate_active_capture_plan",
-        lambda plan: PlanConformance(
+    def conformant(plan: dict) -> PlanConformance:
+        return PlanConformance(
             ok=True,
             status="ok",
             active_plan_id=str(plan.get("plan_id") or ""),
             expected_plan_id=str(plan.get("plan_id") or ""),
             emitted_legs=list(plan.get("expected_emitted_legs") or []),
-        ),
-    )
+        )
+
+    # Clip start and the status snapshot each run the conformance check.
+    for module in (active_session, clip_recording):
+        monkeypatch.setattr(module, "validate_active_capture_plan", conformant)
 
 
 def _block_recording_task_start(
@@ -193,18 +201,31 @@ def _patch_udp(monkeypatch: pytest.MonkeyPatch) -> None:
     # Reset the per-port value map between tests
     _FakeUdpMicCapture.port_to_value = {}
 
-@pytest.fixture(name="backend")
-def _backend_fixture(monkeypatch, tmp_path: Path):
-    """Construct + start a backend rooted in a tmp dir, tear down on
-    test exit. All 4 leg ports configured — matches the production
-    default. Tests that exercise 3-leg mode just don't opt into
-    include_raw_mic_0."""
+@contextmanager
+def _started_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs,
+) -> Iterator[recording_backend.RecordingBackend]:
+    """A started backend rooted in a tmp dir, shut down on exit."""
     monkeypatch.setenv(
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = recording_backend.RecordingBackend(
-        output_dir=tmp_path / "out",
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out", **kwargs)
+    b.start()
+    try:
+        yield b
+    finally:
+        b.shutdown()
+
+
+@pytest.fixture(name="backend")
+def _backend_fixture(monkeypatch, tmp_path: Path):
+    """A started backend with every leg port configured — matches the
+    production default. Tests that exercise 3-leg mode just don't opt into
+    include_raw_mic_0."""
+    with _started_backend(
+        monkeypatch,
+        tmp_path,
         ports={
             "on": 9876,
             "off": 9877,
@@ -221,10 +242,8 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
             **wake_ports.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
-    )
-    b.start()
-    yield b
-    b.shutdown()
+    ) as b:
+        yield b
 
 @pytest.fixture(name="running_server_port")
 def _running_server_port_fixture(backend) -> Iterator[int]:
@@ -335,16 +354,11 @@ def _mute_path_fixture(tmp_path: Path) -> Path:
 @pytest.fixture(name="mute_backend")
 def _mute_backend_fixture(monkeypatch, tmp_path: Path, mute_path: Path):
     """Backend wired to a tmp mic_mute.env (same shape as `backend`)."""
-    monkeypatch.setenv(
-        BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
-    )
-    _allow_capture_plan_conformance(monkeypatch)
-    b = recording_backend.RecordingBackend(
-        output_dir=tmp_path / "out",
+    with _started_backend(
+        monkeypatch,
+        tmp_path,
         ports={"on": 9876, "off": 9877, "dtln": 9878},
         max_duration_sec=10.0,
         mic_mute_path=mute_path,
-    )
-    b.start()
-    yield b
-    b.shutdown()
+    ) as b:
+        yield b

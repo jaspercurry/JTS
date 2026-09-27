@@ -196,6 +196,8 @@ def _prepare_teardown(
     wl._turns.input_ended = input_ended
     wl._turns.user_speech_seen = user_speech
     wl._turns.manual_endpoint_this_turn = manual
+    # Audio the provider took came from frames the button delivered.
+    wl._turns.manual_frames = int(bytes_sent > 0)
     return turn
 
 

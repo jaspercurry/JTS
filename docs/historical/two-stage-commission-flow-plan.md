@@ -13,8 +13,8 @@
 > [`docs/historical/linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 > — see D10 and D1 respectively. Composes with — does not re-open — the
 > rest of that document (screen grammar §2.1/§2.3, tier chooser §3) and
-> [`docs/gating-v2-plan.md`](../gating-v2-plan.md) /
-> [`docs/room-correction-regime-plan.md`](../room-correction-regime-plan.md)
+> [`docs/historical/gating-v2-plan.md`](gating-v2-plan.md) /
+> [`docs/historical/room-correction-regime-plan.md`](room-correction-regime-plan.md)
 > (the layers this flow commissions).
 >
 > **Symbol note (2026-08-26).** The second preparer this document calls
@@ -304,7 +304,7 @@ must not be written up as having fixed it.
 Express remains a single post-apply position; Full remains the
 six-position spatial cloud-verify walk. The rejected one-position Full
 alternative would land Full in the degenerate case
-[`docs/gating-v2-plan.md`](../gating-v2-plan.md) already named — *"express
+[`docs/historical/gating-v2-plan.md`](gating-v2-plan.md) already named — *"express
 cloud-verify is 1 position → **0 curves → no combine at all**"* — so
 Full's post-apply group would produce no combined curve, not a smaller
 one. It would also make the user-facing claim inconsistent with the

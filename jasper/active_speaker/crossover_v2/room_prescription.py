@@ -17,7 +17,7 @@ share is imported from it rather than restated: the prohibited-key walk, the
 intake readers, the filter record, the composed grid, the refusal values whose
 meaning is identical, and the exception class.
 
-`See ADR-0256` rules 1-2 and `docs/room-correction-regime-plan.md` D5.
+`See ADR-0256` rules 1-2.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ from jasper.audio_measurement.room_limits import (
     cut_floor_db,
     spatial_support,
 )
+from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
@@ -143,6 +144,7 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     COMPOSED_BOOST_EXCEEDED,
     ROOM_MEDIAN_UNAVAILABLE,
+    ROOM_NOT_BANKED,
     LAYOUT_UNAVAILABLE,
     BOOST_NOT_ADMITTED,
     TAPER_VIOLATED,
@@ -201,10 +203,13 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
     deviation row per declared position — because a median read loosely would
     make the limits a property of the artifact's mistakes. Every fault is
     ``room_median_unavailable``: a median that cannot be read is evidence this
-    door does not have, whatever the reason.
+    door does not have, whatever the reason. A banked round that holds no room
+    view is ``room_not_banked``.
     """
     if not isinstance(raw, Mapping):
         _unavailable(f"a room median must be a mapping, got {type(raw).__name__}")
+    if raw.get("code") == ROOM_NOT_BANKED:
+        _refuse(ROOM_NOT_BANKED, "this round's bank holds no room view; one run after the bank is not its evidence")
     freqs = _median_array(raw.get("freqs_hz"), "freqs_hz")
     if freqs.size < 2 or not np.all(np.diff(freqs) > 0.0) or freqs[0] <= 0.0:
         _unavailable("freqs_hz must be a strictly increasing positive grid")
@@ -586,8 +591,8 @@ def _check_bounds(
 ) -> str:
     """Every per-filter bound, and the class the gains add up to.
 
-    The boost cap is per-FREQUENCY: D5's cap, already tapered toward the room
-    ceiling. A cut's depth is never a bound here (`See ADR-0343`).
+    The boost cap is per-FREQUENCY: ``room_limits``' cap, already tapered
+    toward the room ceiling. A cut's depth is never a bound here (`See ADR-0343`).
     """
     lo, hi = median.band_hz
     boosts = 0
@@ -652,7 +657,7 @@ def _check_boosts(
     """The spatial bar, per boosting filter. **It refuses on the first miss.**
 
     A GATE, because feeding an interference null spends headroom on a
-    cancellation that swallows it (`See docs/room-correction-regime-plan.md` D5).
+    cancellation that swallows it (``room_limits``' boost rule).
     """
     findings: list[BoostAdmission] = []
     for entries in sides.values():

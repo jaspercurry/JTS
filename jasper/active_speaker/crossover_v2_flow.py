@@ -16,7 +16,7 @@ from typing import (
 )
 
 from jasper.active_speaker import baseline_profile
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
@@ -24,15 +24,10 @@ from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.admission import (
-    ATTEMPT_INITIATOR_SPEAKER,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
     SlotAttempts,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    CLOUD_GEOMETRY_RETRY_PROMPTS,
-    CLOUD_GEOMETRY_RETRY_RISE_CM,
     CLOUD_POSITION_PROMPTS,
-    GEOMETRY_RETRY_OFFSET_CM,
     LATERAL_POSE_PROMPTS,
     CloudPositionPrompt,
     _pose,
@@ -69,10 +64,9 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     branch_channels_for,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    NON_RETRIABLE_CODES,
-    REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REASON_RETRIES_SPENT,
     PhaseVerdict,
     TakeVerdict,
     reason_diagnosis,
@@ -267,10 +261,6 @@ class CrossoverV2Session:
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
             verify_prompts
         )
-        # Geometry-locked retakes already spent, per group.
-        self._geometry_retries_used: dict[str, int] = {
-            phase: 0 for phase in self._journey.plan.group_indexes
-        }
         # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
@@ -310,7 +300,6 @@ class CrossoverV2Session:
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
-        self._last_reason: dict[str, str] = {}
         # The capture evidence paired with each slot's last rejection; exhaustion reads
         # this rather than the global pair, which can belong to a different position.
         self._last_pilot_evidence: dict[str, tuple[str, bool | None, bool | None]] = {}
@@ -542,27 +531,6 @@ class CrossoverV2Session:
             return table[position]
         return _pose(_plan._LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
 
-    def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
-        """The prompt the operator ACTUALLY followed for the take in hand.
-
-        Not always the table entry: after a geometry-locked rejection the phone showed a
-        wider retry rung, and the sidecar's prompt is the durable statement of where.
-        """
-        slot = self._slot_of_index(index)
-        if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED:
-            used = max(self._geometry_retries_used.get(phase, 1), 1)
-            index_ = min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
-            rung = CLOUD_GEOMETRY_RETRY_PROMPTS[index_]
-            rise_cm = CLOUD_GEOMETRY_RETRY_RISE_CM[index_]
-            return CloudPositionPrompt(
-                rung,
-                offset_cm=GEOMETRY_RETRY_OFFSET_CM,
-                role=POSITION_ROLE_OFFAX,
-                vertical_sign=1 if rise_cm else 0,
-                vertical_offset_cm=rise_cm,
-            )
-        return self._cloud_prompt(phase, index)
-
     def note_restore_observed(self) -> None:
         """The restore-observed host event — disarms the VERIFY hold (#2616)."""
         self._journey.mark_restored()
@@ -647,25 +615,12 @@ class CrossoverV2Session:
         )
 
         decision = _admission.assess_begin(
-            ledger=None if executor_ledger is not None and attempt == 1 else ledger,
-            last_reason=self._last_reason.get(slot),
-            non_retriable=NON_RETRIABLE_CODES,
-            default_code=REASON_LOCATE_FAILED,
+            ledger=ledger,
+            default_code=REASON_RETRIES_SPENT,
             retry_charge=executor_ledger.charge
             if executor_ledger is not None
             else "operator",
         )
-        if decision.kind == _admission.REFUSE_NON_RETRIABLE:
-            spec = REASON_REGISTRY[decision.code]
-            self.capture_published_refusal = True
-            raise CaptureBeginRefused(
-                spec.code,
-                reason_message(
-                    spec.code,
-                    spec,
-                    pilot_heard=self._pilot_heard_for(decision.code, slot=slot),
-                ),
-            )
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
             assert ledger is not None
             code = decision.code
@@ -682,7 +637,7 @@ class CrossoverV2Session:
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 code,
-                self._extras_spent_message(
+                _admission.extras_spent_message(
                     ledger,
                     diagnosis=diagnosis,
                     outcome=self._spent_slot_outcome(phase, index),
@@ -711,18 +666,10 @@ class CrossoverV2Session:
             if executor_ledger is not None
             else self._slot_attempts.setdefault(slot, SlotAttempts())
         )
-        if decision.spends_extra and executor_ledger is None:
-            try:
-                ledger.spend(
-                    "speaker"
-                    if decision.initiator == ATTEMPT_INITIATOR_SPEAKER
-                    else "operator"
-                )
-            except _admission.AttemptOverspendError as exc:
-                raise CrossoverV2FlowError(str(exc)) from exc
-        if executor_ledger is not None and attempt > 1:
-            ledger.spend(executor_ledger.charge)
-        ledger.admitted += 1
+        try:
+            ledger.admit()
+        except _admission.AttemptOverspendError as exc:
+            raise CrossoverV2FlowError(str(exc)) from exc
         self._armed_capture = (index, attempt)
         log_event(
             logger,
@@ -731,23 +678,10 @@ class CrossoverV2Session:
             phase=phase,
             index=index,
             attempt=attempt,
+            charge=ledger.charge,
             extra_used=ledger.extras_used,
-            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            extra_allowed=ledger.retries_per_pose,
             extra_by_speaker=ledger.by_speaker,
-        )
-
-    @staticmethod
-    def _extras_spent_message(
-        ledger: SlotAttempts,
-        *,
-        diagnosis: str,
-        outcome: str,
-    ) -> str:
-        """The household sentence for a position whose extras are gone."""
-        return _admission.extras_spent_message(
-            ledger,
-            diagnosis=diagnosis,
-            outcome=outcome,
         )
 
     def _spent_slot_outcome(self, phase: str, index: int) -> str:
@@ -783,7 +717,7 @@ class CrossoverV2Session:
 
     def _capture_purpose(self, phase: str, index: int) -> str | None:
         prompt = (
-            self._prompt_shown_for(phase, index)
+            self._cloud_prompt(phase, index)
             if phase in GROUP_PHASES
             else self._lateral_prompts[0]
             if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts
@@ -804,12 +738,12 @@ class CrossoverV2Session:
             None,
         )
         if phase in GROUP_PHASES:
-            prompt = self._prompt_shown_for(phase, index)
+            prompt = self._cloud_prompt(phase, index)
             position, vertical = (
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver)
+            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver, distance_m=prompt.distance_m)
         return replace(
             self._geometry,
             gate_exempt_reason=exemption,

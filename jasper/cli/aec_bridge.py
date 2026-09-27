@@ -60,6 +60,7 @@ estimator tolerates bounded drift; nothing here resamples to compensate, and
 from __future__ import annotations
 
 from contextlib import suppress
+from functools import partial
 import logging
 import math
 import os
@@ -67,16 +68,16 @@ import signal
 import sys
 import threading
 import time
+import wave
 from queue import Queue, Empty
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
-    AEC3_SWEEP_SOURCE_XVF,
 )
 from jasper.watchdog import Heartbeat
 from jasper.log_event import log_event
@@ -133,7 +134,7 @@ from jasper.aec.bridge_telemetry import (
     add_loop_emitter,
     logger,
 )
-from jasper.aec.bridge_corpus_lanes import build_corpus_lanes
+from jasper.aec.bridge_corpus_lanes import CorpusLanes, build_corpus_lanes
 from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 from ..logging_setup import configure_logging
@@ -175,20 +176,6 @@ class BridgeStalled(RuntimeError):
     endpoint) the callback simply stops being invoked, and no in-process
     recovery path exists — only a new process gets a working stream.
     """
-
-
-# Clipping counters for the post-AEC mic stage (after JASPER_AEC_MIC_GAIN_DB),
-# module-level for cheap cross-thread access: a race between increment and
-# reset costs at most one frame in one log window's percentage. The reference
-# pre-clip stage keeps its own pair in `bridge_reference`.
-_out_clipped_samples = 0
-_out_total_samples = 0
-
-# Counter for `ref_q empty when the main loop polled` events: the reference
-# arrives in bursts while the mic delivers at a smooth 20 ms cadence, so some
-# polls land between bursts (see `_aec_loop`). Logged in the periodic RMS
-# line; above roughly 2 Hz, carry-forward is doing more work than expected.
-_ref_starved_frames = 0
 
 
 def _apply_mic_output_gain(
@@ -272,110 +259,23 @@ class _MicStarvationWatchdog:
         return self._starved_windows >= self._max_starved
 
 
-def _process_optional_engine(
-    engine: Any,
-    input_bytes: bytes,
-    ref_bytes: bytes,
-    *,
-    failure_message: str | None,
-) -> tuple[Any | None, bytes, Exception | None]:
-    """Process one optional leg and disable it after its first failure.
+def _open_production_legs(
+    emitters: dict[str, LegEmitter],
+    config: BridgeConfig,
+    chip_aec_qs: Optional[dict[str, Queue]],
+    chip_beam_plan: _mic_profile.ChipBeamPlan | None,
+) -> tuple[LegEmitter, LegEmitter | None, LegEmitter, LegEmitter, dict[str, LegEmitter]]:
+    """Open the on, usb_host_mic, off, raw0 and chip-beam legs into `emitters`.
 
-    The primary AEC engine deliberately does not use this helper: a primary
-    failure must still escape and trigger the bridge's systemd recovery path.
+    UDP output: localhost, non-blocking sendto. `sendto` never blocks on
+    `lo` at this rate (~256 kbps), so the main thread can always observe
+    SIGTERM and exit inside the unit's `TimeoutStopSec=5s`.
     """
-    try:
-        return engine, engine.process(input_bytes, ref_bytes), None
-    except Exception as exc:  # noqa: BLE001
-        if failure_message is not None:
-            # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key
-            # is the record's file:line, so the caller's must survive.
-            logger.exception(failure_message, exc, stacklevel=2)
-        return None, b"", exc
-
-
-def _aec_loop(  # noqa: PLR0915
-    ref_q: Queue, mic_q: Queue, engine: Optional[Aec3Engine],
-    heartbeat: Optional[Heartbeat] = None,
-    raw0_q: Optional[Queue] = None,
-    chip_aec_qs: Optional[dict[str, Queue]] = None,
-    chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
-    production_chip_aec_enabled: bool = False,
-    chip_aec_primary_leg: str = "chip_aec_150",
-    emit_ref: bool = False,
-    usb_raw_q: Optional[Queue] = None,
-    xvf_raw0_webrtc_enabled: bool = False,
-    xvf_raw0_dtln_enabled: bool = False,
-    config: BridgeConfig | None = None,
-) -> None:
-    """Drain mic/ref queues, run the selected AEC path, and emit UDP legs.
-
-    Each iteration consumes one mic frame and one reference frame in arrival
-    order. An empty reference queue carries the last real reference frame
-    forward rather than injecting silence, which keeps AEC3's adaptive filter
-    fed through bursty reference delivery. Primary, raw, corpus, chip-AEC and
-    optional-engine outputs are packetized into per-leg UDP streams.
-
-    With `JASPER_AEC_DEBUG_RECORD_DIR` set, the engine's input mic stream,
-    its pre-gain output and the reference are also written to WAV files there
-    for offline ERLE analysis.
-    """
-    config = config or BridgeConfig.from_env()
-    # Post-AEC static gain, applied to the engine output before it reaches
-    # jasper-voice over UDP. Restores level into openWakeWord's training
-    # distribution when the chip's mic preamp delivers a quiet AEC output;
-    # 0 dB (off) by default, and soft-clipped via tanh on the way out so a
-    # high gain cannot push hard-clip distortion into the wake-word input.
-    global _out_clipped_samples, _out_total_samples
-    global _ref_starved_frames
-    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT))
-    mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
-    # Stall-recovery threshold: consecutive seconds of empty mic_q before
-    # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
-    stall_restart_sec = int(
-        float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
-    )
-    consecutive_empty_sec = 0
-    # Additive slow-drip stall watchdog: the consecutive-empty check above
-    # resets on a single frame, so an intermittent trickle never trips it.
-    # JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
-    drip_watchdog = _MicStarvationWatchdog(
-        max_starved_windows=int(
-            os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
-        ),
-    )
-    import wave
-    usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
-        os.environ,
-    )
-    usb_mic_source = resolve_usb_mic_source(
-        config.usb_mic_leg,
-        plan=usb_mic_choice_plan,
-        production_chip_aec_enabled=production_chip_aec_enabled,
-        chip_aec_primary_leg=chip_aec_primary_leg,
-    )
-    # UDP output: localhost, non-blocking sendto. `sendto` never blocks on
-    # `lo` at this rate (~256 kbps), so the main thread can always observe
-    # SIGTERM and exit inside the unit's `TimeoutStopSec=5s`.
-    emitters: dict[str, LegEmitter] = {}
-
-    def add_emitter(
-        leg: str,
-        port: int,
-        *,
-        frame_samples: int = OUT_FRAME_SAMPLES,
-        emitter_cls: type[LegEmitter] = LegEmitter,
-    ) -> LegEmitter:
-        return add_loop_emitter(
-            emitters,
-            _bridge_stats,
-            config.out_host,
-            leg,
-            port,
-            frame_samples=frame_samples,
-            emitter_cls=emitter_cls,
-        )
-
+    add_emitter = partial(add_loop_emitter, emitters, _bridge_stats, config.out_host)
+    # Voice/wake LegEmitters aggregate four 320-sample frames into one
+    # 1280-sample UDP packet, holding UdpMicCapture's wire contract. The
+    # dedicated USB host-mic consumer emits each 320-sample frame
+    # immediately: it is latency-sensitive and has no voice consumer.
     on_emitter = add_emitter("on", config.out_port)
     # Dedicated non-wake consumer for the optional USB host microphone. This
     # duplicate keeps jasper-voice's frozen :9876 ownership intact: the
@@ -412,34 +312,18 @@ def _aec_loop(  # noqa: PLR0915
                 continue
             port = chip_aec_ports.get(beam.token, leg_default_port(beam.token))
             chip_aec_emitters[beam.token] = add_emitter(beam.token, port)
+    return on_emitter, usb_host_mic_emitter, raw_emitter, raw0_emitter, chip_aec_emitters
 
-    lanes = build_corpus_lanes(
-        emitters,
-        _bridge_stats,
-        config,
-        select_engine=_select_engine,
-        xvf_raw0_webrtc_enabled=xvf_raw0_webrtc_enabled,
-        xvf_raw0_dtln_enabled=xvf_raw0_dtln_enabled,
-        emit_ref=emit_ref,
-        production_chip_aec_enabled=production_chip_aec_enabled,
-        usb_raw_q=usb_raw_q,
-    )
-    xvf_raw0_engine = lanes.xvf_raw0_engine
-    xvf_raw0_webrtc_emitter = lanes.xvf_raw0_webrtc_emitter
-    xvf_raw0_dtln_engine = lanes.xvf_raw0_dtln_engine
-    xvf_raw0_dtln_emitter = lanes.xvf_raw0_dtln_emitter
-    ref_emitter = lanes.ref_emitter
-    usb_raw_emitter = lanes.usb_raw_emitter
-    usb_webrtc_emitter = lanes.usb_webrtc_emitter
-    usb_engine = lanes.usb_engine
-    usb_dtln_engine = lanes.usb_dtln_engine
-    usb_dtln_emitter = lanes.usb_dtln_emitter
-    aec3_sweep_paths = lanes.aec3_sweep_paths
-    emit_aec3_sweep = lanes.emit_aec3_sweep
-    dtln_engine = lanes.dtln_engine
-    dtln_emitter = lanes.dtln_emitter
+
+def _publish_capture_plan(
+    config: BridgeConfig, emitters: dict[str, LegEmitter], lanes: CorpusLanes, *,
+    usb_mic_source: dict[str, object], chip_beam_plan: _mic_profile.ChipBeamPlan | None,
+    chip_aec_emitters: dict[str, LegEmitter], chip_aec_primary_leg: str,
+    production_chip_aec_enabled: bool, emit_ref: bool, usb_corpus: bool,
+) -> None:
+    """Publish the opened legs to the stats snapshot, then log `udp outputs`."""
     output_parts = [f"aec={config.out_host}:{config.out_port}"]
-    if usb_host_mic_emitter is not None:
+    if config.emit_usb_host_mic:
         output_parts.append(
             f"usb_host_mic={config.out_host}:{config.out_port_usb_host_mic}"
         )
@@ -452,36 +336,36 @@ def _aec_loop(  # noqa: PLR0915
     else:
         output_parts.append(f"raw={config.out_host}:{config.out_port_raw}")
     output_parts.append(f"raw0={config.out_host}:{config.out_port_raw0}")
-    if dtln_engine is not None:
+    if lanes.dtln_engine is not None:
         output_parts.append(f"dtln={config.out_host}:{config.out_port_dtln}")
     if chip_beam_plan:
         for beam in chip_beam_plan.legs:
             if beam.token in chip_aec_emitters:
                 port = leg_default_port(beam.token)
                 output_parts.append(f"{beam.token}={config.out_host}:{port}")
-    if xvf_raw0_engine is not None:
+    if lanes.xvf_raw0_engine is not None:
         output_parts.append(
             "xvf_raw0_webrtc_aec3="
             f"{config.out_host}:{config.out_port_xvf_raw0_webrtc_aec3}"
         )
-    if xvf_raw0_dtln_engine is not None:
+    if lanes.xvf_raw0_dtln_engine is not None:
         output_parts.append(
             f"xvf_raw0_dtln={config.out_host}:{config.out_port_xvf_raw0_dtln}"
         )
     if emit_ref:
         output_parts.append(f"ref={config.out_host}:{config.out_port_ref}")
-    if usb_raw_q is not None:
+    if usb_corpus:
         output_parts.append(
             f"usb_raw={config.out_host}:{config.out_port_usb_raw}"
         )
         output_parts.append(
             f"usb_webrtc={config.out_host}:{config.out_port_usb_webrtc}"
         )
-    if usb_dtln_engine is not None:
+    if lanes.usb_dtln_engine is not None:
         output_parts.append(
             f"usb_dtln={config.out_host}:{config.out_port_usb_dtln}"
         )
-    for path in aec3_sweep_paths:
+    for path in lanes.aec3_sweep_paths:
         output_parts.append(
             f"{path.variant.leg}="
             f"{config.out_host}:{config.out_port_aec3_sweep[path.variant.leg]}"
@@ -492,12 +376,12 @@ def _aec_loop(  # noqa: PLR0915
         emitted_legs=sorted(emitters.keys()),
         corpus_flags={
             "ref": emit_ref,
-            "usb": usb_raw_q is not None,
-            "usb_dtln": usb_dtln_engine is not None,
+            "usb": usb_corpus,
+            "usb_dtln": lanes.usb_dtln_engine is not None,
             "chip_aec": bool(chip_aec_emitters),
-            "aec3_sweep": bool(aec3_sweep_paths),
-            "xvf_raw0_webrtc_aec3": xvf_raw0_webrtc_emitter is not None,
-            "xvf_raw0_dtln": xvf_raw0_dtln_emitter is not None,
+            "aec3_sweep": bool(lanes.aec3_sweep_paths),
+            "xvf_raw0_webrtc_aec3": lanes.xvf_raw0_webrtc_emitter is not None,
+            "xvf_raw0_dtln": lanes.xvf_raw0_dtln_emitter is not None,
             "production_chip_aec": production_chip_aec_enabled,
         },
         beam_plan={
@@ -525,62 +409,434 @@ def _aec_loop(  # noqa: PLR0915
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
-    # Voice/wake LegEmitters aggregate four 320-sample frames into one
-    # 1280-sample UDP packet, holding UdpMicCapture's wire contract. The
-    # dedicated USB host-mic consumer emits each 320-sample frame
-    # immediately: it is latency-sensitive and has no voice consumer.
-    silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
+
+
+def _open_debug_wavs(debug_dir: str) -> tuple[wave.Wave_write, ...] | None:
+    """Open the mic, pre-gain AEC output and reference WAVs; see `_aec_loop`."""
+    if not debug_dir:
+        return None
+    try:
+        os.makedirs(debug_dir, exist_ok=True)
+        wavs = []
+        for name in ("mic_ch1", "aec_output", "ref"):
+            wav = wave.open(f"{debug_dir}/{name}.wav", "wb")
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(SAMPLE_RATE)
+            wavs.append(wav)
+        logger.warning(
+            "DEBUG RECORD MODE: writing mic/aec/ref WAVs to %s "
+            "until shutdown",
+            debug_dir,
+        )
+    except OSError as e:
+        logger.error(
+            "failed to open debug record dir %s: %s; skipping",
+            debug_dir, e,
+        )
+        return None
+    return tuple(wavs)
+
+
+def _write_debug_wavs(
+    wavs: tuple[wave.Wave_write, ...],
+    mic_bytes: bytes, aec_bytes: bytes, ref_bytes: bytes,
+) -> bool:
+    """Append one frame to each debug WAV; False once a write fails."""
+    mic_wav, aec_wav, ref_wav = wavs
+    try:
+        mic_wav.writeframes(mic_bytes)
+        aec_wav.writeframes(aec_bytes)
+        ref_wav.writeframes(ref_bytes)
+    except OSError as e:
+        logger.error("debug wav write failed: %s", e)
+        return False
+    return True
+
+
+def _check_mic_stall(consecutive_empty_sec: int, stall_restart_sec: int) -> None:
+    """Log a growing mic stall; raise `BridgeStalled` once it hits the threshold."""
+    # Log once at stall onset, then every 2 s so the journal
+    # shows the stall growing without flooding 1 line/sec.
+    if consecutive_empty_sec == 1 or consecutive_empty_sec % 2 == 0:
+        logger.warning(
+            "mic queue empty for %ds — bridge stalled (will exit "
+            "non-zero at %ds for systemd restart)",
+            consecutive_empty_sec, stall_restart_sec,
+        )
+    if stall_restart_sec > 0 and consecutive_empty_sec >= stall_restart_sec:
+        raise BridgeStalled(
+            f"mic queue empty for {consecutive_empty_sec}s — "
+            "InputStream is dead (typically ALSA underrun on "
+            "XVF UAC2 capture), exiting non-zero so systemd "
+            "Restart=on-failure can spin up a fresh process"
+        )
+
+
+def _next_reference(ref_q: Queue, last_ref_bytes: bytes, window: _RmsWindow) -> bytes:
+    """Consume exactly ONE ref frame in arrival order, else carry the last forward.
+
+    The reference arrives in bursts while the mic delivers smoothly at the
+    20 ms cadence, so a burst is consumed one frame per iteration and at
+    worst 1 frame in 3 is a 20 ms-stale carry-forward — within AEC3's
+    delay-estimator tolerance.
+
+    Do NOT drain to the newest frame: that discards half the real
+    reference and leaves every other frame either zeroed (25 Hz envelope
+    artefact, no filter convergence) or a byte-duplicate of its
+    predecessor (50 Hz artefact, audible as buzzing).
+    """
+    try:
+        return ref_q.get_nowait()
+    except Empty:
+        window.ref_starved_frames += 1
+        _bridge_stats.inc("ref_starved_frames")
+        return last_ref_bytes
+
+
+def _drain_raw0(raw0_q: Optional[Queue], raw0_emitter: LegEmitter) -> bytes:
+    """Take at most one truly-raw mic 0 frame (chip channel 2, no chip DSP).
+
+    Drained independently of mic_q so a backlog on one cannot stall the
+    other. The same PortAudio callback feeds both queues, so there is
+    nominally one new raw0 frame per iteration; a gap is simply skipped —
+    nothing time-aligns this stream to the AEC engine.
+    """
+    raw0_bytes = b""
+    if raw0_q is not None:
+        try:
+            raw0_bytes = raw0_q.get_nowait()
+        except Empty:
+            pass
+        if raw0_bytes:
+            raw0_emitter.emit(raw0_bytes)
+    return raw0_bytes
+
+
+def _drain_chip_beams(
+    chip_aec_qs: Optional[dict[str, Queue]], chip_aec_emitters: dict[str, LegEmitter],
+) -> dict[str, bytes]:
+    """Take at most one frame per chip beam; emit the beams that have a leg."""
+    chip_frames: dict[str, bytes] = {}
+    if chip_aec_qs:
+        for leg, q in chip_aec_qs.items():
+            try:
+                chip_bytes = q.get_nowait()
+            except Empty:
+                continue
+            chip_frames[leg] = chip_bytes
+            if emitter := chip_aec_emitters.get(leg):
+                emitter.emit(chip_bytes)
+    return chip_frames
+
+
+def _chip_primary_frame(
+    chip_frames: dict[str, bytes], leg: str, missing_log: DropLogDebouncer,
+) -> bytes:
+    """The primary chip beam's frame, or b"" with a debounced warning."""
+    clean = chip_frames.get(leg, b"")
+    if not clean:
+        if outcome := missing_log.record(time.monotonic()):
+            drops, window_sec = outcome
+            log_event(
+                logger, "aec_bridge.chip_primary_missing", leg=leg,
+                action="skip_frame", frames=drops, window_sec=f"{window_sec:.1f}",
+                level=logging.WARNING,
+            )
+    return clean
+
+
+class _UsbHostMicLeg:
+    """Pick the `usb_host_mic` leg's source frame each iteration, then emit it.
+
+    Selection runs every frame even with the leg closed, so the fallback
+    counter and the published effective source follow the resolved plan.
+    """
+
+    def __init__(
+        self, source: dict[str, object], emitter: LegEmitter | None, *,
+        production_chip_aec_enabled: bool, chip_aec_primary_leg: str,
+    ) -> None:
+        self._emitter = emitter
+        self._mode = str(source["mode"])
+        self._selected_leg = str(source["leg"])
+        self._planned_fallback = bool(source["fallback_active"])
+        self._chip = production_chip_aec_enabled
+        self._primary_leg = chip_aec_primary_leg
+        self._raw0_missing_log = DropLogDebouncer()
+        self._leg_missing_log = DropLogDebouncer()
+        self._published_leg = self._selected_leg
+        self._published_fallback = self._planned_fallback
+        self._frame: bytes | None = None  # None exports the primary clean frame
+
+    def select(self, raw0_bytes: bytes, chip_frames: dict[str, bytes]) -> None:
+        effective_leg = self._selected_leg
+        fallback_active = self._planned_fallback
+        self._frame = None
+        if self._selected_leg == USB_MIC_RAW_XVF_LEG:
+            # raw0_bytes is the physical XVF channel-2 frame this bridge
+            # already captured: reuse it directly — no parallel capture
+            # stack, no voice gain, and no clean/chip fallback.
+            self._frame = raw0_bytes
+            if not raw0_bytes:
+                if outcome := self._raw0_missing_log.record(time.monotonic()):
+                    drops, window_sec = outcome
+                    log_event(
+                        logger, "usb_mic.raw0_missing", action="skip_frame",
+                        frames=drops, window_sec=f"{window_sec:.1f}",
+                        level=logging.WARNING,
+                    )
+        if (
+            self._chip
+            and self._selected_leg != self._primary_leg
+            and self._selected_leg != USB_MIC_RAW_XVF_LEG
+        ):
+            selected_frame = chip_frames.get(self._selected_leg, b"")
+            if selected_frame:
+                self._frame = selected_frame
+            else:
+                effective_leg = self._primary_leg
+                fallback_active = True
+                if outcome := self._leg_missing_log.record(time.monotonic()):
+                    drops, window_sec = outcome
+                    log_event(
+                        logger, "usb_mic.leg_missing", leg=self._selected_leg,
+                        fallback=self._primary_leg, frames=drops,
+                        window_sec=f"{window_sec:.1f}", level=logging.WARNING,
+                    )
+        if fallback_active:
+            _bridge_stats.inc("usb_mic_source_fallback_frames")
+        if (
+            effective_leg != self._published_leg
+            or fallback_active != self._published_fallback
+        ):
+            _bridge_stats.set_usb_mic_effective_source(
+                mode=self._mode, leg=effective_leg, fallback_active=fallback_active,
+            )
+            self._published_leg = effective_leg
+            self._published_fallback = fallback_active
+
+    def emit(self, clean: bytes, gain_lin: float) -> None:
+        if self._emitter is None:
+            return
+        usb_mic_clean: bytes | None = clean
+        if self._selected_leg == USB_MIC_RAW_XVF_LEG:
+            # Missing raw frames remain missing: an explicit lab
+            # source must never silently become production-clean
+            # audio, not even for one USB-export frame.
+            usb_mic_clean = self._frame
+        elif self._frame is not None:
+            # USB beam selection is downstream-only but keeps the same
+            # output-level contract as the primary clean leg. Its
+            # clipping does not belong in voice's out_clip metric.
+            usb_mic_clean, _clipped, _total = _apply_mic_output_gain(
+                self._frame, gain_lin,
+            )
+        if usb_mic_clean:
+            self._emitter.emit(usb_mic_clean)
+
+
+class _RmsWindow:
+    """Accumulate one `RMS_LOG_INTERVAL_SEC` window, then publish it.
+
+    Publishing writes the `rms over` journal line and the stats snapshot's
+    RMS window. The window also counts post-gain output clipping (the
+    reference pre-clip stage keeps its own pair in `bridge_reference`) and
+    `ref_starved_frames`, the polls that found `ref_q` empty: above roughly
+    2 Hz, carry-forward is doing more work than expected.
+    """
+
+    def __init__(self, *, chip: bool, chip_primary_leg: str) -> None:
+        self._chip = chip
+        self._chip_primary_leg = chip_primary_leg
+        self._last_log = 0.0
+        self._frames = 0
+        self._sum_mic_sq = self._sum_ref_sq = self._sum_aec_sq = 0.0
+        # Counted separately: raw0 is drained opportunistically, so a
+        # window can hold fewer raw0 frames than mic frames.
+        self._raw0_frames = 0
+        self._sum_raw0_sq = 0.0
+        self.out_clipped_samples = self.out_total_samples = 0
+        self.ref_starved_frames = 0
+
+    def add(
+        self, mic_bytes: bytes, ref_bytes: bytes, aec_bytes: bytes, raw0_bytes: bytes,
+    ) -> None:
+        """`aec_bytes` is pre-gain: "attenuation" must reflect what the AEC
+        accomplished, not how much the post-gain stage amplified the residual."""
+        mic_arr = np.frombuffer(mic_bytes, dtype=np.int16).astype(np.float32)
+        ref_arr = np.frombuffer(ref_bytes, dtype=np.int16).astype(np.float32)
+        aec_arr = np.frombuffer(aec_bytes, dtype=np.int16).astype(np.float32)
+        self._sum_mic_sq += float(np.mean(mic_arr * mic_arr))
+        self._sum_ref_sq += float(np.mean(ref_arr * ref_arr))
+        self._sum_aec_sq += float(np.mean(aec_arr * aec_arr))
+        self._frames += 1
+        if raw0_bytes:
+            raw0_arr = np.frombuffer(raw0_bytes, dtype=np.int16).astype(np.float32)
+            self._sum_raw0_sq += float(np.mean(raw0_arr * raw0_arr))
+            self._raw0_frames += 1
+
+    def publish_if_due(self, frames_processed: int, ref_q: Queue, mic_q: Queue) -> None:
+        now = time.monotonic()
+        if now - self._last_log <= RMS_LOG_INTERVAL_SEC:
+            return
+        if self._frames > 0:
+            mic_rms = math.sqrt(self._sum_mic_sq / self._frames)
+            ref_rms = math.sqrt(self._sum_ref_sq / self._frames)
+            aec_rms = math.sqrt(self._sum_aec_sq / self._frames)
+            # Omitted, not zeroed, when the window drained no raw0
+            # frames: doctor reads a present `raw0` as the near-end
+            # level, and `raw0=0` would pin its music gate off.
+            raw0_rms = (
+                math.sqrt(self._sum_raw0_sq / self._raw0_frames)
+                if self._raw0_frames else None
+            )
+            raw0_token = "" if raw0_rms is None else " raw0=%.0f" % raw0_rms
+            if mic_rms > 1.0:
+                attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
+            else:
+                attn_db = 0.0
+            ref_clip_pct = ref_clip_percent()
+            out_clip_pct = (
+                100.0 * self.out_clipped_samples / self.out_total_samples
+                if self.out_total_samples else 0.0
+            )
+            if self._chip:
+                logger.info(
+                    "chip_aec rms over %.1fs: ref=%.0f near=%s:%.0f "
+                    "primary=%s:%.0f level_delta=%.1f dB%s "
+                    "(frames=%d ref_q=%d mic_q=%d ref_starve=%d "
+                    "ref_clip=%.2f%% out_clip=%.2f%%)",
+                    self._frames * FRAME_SAMPLES / SAMPLE_RATE,
+                    ref_rms, "chip_aec_210", mic_rms,
+                    self._chip_primary_leg, aec_rms, attn_db, raw0_token,
+                    frames_processed, ref_q.qsize(), mic_q.qsize(),
+                    self.ref_starved_frames,
+                    ref_clip_pct, out_clip_pct,
+                )
+            else:
+                logger.info(
+                    "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
+                    "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
+                    "ref_starve=%d ref_clip=%.2f%% out_clip=%.2f%%)",
+                    self._frames * FRAME_SAMPLES / SAMPLE_RATE,
+                    ref_rms, mic_rms, aec_rms, attn_db,
+                    frames_processed, ref_q.qsize(), mic_q.qsize(),
+                    self.ref_starved_frames,
+                    ref_clip_pct, out_clip_pct,
+                )
+            _bridge_stats.record_rms_window(
+                ref=ref_rms,
+                mic=raw0_rms if self._chip and raw0_rms is not None else mic_rms,
+                level_db=None if self._chip else attn_db,
+                chip=self._chip,
+            )
+        self._last_log = now
+        self._frames = 0
+        self._sum_mic_sq = self._sum_ref_sq = self._sum_aec_sq = 0.0
+        self._raw0_frames = 0
+        self._sum_raw0_sq = 0.0
+        reset_ref_clip_counters()
+        self.out_clipped_samples = self.out_total_samples = 0
+        self.ref_starved_frames = 0
+
+
+def _aec_loop(
+    ref_q: Queue, mic_q: Queue, engine: Optional[Aec3Engine],
+    heartbeat: Optional[Heartbeat] = None,
+    raw0_q: Optional[Queue] = None,
+    chip_aec_qs: Optional[dict[str, Queue]] = None,
+    chip_beam_plan: _mic_profile.ChipBeamPlan | None = None,
+    production_chip_aec_enabled: bool = False,
+    chip_aec_primary_leg: str = "chip_aec_150",
+    emit_ref: bool = False,
+    usb_raw_q: Optional[Queue] = None,
+    xvf_raw0_webrtc_enabled: bool = False,
+    xvf_raw0_dtln_enabled: bool = False,
+    config: BridgeConfig | None = None,
+) -> None:
+    """Drain mic/ref queues, run the selected AEC path, and emit UDP legs.
+
+    Each iteration consumes one mic frame and one reference frame in arrival
+    order. An empty reference queue carries the last real reference frame
+    forward rather than injecting silence, which keeps AEC3's adaptive filter
+    fed through bursty reference delivery. Primary, raw, corpus, chip-AEC and
+    optional-engine outputs are packetized into per-leg UDP streams.
+
+    With `JASPER_AEC_DEBUG_RECORD_DIR` set, the engine's input mic stream,
+    its pre-gain output and the reference are also written to WAV files there
+    for offline ERLE analysis.
+    """
+    config = config or BridgeConfig.from_env()
+    # Post-AEC static gain, applied to the engine output before it reaches
+    # jasper-voice over UDP. Restores level into openWakeWord's training
+    # distribution when the chip's mic preamp delivers a quiet AEC output;
+    # 0 dB (off) by default, and soft-clipped via tanh on the way out so a
+    # high gain cannot push hard-clip distortion into the wake-word input.
+    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT))
+    mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
+    # Stall-recovery threshold: consecutive seconds of empty mic_q before
+    # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
+    stall_restart_sec = int(
+        float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
+    )
+    consecutive_empty_sec = 0
+    # Additive slow-drip stall watchdog: the consecutive-empty check above
+    # resets on a single frame, so an intermittent trickle never trips it.
+    # JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
+    drip_watchdog = _MicStarvationWatchdog(
+        max_starved_windows=int(
+            os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
+        ),
+    )
+    usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
+        os.environ,
+    )
+    usb_mic_source = resolve_usb_mic_source(
+        config.usb_mic_leg,
+        plan=usb_mic_choice_plan,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        chip_aec_primary_leg=chip_aec_primary_leg,
+    )
+    emitters: dict[str, LegEmitter] = {}
+    on_emitter, usb_host_mic_emitter, raw_emitter, raw0_emitter, chip_aec_emitters = (
+        _open_production_legs(emitters, config, chip_aec_qs, chip_beam_plan)
+    )
+    lanes = build_corpus_lanes(
+        emitters,
+        _bridge_stats,
+        config,
+        select_engine=_select_engine,
+        xvf_raw0_webrtc_enabled=xvf_raw0_webrtc_enabled,
+        xvf_raw0_dtln_enabled=xvf_raw0_dtln_enabled,
+        emit_ref=emit_ref,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        usb_raw_q=usb_raw_q,
+    )
+    _publish_capture_plan(
+        config, emitters, lanes, usb_mic_source=usb_mic_source,
+        chip_beam_plan=chip_beam_plan, chip_aec_emitters=chip_aec_emitters,
+        chip_aec_primary_leg=chip_aec_primary_leg,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        emit_ref=emit_ref, usb_corpus=usb_raw_q is not None,
+    )
+    usb_host_mic = _UsbHostMicLeg(
+        usb_mic_source, usb_host_mic_emitter,
+        production_chip_aec_enabled=production_chip_aec_enabled,
+        chip_aec_primary_leg=chip_aec_primary_leg,
+    )
     # Cold-start value for ref carry-forward, used only until the first real
     # ref frame arrives; after that `last_ref_bytes` always holds a
     # previously-real reference.
-    last_ref_bytes = silence
+    last_ref_bytes = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     frames_processed = 0
     chip_primary_missing_log = DropLogDebouncer()
-    usb_mic_leg_missing_log = DropLogDebouncer()
-    usb_mic_raw0_missing_log = DropLogDebouncer()
-    usb_mic_effective_leg = str(usb_mic_source["leg"])
-    usb_mic_fallback_active = bool(usb_mic_source["fallback_active"])
-
-    # Optional debug WAV writers — see `_aec_loop` docstring.
-    debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
-    mic_wav: Optional[wave.Wave_write] = None
-    aec_wav: Optional[wave.Wave_write] = None
-    ref_wav: Optional[wave.Wave_write] = None
-    if debug_dir:
-        try:
-            os.makedirs(debug_dir, exist_ok=True)
-            mic_wav = wave.open(f"{debug_dir}/mic_ch1.wav", "wb")
-            mic_wav.setnchannels(1)
-            mic_wav.setsampwidth(2)
-            mic_wav.setframerate(SAMPLE_RATE)
-            aec_wav = wave.open(f"{debug_dir}/aec_output.wav", "wb")
-            aec_wav.setnchannels(1)
-            aec_wav.setsampwidth(2)
-            aec_wav.setframerate(SAMPLE_RATE)
-            ref_wav = wave.open(f"{debug_dir}/ref.wav", "wb")
-            ref_wav.setnchannels(1)
-            ref_wav.setsampwidth(2)
-            ref_wav.setframerate(SAMPLE_RATE)
-            logger.warning(
-                "DEBUG RECORD MODE: writing mic/aec/ref WAVs to %s "
-                "until shutdown",
-                debug_dir,
-            )
-        except OSError as e:
-            logger.error(
-                "failed to open debug record dir %s: %s; skipping",
-                debug_dir, e,
-            )
-            mic_wav = aec_wav = ref_wav = None
-    last_log = 0.0
-    rms_window_frames = 0
-    sum_mic_sq = 0.0
-    sum_ref_sq = 0.0
-    sum_aec_sq = 0.0
-    # Counted separately: raw0 is drained opportunistically, so a
-    # window can hold fewer raw0 frames than mic frames.
-    raw0_window_frames = 0
-    sum_raw0_sq = 0.0
+    window = _RmsWindow(
+        chip=production_chip_aec_enabled, chip_primary_leg=chip_aec_primary_leg,
+    )
+    debug_wavs = _open_debug_wavs(
+        os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
+    )
 
     try:
         while not _shutdown.is_set():
@@ -598,45 +854,11 @@ def _aec_loop(  # noqa: PLR0915
                 drip_watchdog.record_frame()
             except Empty:
                 consecutive_empty_sec += 1
-                # Log once at stall onset, then every 2 s so the journal
-                # shows the stall growing without flooding 1 line/sec.
-                if consecutive_empty_sec == 1 or consecutive_empty_sec % 2 == 0:
-                    logger.warning(
-                        "mic queue empty for %ds — bridge stalled (will exit "
-                        "non-zero at %ds for systemd restart)",
-                        consecutive_empty_sec, stall_restart_sec,
-                    )
-                if (
-                    stall_restart_sec > 0
-                    and consecutive_empty_sec >= stall_restart_sec
-                ):
-                    raise BridgeStalled(
-                        f"mic queue empty for {consecutive_empty_sec}s — "
-                        "InputStream is dead (typically ALSA underrun on "
-                        "XVF UAC2 capture), exiting non-zero so systemd "
-                        "Restart=on-failure can spin up a fresh process"
-                    )
+                _check_mic_stall(consecutive_empty_sec, stall_restart_sec)
                 continue
 
-            # Consume exactly ONE ref frame per iteration, in arrival order,
-            # carrying the previous frame forward when the queue is empty.
-            # The reference arrives in bursts while the mic delivers smoothly
-            # at the 20 ms cadence, so a burst is consumed one frame per
-            # iteration and at worst 1 frame in 3 is a 20 ms-stale
-            # carry-forward — within AEC3's delay-estimator tolerance.
-            #
-            # Do NOT drain to the newest frame: that discards half the real
-            # reference and leaves every other frame either zeroed (25 Hz
-            # envelope artefact, no filter convergence) or a byte-duplicate
-            # of its predecessor (50 Hz artefact, audible as buzzing).
-            try:
-                last_ref_bytes = ref_q.get_nowait()
-            except Empty:
-                _ref_starved_frames += 1
-                _bridge_stats.inc("ref_starved_frames")
-            ref_bytes = last_ref_bytes
-            if emit_ref:
-                ref_emitter.emit(ref_bytes)
+            ref_bytes = last_ref_bytes = _next_reference(ref_q, last_ref_bytes, window)
+            lanes.emit_reference(ref_bytes)
 
             # Emit the chip-direct mic BEFORE running the AEC engine, so the
             # "AEC OFF" leg carries the same bytes AEC3 is about to receive
@@ -644,379 +866,55 @@ def _aec_loop(  # noqa: PLR0915
             if not production_chip_aec_enabled:
                 raw_emitter.emit(mic_bytes)
 
-            # Truly-raw mic 0 (chip channel 2, no chip DSP), drained
-            # independently of mic_q so a backlog on one cannot stall the
-            # other. The same PortAudio callback feeds both queues, so there
-            # is nominally one new raw0 frame per iteration; at most one is
-            # drained and a gap is simply skipped — nothing time-aligns this
-            # stream to the AEC engine.
-            raw0_bytes = b""
-            if raw0_q is not None:
-                try:
-                    raw0_bytes = raw0_q.get_nowait()
-                except Empty:
-                    pass
-                if raw0_bytes:
-                    raw0_emitter.emit(raw0_bytes)
-                    if xvf_raw0_engine is not None:
-                        (
-                            xvf_raw0_engine,
-                            xvf_raw0_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            xvf_raw0_engine,
-                            raw0_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "XVF raw0 WebRTC process() crashed; disabling "
-                                "xvf_raw0_webrtc_aec3 path: %s"
-                            ),
-                        )
-                        if xvf_raw0_clean:
-                            xvf_raw0_webrtc_emitter.emit(xvf_raw0_clean)
-                    if xvf_raw0_dtln_engine is not None:
-                        (
-                            xvf_raw0_dtln_engine,
-                            xvf_raw0_dtln_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            xvf_raw0_dtln_engine,
-                            raw0_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "XVF raw0 DTLN process() crashed; disabling "
-                                "xvf_raw0_dtln path: %s"
-                            ),
-                        )
-                        if xvf_raw0_dtln_clean:
-                            xvf_raw0_dtln_emitter.emit(xvf_raw0_dtln_clean)
-
-            chip_frames: dict[str, bytes] = {}
-            if chip_aec_qs:
-                for leg, q in chip_aec_qs.items():
-                    try:
-                        chip_bytes = q.get_nowait()
-                    except Empty:
-                        continue
-                    chip_frames[leg] = chip_bytes
-                    if emitter := chip_aec_emitters.get(leg):
-                        emitter.emit(chip_bytes)
-
+            raw0_bytes = _drain_raw0(raw0_q, raw0_emitter)
+            if raw0_bytes:
+                lanes.process_raw0(raw0_bytes, ref_bytes)
+            chip_frames = _drain_chip_beams(chip_aec_qs, chip_aec_emitters)
             if production_chip_aec_enabled:
-                clean = chip_frames.get(chip_aec_primary_leg, b"")
-                if not clean:
-                    if outcome := chip_primary_missing_log.record(time.monotonic()):
-                        drops, window_sec = outcome
-                        log_event(
-                            logger,
-                            "aec_bridge.chip_primary_missing",
-                            leg=chip_aec_primary_leg,
-                            action="skip_frame",
-                            frames=drops,
-                            window_sec=f"{window_sec:.1f}",
-                            level=logging.WARNING,
-                        )
+                clean_aec_only = _chip_primary_frame(
+                    chip_frames, chip_aec_primary_leg, chip_primary_missing_log,
+                )
+                if not clean_aec_only:
                     continue
             else:
                 assert engine is not None  # main() sets it unless chip-AEC
-                clean = engine.process(mic_bytes, ref_bytes)
-            # Pre-gain output for the RMS metric: "attenuation" must reflect
-            # what the AEC accomplished, not how much the post-gain stage
-            # amplified the residual.
-            clean_aec_only = clean
-            usb_mic_aec_only = clean_aec_only
-            usb_mic_uses_clean = True
-            selected_usb_leg = str(usb_mic_source["leg"])
-            effective_usb_leg = selected_usb_leg
-            fallback_active = bool(usb_mic_source["fallback_active"])
-            if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
-                # raw0_bytes is the physical XVF channel-2 frame this bridge
-                # already captured: reuse it directly — no parallel capture
-                # stack, no voice gain, and no clean/chip fallback.
-                usb_mic_aec_only = raw0_bytes
-                usb_mic_uses_clean = False
-                if not raw0_bytes:
-                    if outcome := usb_mic_raw0_missing_log.record(
-                        time.monotonic()
-                    ):
-                        drops, window_sec = outcome
-                        log_event(
-                            logger,
-                            "usb_mic.raw0_missing",
-                            action="skip_frame",
-                            frames=drops,
-                            window_sec=f"{window_sec:.1f}",
-                            level=logging.WARNING,
-                        )
-            if (
-                production_chip_aec_enabled
-                and selected_usb_leg != chip_aec_primary_leg
-                and selected_usb_leg != USB_MIC_RAW_XVF_LEG
-            ):
-                selected_usb_frame = chip_frames.get(selected_usb_leg, b"")
-                if selected_usb_frame:
-                    usb_mic_aec_only = selected_usb_frame
-                    usb_mic_uses_clean = False
-                else:
-                    effective_usb_leg = chip_aec_primary_leg
-                    fallback_active = True
-                    if outcome := usb_mic_leg_missing_log.record(time.monotonic()):
-                        drops, window_sec = outcome
-                        log_event(
-                            logger,
-                            "usb_mic.leg_missing",
-                            leg=selected_usb_leg,
-                            fallback=chip_aec_primary_leg,
-                            frames=drops,
-                            window_sec=f"{window_sec:.1f}",
-                            level=logging.WARNING,
-                        )
-            if fallback_active:
-                _bridge_stats.inc("usb_mic_source_fallback_frames")
-            if (
-                effective_usb_leg != usb_mic_effective_leg
-                or fallback_active != usb_mic_fallback_active
-            ):
-                _bridge_stats.set_usb_mic_effective_source(
-                    mode=str(usb_mic_source["mode"]),
-                    leg=effective_usb_leg,
-                    fallback_active=fallback_active,
-                )
-                usb_mic_effective_leg = effective_usb_leg
-                usb_mic_fallback_active = fallback_active
+                clean_aec_only = engine.process(mic_bytes, ref_bytes)
+            usb_host_mic.select(raw0_bytes, chip_frames)
 
-            # Optional DTLN-aec leg, run AFTER engine.process so the wake
-            # loop's primary mic stream keeps its normal critical path: the
-            # extra ~1.5 ms of DTLN inference per frame spends the slack in
-            # the 20 ms frame budget.
-            if dtln_engine is not None:
-                failed_dtln_engine = dtln_engine
-                dtln_engine, dtln_clean, dtln_error = _process_optional_engine(
-                    dtln_engine,
-                    mic_bytes,
-                    ref_bytes,
-                    failure_message=None,
-                )
-                if dtln_error is not None:
-                    # DTLN is observational: preserve the primary AEC3 path
-                    # and make this transition authoritative for the stats
-                    # writer and doctor. Nulling the engine keeps it to one
-                    # event rather than one warning per audio frame.
-                    with suppress(Exception):
-                        failed_dtln_engine.close()
-                    failed_dtln_emitter = emitters.pop("dtln", None)
-                    if failed_dtln_emitter is not None:
-                        with suppress(Exception):
-                            failed_dtln_emitter.close()
-                    dtln_emitter = None
-                    _bridge_stats.mark_leg_unavailable(
-                        "dtln", error=str(dtln_error)
-                    )
-                    log_event(
-                        logger,
-                        "aec_bridge.leg_degraded",
-                        leg="dtln",
-                        phase="process",
-                        action="disable",
-                        error_type=type(dtln_error).__name__,
-                        error=str(dtln_error),
-                        level=logging.WARNING,
-                        exc_info=(
-                            type(dtln_error),
-                            dtln_error,
-                            dtln_error.__traceback__,
-                        ),
-                    )
-                if dtln_clean:
-                    dtln_emitter.emit(dtln_clean)
-
-            if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_XVF:
-                emit_aec3_sweep(mic_bytes, ref_bytes)
-
-            if usb_raw_q is not None:
-                try:
-                    usb_bytes = usb_raw_q.get_nowait()
-                except Empty:
-                    usb_bytes = b""
-                if usb_bytes:
-                    usb_raw_emitter.emit(usb_bytes)
-
-                    if usb_engine is not None:
-                        usb_engine, usb_clean, _error = _process_optional_engine(
-                            usb_engine,
-                            usb_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "USB WebRTC process() crashed; disabling "
-                                "usb_webrtc path: %s"
-                            ),
-                        )
-                        if usb_clean:
-                            usb_webrtc_emitter.emit(usb_clean)
-
-                    if usb_dtln_engine is not None:
-                        (
-                            usb_dtln_engine,
-                            usb_dtln_clean,
-                            _error,
-                        ) = _process_optional_engine(
-                            usb_dtln_engine,
-                            usb_bytes,
-                            ref_bytes,
-                            failure_message=(
-                                "USB DTLN process() crashed; disabling "
-                                "usb_dtln path: %s"
-                            ),
-                        )
-                        if usb_dtln_clean:
-                            usb_dtln_emitter.emit(usb_dtln_clean)
-                    if config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB:
-                        emit_aec3_sweep(usb_bytes, ref_bytes)
+            lanes.process_frame(
+                mic_bytes, ref_bytes, usb_raw_q,
+                sweep_source=config.aec3_sweep_input_source,
+                emitters=emitters, stats=_bridge_stats,
+            )
 
             # Written here, sample-aligned, so the WAVs hold exactly what the
             # bridge measured for its "attenuation" log and what the AEC
             # emitted before the post-gain stage.
-            if mic_wav is not None:
-                try:
-                    mic_wav.writeframes(mic_bytes)
-                    aec_wav.writeframes(clean_aec_only)
-                    ref_wav.writeframes(ref_bytes)
-                except OSError as e:
-                    logger.error("debug wav write failed: %s", e)
-                    mic_wav = aec_wav = ref_wav = None
+            if debug_wavs is not None and not _write_debug_wavs(
+                debug_wavs, mic_bytes, clean_aec_only, ref_bytes,
+            ):
+                debug_wavs = None
             clean, clipped_samples, total_samples = _apply_mic_output_gain(
                 clean_aec_only,
                 mic_gain_lin,
             )
-            _out_clipped_samples += clipped_samples
-            _out_total_samples += total_samples
+            window.out_clipped_samples += clipped_samples
+            window.out_total_samples += total_samples
             on_emitter.emit(clean)
-            if usb_host_mic_emitter is not None:
-                usb_mic_clean = clean
-                if selected_usb_leg == USB_MIC_RAW_XVF_LEG:
-                    # Missing raw frames remain missing: an explicit lab
-                    # source must never silently become production-clean
-                    # audio, not even for one USB-export frame.
-                    usb_mic_clean = usb_mic_aec_only
-                elif not usb_mic_uses_clean:
-                    # USB beam selection is downstream-only but keeps the same
-                    # output-level contract as the primary clean leg. Its
-                    # clipping does not belong in voice's out_clip metric.
-                    usb_mic_clean, _clipped, _total = _apply_mic_output_gain(
-                        usb_mic_aec_only,
-                        mic_gain_lin,
-                    )
-                if usb_mic_clean:
-                    usb_host_mic_emitter.emit(usb_mic_clean)
+            usb_host_mic.emit(clean, mic_gain_lin)
             frames_processed += 1
             _bridge_stats.inc("frames_processed")
             if heartbeat is not None:
                 heartbeat.bump()
-
-            mic_arr = np.frombuffer(mic_bytes, dtype=np.int16).astype(np.float32)
-            ref_arr = np.frombuffer(ref_bytes, dtype=np.int16).astype(np.float32)
-            aec_arr = np.frombuffer(clean_aec_only, dtype=np.int16).astype(np.float32)
-            sum_mic_sq += float(np.mean(mic_arr * mic_arr))
-            sum_ref_sq += float(np.mean(ref_arr * ref_arr))
-            sum_aec_sq += float(np.mean(aec_arr * aec_arr))
-            rms_window_frames += 1
-            if raw0_bytes:
-                raw0_arr = np.frombuffer(
-                    raw0_bytes, dtype=np.int16,
-                ).astype(np.float32)
-                sum_raw0_sq += float(np.mean(raw0_arr * raw0_arr))
-                raw0_window_frames += 1
-
-            now = time.monotonic()
-            if now - last_log > RMS_LOG_INTERVAL_SEC:
-                if rms_window_frames > 0:
-                    mic_rms = math.sqrt(sum_mic_sq / rms_window_frames)
-                    ref_rms = math.sqrt(sum_ref_sq / rms_window_frames)
-                    aec_rms = math.sqrt(sum_aec_sq / rms_window_frames)
-                    # Omitted, not zeroed, when the window drained no raw0
-                    # frames: doctor reads a present `raw0` as the near-end
-                    # level, and `raw0=0` would pin its music gate off.
-                    raw0_rms = (
-                        math.sqrt(sum_raw0_sq / raw0_window_frames)
-                        if raw0_window_frames else None
-                    )
-                    raw0_token = (
-                        "" if raw0_rms is None else " raw0=%.0f" % raw0_rms
-                    )
-                    if mic_rms > 1.0:
-                        attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
-                    else:
-                        attn_db = 0.0
-                    ref_clip_pct = ref_clip_percent()
-                    out_clip_pct = (
-                        100.0 * _out_clipped_samples / _out_total_samples
-                        if _out_total_samples else 0.0
-                    )
-                    if production_chip_aec_enabled:
-                        logger.info(
-                            "chip_aec rms over %.1fs: ref=%.0f near=%s:%.0f "
-                            "primary=%s:%.0f level_delta=%.1f dB%s "
-                            "(frames=%d ref_q=%d mic_q=%d ref_starve=%d "
-                            "ref_clip=%.2f%% out_clip=%.2f%%)",
-                            rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
-                            ref_rms, "chip_aec_210", mic_rms,
-                            chip_aec_primary_leg, aec_rms, attn_db, raw0_token,
-                            frames_processed, ref_q.qsize(), mic_q.qsize(),
-                            _ref_starved_frames,
-                            ref_clip_pct, out_clip_pct,
-                        )
-                    else:
-                        logger.info(
-                            "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
-                            "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
-                            "ref_starve=%d ref_clip=%.2f%% out_clip=%.2f%%)",
-                            rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
-                            ref_rms, mic_rms, aec_rms, attn_db,
-                            frames_processed, ref_q.qsize(), mic_q.qsize(),
-                            _ref_starved_frames,
-                            ref_clip_pct, out_clip_pct,
-                        )
-                    _bridge_stats.record_rms_window(
-                        ref=ref_rms,
-                        mic=(
-                            raw0_rms
-                            if production_chip_aec_enabled
-                            and raw0_rms is not None
-                            else mic_rms
-                        ),
-                        level_db=(
-                            None if production_chip_aec_enabled else attn_db
-                        ),
-                        chip=production_chip_aec_enabled,
-                    )
-                last_log = now
-                rms_window_frames = 0
-                sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
-                raw0_window_frames = 0
-                sum_raw0_sq = 0.0
-                reset_ref_clip_counters()
-                _out_clipped_samples = _out_total_samples = 0
-                _ref_starved_frames = 0
+            window.add(mic_bytes, ref_bytes, clean_aec_only, raw0_bytes)
+            window.publish_if_due(frames_processed, ref_q, mic_q)
     finally:
         for emitter in emitters.values():
             emitter.close()
-        if xvf_raw0_engine is not None:
-            xvf_raw0_engine.close()
-        if xvf_raw0_dtln_engine is not None:
-            xvf_raw0_dtln_engine.close()
-        if usb_engine is not None:
-            usb_engine.close()
-        if usb_dtln_engine is not None:
-            usb_dtln_engine.close()
-        for path in aec3_sweep_paths:
-            with suppress(Exception):
-                path.engine.close()
-        for w in (mic_wav, aec_wav, ref_wav):
-            if w is not None:
-                try:
-                    w.close()
-                except OSError:
-                    pass
+        lanes.close_engines()
+        for wav in debug_wavs or ():
+            with suppress(OSError):
+                wav.close()
 
 
 def _park(code: int, reason: str, detail: str) -> int:

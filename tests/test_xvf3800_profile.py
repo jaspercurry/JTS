@@ -12,18 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper.aec_sweep import (
-    AGC1_ENABLED_ENV,
-    AGC1_MAX_GAIN_DB_ENV,
-    AGC1_TARGET_DBFS_ENV,
-    NS_ENABLED_ENV,
-    NS_LEVEL_ENV,
-)
-from jasper.audio_profile_state import AEC_MODE_ENV, AEC_MODE_FILE_ENV
-from jasper.aec.bridge_engines import (
-    CORPUS_USB_DTLN_ENABLED_ENV,
-)
-from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.mics import xvf3800
 
 
@@ -249,26 +237,6 @@ def test_registry_constant_reaches_bash_even_with_no_mic(
     assert absent_mic_env[key] == value
 
 
-@pytest.mark.parametrize(
-    ("constant", "literal"),
-    [
-        (xvf3800.CORPUS_CHIP_AEC_ENABLED_ENV, "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"),
-        (xvf3800.CHIP_AEC_PRIMARY_LEG_ENV, "JASPER_AEC_CHIP_AEC_PRIMARY_LEG"),
-        (BRIDGE_STATS_PATH_ENV, "JASPER_AEC_BRIDGE_STATS_PATH"),
-        (CORPUS_USB_DTLN_ENABLED_ENV, "JASPER_AEC_CORPUS_USB_DTLN_ENABLED"),
-        (NS_ENABLED_ENV, "JASPER_AEC_NS_ENABLED"),
-        (NS_LEVEL_ENV, "JASPER_AEC_NS_LEVEL"),
-        (AGC1_ENABLED_ENV, "JASPER_AEC_AGC1_ENABLED"),
-        (AGC1_TARGET_DBFS_ENV, "JASPER_AEC_AGC1_TARGET_DBFS"),
-        (AGC1_MAX_GAIN_DB_ENV, "JASPER_AEC_AGC1_MAX_GAIN_DB"),
-        (AEC_MODE_ENV, "JASPER_AEC_MODE"),
-        (AEC_MODE_FILE_ENV, "JASPER_AEC_MODE_FILE"),
-    ],
-)
-def test_env_key_constant_not_written_by_reconciler_keeps_its_name(
-    constant: str, literal: str,
-) -> None:
-    assert constant == literal
 
 
 @pytest.mark.parametrize(

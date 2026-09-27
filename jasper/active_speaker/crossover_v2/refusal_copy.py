@@ -12,6 +12,7 @@ from typing import Any, Iterable, Literal, Mapping
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
+from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
 
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -55,6 +56,8 @@ REASON_CHANNEL_MAP_MISMATCH = "channel_map_mismatch"
 # `capture_dispatch.assess`.
 REASON_ANCHOR_AMBIGUOUS = "anchor_ambiguous"
 REASON_ANCHOR_TOO_QUIET = "anchor_too_quiet"
+# The test tones cleared the room but the sweep after them did not (#5672).
+REASON_SWEEP_MISSING = "sweep_missing"
 REASON_PILOT_STEP_IMPLAUSIBLE = "pilot_step_implausible"
 REASON_CLIPPED = "clipped"
 REASON_LEVEL_DRIFT_AT_SESSION_GAIN = "level_drift_at_session_gain"
@@ -157,7 +160,7 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # measurement and the model cancels out of a measured-vs-model grade.
 REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # The apply transaction came back blocked or raised.
-# ``_persist_terminal_failure`` scopes its §5.6 evidence reset away from this
+# ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
@@ -165,6 +168,7 @@ REASON_APPLY_FAILED = "apply_failed"
 # jasper.web.correction_crossover_v2.
 REASON_USER_STOPPED = "user_stopped"
 REASON_ARM_HOST_STUCK = "arm_host_stuck"
+REASON_RETRIES_SPENT = "retries_spent"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -457,6 +461,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "", "The selected run does not match this manifest.",
         next_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
     ),
+    # See ADR-0371
+    "room_not_banked": ReasonSpec(
+        "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement.",
+        next_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
+    ),
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
@@ -475,6 +484,12 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},
+    ),
+    CODE_CAPTURE_GAIN_UNVERIFIED: ReasonSpec(
+        CODE_CAPTURE_GAIN_UNVERIFIED, TEMPLATE_HARD_STOP, 0, "",
+        "JTS could not set the measurement microphone's input level to full, so it cannot check the sound level. "
+        "Reconnect the microphone, then measure again.",
+        next_action={"id": "connect_mic", "label": "Reconnect the measurement microphone", "href": "/sound/speaker/crossover/"},
     ),
     "measurement_mic_unidentified": ReasonSpec(
         "measurement_mic_unidentified", TEMPLATE_HARD_STOP, 0, "", "Select a known measurement microphone.",
@@ -601,6 +616,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
         RetryableReasonCopy(
             "The capture glitched.",
+            "measuring again.",
+            joiner=" — ",
+            strip_before_join=".",
+        ),
+        auto_retry=True,
+        capture_quality=True,
+    ),
+    REASON_SWEEP_MISSING: _retriable_reason(
+        REASON_SWEEP_MISSING, TEMPLATE_SILENT_AUTO_RETRY, 1,
+        RetryableReasonCopy(
+            "JTS heard the test tones, but not the sweep after them.",
             "measuring again.",
             joiner=" — ",
             strip_before_join=".",
@@ -956,8 +982,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Something went wrong on the speaker during that measurement. "
         "Try again.",
     ),
-    "retries_spent": ReasonSpec(
-        "retries_spent", TEMPLATE_SESSION_RESTART, 0, "",
+    REASON_RETRIES_SPENT: ReasonSpec(
+        REASON_RETRIES_SPENT, TEMPLATE_SESSION_RESTART, 0, "",
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {

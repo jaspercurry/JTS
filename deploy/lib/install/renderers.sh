@@ -297,7 +297,7 @@ EOF
     # Never fatal under `set -e`: a non-durable publish (74) already wrote the
     # file, and a refused overlay collision exits 0 with its own stderr event.
     # The reconcile service re-runs this on every boot either way.
-    PYTHONPATH="${REPO_DIR}" "$python" -m jasper.audio_hardware.usb_port_role \
+    PYTHONPATH="${REPO_DIR}" "$python" -m jasper.cli.usb_port_role \
         --reconcile-boot \
         --model-file "${JASPER_PI_MODEL_FILE:-/proc/device-tree/model}" \
         --boot-config "$cfg" \

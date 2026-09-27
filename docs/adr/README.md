@@ -15,12 +15,13 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0199](0199-the-handoff-doc-corpus-is-deleted.md) | The HANDOFF doc corpus is deleted | accepted |
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
 | [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
-| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230 |
+| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 | [0334](0334-the-repository-root-holds-only-entry-points-and-build-contracts.md) | The repository root holds only entry points and build contracts | accepted |
 | [0347](0347-ci-tests-python-3-13-only.md) | CI tests Python 3.13 only | accepted |
 | [0351](0351-a-source-scan-test-stays-only-with-a-non-negotiable-tie.md) | A source-scan test stays only with a non-negotiable or recurrence tie; the tied set is locked | accepted |
+| [0369](0369-the-gating-v2-and-room-correction-regime-plans-are-archived.md) | The gating-v2 and room-correction regime plans are archived; D5's boost evidence lives in `room_limits.py` | accepted |
 
 ## Deploy, install & system
 
@@ -82,8 +83,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0177](0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md) | Duck ownership is asked of the owner, never inferred from a dB gap | accepted |
 | [0206](0206-the-airplay-sender-slider-is-an-inbound-control-surface.md) | The AirPlay sender slider is an inbound control surface — shairport's volume hook drives the master fader | accepted |
 | [0211](0211-a-live-eq-edit-ducks-only-when-camilladsp-rebuilds.md) | A live EQ edit ducks only when CamillaDSP rebuilds | accepted |
-| [0213](0213-the-reconciler-asks-the-dsp-writer-lock-before-it-corrects-the-fader.md) | The reconciler asks the DSP writer lock before it corrects the fader | accepted |
+| [0213](0213-the-reconciler-asks-the-dsp-writer-lock-before-it-corrects-the-fader.md) | The reconciler asks the DSP writer lock before it corrects the fader | amended by 0368 |
 | [0313](0313-the-camilla-controller-refuses-a-graph-that-breaks-the-hearing-ceiling.md) | The CamillaController refuses a graph that breaks the hearing ceiling | accepted |
+| [0368](0368-the-volume-floor-audition-holds-the-dsp-writer-lock.md) | The volume-floor audition holds the DSP writer lock, so the reconciler has no quiet carve-out | accepted |
 
 ## Local sources & renderers
 
@@ -174,7 +176,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0154](0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md) | Reactive cues never cool down; proactive cues are rate-limited | amended by 0215 |
 | [0170](0170-a-selectable-audio-input-profile-owns-its-whole-wake-leg-set.md) | A selectable audio-input profile owns its whole wake-leg set | accepted |
 | [0190](0190-chip-aec-identity-keys-only-physics.md) | Chip-AEC alignment identity compares only physics | amended by 0223 |
-| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363 |
+| [0217](0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md) | A streambox runs the assistant only while a mic-bearing remote is paired | amended by 0363, 0372 |
 | [0223](0223-a-moved-reference-queue-is-what-k-absorbs.md) | A moved reference queue is what K absorbs, not a staleness signal | accepted |
 | [0224](0224-the-aec-bridge-starts-on-a-reconciler-published-ready-marker.md) | The AEC bridge starts on a reconciler-published ready marker | RestartSec superseded by 0267 |
 | [0239](0239-the-voice-daemon-not-jasper-control-plays-the-mic-loss-cue-at-shutdown.md) | The voice daemon plays the mic-loss cue at shutdown; jasper-control has no player | amended by 0240 |
@@ -192,7 +194,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0143](0143-observability-has-three-planes-and-debug-verbosity-is-additive-only.md) | Observability has three planes, and debug verbosity is additive only | accepted |
 | [0144](0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md) | Diagnostics leave the box over SSH, not over the LAN | accepted |
 | [0146](0146-userspace-liveness-is-two-software-layers-and-three-deferred-dials.md) | Userspace liveness is two software layers, and three deferred dials | accepted |
-| [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | accepted |
+| [0225](0225-accessory-bridges-share-one-interpreter.md) | Accessory bridges share one interpreter | amended by 0372 |
 | [0233](0233-one-reader-per-fact-two-surfaces-one-doctor.md) | One reader per fact, two surfaces, one doctor | rule 2 `/state` superseded by 0270, rule 3 amended by 0270 |
 | [0243](0243-a-secret-is-replaced-whole-by-one-redactor-per-language.md) | A secret is replaced whole, by one redactor per language | accepted |
 | [0245](0245-state-audio-graph-section-deleted.md) | `/state.audio_graph` section deleted | accepted |
@@ -201,6 +203,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0271](0271-jasper-heal-is-a-control-supervisor-that-observes-before-it-acts.md) | jasper-heal is a control supervisor that observes before it acts | superseded by 0349 |
 | [0349](0349-jasper-heal-is-deleted.md) | jasper-heal is deleted | accepted |
 | [0350](0350-agents-change-settings-through-the-owner-function-and-jasper-settings.md) | Agents change settings through the owner function and `jasper-settings` | accepted |
+| [0372](0372-a-remote-mic-is-armed-only-after-its-adapter-runs.md) | A remote mic is armed only after its adapter runs | accepted |
 
 ## Web & UI
 
@@ -251,7 +254,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
-| [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | accepted |
+| [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | amended by 0367 |
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
 | [0210](0210-polarity-has-two-frames-and-one-conversion-owner.md) | Polarity has two frames, and one conversion owner | accepted |
@@ -326,7 +329,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
 | [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | accepted |
 | [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | accepted |
-| [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | accepted |
+| [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | §3 superseded by 0371 |
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | amended by 0359 |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
 | [0354](0354-every-take-keeps-its-measured-impulses.md) | Every take keeps its measured impulses: one `.npz` per take beside its recording, read before any rebuild | accepted |
@@ -341,3 +344,6 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |
 | [0365](0365-a-drivers-pose-finds-its-level-with-a-probe.md) | A driver's pose finds its level with a probe: a rising staircase of short sweeps, stopped at the ramp bound under the SPL stop, solves its take's gain | accepted |
 | [0366](0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) | One pose model (kind, distance, angle or seat offset, optional driver), a level found at each pose by one solver, and a trusted band stated from the pose; registry rows become presets over named layouts | accepted |
+| [0367](0367-a-drivers-declared-band-bounds-a-boost-and-discloses-a-cut.md) | A driver's declared band bounds a boost; a cut outside it is admitted and disclosed on the receipt | accepted |
+| [0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) | Each run purpose declares on its program row which applied layers its takes clear; a bass run plays with room off and its base with bass off, the door derives the played graph and banks nothing measurement-only, and preflight folds the room-off rise into the opener | accepted |
+| [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | accepted |

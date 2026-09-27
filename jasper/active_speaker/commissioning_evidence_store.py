@@ -31,7 +31,7 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_json, fsync_directory
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionAuthority,
 )

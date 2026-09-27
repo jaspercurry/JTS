@@ -27,7 +27,9 @@ from jasper.active_speaker.crossover_v2.corner_admissibility import (
 from jasper.active_speaker.crossover_v2.prescription_contract import (
     CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import contract_sources, default_out, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    contract_sources, default_out, read_run_manifest, round_inputs, set_artifact_name,
+)
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
@@ -35,6 +37,7 @@ from jasper.active_speaker.measurement_programs import programs_for_topology
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -52,10 +55,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "356f7257d319df4d1c4358a2be7eb4c2711be8b8ea6950b7f6aba4ea87c2e2cb"),
-    ("mono", True, "8e3784e0ee73324f4d25c472b734b993ad3aa37d54405d24a03de97b5fbf557c"),
-    ("stereo", False, "ab428ccca788fa893849920a5b46c1fd620f08961cd495471722ae26851f0b2a"),
-    ("stereo", True, "b466d38799d6ce1f697f5ccba7d0a3c1709158424b5b66ea4de277c899d90661"),
+    ("mono", False, "053c9162fead93f7787570c0836253fe8280a94f7c150ee42650b5203c5f4040"),
+    ("mono", True, "ea1b58f130ef5f0373b472c83f87c23ed23835e005e1026d566009ded3d1a300"),
+    ("stereo", False, "d98043d786539d6c4cd792b5951f4d234aaebc7051454fc8e52fed5b5730f250"),
+    ("stereo", True, "d0efbbbdc3fbb52a2ac0012ac1d52033f9493623f3293b434895df1f03d6a810"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -154,7 +157,7 @@ def _contracts(bank: Path, session: Path):
     ("speaker", "alignment", alignment.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
     ("speaker", "topology", topology.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS),
     ("room", None, room.ROOM_PRESCRIPTION_REFUSAL_REASONS),
-    ("bass", None, bass.BASS_PRESCRIPTION_REFUSAL_REASONS),
+    ("bass", None, dynamic.DYNAMIC_BASS_REFUSAL_REASONS),
 ])
 def test_each_door_serves_an_authoring_schema_and_the_judges_codes(round_bank, section, door, codes):
     contracts = _contracts(*round_bank)
@@ -282,7 +285,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
-        "bass_evidence_unavailable", "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
+        "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
         "bass_delta_highpass_hz_invalid", "bass_detector_lowpass_hz_invalid", "bass_compressor_threshold_dbfs_invalid",
         "bass_compressor_factor_invalid", "bass_compressor_attack_s_invalid", "bass_compressor_release_s_invalid",
         "bass_low_boost_db_invalid", "bass_reference_level_db_invalid",
@@ -304,7 +307,7 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)
     assert contract["evidence_status"] == "evaluated"
-    assert set(contract["refusal_codes"]) == bass.BASS_PRESCRIPTION_REFUSAL_REASONS
+    assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
     levels = contract["evidence_status_detail"]["levels"]
     assert levels == bass_table_rows(bass_packet["bass_table"])
     for level in levels:
@@ -366,6 +369,22 @@ def test_linkwitz_schema_edges_match_the_validator(name):
             validate(shape[name], delta_highpass_hz=None)
         with pytest.raises(ValueError):
             validate(shape[rules["target_hz_exclusive_upper_field"]])
+
+
+@pytest.mark.parametrize("named_set", [False, True])
+def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, named_set):
+    """A re-run room view is a view (ADR-0371)."""
+    bank, _ = round_bank
+    set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"] if named_set else None
+    view = bank / set_artifact_name("room.json", set_id)
+    stored = json.loads((bank / "room.json").read_text())
+    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "out": str(view)}]}))
+    view.write_text(json.dumps({}))
+    assert cli.main(["contract", "--round", str(bank), "--section", "room",
+                     *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
+    served = json.loads(capsys.readouterr().out)
+    assert served["evidence_status"] == "evaluated"
+    assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
 
 
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):
@@ -614,3 +633,6 @@ def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
     assert cli.main(["contract", "--section", "room"]) == 0
     room_contract = json.loads(capsys.readouterr().out)
     assert {"schema", "bounds"} <= set(rear) & set(room_contract)
+    # The starting document the rear door admits as written: untuned and muted.
+    seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
+    assert (seed["rear_muted"], seed["valid_band_hz"]) == (True, None)

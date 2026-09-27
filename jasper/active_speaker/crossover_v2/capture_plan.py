@@ -41,9 +41,12 @@ from ..measurement_programs import (
     gate_exemption, pose_place, resolved_measurement_purpose,
 )
 from ..round_copy import millimetres
-from . import contracts as _contracts
-from . import spatial as _spatial
-from .contracts import CrossoverV2FlowError
+from .contracts import (
+    DEFAULT_CLOUD_MEASURE_POSITIONS,
+    POSITION_AXIS_HORIZONTAL,
+    POSITION_AXIS_VERTICAL,
+    CrossoverV2FlowError,
+)
 from .journey import (
     PHASE_CHECK,
     PHASE_ENTRY_BASELINE,
@@ -58,6 +61,14 @@ from .programs import (
     measurement_band_hz,
 )
 from .measure_spec import MeasureSpec, branch_channels_for, solo_target
+from .spatial import (
+    MARK_DISTANCE_M,
+    POSITION_ROLE_OFFAX,
+    POSITION_ROLE_ONAX,
+    POSITION_ROLE_XOVR,
+    POSITION_ROLES,
+    PositionGeometry,
+)
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
 
@@ -132,8 +143,6 @@ CAPTURE_PLAN_MAX_ATTEMPTS = 8
 # sweeps at guided positions, ≥10 cm spread for HF null decorrelation and
 # ≥~30 cm spread to support the LF edge.
 
-# Owned by :mod:`.contracts`.
-DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 # Configurable floor. ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee is
 # specified against exactly this number.
 MIN_CLOUD_MEASURE_POSITIONS = 6
@@ -164,16 +173,6 @@ CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 WIDE_OFFSET_MIN_CM = 30.0
 # The shortest prompted move that still decorrelates HF nulls.
 MIN_CLOUD_OFFSET_CM = 10.0
-# How far the geometry-locked retake rungs ask the operator to go: past every
-# position in the table (widest 60 cm), and no further, because a desk-scale
-# setup has to be able to reach it (#1874).
-GEOMETRY_RETRY_OFFSET_CM = 75.0
-
-# Owned by :mod:`.spatial`.
-POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
-POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
-POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
-POSITION_ROLES = _spatial.POSITION_ROLES
 
 
 def format_position_distance(offset_cm: float) -> str:
@@ -470,8 +469,6 @@ if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
         f"{DEFAULT_CLOUD_VERIFY_POSITIONS}"
     )
 
-MARK_DISTANCE_M = _spatial.MARK_DISTANCE_M
-
 
 def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     """The signed horizontal bearing of one lateral pose, in WHOLE degrees.
@@ -524,7 +521,7 @@ def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
     return int(round(prompt.vertical_sign * math.degrees(radians)))
 
 
-def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
+def position_geometry(prompt: CloudPositionPrompt) -> PositionGeometry:
     """One pose's WHERE, as the four fields its retained record carries.
 
     TOTAL where :func:`position_angle_deg` refuses, because this runs on the
@@ -534,15 +531,15 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
     """
     elevation = position_elevation_deg(prompt)
     if prompt.role == POSITION_ROLE_XOVR:
-        return _spatial.PositionGeometry(
-            axis=_spatial.POSITION_AXIS_VERTICAL,
+        return PositionGeometry(
+            axis=POSITION_AXIS_VERTICAL,
             degrees=None,
             mark_distance_m=prompt.mark_distance_m,
             vertical_deg=elevation,
         )
     unsigned = float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0
-    return _spatial.PositionGeometry(
-        axis=_spatial.POSITION_AXIS_HORIZONTAL,
+    return PositionGeometry(
+        axis=POSITION_AXIS_HORIZONTAL,
         degrees=None if unsigned else position_angle_deg(prompt),
         # A seat pose is stated from the head, so no mark distance is true of it.
         mark_distance_m=None if prompt.kind == POSE_KIND_SEAT else prompt.mark_distance_m,
@@ -550,10 +547,6 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
         kind=prompt.kind,
         seat_offset_m=prompt.seat_offset_m,
     )
-
-
-#: Owned by :mod:`.spatial`.
-_DESIGN_AXIS_GEOMETRY = _spatial._DESIGN_AXIS_GEOMETRY
 
 
 def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
@@ -637,34 +630,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
         return "Hold the microphone at the head centre of the listening position, at ear height."
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
-
-# What the geometry-locked retake asks for. Two rungs, so a second retake is a
-# genuinely different instruction. Same register as the position table (#1805):
-# numeric distances in both units, absolute poses measured from the mark.
-CLOUD_GEOMETRY_RETRY_PROMPTS: tuple[str, ...] = (
-    "Same measurement, wider spot: move the microphone "
-    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the LEFT of the "
-    "mark, at mark height, still pointed at the speaker.",
-    "One more, wider still: move the microphone "
-    f"{format_position_distance(GEOMETRY_RETRY_OFFSET_CM)} to the RIGHT of the "
-    f"mark and {format_position_distance(WIDE_OFFSET_MIN_CM)} ABOVE mark "
-    "height.",
-)
-
-#: The RISE each retake rung asks for, one per rung, in centimetres — the
-#: machine-readable half of the sentences above, since these rungs are built
-#: outside :func:`_pose`. Read into
-#: :attr:`CloudPositionPrompt.vertical_offset_cm` by ``_prompt_shown_for``.
-CLOUD_GEOMETRY_RETRY_RISE_CM: tuple[float, ...] = (0.0, WIDE_OFFSET_MIN_CM)
-
-# A rung added without a rise beside it would bank mark height for whatever it
-# asks for.
-if len(CLOUD_GEOMETRY_RETRY_RISE_CM) != len(CLOUD_GEOMETRY_RETRY_PROMPTS):
-    raise ValueError(
-        "every geometry-retake rung must state the rise it asks for: "
-        f"{len(CLOUD_GEOMETRY_RETRY_PROMPTS)} rungs, "
-        f"{len(CLOUD_GEOMETRY_RETRY_RISE_CM)} rises"
-    )
 
 
 def _min_positions_for_two_wide_offsets(

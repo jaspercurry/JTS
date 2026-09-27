@@ -54,6 +54,7 @@ from .catalog import (
     VALID_PROVIDER_IDS,
     ProviderCatalogEntry,
     default_model_id,
+    default_voice_id,
     provider_by_id,
 )
 
@@ -247,12 +248,13 @@ class VoiceSelectionRefused(ValueError):
 
 @dataclass(frozen=True)
 class VoiceSelection:
-    """The provider and model in effect after :func:`select_voice`, and which
-    of the two (``"provider"``, ``"model"``) it changed."""
+    """The saved selection and the fields it changed."""
 
     provider: str
     model: str
     changed: tuple[str, ...]
+    voice: str
+    barge_in: bool
 
 
 def voice_env_files(
@@ -290,6 +292,8 @@ def select_voice(
     model: str | None = None,
     *,
     via: str,
+    voice: str | None = None,
+    barge_in: bool | None = None,
     client: str | None = None,
     path: str | None = None,
     keys_path: str | None = None,
@@ -340,19 +344,31 @@ def select_voice(
             f"{entry.key_env} value at /assistant/voice/ before selecting it "
             "as active.",
         )
+    settings = merged_env_files(files[:2], require_readable=True)
+    old_voice = settings.get(entry.voice_env) or default_voice_id(target)
+    old_barge_in = resolve_barge_in_enabled(target, settings)
+    if voice is not None and voice != old_voice and voice not in {option.id for option in entry.voices}:
+        raise VoiceSelectionRefused("unknown_voice", f"{entry.label} offers no voice {voice!r}.")
     updates = {"JASPER_VOICE_PROVIDER": target}
     if model is not None:
         updates[entry.model_env] = model
+    if voice is not None:
+        updates[entry.voice_env] = voice
+    if barge_in is not None:
+        updates[barge_in_env_key(target)] = "true" if barge_in else "false"
     locked_update_env_file(
         path, updates, mode=PROVIDER_FILE_MODE, owner=VOICE_PROVIDER_ENV_OWNER,
     )
     after = in_effect if model is None else model
     log_event(logger, "voice.save", provider=target, model=after, via=via, client=client)
+    chosen_voice = old_voice if voice is None else voice
+    chosen_barge_in = old_barge_in if barge_in is None else barge_in
     changed = tuple(
-        name for name, was, now in (("provider", before, target), ("model", old, after))
+        name for name, was, now in (("provider", before, target), ("model", old, after),
+                                   ("voice", old_voice, chosen_voice), ("barge_in", old_barge_in, chosen_barge_in))
         if was != now
     )
-    return VoiceSelection(target, after, changed)
+    return VoiceSelection(target, after, changed, chosen_voice, chosen_barge_in)
 
 
 # --- Per-provider barge-in enable flag ---------------------------------

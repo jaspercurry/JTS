@@ -30,6 +30,8 @@ from dbus_next.errors import (  # type: ignore
     InvalidAddressError,
 )
 
+from ..platform import systemd
+from . import _wizard_cli
 from ..bluetooth.availability import (
     BLUETOOTH_CONTROL_PLANE_UNIT,
     BluetoothAvailability,
@@ -69,7 +71,6 @@ from ..source_intent import (
     request_source_intent,
     source_intent_enabled,
 )
-from ..platform import systemd
 
 # Default scan duration when the user clicks Scan. Server-side
 # enforced — even if the user closes the tab the scan auto-stops.
@@ -748,7 +749,6 @@ def _post_device_action(idle_hold: Any, action: str, handler: BaseHTTPRequestHan
 
 
 def _make_handler(*, idle_hold=systemd.no_hold) -> type[BaseHTTPRequestHandler]:
-
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
@@ -1306,8 +1306,6 @@ def _start_dispatcher(_args, tracker) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _wizard_cli
-
     # Idle-exit (the runner's default) after 10 min of no requests so the
     # resident set goes to zero between admin sessions; ~17 MB Pss saved when
     # idle.

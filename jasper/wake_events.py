@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sqlite3
 import sys
 import threading
@@ -16,10 +15,12 @@ from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+from .atomic_io import atomic_write_bytes
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -169,13 +170,13 @@ def _now_iso() -> str:
 
 
 def _write_wav(path: Path, pcm: bytes) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with wave.open(str(tmp), "wb") as w:
+    buffer = BytesIO()
+    with wave.open(buffer, "wb") as w:
         w.setnchannels(CHANNELS)
         w.setsampwidth(SAMPLE_WIDTH_BYTES)
         w.setframerate(SAMPLE_RATE_HZ)
         w.writeframes(pcm)
-    os.replace(tmp, path)
+    atomic_write_bytes(path, buffer.getvalue(), mode=None, group_from_parent=False)
 
 
 def _retained_bytes(value: Any) -> int:
@@ -185,10 +186,9 @@ def _retained_bytes(value: Any) -> int:
 
 
 class WakeEventStore:
-    """One ordered storage worker. Writes acknowledge admission, reads await completion.
-
-    Pending counts and bytes include the active operation. Producers never wait
-    for storage or capacity. Only immutable arguments cross the worker boundary.
+    """One storage worker; pending limits include the active operation.
+    Writes acknowledge admission. Reads await completion. Producers never wait
+    for storage or capacity; only immutable arguments cross the worker boundary.
     """
 
     def __init__(

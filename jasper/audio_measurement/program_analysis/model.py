@@ -993,3 +993,5 @@ class ProgramAnalysis:
     # dBFS, one driver's located sweeps in their band, one reading per gain
     # (ADR-0364). Set only by `analyze_program_capture`; empty unless one driver swept.
     stimulus_levels: tuple[LevelReading, ...] = ()
+    # dB, VERIFY only: see `response._sweep_over_ambient_db`. ``None`` without an ambient window.
+    sweep_over_ambient_db: float | None = None

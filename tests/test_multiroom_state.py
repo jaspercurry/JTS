@@ -19,6 +19,8 @@ tested directly with synthetic unit states.
 """
 from __future__ import annotations
 
+import pytest
+
 from jasper.multiroom.config import DEFAULT_BUFFER_MS, DEFAULT_CODEC, load_config
 from jasper.multiroom.state import (
     GROUPING_READINESS_KEY,
@@ -84,7 +86,7 @@ def _cfg(tmp_path, body):
 
 
 _EXPECTED_KEYS = {
-    "trim_db", "peer_addr", "peer_name", "roster",
+    "trim_db", "left_delay_ms", "right_delay_ms", "peer_addr", "peer_name", "roster",
     "enabled", "role", "channel", "bond_id",
     "leader_addr", "buffer_ms", "codec", "error",
 }
@@ -118,8 +120,11 @@ def test_state_has_exactly_the_expected_keys(tmp_path):
 # ---------- valid enabled => full dict incl codec ----------
 
 
-def test_valid_enabled_full_dict_includes_codec(tmp_path):
-    path = _write_env(tmp_path, _leader_env())
+@pytest.mark.parametrize("delays", [(0.0, 0.0), (1.25, 2.5)])
+def test_valid_enabled_full_dict_includes_codec(tmp_path, delays):
+    path = _write_env(tmp_path, _leader_env() + (
+        f"JASPER_GROUPING_LEFT_DELAY_MS={delays[0]}\nJASPER_GROUPING_RIGHT_DELAY_MS={delays[1]}\n"
+    ))
     state = read_grouping_state(
         path, unit_state_reader=_stub, tap_path_reader=_tap_set
     )
@@ -128,6 +133,7 @@ def test_valid_enabled_full_dict_includes_codec(tmp_path):
     assert state["channel"] == "left"
     assert state["bond_id"] == "living-room"
     assert state["codec"] == "opus"
+    assert (state["left_delay_ms"], state["right_delay_ms"]) == delays
     assert state["error"] is None
 
 

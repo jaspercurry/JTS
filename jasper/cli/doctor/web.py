@@ -216,9 +216,9 @@ def check_tool_catalog() -> CheckResult:
     With no voice provider jasper-voice never writes the catalog, so that is
     a skip rather than a failure; with a provider set but no catalog on disk,
     warn — the wizard renders "not ready" and toggles do not take effect.
-    Reads the light view (jasper.tool_catalog_view), never the heavy
+    Reads the light view (jasper.tools.tool_catalog_view), never the heavy
     registry."""
-    from ...tool_catalog_view import summary
+    from ...tools.tool_catalog_view import summary
     from ...voice.provider_state import read_active_provider
 
     label = "tool catalog"
@@ -376,8 +376,8 @@ def check_camillagui_loopback() -> CheckResult:
 # and `<name>.socket` derive from each entry). Canonical membership is the
 # installer's WIZARD_UNITS array (deploy/lib/install/systemd-units.sh);
 # tests/test_doctor_web.py pins this tuple set-equal to it and to the shipped
-# deploy/*.socket files. One name covers both profiles — a streambox installs
-# its own web units under the same jasper-web names — so no profile branch.
+# deploy/systemd/jasper-*.socket files. One name covers both profiles (a
+# streambox installs its web units under the same names), so no profile branch.
 WIZARD_UNITS = (
     "jasper-web",
     "jasper-bluetooth-web",

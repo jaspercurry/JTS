@@ -4,7 +4,7 @@
 
 """jasper-voice's push-to-talk collaborator: the manual-mic runtime map,
 which source (if any) is active, whether this daemon is push-to-talk-only,
-and the hold-cap decision.
+whether a source can stream right now, and the hold-cap decision.
 
 A plain collaborator called BY `WakeLoop` — no Protocol, no adapter, no
 host. `WakeLoop` builds one `PushToTalk` at construction time and reads
@@ -18,6 +18,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
+from jasper.accessories import status as accessory_status
 from jasper.log_event import log_event
 
 from ..mic_capture import MicCapture
@@ -53,13 +54,9 @@ PTT_MIN_INPUT_CAP_SEC = 5.0
 # test_ptt_keepalive_stays_inside_heartbeat_stale_threshold.
 #
 # A tick proves the loop is iterating, not that the accessory is still
-# delivering audio: `UdpMicCapture.frames()` has no timeout, so a dead
-# sender (remote battery, out of range, adapter stall) blocks its
-# manual-mic task forever while the tick keeps patting the watchdog — a
-# dead remote reads as a healthy speaker. Issue #2243. A frame timeout
-# here is not the fix: silence is a push-to-talk device's steady state,
-# so frame flow cannot tell idle from dead. Connection state can, and
-# that is the accessory reconciler's to publish.
+# delivering audio: `UdpMicCapture.frames()` has no timeout, and silence is
+# a push-to-talk device's steady state, so frame flow cannot tell idle from
+# dead. The adapter's published link state can: see `PushToTalk.not_ready`.
 PTT_KEEPALIVE_INTERVAL_SEC = 2.0
 
 # Hard cap on user audio length within a single turn. Once the user
@@ -122,6 +119,31 @@ class PushToTalk:
         # knowing anything about install tiers.
         self.only: bool = not have_wake_legs and bool(self.sources)
         self._cap_warned: bool = False
+
+    def known(self, source_id: str) -> bool:
+        """Whether a press naming ``source_id`` came from a mic this box has:
+        one this daemon opened, or a remote the accessory reconciler registered
+        without arming (ADR-0372)."""
+        return (
+            source_id in self.sources
+            or source_id in accessory_status.registered_mic_sources()
+        )
+
+    def not_ready(self, source_id: str) -> str | None:
+        """Why ``source_id`` cannot stream right now, or None when it can.
+
+        The code is ``jasper.accessories.status``'s, read fresh from the
+        adapter's own published facts on every call (issue #3346). A source
+        this daemon did not open counts as not armed.
+        """
+        return accessory_status.mic_not_ready_reason(
+            source_id, armed=source_id in self.sources,
+        )
+
+    def status(self) -> dict[str, dict[str, Any]]:
+        """``/state.voice.push_to_talk`` while this daemon runs: the sources
+        it opened count as armed, since only those can carry a hold."""
+        return accessory_status.mic_readiness(self.sources)
 
     def input_cap_sec(self, idle_timeout_sec: float) -> float:
         """How long a held button may hold the user's input open.

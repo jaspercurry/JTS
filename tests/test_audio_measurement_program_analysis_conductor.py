@@ -12,11 +12,12 @@ import dataclasses
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
 from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.audio_measurement import program_analysis
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,

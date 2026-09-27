@@ -21,6 +21,7 @@ from jasper import aec_sweep, wake_ports
 from jasper.chip_aec.policy import ChipAecGate
 from jasper.env_file import read_env_file
 from jasper.wake_corpus import (
+    active_session,
     bridge_session,
     capture_plan,
     recording_backend,
@@ -33,6 +34,7 @@ from tests.wake_corpus_setup_fixtures import (
     _backend_fixture,
     _patch_udp,
     _session_metadata,
+    _started_backend,
     _use_tmp_bridge_env,
 )
 
@@ -236,16 +238,16 @@ def test_begin_session_default_excludes_raw0(backend) -> None:
     """Default begin_session() does NOT opt into raw0 — historical
     pre-flag sessions shouldn't suddenly start capturing 4 legs."""
     backend.begin_session("jasper")
-    assert backend.include_raw_mic_0() is False
-    assert backend.include_dtln() is True
+    assert backend.status_snapshot()["include_raw_mic_0"] is False
+    assert backend.status_snapshot()["include_dtln"] is True
 
 
 def test_begin_session_can_disable_dtln(backend, tmp_path: Path) -> None:
     """XVF DTLN is session-selectable so low-RAM corpus runs can stay
     on the two cheap production legs."""
     backend.begin_session("jasper", include_dtln=False)
-    assert backend.include_dtln() is False
-    assert backend.enabled_legs() == ("on", "off")
+    assert backend.status_snapshot()["include_dtln"] is False
+    assert backend.status_snapshot()["enabled_legs"] == ["on", "off"]
 
     backend.start_recording("quiet", "near")
     time.sleep(0.1)
@@ -264,7 +266,7 @@ def test_begin_session_with_raw0_records_4_legs(
     """A session opened with include_raw_mic_0=True captures all 4
     legs per clip into aec_<leg>_<condition_dir>/ quadrants."""
     backend.begin_session("jasper", include_raw_mic_0=True)
-    assert backend.include_raw_mic_0() is True
+    assert backend.status_snapshot()["include_raw_mic_0"] is True
     backend.start_recording("ambient", "near")
     time.sleep(0.1)
     clip = backend.stop_recording()
@@ -306,8 +308,8 @@ def test_begin_session_with_usb_mic_records_corpus_experiment_legs(
     """USB/ref opt-in adds the corpus-only cheap-mic legs without
     needing to change the production base leg set."""
     backend.begin_session("jasper", include_usb_mic=True)
-    assert backend.include_usb_mic() is True
-    assert set(backend.enabled_legs()) == {
+    assert backend.status_snapshot()["include_usb_mic"] is True
+    assert set(backend.status_snapshot()["enabled_legs"]) == {
         "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
     }
     backend.start_recording("ambient", "near")
@@ -330,9 +332,10 @@ def test_begin_session_with_usb_dtln_records_companion_legs(
     """USB DTLN can be tested independently of USB WebRTC, but it
     still records ref + USB raw so the comparison is interpretable."""
     backend.begin_session("jasper", include_usb_dtln=True)
-    assert backend.include_usb_mic() is False
-    assert backend.include_usb_dtln() is True
-    assert set(backend.enabled_legs()) == {
+    snap = backend.status_snapshot()
+    assert snap["include_usb_mic"] is False
+    assert snap["include_usb_dtln"] is True
+    assert set(snap["enabled_legs"]) == {
         "on", "off", "dtln", "ref", "usb_raw", "usb_dtln",
     }
 
@@ -358,9 +361,10 @@ def test_begin_session_with_xvf_raw0_dtln_records_companion_legs(backend) -> Non
         include_xvf_raw0_dtln=True,
     )
 
-    assert backend.include_raw_mic_0() is True
-    assert backend.include_xvf_raw0_dtln() is True
-    assert set(backend.enabled_legs()) == {
+    snap = backend.status_snapshot()
+    assert snap["include_raw_mic_0"] is True
+    assert snap["include_xvf_raw0_dtln"] is True
+    assert set(snap["enabled_legs"]) == {
         "on", "off", "dtln", "raw0", "xvf_raw0_dtln",
     }
 
@@ -377,18 +381,19 @@ def test_begin_session_chip_profile_records_comparison_legs(backend) -> None:
         include_aec3_sweep=True,  # incompatible pilot sweep is parked.
     )
 
-    assert backend.corpus_profile() == runtime_probe.PROFILE_CHIP_AEC_COMPARISON
-    assert backend.include_raw_mic_0() is True
-    assert backend.include_usb_mic() is False
-    assert backend.include_aec3_sweep() is False
-    assert backend.enabled_legs() == (
+    snap = backend.status_snapshot()
+    assert snap["corpus_profile"] == runtime_probe.PROFILE_CHIP_AEC_COMPARISON
+    assert snap["include_raw_mic_0"] is True
+    assert snap["include_usb_mic"] is False
+    assert snap["include_aec3_sweep"] is False
+    assert snap["enabled_legs"] == [
         "chip_aec_150",
         "chip_aec_210",
         "raw0",
         "xvf_raw0_webrtc_aec3",
         "ref",
         "xvf_raw0_dtln",
-    )
+    ]
 
 
 def test_begin_session_chip_profile_records_usb_legs_when_requested(
@@ -401,8 +406,8 @@ def test_begin_session_chip_profile_records_usb_legs_when_requested(
         include_usb_dtln=True,
     )
 
-    assert backend.include_usb_mic() is True
-    assert backend.enabled_legs() == (
+    assert backend.status_snapshot()["include_usb_mic"] is True
+    assert backend.status_snapshot()["enabled_legs"] == [
         "chip_aec_150",
         "chip_aec_210",
         "raw0",
@@ -411,7 +416,7 @@ def test_begin_session_chip_profile_records_usb_legs_when_requested(
         "usb_raw",
         "usb_webrtc",
         "usb_dtln",
-    )
+    ]
 
 
 # The serialized chip-AEC gate is a hash input: it rides
@@ -482,11 +487,11 @@ def test_begin_session_with_aec3_sweep_records_variant_legs(
     backend.begin_session(
         "jasper", include_dtln=False, include_aec3_sweep=True,
     )
-    assert backend.include_aec3_sweep() is True
-    assert backend.enabled_legs() == (
+    assert backend.status_snapshot()["include_aec3_sweep"] is True
+    assert backend.status_snapshot()["enabled_legs"] == [
         "on", "off", "ref", "usb_raw", "usb_webrtc",
         *runtime_probe.AEC3_SWEEP_LEGS,
-    )
+    ]
 
     backend.start_recording("music", "far")
     time.sleep(0.1)
@@ -1569,7 +1574,9 @@ def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
     )
 
 
-def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
+def test_recovery_restores_include_raw_mic_0_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """A recovered session must restore the include_raw_mic_0 flag
     so a follow-up clip inherits the original session's leg set
     (not silently degraded to the 3-base default)."""
@@ -1582,19 +1589,17 @@ def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
         "include_raw_mic_0": True,
         "clips": [],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.include_raw_mic_0() is True
-        assert b.include_dtln() is True
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        assert b.status_snapshot()["include_raw_mic_0"] is True
+        assert b.status_snapshot()["include_dtln"] is True
 
 
-def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
+def test_recovery_restores_usb_dtln_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     out = tmp_path / "out"
     md = out / "metadata"
     md.mkdir(parents=True)
@@ -1608,20 +1613,19 @@ def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
         "include_usb_dtln": True,
         "clips": [],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "x",
     }))
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.include_dtln() is False
-        assert b.include_usb_dtln() is True
-        assert b.enabled_legs() == ("on", "off", "ref", "usb_raw", "usb_dtln")
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        snap = b.status_snapshot()
+        assert snap["include_dtln"] is False
+        assert snap["include_usb_dtln"] is True
+        assert snap["enabled_legs"] == ["on", "off", "ref", "usb_raw", "usb_dtln"]
 
 
-def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
+def test_recovery_handles_pre_raw0_session_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """Sessions recorded BEFORE this feature don't have the
     include_raw_mic_0 key. Recovery must treat the missing key as
     False (backward compat with existing on-disk corpora)."""
@@ -1634,18 +1638,16 @@ def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
         "clips": [],
         # NO include_raw_mic_0 key
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.include_raw_mic_0() is False
-    finally:
-        b.shutdown()
+    with _started_backend(monkeypatch, tmp_path) as b:
+        assert b.status_snapshot()["include_raw_mic_0"] is False
 
 
-def test_recovery_handles_pre_audio_context_session_metadata(tmp_path: Path) -> None:
+def test_recovery_handles_pre_audio_context_session_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """Older sidecars do not have audio_context or per-clip selected_legs."""
     out = tmp_path / "out"
     md = out / "metadata"
@@ -1661,19 +1663,15 @@ def test_recovery_handles_pre_audio_context_session_metadata(tmp_path: Path) -> 
              "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
         ],
     }))
-    (md / recording_backend.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+    (md / active_session.ACTIVE_SESSION_MARKER).write_text(json.dumps({
         "session_id": "old",
     }))
-    b = recording_backend.RecordingBackend(output_dir=out)
-    b.start()
-    try:
-        assert b.audio_context() is None
+    with _started_backend(monkeypatch, tmp_path) as b:
+        assert b.status_snapshot()["audio_context"] is None
         clips = b.list_clips(include_deleted=True)
         assert len(clips) == 1
         assert clips[0].selected_legs == []
         assert clips[0].audio_context == {}
-    finally:
-        b.shutdown()
 
 
 # ---------------------------------------------------------------------------

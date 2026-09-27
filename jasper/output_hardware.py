@@ -234,7 +234,7 @@ class OutputHardwareState:
         which want :attr:`observed_profile_id` instead. Mirrors
         ``apply_observed_single_policy`` /
         ``apply_observed_composite_policy`` in
-        ``deploy/bin/jasper-audio-hardware-reconcile`` bit for bit: a single
+        ``jasper/audio_hardware/reconcile_hardware.py`` bit for bit: a single
         DAC counts only while this record is ``ready`` AND names the card it
         selected; the dual-Apple composite counts as soon as it is named,
         parked or not, because its helper services are driven either way.

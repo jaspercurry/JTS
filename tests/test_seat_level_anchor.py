@@ -132,9 +132,6 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
         calibration.find_stored_calibration, root=root,
     ))
 
-    def no_vendor_fetch(*_args):
-        pytest.fail("stored calibration lookup must not fetch")
-
     if stored_serial == "810-8495":
         with pytest.raises(slr.LevelUnresolved) as excinfo:
             slr.resolve_anchor_level()
@@ -145,10 +142,6 @@ def test_banked_anchor_resolves_legacy_minidsp_serial_formats(
             mic_serial="8108494", session_id=slr.load_seat_level_reference()["session_id"],
             leveled_at=slr.load_seat_level_reference()["leveled_at"], target_db_spl=ANCHOR_DB_SPL,
         )
-        cached = calibration.fetch_vendor_calibration(
-            model_key="minidsp_umik2", serial="8108494", root=root, opener=no_vendor_fetch,
-        )
-        assert cached.calibration_id == record.calibration_id
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
 
 
@@ -190,3 +183,45 @@ def test_session_schema_requires_leveling_after_upgrade(anchor, version):
     else:
         assert measurement_reference_volume_db() == REFERENCE_VOLUME_DB
         assert raw["session_id"] and raw["leveled_at"]
+
+
+@pytest.mark.parametrize("change,expected", [
+    ({}, (False, False)),
+    ({"candidate_fingerprint": "other"}, (True, False)),
+    ({"compiled_graph_sha256": "other"}, (True, False)),
+    ({"geometry": {"distance_m": 3.0}}, (False, True)),
+    ({"arm_offset_deg": 20.0}, (False, True)),
+    ({"legacy": True}, (None, None)),
+    ({"unavailable": True}, (None, None)),
+])
+def test_graph_and_pose_changes_are_disclosed_without_refusing(anchor, monkeypatch, change, expected):
+    graph = {"candidate_fingerprint": "candidate", "compiled_graph_sha256": "sha"}
+    pose = {"geometry": {"distance_m": 2.0}, "arm_offset_deg": 10.0}
+    record = json.loads(anchor.read_text())
+    if not change.get("legacy"):
+        record.update(graph=graph, pose=pose)
+    anchor.write_text(json.dumps(record))
+    current_graph = {key: change.get(key, value) for key, value in graph.items()}
+    current_pose = {key: change.get(key, value) for key, value in pose.items()}
+    if change.get("unavailable"):
+        current_graph = current_pose = None
+    monkeypatch.setattr(slr, "read_graph", lambda **kw: current_graph)
+    monkeypatch.setattr(slr, "read_pose", lambda **kw: current_pose)
+    sensitivity = calibration.MicSensitivity(-12.07, 18, "8108494")
+    resolved, evidence = slr.resolve_anchor_level(facts=slr.AnchorFacts(record, sensitivity, current_graph, current_pose))
+    assert (resolved.reference_volume_db, resolved.anchor_db_spl) == (REFERENCE_VOLUME_DB, ANCHOR_DB_SPL)
+    status = slr.seat_level_reference_status()
+    for result in (evidence, status):
+        assert (result["anchor_graph_mismatch"], result["anchor_pose_mismatch"]) == expected
+    assert json.loads(anchor.read_text()) == record
+
+
+@pytest.mark.parametrize("offset", [None, 12.5])
+def test_pose_reader_banks_declared_geometry_and_supplied_offset(monkeypatch, offset):
+    from jasper.active_speaker import anchor_provenance as provenance
+    from jasper.audio_measurement import measurement_geometry
+
+    geometry = measurement_geometry.DeclaredGeometry(1.0, 1.2, 2.0)
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda: geometry)
+    assert provenance.read_pose(arm_offset_deg=offset) == {"geometry": geometry.to_dict(), "arm_offset_deg": offset}
+    assert provenance.read_pose() == {"geometry": geometry.to_dict(), "arm_offset_deg": None}

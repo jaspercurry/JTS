@@ -6,10 +6,10 @@
 
 # Self-heal a lost NetworkManager WiFi profile from the wizard-owned stash.
 #
-# The 2026-05-23 incident: a dirty shutdown left
+# A dirty shutdown can leave
 # /etc/NetworkManager/system-connections/<SSID>.nmconnection empty after
-# ext4 journal recovery. The Pi rebooted with NO WiFi profile at all and
-# was unreachable on the LAN — required HDMI + USB-keyboard recovery.
+# ext4 journal recovery. The Pi then boots with NO WiFi profile at all and
+# is unreachable on the LAN until someone recovers it over HDMI + keyboard.
 #
 # This script reads the stash that the /wifi/ wizard writes on every
 # successful connect (/var/lib/jasper/wifi_guardian.env) and reconciles
@@ -20,8 +20,8 @@
 #      (don't stomp a working network the operator manually connected
 #       to via SSH after stash was written)
 #   3. WiFi is down, profile EXISTS      -> activate it
-#   4. WiFi is down, profile MISSING     -> THE INCIDENT CASE:
-#      recreate via `nmcli dev wifi connect`
+#   4. WiFi is down, profile MISSING     -> recreate via
+#      `nmcli dev wifi connect`
 #
 # Run by systemd at boot via jasper-wifi-guardian.service (Type=oneshot,
 # after NetworkManager-wait-online). Pure bash, mirrors
@@ -273,8 +273,7 @@ if [[ "$PROFILE_EXISTS" == "1" ]]; then
     exit 1
 fi
 
-# Case 4: THE INCIDENT CASE. No active WiFi, no profile, but we have a
-# stash. Recreate.
+# Case 4: no active WiFi, no profile, but a stash. Recreate.
 emit recreate_attempt "ssid=$SSID"
 
 # Capture nmcli's stderr in a private temp file. nmcli can echo the PSK

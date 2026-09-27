@@ -34,6 +34,7 @@ import numpy as np
 import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
+from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -62,7 +63,7 @@ from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferr
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.active_speaker.crossover_v2.spatial import (
     cloud_position_record,
@@ -808,21 +809,13 @@ def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth(
 # --------------------------------------------------------------------------- #
 
 
-def _spot_program(azimuth_deg: int, elevation_deg: int) -> mp.MeasurementProgram:
-    """One take at one caller-supplied bearing."""
-    return mp.MeasurementProgram(
-        "spot", "express", (mp.ProgramPose(azimuth_deg, elevation_deg),)
-    )
-
-
 @pytest.mark.parametrize(
     "program",
     [
         mp.program("baseline", "express"),
         mp.program("baseline", "full"),
-        _spot_program(22, 10),
     ],
-    ids=["baseline/express", "baseline/full", "spot"],
+    ids=["baseline/express", "baseline/full"],
 )
 def test_a_program_becomes_its_own_walk_in_table_order(
     program: mp.MeasurementProgram,
@@ -853,10 +846,7 @@ def test_a_program_becomes_its_own_walk_in_table_order(
         for pose in program.poses
         for _ in range(pose.repeats + program.room_sweep)
     ]
-    assert request.program == (
-        "spot" if program.program_id == "spot"
-        else f"{program.program_id}/{program.size}"
-    )
+    assert request.program == f"{program.program_id}/{program.size}"
 
 
 def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
@@ -1010,17 +1000,17 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
 
 @pytest.mark.parametrize(
     ("program_id", "size"),
-    [("seat", "cube"), ("seat", "express"), ("close", "spot")],
-    ids=["seat/cube", "seat/express", "close/spot"],
+    [("seat", "cube"), ("seat", "express")],
+    ids=["seat/cube", "seat/express"],
 )
 def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
     program_id: str, size: str,
 ) -> None:
     """The room is measured THROUGH the speaker stage it sits on.
 
-    So a seat or close pose is a SUMMED capture even with no candidate named,
-    which for a bearing selects per-driver. The category, the standoff and the
-    head offset ride from the table's pose onto the stop unchanged.
+    So a seat pose is a SUMMED capture even with no candidate named, which for
+    a bearing selects per-driver. The category and the head offset ride from
+    the table's pose onto the stop unchanged.
     """
     program = mp.program(program_id, size)
     request = ac.request_for_program(program, candidates=())
@@ -1029,7 +1019,7 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
     assert [(s.kind, s.distance_m, s.seat_offset_m) for s in request.stops] == [
         (p.kind, p.distance_m, p.seat_offset_m) for p in program.poses
     ]
-    price = ac.walk_price(request)
+    price = walk_price(request)
     assert (price["mic_moves"], price["captures"]) == (
         program.mic_move_count, program.capture_count,
     )
@@ -1120,14 +1110,15 @@ def test_position_gate_names_the_behind_pose_without_changing_the_action_body(el
 
 
 def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
-    """The close reference is on the design axis, at a standoff it declares."""
-    stop, = ac.resolve_request(ac.request_for_program(mp.program("close", "spot")))
+    """A close pose is on the design axis, at a standoff it declares."""
+    program = mp.program("nearfield", "woofer")
+    stop = ac.resolve_request(ac.request_for_program(program))[0]
     geometry = capture_plan.position_geometry(stop.prompt)
 
     assert (geometry.kind, geometry.degrees, geometry.seat_offset_m) == (
         mp.POSE_KIND_CLOSE, 0, None,
     )
-    assert geometry.mark_distance_m == mp.CLOSE_DISTANCE_M
+    assert geometry.mark_distance_m == program.poses[0].distance_m
     assert capture_plan.position_angle_deg(stop.prompt) == 0
 
 
@@ -1171,24 +1162,17 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 13, "ceiling_min": 56,
+         {"mic_moves": 5, "captures": 15, "ceiling_min": 54,
           "stimulus_s": None}),
         (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
-         {"mic_moves": 5, "captures": 16, "ceiling_min": 60,
+         {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
           "stimulus_s": None}),
     ],
     ids=["no-cycle", "two-candidates"],
 )
-def test_the_shipped_programs_resolve_exactly_as_before(
+def test_shipped_program_geometry_and_full_capture_price(
     candidates: tuple[str, ...], regime: str, phase: str, price: dict,
 ) -> None:
-    """The pose category is ADDITIVE: every bearing walk is what it always was.
-
-    Transcribed from a walk captured before poses had a kind -- copy, order,
-    repeats, advance policy, geometry and price -- so a categorized pose that
-    leaked into the bearing path fails here rather than in a household's
-    prompt. A bearing's geometry adds NO keys to the take record either.
-    """
     request = ac.request_for_program(
         mp.program("baseline", "express"), candidates=candidates,
     )
@@ -1209,13 +1193,7 @@ def test_the_shipped_programs_resolve_exactly_as_before(
         for _candidate in (candidates or ("",))
     ]
     assert [pose_kind_fields(geometry) for geometry in geometries] == [{"mark_distance_m": 1.0}] * len(stops)
-    assert ac.walk_price(request) == price
-
-
-@pytest.mark.parametrize("repeats, ceiling_min", [(1, 32), (2, 36), (3, 40)])
-def test_walk_price_counts_every_entry_baseline_repeat(repeats, ceiling_min):
-    request = ac.request_for_program(mp.program("close", "spot"), repeats=repeats)
-    assert ac.walk_price(request)["ceiling_min"] == ceiling_min
+    assert walk_price(request) == price
 
 
 def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
@@ -1283,12 +1261,6 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
     stimulus_s: float | None,
 ) -> None:
-    """``stimulus_s`` is derived from the program's own counts, the same rule
-    :func:`test_a_program_becomes_its_own_walk_in_table_order` pins for everything
-    else ``walk_price`` reports -- so this cannot drift from the table either.
-    ``None``, never ``0``, for a walk that picked no duration: the two are
-    different statements, and a reader printing ``0 s`` states the wrong one.
-    """
     program = mp.program(program_id, size)
     request = ac.request_for_program(
         program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN,
@@ -1297,11 +1269,10 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
             level_ladder_dbfs=level_ladder_dbfs,
         ),
     )
-    cycle = candidates or ("base",)
-    price = ac.walk_price(request)
+    price = walk_price(request)
 
     assert price["mic_moves"] == program.mic_move_count
-    assert price["captures"] == program.capture_count * len(cycle)
+    assert price["captures"] == len(prepare_plan_captures(request))
     assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
 
 
@@ -1489,8 +1460,8 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
     ]
-    assert ac.walk_price(request)["captures"] == len(specs)
-    assert ac.walk_price(request)["mic_moves"] == 3
+    assert walk_price(request)["captures"] == len(specs)
+    assert walk_price(request)["mic_moves"] == 3
 
 
 @pytest.mark.parametrize("row, pair", [("branches", ("woofer", "tweeter")),

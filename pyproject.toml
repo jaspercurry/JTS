@@ -39,15 +39,6 @@ streambox = [
 full = [
     "matplotlib>=3.8,<4",
     "google-genai==2.22.0",
-    # OpenAI Realtime SDK — used by jasper.voice.openai_session for
-    # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
-    # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
-    # Agent backend. 2.36.0 shipped on 2026-05-07 alongside
-    # gpt-realtime-2 and exposes the post-GA `client.realtime.connect`
-    # path; older SDKs only have `client.beta.realtime.connect`,
-    # which we don't use. Pulls in `websockets` as the realtime
-    # transport. Skippable at install time only if the active
-    # provider is gemini AND the user is sure they'll never switch.
     "openai[realtime]>=3.12.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594).
     "audioop-lts>=0.2",
@@ -117,21 +108,6 @@ full = [
     "zeroconf>=0.151.3,<1.0",
 ]
 
-dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=0.23",
-    "pytest-timeout>=2.3",
-    "pytest-xdist>=3.8",
-    "ruff>=0.16.1",
-    "import-linter>=2.15,<2.16",
-    # The day-one baseline is checker-version-sensitive. Bump this
-    # deliberately when tightening or regenerating the baseline.
-    "mypy>=2.3.0,<2.4",
-]
-
-# Keep this dependency group identical to the ``dev`` optional extra above:
-# uv consumes the group, while pip users still install ``.[dev]``. The
-# cross-frontend contract is pinned by tests/test_dependency_groups.py.
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
@@ -175,7 +151,7 @@ jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
 jasper-xvf-profile = "jasper.cli.xvf_profile:main"
 jasper-xvf-firmware-update = "jasper.cli.xvf_firmware_update:main"
 jasper-enhanced-aec-install = "jasper.cli.enhanced_aec_install:main"
-jasper-audio-validate = "jasper.audio_validation:main"
+jasper-audio-validate = "jasper.cli.audio_validate:main"
 jasper-audio-hw-validate = "jasper.cli.audio_hw_validate:hardware_main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
@@ -336,14 +312,12 @@ module = [
     "jasper.active_speaker.startup_load",
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
-    # calibration and peq: latent type debt kept on the baseline, not fixed
-    # inside a relocation.
-    "jasper.audio_measurement.calibration",
+    # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
     "jasper.bluetooth.scan",
     "jasper.camilla",
-    "jasper.citibike",
+    "jasper.transit.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
     "jasper.cli.doctor.aec",
@@ -366,7 +340,7 @@ module = [
     "jasper.peering.daemon",
     "jasper.spotify_router",
     "jasper.spotify_routing",
-    "jasper.subway",
+    "jasper.transit.subway",
     "jasper.tools.catalog",
     "jasper.tools.packs",
     "jasper.tools.spotify",
@@ -380,7 +354,6 @@ module = [
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.wake_corpus.recording_backend",
     "jasper.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",
@@ -424,10 +397,10 @@ containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
   "cli : turntable : web",
-  "usage_writer",
-  "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_models : weather",
+  "aec : usage_writer",
+  "accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
   "audio_runtime_settings",
-  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : volume_diagnostics",
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
   "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
   "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "audio_measurement : audio_validation_artifacts : bass_extension : model_downloads : volume_owner",
@@ -435,12 +408,10 @@ layers = [
   "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
 ]
 exhaustive = true
+# Not yet ranked; the ratchet order is tracked in #4719.
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  # aec transitively imports jasper.usb_mic, whose chain reaches cli/web; aec
-  # ranks when usb_mic does.
-  "aec",
   "assistant_loudness",
   "assistant_volume",
   "attribution",
@@ -476,22 +447,15 @@ exhaustive_ignores = [
   "multiroom",
   "mux",
   "oauth_redirect",
-  # Hardware still reaches cli.usb_port_role through audio_hardware.usb_port_role.
   "output_hardware",
-  # Topology still reaches cli through output_hardware.
   "output_topology",
-  # Store consumes the held schema and hardware owners above.
-  "output_topology_store",
-  # Observation consumes output_hardware and active_speaker.output_contract,
-  # which still reach cli. Rank it after that upward dependency is removed.
   "output_topology_observation",
   "output_topology_runtime",
+  "output_topology_store",
   "outputd_failure_reconcile_state",
   "peering",
   "renderer",
   "ring_assets",
-  # fanin_coupling -> active_speaker.output_contract -> output_topology -> cli;
-  # ring_conf ranks when its geometry constants no longer import that chain.
   "ring_conf",
   "sound",
   "source_intent",
@@ -502,13 +466,13 @@ exhaustive_ignores = [
   "transport_coherence",
   "tts_playout",
   "tts_routing",
-  "usb_mic",
   "usbsink",
   "voice",
   "voice_daemon",
-  "volume_coordinator", "volume_handoff",  # volume_curve -> sound -> cli; rank after that chain is cut.
+  "volume_coordinator",
   "volume_curve",
   "volume_echo",
+  "volume_handoff",
   "volume_observers",
   "volume_persistence",
   "volume_process",

@@ -185,11 +185,11 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
         capture_enabled=True, db_path=str(tmp_path / "conv.db"),
     ))
     monkeypatch.setattr(
-        "jasper.tool_state.read_tool_state",
+        "jasper.tools.tool_state.read_tool_state",
         lambda *a, **k: SimpleNamespace(disabled_tools=set(), disabled_packs=set()),
     )
     monkeypatch.setattr(
-        "jasper.tool_prompt_overrides.read_prompt_overrides", lambda *a, **k: {},
+        "jasper.tools.tool_prompt_overrides.read_prompt_overrides", lambda *a, **k: {},
     )
     monkeypatch.setattr("jasper.tools.catalog.write_catalog", lambda *a, **k: None)
     monkeypatch.setattr(

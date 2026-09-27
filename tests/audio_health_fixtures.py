@@ -129,7 +129,6 @@ def _airplay(
 
 def _outputd(
     *,
-    content_xruns: int = 0,
     dac_xruns: int = 0,
     progress_age_ms: int = 10,
     backend: str = "alsa",
@@ -142,7 +141,7 @@ def _outputd(
     return {
         "backend": backend,
         "mix": {"clipped_samples": clipped_samples},
-        "content": {"xrun_count": content_xruns, "deaf": content_deaf},
+        "content": {"deaf": content_deaf},
         "dac": {
             "xrun_count": dac_xruns,
             "sample_rate": 48000,

@@ -101,6 +101,7 @@ def measurement_graph_evidence(
     scope: str,
     candidate: MeasuredCrossoverCandidate | None = None,
     candidate_id: str = "",
+    cleared_layers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if scope == GRAPH_SCOPE_DRIVERS:
         return {}
@@ -110,9 +111,17 @@ def measurement_graph_evidence(
         raise MeasurementGraphRefused("measurement_candidate_required", scope)
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
+    candidate = played_candidate(candidate, cleared_layers)
     if scope == "timing":
         candidate = _front_drivers(candidate)
     return {name: dict(getattr(candidate, name)) for name in GRAPH_LAYERS}
+
+
+def played_candidate(candidate: MeasuredCrossoverCandidate, cleared_layers: tuple[str, ...]) -> MeasuredCrossoverCandidate:
+    """``candidate`` as its take plays it: the layers the take's purpose clears
+    emptied, never banked (ADR-0370)."""
+    emptied: dict[str, Any] = {name: {} for name in cleared_layers}
+    return replace(candidate, **emptied) if emptied else candidate
 
 
 def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset) -> None:
@@ -150,13 +159,15 @@ def compile_tuning_graph(
     preference_filters: Sequence[FilterSpec] | None = None,
     output_trim_db: float = 0.0,
     branch_channels: Mapping[str, int] | None = None,
+    cleared_layers: tuple[str, ...] = (),
 ) -> str:
     """Compile and prove the candidate at the requested layer.
 
     ``branch_channels`` names the two measurement targets a
     ``candidate_branches`` take excites and the stereo program channel each
     rides (:func:`~.crossover_v2.measure_spec.branch_channels_for`). Every
-    other scope states none.
+    other scope states none. ``cleared_layers`` are the candidate layers the
+    take's purpose plays emptied (:func:`played_candidate`).
     """
     if scope not in CANDIDATE_SCOPES:
         raise MeasurementGraphRefused("measurement_scope_invalid", scope)
@@ -165,7 +176,7 @@ def compile_tuning_graph(
     if not isinstance(candidate, MeasuredCrossoverCandidate):
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
     require_candidate_speaker_identity(candidate, profile.preset)
-    candidate = candidate_on_declaration(candidate, profile.preset)
+    candidate = played_candidate(candidate_on_declaration(candidate, profile.preset), cleared_layers)
     if scope == "timing":
         candidate = timing_candidate(candidate, output_trim_db=output_trim_db)
         preference_filters, output_trim_db = (), 0.0

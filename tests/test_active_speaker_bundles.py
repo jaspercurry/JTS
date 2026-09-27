@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker import bundles
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission.excitation_artifacts import (
     ADMISSION_AUTHORITY_MARKER,
     AdmissionArtifactError,
     AdmissionArtifactErrorCode,

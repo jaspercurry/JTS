@@ -107,11 +107,8 @@ from jasper.wake_corpus.bridge_session import (
     PROFILE_CHIP_AEC_COMPARISON,
     PROFILE_STANDARD,
 )
-from jasper.wake_corpus.recording_backend import (
-    MIC_MUTED_MESSAGE,
-    RecordingBackend,
-    StateError,
-)
+from jasper.wake_corpus.errors import MIC_MUTED_MESSAGE, StateError
+from jasper.wake_corpus.recording_backend import RecordingBackend
 from jasper.platform import systemd
 from jasper.web._common import (
     begin_request,
@@ -662,8 +659,7 @@ def _post_corpus_test_mode(handler: _Handler, body: dict[str, Any]) -> None:
                 ),
                 aec3_sweep_source=body.get("aec3_sweep_source"),
             )
-            # Mark only after voice was actually stopped, so a
-            # later startup can handler-heal an abandoned session.
+            # Mark after voice stops so startup can recover an abandoned session.
             handler.backend.note_test_mode_entered()
         else:
             bridge_session.exit_corpus_test_mode()

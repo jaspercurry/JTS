@@ -46,6 +46,8 @@ from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_crossover_v2_driver_prescription import BRANCH_CONTEXT, _boost
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
+from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.branch_chain import branch_headroom_db
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -1203,10 +1205,6 @@ def test_the_emitter_and_the_prover_read_the_same_chain():
     allowance are the same quantity over the same three terms — if they ever
     disagreed by more than the proof's float slack, a graph correct by
     construction would refuse itself on hardware."""
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, branch_headroom_db,
-    )
-
     filters = [_peak(6000.0, 4.0), _peak(9000.0, 2.0)]
     text = emit_active_speaker_baseline_config(
         _preset(), playback_device=ACTIVE_PCM,

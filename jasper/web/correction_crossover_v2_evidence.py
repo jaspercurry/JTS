@@ -402,7 +402,8 @@ def bind_production_play(
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
         level_reference_yaml=session_graph.level_reference_yaml,
         roles=roles,
-        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate_id=spec.candidate_id),
+        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(
+            scope=spec.graph_scope, candidate_id=spec.candidate_id, cleared_layers=spec.cleared_layers),
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)

@@ -71,9 +71,9 @@ conversion and causal fitting.
 
 **OPERATIONAL** (live code): document validation (`read_rear_calibration`);
 stage compile for `electrical_dsp`/`branches` (`compile_rear_stage`),
-reachable via `jasper-crossover-prescriber rear-calibration --document ...
---channels --front --rear --tweeter`; the seed CLI
-(`rear-calibration --seed --sample-rate <hz>`).
+reachable via `jasper-crossover-prescriber judge --preview <doc> --round
+<pair round>` at the declared cabinet's outputs (`compiled_stage`); the seed
+in `jasper-crossover-prescriber contract --section rear` (`seed`).
 
 **PROVISIONAL** (untuned, seeded from a single idealized snapshot, not
 measured): the diagnostic seed's cancellation branch (`-0.84 dB`,

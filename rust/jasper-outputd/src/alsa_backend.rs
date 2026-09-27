@@ -162,7 +162,6 @@ pub struct IoCounters {
     pub content_partial_period_count: u64,
     pub content_eagain_count: u64,
     pub dac_frames_written: u64,
-    pub content_xrun_count: u64,
     pub dac_xrun_count: u64,
 }
 

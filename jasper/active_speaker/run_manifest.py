@@ -134,10 +134,15 @@ class RunManifest:
             return "partial"
         return "complete"
 
-    def begin(self, stop: Mapping[str, Any], *, attempt: int, pose_index: int) -> None:
+    def begin(self, stop: Mapping[str, Any], *, attempt: int, pose_index: int, replay: bool = False) -> None:
         self.pending_records.clear()
         self._attempts += 1
-        self._context = {**stop, "attempt": attempt, "pose_index": pose_index}
+        self._context = {**stop, "attempt": attempt, "pose_index": pose_index, **({"replay": True} if replay else {})}
+
+    def discard_pose(self, pose_index: int) -> None:
+        """A redo's pose keeps its takes banked, but none stays kept or a level reference (#5722)."""
+        discarded = {take["take_id"] for take in self.takes if take["pose_index"] == pose_index}
+        self._chosen = {key: take_id for key, take_id in self._chosen.items() if take_id not in discarded}
 
     def mark_not_measured(self, index: int, reason: str) -> None:
         next(stop for stop in self.planned if stop["index"] == index)["reason"] = reason
@@ -178,8 +183,9 @@ class RunManifest:
         # Offsets change the gain, each program composes its own stimulus level, and
         # each candidate graph has its own sensitivity; only repeats of this program
         # on this graph at this fader share an expected SPL.
+        chosen = set(self._chosen.values())
         accepted = {take["take_id"]: take for take in self.takes
-                    if take["quality"]["status"] == TAKE_MEASURED
+                    if take["take_id"] in chosen
                     and take["level"].get("level_db") == gain
                     and take["level"].get("program_id") == program
                     and take.get("candidate_id") == candidate

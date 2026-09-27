@@ -85,7 +85,7 @@ async def test_docs_starter_pack_uses_real_boundary_without_registering_producti
     assert list(reg.tools) == [starter.STARTER_TOOL_NAME]
     assert reg.tool_packs == {starter.STARTER_TOOL_NAME: starter.STARTER_PACK.name}
 
-    manifest = reg.to_manifest()[0]
+    manifest = reg.tools[starter.STARTER_TOOL_NAME].to_manifest_entry()
     assert manifest["description"] == built.model_facing_description()
     assert manifest["labels"] == list(starter.STARTER_TOOL_LABELS)
     assert manifest["timeout"] == starter.STARTER_TOOL_TIMEOUT_SEC

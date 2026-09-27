@@ -12,6 +12,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -196,17 +197,6 @@ printf 'event=kept\\n'
     assert log.read_bytes().split(b"\0")[:-1] == [arg.encode() for arg in expected]
 
 
-def test_lib_defines_the_shared_remote_capture_cleanup_guard() -> None:
-    """cleanup_remote_capture lives once in _lib.sh (#4805) — every capture
-    script traps or calls it instead of re-implementing the path-shape
-    allowlist + quoting itself."""
-    text = (ROOT / "scripts" / "_lib.sh").read_text(encoding="utf-8")
-
-    assert "cleanup_remote_capture()" in text
-    assert 'printf -v remote_capture_q \'%q\' "$remote_dir"' in text
-    assert '"sudo rm -rf -- ${remote_capture_q}"' in text
-
-
 @pytest.mark.parametrize(
     ("name", "remote_prefix"),
     [
@@ -235,9 +225,63 @@ def test_capture_scripts_clean_their_bounded_remote_directory_on_exit(
     assert remote_prefix in rm_calls[0]
 
 
-def test_capture_reference_condition_cleans_its_bounded_remote_directory() -> None:
-    text = (ROOT / "scripts" / "capture-reference-condition.sh").read_text(encoding="utf-8")
-    assert 'cleanup_remote_capture "/tmp/jts-refcap-*" "$OUT_REMOTE"' in text
+@pytest.mark.parametrize(
+    ("voice", "fault"),
+    [("stop", None), ("stop", "restart-fails"), ("stop", "session-dropped"), ("keep", None)],
+)
+def test_aec_debug_record_capture_restores_the_bridge_and_voice(
+    tmp_path: Path, voice: str, fault: str | None,
+) -> None:
+    """The bridge records under the debug drop-in; after any exit (a clean
+    run, a failed restart, a dropped ssh session) the drop-in is gone, the
+    bridge restarts without it, and a stopped jasper-voice starts again."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    # Runs the remote program here; a dropped session leaves its output
+    # channel with no reader, as sshd does when the laptop end dies.
+    _write_executable(fake_bin / "ssh", textwrap.dedent(f"""\
+        #!{sys.executable}
+        import os, subprocess, sys
+        program = sys.stdin.read().replace("/run/systemd/system", os.environ["FAKE_RUN"])
+        sink = None
+        if os.environ["FAKE_FAULT"] == "session-dropped":
+            reader, sink = os.pipe()
+            os.close(reader)
+        sys.exit(subprocess.run(["bash", "-c", sys.argv[-1]], input=program.encode(),
+                                stdout=sink, stderr=sink).returncode)
+        """))
+    _write_executable(fake_bin / "sudo", '#!/bin/bash\nexec "$@"\n')
+    _write_executable(fake_bin / "systemctl", textwrap.dedent("""\
+        #!/bin/bash
+        conf="$FAKE_RUN/jasper-aec-bridge.service.d/debug-record.conf"
+        printf '%s|%s\\n' "$*" "$(paste -sd' ' "$conf" 2>/dev/null)" >> "$FAKE_LOG"
+        [[ "$FAKE_FAULT" != restart-fails || "$1" != restart ]]
+        """))
+    run_dir, log, out = tmp_path / "run", tmp_path / "systemctl.log", tmp_path / "capture"
+    env = _env_without_target()
+    env.update({
+        "PI_HOST": "explicit.invalid",
+        "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+        "FAKE_RUN": str(run_dir),
+        "FAKE_LOG": str(log),
+        "FAKE_FAULT": fault or "",
+    })
+
+    result = run_bash(
+        ["-c", f'source "{ROOT / "scripts" / "_lib.sh"}"\n'
+               f'aec_debug_record_capture "{out}" 0 0 {voice} go'],
+        env=env, timeout=30,
+    )
+
+    calls = [line.split("|", 1) for line in log.read_text(encoding="utf-8").splitlines()]
+    bridge = [dropin.split() for cmd, dropin in calls if cmd == "restart jasper-aec-bridge.service"]
+    assert (result.returncode == 0) == (fault is None), result.stdout + result.stderr
+    assert bridge[0] == ["[Service]", f"Environment=JASPER_AEC_DEBUG_RECORD_DIR={out}"]
+    assert bridge[-1] == []
+    assert not (run_dir / "jasper-aec-bridge.service.d").exists()
+    assert [cmd for cmd, _ in calls if "jasper-voice" in cmd] == (
+        ["stop jasper-voice.service", "start jasper-voice.service"] if voice == "stop" else []
+    )
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)

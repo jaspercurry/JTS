@@ -10,6 +10,7 @@ import contextlib
 import errno
 import gc
 import os
+from pathlib import Path
 import stat
 import threading
 import time
@@ -55,23 +56,33 @@ def test_atomic_write_bytes_publishes_exact_bytes_and_leaves_no_temp_file(
     assert not any(tmp_path.glob("*.tmp"))
 
 
-def test_mode_is_applied(tmp_path):
+@pytest.mark.parametrize("umask, mode, expected", [
+    (0o022, 0o600, 0o600), (0o022, None, 0o644),
+    (0o007, None, 0o660), (0o077, None, 0o600),
+])
+def test_mode_is_applied(tmp_path, umask, mode, expected):
     path = tmp_path / "secret.env"
-    atomic_write_text(path, "JASPER_X=1\n", mode=0o600)
-    assert (os.stat(path).st_mode & 0o777) == 0o600
+    previous = os.umask(umask)
+    try:
+        atomic_write_text(path, "JASPER_X=1\n", mode=mode)
+    finally:
+        os.umask(previous)
+    assert (os.stat(path).st_mode & 0o777) == expected
 
 
-def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path):
+@pytest.mark.parametrize("value, default, encoded", [(1, None, "1"), (Path("a/b"), str, '"a/b"')])
+def test_atomic_write_json_uses_canonical_encoding_and_policy(tmp_path, value, default, encoded):
     path = tmp_path / "state.json"
 
     atomic_write_json(
         path,
-        {"z": 1, "a": {"ready": True}},
+        {"z": value, "a": {"ready": True}},
+        default=default,
         mode=0o640,
     )
 
     assert path.read_text(encoding="utf-8") == (
-        '{\n  "a": {\n    "ready": true\n  },\n  "z": 1\n}\n'
+        '{\n  "a": {\n    "ready": true\n  },\n  "z": ' + encoded + '\n}\n'
     )
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
@@ -203,6 +214,39 @@ def _write(writer, path):
             path, lambda cur: {**cur, "JASPER_X": "1"}, mode=0o640
         ),
     }[writer]()
+
+
+@pytest.mark.parametrize("writer", ["update", "transform"])
+@pytest.mark.parametrize("can_chown", [True, False])
+def test_env_writers_preserve_target_owner_when_permitted(
+    tmp_path, monkeypatch, writer, can_chown
+):
+    path = tmp_path / "wizard.env"
+    path.write_text("KEEP=yes\n")
+    path.chmod(0o600)
+    target = path.stat()
+    owner = (target.st_uid + 1, target.st_gid + 1)
+    real_stat = os.stat
+    chowns = []
+
+    def foreign_owner(p, *args, **kwargs):
+        st = real_stat(p, *args, **kwargs)
+        if st.st_ino == target.st_ino:
+            return os.stat_result(tuple(st)[:4] + owner + tuple(st)[6:])
+        return st
+
+    def chown(p, uid, gid):
+        chowns.append((real_stat(p).st_ino, uid, gid))
+        if not can_chown:
+            raise PermissionError(errno.EPERM, "chown denied")
+
+    monkeypatch.setattr(os, "stat", foreign_owner)
+    monkeypatch.setattr(os, "chown", chown)
+    _write(writer, path)
+
+    assert chowns == [(path.stat().st_ino, *owner)]
+    assert path.read_text() == "KEEP=yes\nJASPER_X=1\n"
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 @pytest.mark.parametrize("writer", ["text", "json", "update", "transform"])

@@ -106,11 +106,13 @@ def test_cue_play_busy_409(server_with_voice_socket):
     assert received == ["CUE_PLAY cant_connect"]
 
 
-def test_session_start_cap_503(server_with_voice_socket):
+@pytest.mark.parametrize("result", ["CAP", "NOT_READY"])
+def test_session_start_transient_refusal_503(server_with_voice_socket, result):
     base, voice_responses, _ = server_with_voice_socket
-    voice_responses.append({"result": "CAP"})
+    voice_responses.append({"result": result})
     status, body = _post(f"{base}/session/start", None)
     assert status == 503
+    assert body["result"] == result
 
 
 def test_session_end_no_session_409(server_with_voice_socket):

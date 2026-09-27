@@ -54,6 +54,8 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..identity import reader as identity
 from ..control import household_credential
 from ..multiroom.airplay_latency import with_airplay_latency_fit
@@ -68,7 +70,6 @@ from ._common import (
     dispatch_post,
     local_web_host,
     read_json_body,
-    restart_voice_daemon,
     restart_systemd_units,
     send_html_response,
     send_json_response,
@@ -421,10 +422,8 @@ def _save_bond(handler: BaseHTTPRequestHandler) -> None:
             "roster": [],
         }
         if fresh_bond:
-            # A new pair must not inherit stale balance trim from a previous
-            # bond/unbond cycle. Existing-bond edits omit trim_db so a
-            # calibrated L/R balance is preserved.
-            body["trim_db"] = 0.0
+            # Existing-bond edits preserve calibration; a new pair must not inherit it.
+            body.update(trim_db=0.0, left_delay_ms=0.0, right_delay_ms=0.0)
         if role == "leader":
             # The LEADER records every OTHER member so _unbond can disable ALL
             # of them. peer_addr / peer_name stay the PRIMARY L/R sibling so
@@ -606,7 +605,7 @@ def _unbond(handler: BaseHTTPRequestHandler) -> None:
         ]
 
     # Self first (empty addr → loopback), then each matching peer.
-    disabled_body = {"enabled": False, "trim_db": 0.0}
+    disabled_body = {"enabled": False, "trim_db": 0.0, "left_delay_ms": 0.0, "right_delay_ms": 0.0}
     targets: list[tuple[str, dict]] = [("", dict(disabled_body))]
     targets += [(addr, dict(disabled_body)) for addr in peer_addrs]
     addrs = [t[0] for t in targets]
@@ -1226,5 +1225,4 @@ def make_server(target) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer. `target` is either an (host, port)
     tuple (direct bind) or an already-bound socket (from systemd socket
     activation — see jasper/web/__main__.py)."""
-    from ..platform.systemd import make_http_server
-    return make_http_server(target, _make_handler())
+    return systemd.make_http_server(target, _make_handler())

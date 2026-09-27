@@ -16,12 +16,14 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
+from jasper.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig, total_positive_boost_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
 from ._common import coerce_finite_float
+from .anchor_provenance import provenance_mismatches, read_graph, read_pose
 from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 
@@ -59,18 +61,38 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any])
     return max(0.0, dynamic_bass_gain_reserve_db(candidate) - dynamic_bass_gain_reserve_db(applied))
 
 
+def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float]) -> float:
+    """The most a graph without ``room_peqs`` plays above one with them across
+    ``band_hz``: their positive-boost charge less their lowest response there
+    (ADR-0370). Never negative, since the charge bounds their peak."""
+    if not room_peqs:
+        return 0.0
+    low, high = band_hz
+    steps = max(1, math.ceil(48 * math.log2(high / low)))
+    grid = sorted({*(low * (high / low) ** (step / steps) for step in range(steps + 1)),
+                   *(peq.freq for peq in room_peqs if low <= peq.freq <= high)})
+    trig = freq_trig(grid)
+    response = [sum(values) for values in zip(*(
+        filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
+        for peq in room_peqs))]
+    return total_positive_boost_db(room_peqs) - min(response)
+
+
 def predicted_rung_admission(
     fader_db: float, anchor: ResolvedLevel, candidates: Mapping[str, Mapping[str, Any]], *,
-    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float,
+    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float, room_off_rise_db: float | None = None,
 ) -> dict[str, Any]:
+    """``room_off_rise_db`` is how much louder a take with the room layer cleared
+    plays than the anchor's graph, for a plan that clears it (ADR-0370)."""
     lift, name = max((rung_lift_bound_db(descriptor, applied), name) for name, descriptor in candidates.items())
-    margin = tolerance_db + lift
+    margin = tolerance_db + lift + (room_off_rise_db or 0.0)
     bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
     predicted = anchor.db_spl_at(fader_db)
     # 1e-9 dB clears db_spl_at's rounding; a one-ulp fader step can round back above the bound.
     level = fader_db - (predicted - bound) - 1e-9 if predicted > bound else fader_db
     return {"level_db": level, "admitted_db_spl": anchor.db_spl_at(level), "candidate_id": name,
             "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
+            **({"room_off_rise_db": room_off_rise_db} if room_off_rise_db is not None else {}),
             "margin_db": margin, "margin_bound_db_spl": bound,
             **({"bound_by": "commissioning_margin"} if level < fader_db else {})}
 
@@ -211,6 +233,8 @@ def seat_level_reference_status() -> dict[str, Any] | None:
     return None if record is None else {
         "seat_level_reference_volume_db": _reference_volume_db(record),
         "leveled_db_spl": record.get("measured_db_spl"),
+        "graph": record.get("graph"), "pose": record.get("pose"),
+        **provenance_mismatches(record, graph=read_graph(), pose=read_pose()),
     }
 
 
@@ -236,6 +260,8 @@ def write_seat_level_reference(
     sensitivity: dict[str, Any],
     max_main_volume_db: float,
     stimulus: StimulusProvenance | None = None,
+    graph: Mapping[str, Any] | None = None,
+    pose: Mapping[str, Any] | None = None,
     ambient_report: Mapping[str, Any] | None = None,
     state_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -268,6 +294,8 @@ def write_seat_level_reference(
         "mic_sensitivity": dict(sensitivity),
         "max_main_volume_db": round(float(max_main_volume_db), 3),
         "stimulus": None if stimulus is None else stimulus.to_dict(),
+        "graph": dict(graph) if graph is not None else None,
+        "pose": dict(pose) if pose is not None else None,
         "ambient_report": None if ambient_report is None else dict(ambient_report),
     }
     atomic_write_json(path, payload, mode=0o640)
@@ -314,6 +342,8 @@ class ResolvedLevel:
 class AnchorFacts:
     record: Mapping[str, Any]
     sensitivity: MicSensitivity | None
+    graph: Mapping[str, Any] | None = None
+    pose: Mapping[str, Any] | None = None
 
 
 def resolve_anchor_level(
@@ -382,7 +412,10 @@ def resolve_anchor_level(
         reference_volume_db=reference_volume_db,
         mic_serial=sensitivity.serial, session_id=str(record["session_id"]),
         leveled_at=str(record["leveled_at"]), target_db_spl=target,
-    ), {"anchor_mic_serial": str(banked_serial) if banked_serial else None, "anchor_rebased_db": rebased - anchor}
+    ), {"anchor_mic_serial": str(banked_serial) if banked_serial else None, "anchor_rebased_db": rebased - anchor,
+        **provenance_mismatches(record,
+            graph=facts.graph if facts is not None else read_graph(compile_graph=True) if record.get("graph") else None,
+            pose=facts.pose if facts is not None else read_pose() if record.get("pose") else None)}
 
 
 def check_target_capture_dbfs(sensitivity: Any, anchor_db_spl: float) -> float:

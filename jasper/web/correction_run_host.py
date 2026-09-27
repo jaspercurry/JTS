@@ -235,7 +235,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             manifest.detail = exception_detail(exc)
             raise
         finally:
-            door.opened = bound.door.opened if bound else None
+            door.isolation = bound.door.isolation if bound else None
             await packet.finish()
             summary = packet.to_dict()
             gate.publish({key: summary[key] for key in ("status", "reason", "level", "runs", "honoured")} |

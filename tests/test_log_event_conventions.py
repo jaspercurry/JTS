@@ -73,13 +73,13 @@ _EVENT_IN_TEXT = re.compile(r"event=([a-z0-9_.]*)")
 _SHAPE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$")
 
 # Files that READ event names back: a doctor hint naming what to grep, a
-# `/state` sampler scanning the journal. deploy/bin/ is not among them — its
-# `event=` lines are its own shell emissions, and a shell-emitted name is
-# outside a Python AST collector's reach either way.
+# `/state` sampler scanning the journal. The rest of deploy/bin/ is not among
+# them — its `event=` lines are its own shell emissions, and a shell-emitted
+# name is outside a Python AST collector's reach either way.
 _READER_PATHS = (
     "jasper/cli/doctor",
     "jasper/control",
-    "scripts/journal-review.sh",
+    "deploy/bin/journal-review.sh",
     "scripts/fetch-pi-logs.sh",
 )
 
@@ -94,7 +94,6 @@ _READER_PATHS = (
 DEFERRED_ACTIVE_ZONE: dict[str, set[str]] = {
     "jasper/active_speaker/camilla_yaml/emit_baseline.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_commissioning.py": {"*"},
-    "jasper/active_speaker/camilla_yaml/emit_driver_domain.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_program.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_program_bake.py": {"*"},
     "jasper/active_speaker/camilla_yaml/emit_startup.py": {"*"},

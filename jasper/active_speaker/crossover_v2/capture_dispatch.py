@@ -45,6 +45,11 @@ VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 #: here, never above the admission bound under its own stop (ADR-0361).
 NEAR_FIELD_TARGET_DB_SPL = 80.0
 NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
+#: The most one near-field level retake raises a take's gain (ADR-0361).
+NEAR_FIELD_MAX_RAISE_DB = 15.0
+#: dB a VERIFY sweep's impulse must clear its take's ambient floor by; real jts3 takes
+#: read 9.1 dB and up (replay: #5672).
+SWEEP_OVER_AMBIENT_MIN_DB = 6.0
 
 
 def capped_gain_ceilings(
@@ -105,7 +110,8 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
 def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
     """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
     probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
-    solved = solve_gain(level.reading, target_db=level.target_db_spl)
+    solved = solve_gain(level.reading, target_db=level.target_db_spl,
+                        tolerance_db=NEAR_FIELD_TARGET_TOLERANCE_DB, max_raise_db=NEAR_FIELD_MAX_RAISE_DB)
     shortfall = solved - level.peak_dbfs if probe else 0.0
     return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                        next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
@@ -233,6 +239,7 @@ def _assess_recording(
         "discontinuity_samples": analysis.discontinuity_samples,
         "peak_dbfs": max((loc.peak_dbfs for loc in stimuli), default=None),
         "locate_confidence_min": min((loc.confidence for loc in stimuli), default=None),
+        "sweep_over_ambient_db": analysis.sweep_over_ambient_db,
         **locate_confidences,
     }
     evidence.update({key: value if isinstance(value, bool) else float(value)
@@ -294,6 +301,9 @@ def _assess_recording(
         return refuse(reasons.REASON_CAPTURE_OVERRUN, next="retake_same", charge="speaker")
     if evidence["frame_loss"]:
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
+    over_ambient = analysis.sweep_over_ambient_db
+    if analysis.pilot_snr_ok is True and over_ambient is not None and over_ambient < SWEEP_OVER_AMBIENT_MIN_DB:
+        return refuse(reasons.REASON_SWEEP_MISSING, next="retake_same", charge="speaker")
     if not _stimulus_locate_ok(analysis):
         return quiet(reasons.REASON_LOCATE_FAILED)
     if evidence["anchor_ambiguous"]:

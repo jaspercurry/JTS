@@ -5,7 +5,7 @@
 """Citi Bike transit provider — keyless, GBFS-backed.
 
 Implements `TransitProvider` for the wizard at `/assistant/transit/`. The
-GBFS fetcher and runtime client live in `jasper.citibike`; this
+GBFS fetcher and runtime client live in `jasper.transit.citibike`; this
 module is the thin wizard adapter that uses the same fetcher to
 present "nearest stations" with a live snapshot of capacity.
 
@@ -24,14 +24,8 @@ import logging
 from collections.abc import Mapping
 
 from ...env_load import parse_bool_value
+from .. import citibike
 from ..base import BoundingBox, Stop, haversine_miles
-
-# `jasper.citibike` imports `from .transit.base import TransitError`,
-# which triggers `transit/__init__.py`, which transitively loads this
-# provider module — re-entering `jasper.citibike` mid-init would hit a
-# partial module without the GBFS symbols. Lazy-import inside
-# `find_stops_near` breaks the cycle: by the time anything calls the
-# method, both modules have finished loading.
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +67,8 @@ class _CitiBike:
         credentials: dict[str, str] | None = None,
         count: int = 10,
     ) -> list[Stop]:
-        from ...citibike import (
-            INFO_TTL_SECONDS,
-            STATION_INFO_URL,
-            STATION_STATUS_URL,
-            STATUS_TTL_SECONDS,
-            fetch_feed,
-        )
-        info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
-        status = fetch_feed(STATION_STATUS_URL, STATUS_TTL_SECONDS)
+        info = citibike.fetch_feed(citibike.STATION_INFO_URL, citibike.INFO_TTL_SECONDS)
+        status = citibike.fetch_feed(citibike.STATION_STATUS_URL, citibike.STATUS_TTL_SECONDS)
         status_by_id = {
             s["station_id"]: s
             for s in (status.get("data") or {}).get("stations", [])
@@ -132,20 +119,16 @@ class _CitiBike:
         return {k: "citibike is keyless" for k in credentials} or None
 
     def build_client(self, env: Mapping[str, str]) -> object | None:
-        # Parse our own keys (mirrors Config.citibike_*): empty station list
-        # disables the tool. Lazy import also avoids the cycle described above.
-        from ...citibike import CitiBikeClient, parse_saved_stations
-
-        stations = list(parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
+        stations = list(citibike.parse_saved_stations(env.get("JASPER_CITIBIKE_STATIONS", "")))
         if not stations:
             return None
         ebike_only = parse_bool_value(
             env.get("JASPER_CITIBIKE_EBIKE_ONLY"),
         ) is True
-        return CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
+        return citibike.CitiBikeClient(saved_stations=stations, ebike_only=ebike_only)
 
     def make_tools(self, client: object):
-        from ...tools.citibike import make_citibike_tools  # lazy
+        from ...tools.citibike import make_citibike_tools  # lazy: cycle via transit/__init__ imports this provider
 
         return make_citibike_tools(client)
 

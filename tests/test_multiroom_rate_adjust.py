@@ -251,7 +251,7 @@ def test_doctor_check_covers_the_active_follower(monkeypatch, tmp_path):
     config_file = tmp_path / "active.yml"
     config_file.write_text("devices:\n  enable_rate_adjust: true\n")
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
 
@@ -291,7 +291,7 @@ def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
     config_file = tmp_path / "active.yml"
     config_file.write_text("devices:\n  enable_rate_adjust: true\n")
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
 
@@ -320,7 +320,7 @@ def test_doctor_check_will_not_claim_rate_adjust_off_it_cannot_read(
     # A devices block with no enable_rate_adjust key at all.
     config_file.write_text("devices:\n  samplerate: 48000\n")
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
 
@@ -351,7 +351,7 @@ def test_doctor_backstops_on_an_unreadable_active_config(
     monkeypatch, tmp_path, check_name, unreadable, status, reason_name,
 ):
     """Both backstops read the active CamillaDSP config through the same
-    reader (correction._active_camilla_config_path)."""
+    reader (correction.active_camilla_config_path)."""
     import jasper.cli.doctor.correction as corrmod
     import jasper.cli.doctor.grouping as groupmod
     import jasper.multiroom.config as cfgmod
@@ -363,14 +363,14 @@ def test_doctor_backstops_on_an_unreadable_active_config(
     )
     if unreadable == "statefile":
         monkeypatch.setattr(
-            corrmod, "_active_camilla_config_path",
+            corrmod, "active_camilla_config_path",
             lambda: ("/var/lib/jasper/camilla-active.yml", None),
         )
     else:
         unreadable_path = tmp_path / "active.yml"
         unreadable_path.mkdir()
         monkeypatch.setattr(
-            corrmod, "_active_camilla_config_path",
+            corrmod, "active_camilla_config_path",
             lambda: ("statefile", str(unreadable_path)),
         )
 
@@ -390,7 +390,7 @@ def test_doctor_check_warns_active_leader_with_rate_adjust_on(monkeypatch, tmp_p
     config_file = tmp_path / "active.yml"
     config_file.write_text("devices:\n  volume_limit: 0.0\n  enable_rate_adjust: true\n")
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
@@ -412,7 +412,7 @@ def test_doctor_check_ok_active_leader_rate_adjust_off(monkeypatch, tmp_path):
     config_file = tmp_path / "active.yml"
     config_file.write_text("devices:\n  enable_rate_adjust: false\n")
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
     from jasper.cli.doctor.grouping import check_grouping_rate_adjust
@@ -445,7 +445,7 @@ def test_leader_pipe_check_warns_on_solo_config_and_passes_on_emitted_pipe(
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: leader)
     config_file = tmp_path / "active.yml"
     monkeypatch.setattr(
-        corrmod, "_active_camilla_config_path",
+        corrmod, "active_camilla_config_path",
         lambda: ("statefile", str(config_file)),
     )
 
@@ -756,7 +756,7 @@ def _tts_lane_check(
     monkeypatch.setattr(
         groupmod,
         "_resolved_jasper_voice_env",
-        lambda: (groupmod._parse_systemd_environment(resolved_voice_text), ""),
+        lambda: (groupmod.parse_systemd_environment(resolved_voice_text), ""),
     )
     monkeypatch.setattr(
         gemod, "output_topology_state", lambda: (active_box, not active_box)
@@ -962,10 +962,7 @@ def test_grouping_tts_route_matrix_matches_reconciler_writers():
 
 
 def test_camilla_block_field_shared_scanner():
-    """The ONE config-field scanner the doctor's three checks share. Returns the
-    raw value (scalar), "" for a nested-block key (presence), None when the
-    block or key is absent, and is block-scoped (no cross-block match)."""
-    from jasper.cli.doctor._shared import _camilla_block_field
+    from jasper.cli.doctor.grouping import _camilla_block_field
     cfg = (
         "devices:\n  volume_limit: 0.0\n  enable_rate_adjust: true\n"
         "mixers:\n  channel_select:\n    channels: { in: 2, out: 2 }\n"

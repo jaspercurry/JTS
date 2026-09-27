@@ -102,7 +102,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     segment_stimulus,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.audio_measurement.program_analysis import locate as locate_mod
@@ -1542,6 +1542,27 @@ def test_the_seam_returns_both_of_the_aligners_scores():
     assert scores["silence"][0] > scores["silence"][1] * ANCHOR_DISCRIMINATION_RATIO
 
 
+@pytest.mark.parametrize(("full", "banded", "kept", "reads"), [
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.25, SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.1, "full", 2),
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR - 0.25, SWEEP_LOCATE_CONFIDENCE_FLOOR, "banded", 2),
+    (SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_LOCATE_CONFIDENCE_FLOOR + 0.2, "full", 1),
+], ids=["both_under_floor", "in_band_clears", "full_band_clears"])
+def test_the_in_band_sweep_reading_counts_only_when_it_clears_the_floor(monkeypatch, full, banded, kept, reads):
+    """``_locate_sweep`` reads above the modal tails only when the full band misses
+    the locate floor, and keeps that reading only when it clears the floor (#5632)."""
+    sweep = _verify_program().segment("sweep_verify")
+    readings = {"full": (101, full, 0.5), "banded": (102, banded, 0.6)}
+    bands = []
+
+    def locate(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
+        bands.append(band_hz)
+        return readings["full" if band_hz is None else "banded"]
+
+    monkeypatch.setattr(locate_mod, "_locate_in_window", locate)
+    assert locate_mod._locate_sweep(np.zeros(1), np.zeros(1), 100, sweep, sample_rate=SR) == readings[kept]
+    assert [band is None for band in bands] == [True, False][:reads]
+
+
 @pytest.mark.parametrize(
     ("confidence", "step", "corroborated"),
     [(0.18, -1066.7, False),
@@ -1755,23 +1776,21 @@ def test_a_near_tie_the_schedule_does_not_explain_is_still_refused(monkeypatch, 
     assert cd.assess(analysis, phase=phase, program=prog).fault == "anchor_ambiguous"
 
 
-@pytest.mark.parametrize(("seed", "code", "charge"), [
-    (0, "anchor_too_quiet", "speaker"),
-    (11, "locate_failed", "operator"),
-])
-def test_a_take_whose_sweep_never_played_keeps_its_refusal(seed, code, charge):
-    """The in-band view counts only when it clears the locate floor, so below it
-    the full-band reading stands. These two sweep windows read one side of 0.1 in
-    full band and the other side in-band, so a leak in either direction moves
-    their refusal and who pays for it."""
+@pytest.mark.parametrize(("seed", "played"), [(0, False), (11, False), (0, True)])
+def test_a_take_whose_sweep_never_played_is_refused_as_missing(seed, played):
+    """The pilots clear the room, so the take is anchored; a sweep window of room
+    noise is refused however its locate scores fall against their floors (#5672)."""
     prog = _verify_program()
     cap = _pristine(prog, seed=seed)
-    sweep = prog.segment("sweep_verify")
-    start, span = GLOBAL_OFFSET + sweep.start_sample, sweep.n_samples + 4800
-    cap[start:start + span] = np.random.default_rng(seed + 100).normal(0.0, 1e-4, span)
+    if not played:
+        sweep = prog.segment("sweep_verify")
+        start, span = GLOBAL_OFFSET + sweep.start_sample, sweep.n_samples + 4800
+        cap[start:start + span] = np.random.default_rng(seed + 100).normal(0.0, 1e-4, span)
 
     verdict = cd.assess(analyze_program_capture(prog, cap, SR), phase="verify", program=prog)
-    assert (verdict.fault, verdict.charge) == (code, charge)
+    refused = ("sweep_missing", "retake_same", "speaker")
+    assert (verdict.fault, verdict.next, verdict.charge) == ((None, "accept", "none") if played else refused)
+    assert (verdict.evidence["sweep_over_ambient_db"] >= cd.SWEEP_OVER_AMBIENT_MIN_DB) is played
 
 
 def test_check_keeps_the_witness_only_guard_where_its_witness_has_a_twin(monkeypatch):

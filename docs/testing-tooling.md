@@ -73,7 +73,7 @@ every crate in the CI Rust job; `jasper-host-clock` alone gets `--all-features`.
 
 Every test is bounded at **300 s** (`timeout` / `timeout_method` in
 `[tool.pytest.ini_options]`, pinned by
-`tests/test_dependency_groups.py::test_hang_backstop_is_configured_and_uses_the_signal_method`).
+`tests/test_build_and_ci_contracts.py::test_hang_backstop_is_configured_and_uses_the_signal_method`).
 
 - **`timeout_method = "signal"` is load-bearing.** `thread` kills the whole
   pytest process and loses every later result; `signal` fails only the stuck
@@ -172,7 +172,7 @@ Live Pi state without modifying anything:
 | `curl -s http://jts.local/system/diagnostics.json \| jq` | Dashboard doctor snapshot: the last root-fidelity `jasper-doctor --json` result, refreshed in the background so the page never blocks |
 | `curl -s http://jts.local:8780/state \| jq` | The daemon's own in-process posture — voice, audio (incl. `output_hardware`), fanin/outputd/source_selection, resilience supervisors, cues, measurement, debug (ADR-0270). A health fact lives in `/system/diagnostics.json` or a doctor row instead |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Journals + previous-boot OOM/watchdog/reboot forensics + boot timelines + configs + ALSA state into `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks and `log-noise-summary-latest.txt` |
-| [`scripts/journal-review.sh`](../scripts/journal-review.sh) | Read-only journal-health digest run ON the Pi over `--since` (default `7 days ago`): disk usage/retention, per-unit restart counts, warning+ volume, top `event=` keys with a week-over-week delta, OOM/watchdog and repeated-message fingerprints. `--json`; bounded, always exits 0. Also runs weekly from `jasper-journal-review.timer` (writes only its state file) |
+| [`deploy/bin/journal-review.sh`](../deploy/bin/journal-review.sh) | Read-only journal-health digest run ON the Pi (`sudo jasper-journal-review`) over `--since` (default `7 days ago`): disk usage/retention, per-unit restart counts, warning+ volume, top `event=` keys with a week-over-week delta, OOM/watchdog and repeated-message fingerprints. `--json`; bounded, always exits 0. Also runs weekly from `jasper-journal-review.timer` (writes only its state file) |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with `MemoryHigh`/`MemoryMax`/`MemorySwapMax=0`/`RuntimeMaxSec` and a positive `OOMScoreAdjust`. Laptop-side — it SSHes to `$PI_HOST` |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail of `event=` lines only (duck transitions, source preempts, volume routing, wake/turn boundaries) |
@@ -429,17 +429,17 @@ Constraints worth knowing:
 Both use the AEC bridge's debug-record mode (`JASPER_AEC_DEBUG_RECORD_DIR`, see
 [`jasper/cli/aec_bridge.py`](../jasper/cli/aec_bridge.py) `_aec_loop` — three
 time-aligned WAVs: `mic_ch1` raw chip, `aec_output` post-AEC3, `ref` playback
-reference), apply the same systemd drop-in override, and stop `jasper-voice`
-during capture. Outputs are renamed `aec-off.wav` / `aec-on.wav` /
-`reference.wav`.
+reference) through one helper, `aec_debug_record_capture` in
+[`scripts/_lib.sh`](../scripts/_lib.sh), and stop `jasper-voice` during
+capture. Outputs are renamed `aec-off.wav` / `aec-on.wav` / `reference.wav`.
 
 | Tool | Methodology | Output | When |
 |---|---|---|---|
 | [`scripts/wake-rate-test.sh`](../scripts/wake-rate-test.sh) | Fixed track played from a phone; cross-correlation locates each utterance; per-utterance detection status | `logs/wake-rate/<session>/test-<N>/` | Reproducible cross-session A/B of bridge configs, AEC engines or wake models |
 | [`scripts/capture-reference-condition.sh`](../scripts/capture-reference-condition.sh) | Live speech, one capture per stylistic condition (whisper-quiet, music-yell, …) | `reference-conditions/<condition>/` | Personalized baseline covering real speech variation. User-private, gitignored |
 
-**They share the same orchestration mechanism.** A third "bridge capture"
-script almost certainly wants to be a flag on one of these two.
+A new bridge capture calls the same helper, as
+`scripts/verify-ref-no-silence-bug.sh` does.
 
 ---
 
@@ -745,8 +745,8 @@ tuning CLI.
 The adapter runs as a subprocess at
 `/opt/jasper/jasper/turntable/jts_turntable.py`. Root must be able to
 detect it. A loop polls the session, checks power, moves, settles for 30 seconds,
-and sends `position-ready`. The adapter's confirmation flags come from the
-person's attestation; a power sign voids it.
+and sends `position-ready`. The run is refused unless the person attests the
+arm's path is clear (`--attest-rig-clear`); a power sign voids it.
 
 ---
 

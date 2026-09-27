@@ -39,7 +39,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from tests.crossover_v2_fixtures import _preset
 
@@ -162,7 +162,7 @@ def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):
     tests. ``{}`` is the box with no measured evidence at all.
     """
     monkeypatch.setattr(
-        v2state, "_resolve_measurement_level_trims",
+        v2state, "resolve_measurement_level_trims",
         lambda spec, *, preset, topology: (
             (dict(trims), source) if spec.level_matched else ({}, "")
         ),
@@ -198,7 +198,7 @@ def test_the_resolver_asks_the_ONE_owner_and_states_which_evidence_answered(
 
     monkeypatch.setattr(driver_base_trim, "measured_level_trims", _owner)
     _stub_evidence_loaders(monkeypatch)
-    trims, source = v2state._resolve_measurement_level_trims(
+    trims, source = v2state.resolve_measurement_level_trims(
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
         preset=object(), topology=None,
     )
@@ -220,7 +220,7 @@ def test_the_resolver_answers_empty_for_a_walk_that_asked_for_no_level_match(
 
     monkeypatch.setattr(driver_base_trim, "measured_level_trims", _never)
 
-    assert v2state._resolve_measurement_level_trims(
+    assert v2state.resolve_measurement_level_trims(
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE), preset=None, topology=None,
     ) == ({}, "")
 
@@ -248,7 +248,7 @@ def test_an_unexpected_resolve_fault_propagates_instead_of_masquerading(
     _stub_evidence_loaders(monkeypatch)
 
     with pytest.raises(_Boom):
-        v2state._resolve_measurement_level_trims(
+        v2state.resolve_measurement_level_trims(
             MeasureSpec(kind=MEASURE_KIND_CANDIDATE, level_matched=True),
             preset=object(), topology=None,
         )

@@ -2,25 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Citi Bike voice tool.
-
-One tool, `get_citibike_status`, that returns live availability at
-the saved stations parsed from `JASPER_CITIBIKE_STATIONS`. The
-factory short-circuits to `[]` when no stations are saved, so the
-LLM never sees a tool that would always return an empty stations
-list — consistent with `make_subway_tools` / `make_bus_tools`.
-
-`CitiBikeClient.get_status` is sync (GBFS is two CDN requests with
-in-process caching; no parallel fan-out to warrant an AsyncClient).
-The tool wraps it in `asyncio.to_thread` so the realtime LLM
-session never blocks — mirrors the `jasper.subway` pattern.
-"""
+"""Citi Bike voice tool backed by the saved stations."""
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from ..citibike import CitiBikeClient
+from ..transit.citibike import CitiBikeClient
 from ..log_event import log_event
 from ..transit.base import TransitError
 from . import tool
@@ -40,15 +28,43 @@ GET_CITIBIKE_STATUS_LLM_DESCRIPTION = (
 )
 
 
-def make_citibike_tools(client: CitiBikeClient | None):
-    """Build the citi-bike status tool backed by a CitiBikeClient.
+async def _citibike_status(client: CitiBikeClient, station_label: str) -> dict:
+    try:
+        stations = await asyncio.to_thread(
+            client.get_status, station_filter=station_label,
+        )
+    except TransitError as exc:
+        log_event(
+            logger,
+            "transit.citibike.tool.error",
+            outcome="fetch_failed",
+            filter=station_label,
+            err=exc,
+            level=logging.WARNING,
+        )
+        return {"error": f"Citi Bike data is unavailable: {exc}"}
 
-    Returns an empty list when no Citi Bike stations are configured
-    (cleared or never set) — so the model never sees a tool whose
-    every call would return zero stations."""
-    if client is None or not client.enabled:
-        return []
+    no_match = bool(station_label.strip()) and not stations
+    log_event(
+        logger,
+        "transit.citibike.tool.result",
+        filter=station_label,
+        returned=len(stations),
+        no_match=no_match,
+        ebike_only=client.ebike_only,
+    )
+    return {
+        "stations": [
+            s.as_dict(include_classic=not client.ebike_only)
+            for s in stations
+        ],
+        "ebike_only_mode": client.ebike_only,
+        "filter": station_label,
+        "no_match": no_match,
+    }
 
+
+def _make_citibike_status(client: CitiBikeClient):
     @tool(
         labels=("transit", "nyc", "bikeshare"),
         llm_description=GET_CITIBIKE_STATUS_LLM_DESCRIPTION,
@@ -140,42 +156,12 @@ def make_citibike_tools(client: CitiBikeClient | None):
         On error returns {error: ...}; speak the error verbatim so
         the user knows what to clarify.
         """
-        try:
-            stations = await asyncio.to_thread(
-                client.get_status, station_filter=station_label,
-            )
-        except TransitError as exc:
-            # Both feeds missing AND no cache anywhere — fetcher
-            # already logged the underlying outcome bucket. Surface
-            # a single LLM-visible error string; voice prompt says
-            # "speak the error verbatim".
-            log_event(
-                logger,
-                "transit.citibike.tool.error",
-                outcome="fetch_failed",
-                filter=station_label,
-                err=exc,
-                level=logging.WARNING,
-            )
-            return {"error": f"Citi Bike data is unavailable: {exc}"}
+        return await _citibike_status(client, station_label)
 
-        no_match = bool(station_label.strip()) and not stations
-        log_event(
-            logger,
-            "transit.citibike.tool.result",
-            filter=station_label,
-            returned=len(stations),
-            no_match=no_match,
-            ebike_only=client.ebike_only,
-        )
-        return {
-            "stations": [
-                s.as_dict(include_classic=not client.ebike_only)
-                for s in stations
-            ],
-            "ebike_only_mode": client.ebike_only,
-            "filter": station_label,
-            "no_match": no_match,
-        }
+    return get_citibike_status
 
-    return [get_citibike_status]
+
+def make_citibike_tools(client: CitiBikeClient | None):
+    if client is None or not client.enabled:
+        return []
+    return [_make_citibike_status(client)]

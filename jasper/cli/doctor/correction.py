@@ -365,8 +365,7 @@ def _uploaded_calibrations_needing_sign_review() -> list[str]:
     convention.
 
     A calibration file states the microphone's RESPONSE and JTS negates it.
-    Vendor records are repaired on deploy (``migrate_stored_sign_conventions``);
-    an UPLOADED record carries the household's own declaration about a file JTS
+    An UPLOADED record carries the household's own declaration about a file JTS
     never saw, so it is surfaced for review and never flipped silently.
     """
     from jasper.audio_measurement import calibration
@@ -435,7 +434,7 @@ def check_correction_state_dirs() -> CheckResult:
         reason=REASON_UPLOADED_CALIBRATION_SIGN_REVIEW,
     )
 
-def _active_camilla_config_path() -> tuple[Path, str | None]:
+def active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
 
     The path comes from ``jasper.paths``' one resolver and the parse from
@@ -454,7 +453,7 @@ def check_correction_current_config() -> CheckResult:
         is_jts_generated_config,
     )
 
-    statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
+    statefile, config_path = evidence.get("camilla_config", active_camilla_config_path)
     if config_path is None:
         return CheckResult(
             "current correction", "warn",

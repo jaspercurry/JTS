@@ -51,7 +51,7 @@ LONDON_STATE = {
 def stub_gbfs(monkeypatch):
     """Stub the Citi Bike GBFS fetch so the with-coords render never makes a
     real HTTP call (the card SIRI/GBFS-probes during render)."""
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: {"data": {"stations": []}},
@@ -196,7 +196,7 @@ def test_with_coords_renders_citibike_ebike_toggle(stub_gbfs):
 
 
 def test_ebike_only_checkbox_checked_when_set(monkeypatch):
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: {"data": {"stations": []}},

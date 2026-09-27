@@ -83,6 +83,8 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..log_event import log_event
 from .. import wake_models
@@ -105,7 +107,6 @@ from ._common import (
     proxy_post,
     read_json_body,
     resolve_samples,
-    restart_voice_daemon,
     route_path,
     send_html_response,
     send_proxy_json,
@@ -531,7 +532,7 @@ _LAYER_BODY_LIMIT = 4096
 # bound plus the broker's client socket margin
 # (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s) rather than the bare exec
 # bound. jasper-control bounds both legs at
-# aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC (2 s), so the worst case is
+# handlers.aec._ONESHOT_KICK_TIMEOUT_SEC (2 s), so the worst case is
 # 2 * (2 + 5) = 14 s; this proxy timeout must clear that or a merely-slow
 # broker leg becomes a 502 after the kick is already enqueued.
 _AEC_BROKER_KICK_PROXY_TIMEOUT_SEC = 15.0
@@ -904,6 +905,5 @@ def make_server(
     state_path: str = WAKE_MODEL_ENV_PATH,
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> ThreadingHTTPServer:
-    from ..platform import systemd
     cfg = {"state_path": state_path, "control_base": control_base}
     return systemd.make_http_server(target, _make_handler(cfg))

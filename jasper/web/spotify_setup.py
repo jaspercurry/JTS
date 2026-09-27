@@ -79,6 +79,8 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..env_load import SPOTIFY_CREDENTIALS_ENV_PATH
 from ..accounts import (
     ACCOUNT_NAME_PATTERN,
@@ -115,7 +117,6 @@ from ._common import (
     flash_error,
     form_guarded,
     restart_systemd_units,
-    restart_voice_daemon,
     send_html_response,
     send_json_response,
     send_see_other,
@@ -1280,7 +1281,6 @@ def make_server(
     socket.socket (systemd handoff), an (host, port) tuple, or an
     int port (legacy 127.0.0.1 bind). Mirrors voice_setup.make_server
     so jasper.web.__main__ can drive both uniformly."""
-    from ..platform import systemd
     cfg = _build_cfg(
         registry_path=registry_path,
         bounce_redirect_uri=(

@@ -81,11 +81,10 @@ def _short_id(candidate_id: Any) -> str:
     return str(candidate_id or "")[:12]
 
 
-def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
+def rear_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
     """Numbers-only lines for each banked ``rear`` comparison: the band, its
     reference and repeat spread, then one line per candidate naming its
-    changed control family, headroom cost and worst pooled regression.
-    ``jasper-round-views rear`` reads the same entries back."""
+    changed control family, headroom cost and worst pooled regression."""
     def number(value: float | None) -> str:
         return f"{value:.1f}" if value is not None else "null"
 
@@ -119,7 +118,6 @@ def rear_lines(entries: Sequence[Mapping[str, Any]], target: Path) -> list[str]:
                 f"headroom_change_db={number(candidate['headroom_change_db'])}; "
                 f"worst_regression={worst_repr}"
             )
-    lines.append(shlex.join([PROG, "rear", str(target)]))
     return lines
 
 
@@ -206,11 +204,6 @@ def packet_index(
                                for group in packet["sets"] for take in group["takes"]
                                if not take["selected"] and (fault := take["fault"])))
     lines.append("## Decisions")
-    commissioning = packet.get("commissioning") or {}
-    if commissioning.get("candidate_fingerprint"):
-        lines.insert(4, f"commissioning: apply {commissioning['candidate_fingerprint']} to finish")
-    if commissioning.get("status") == "alignment_unmeasured":
-        lines.insert(4, f"alignment_unmeasured: {commissioning['reason']}")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
     takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}
@@ -230,7 +223,7 @@ def packet_index(
                 mark = f" (below trusted floor {series.get('trusted_floor_hz')} Hz)" if row.get("below_trusted_floor") else ""
                 stats.append(f"{label}={json.dumps(row['value'])}{mark}")
         lines.append(f"series {series['role']}: pose {_pose_token(series['pose'])}; " + "; ".join(stats)
-                     + f"; set {series['set_id']}; take {series['take_id']}"
+                     + f"; candidate {series.get('candidate_id')}; set {series['set_id']}; take {series['take_id']}"
                      + (f"; window {series['window']}" if series.get("window") else ""))
     lines += [f"crossover_band_spread=null; reason={reason}" for reason in dict.fromkeys(
         fit.get("crossover_band_spread_reason") for fit in packet["fits"]
@@ -257,7 +250,7 @@ def packet_index(
     if bass_rows := bass_table_rows(packet.get("bass_table", {})):
         lines.append(bass_table_markdown(bass_rows))
     if rear_entries := packet.get("rear"):
-        lines.append("\n".join(rear_lines(rear_entries, target)))
+        lines.append("\n".join(rear_lines(rear_entries)))
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",
               "## Tools", "\n".join(f"- `{cmd}`" for cmd in dict.fromkeys(commands)),
               f"Fingerprint: {packet['packet_fingerprint']}"]

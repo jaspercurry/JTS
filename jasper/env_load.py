@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, overload
 
 from jasper.env_file import parse_env_mapping, read_env_file_text
 
@@ -54,6 +54,7 @@ AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
 AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
+GOOGLE_CREDENTIALS_ENV_PATH = "/var/lib/jasper-secrets/google_credentials.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 #: PERSISTENT (never /run) so a bonded speaker boots with the content lane
@@ -90,13 +91,9 @@ ENV_FILES = (
     SPEAKER_NAME_ENV_PATH,
     SPOTIFY_CREDENTIALS_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
-    # High-value provider/Google secrets live in jasper-secrets (voice+web), while HA +
-    # Spotify integration secrets live in jasper-intsecrets (voice+control+mux+web). A
-    # non-member CLI/daemon that runs env_load simply reads {} for an unreadable
-    # compartment file (parse_env_file is fail-soft on EACCES); the root jasper-doctor
-    # reads them fine.
+    # Compartment non-members load no values on EACCES; root doctor can read them.
     "/var/lib/jasper-secrets/voice_keys.env",
-    "/var/lib/jasper-secrets/google_credentials.env",
+    GOOGLE_CREDENTIALS_ENV_PATH,
     "/var/lib/jasper-secrets/google_routes.env",
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
@@ -140,24 +137,34 @@ class EnvFileState:
         return self.status == "loaded"
 
 
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
-_FALSE_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+_TRUE_VALUES = frozenset({"1", "true", "yes", "y", "on", "enabled", "enable"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "n", "off", "disabled", "disable"})
 
 
-def parse_bool_value(value: str | None) -> bool | None:
-    """Parse one value in the shared env-bool vocabulary (case-insensitive,
-    surrounding blanks ignored).
+@overload
+def parse_bool_value(value: str | None, default: None = None) -> bool | None: ...
 
-    None when there is no answer: unset, blank, or a token outside the
-    vocabulary (a reconciler's literal ``unknown``). A caller with a default
-    applies it to None.
+
+@overload
+def parse_bool_value(value: str | None, default: bool) -> bool: ...
+
+
+def parse_bool_value(value: str | None, default: bool | None = None) -> bool | None:
+    """Parse the shared env vocabulary.
+
+    Without a default, blank or unknown means None. A boolean default enables
+    tolerant quote stripping; blank disables and missing/unknown use the default.
     """
-    token = (value or "").strip().lower()
+    if value is None:
+        return default
+    token = value.strip().lower()
+    if default is not None:
+        token = token.strip("'\"")
     if token in _TRUE_VALUES:
         return True
-    if token in _FALSE_VALUES:
+    if token in _FALSE_VALUES or (not token and default is not None):
         return False
-    return None
+    return default
 
 
 def bounded_env_float(

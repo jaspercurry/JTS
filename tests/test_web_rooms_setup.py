@@ -639,8 +639,8 @@ def test_a_new_bond_configures_every_member(lan, request_body, members):
     for addr, expected in members.items():
         body = posted[addr]
         assert {key: body[key] for key in expected} == expected
-        assert (body["enabled"], body["bond_id"], body["trim_db"]) == (
-            True, reply["bond_id"], 0.0,
+        assert (body["enabled"], body["bond_id"], body["trim_db"], body["left_delay_ms"], body["right_delay_ms"]) == (
+            True, reply["bond_id"], 0.0, 0.0, 0.0,
         )
     assert household_credential.is_paired() is True
 
@@ -653,7 +653,7 @@ def test_re_posting_an_existing_bond_keeps_its_balance(lan):
     handler = _post("/bond", {"bond_id": "bond-existing", "members": [*_PAIR, sub]})
 
     assert handler.status == 200
-    assert all("trim_db" not in body for body in lan.posted().values())
+    assert all(not {"trim_db", "left_delay_ms", "right_delay_ms"}.intersection(body) for body in lan.posted().values())
 
 
 @pytest.mark.parametrize("token", ["browser-token", None])
@@ -760,8 +760,8 @@ def test_unbond_disables_self_and_every_same_bond_peer_it_can_read(lan, caplog):
         True, "bond-1", ["", "192.168.1.9"],
     )
     assert lan.posted() == {
-        "": {"enabled": False, "trim_db": 0.0},
-        "192.168.1.9": {"enabled": False, "trim_db": 0.0},
+        "": {"enabled": False, "trim_db": 0.0, "left_delay_ms": 0.0, "right_delay_ms": 0.0},
+        "192.168.1.9": {"enabled": False, "trim_db": 0.0, "left_delay_ms": 0.0, "right_delay_ms": 0.0},
     }
     assert {household for *_, household in lan.posts} == {secret}
     (fields,) = event_field_maps(caplog, "rooms.unbond")
@@ -812,7 +812,7 @@ def test_unbond_follows_the_recorded_roster_never_a_foreign_claimer(
 
     assert (handler.status, _reply(handler)["ok"]) == (200, True)
     assert sorted(lan.posted()) == disabled
-    assert all(body == {"enabled": False, "trim_db": 0.0} for body in lan.posted().values())
+    assert all(body == {"enabled": False, "trim_db": 0.0, "left_delay_ms": 0.0, "right_delay_ms": 0.0} for body in lan.posted().values())
 
 
 @pytest.mark.parametrize(

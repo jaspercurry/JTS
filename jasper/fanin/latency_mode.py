@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
 from jasper.fanin.status import USBSINK_INPUT_LABEL
+from jasper.json_fields import as_mapping
 from jasper.paths import resolve_state_path
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
@@ -130,10 +131,6 @@ def options() -> list[dict[str, Any]]:
     ]
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
 def _integer(value: Any) -> int | None:
     if value is None:
         return None
@@ -143,16 +140,16 @@ def _integer(value: Any) -> int | None:
         return None
 
 
-def _runtime_resampler(airplay_health: Any) -> dict[str, Any]:
-    current = _mapping(_mapping(airplay_health).get("current"))
-    fanin = _mapping(current.get("fanin"))
-    inputs = _mapping(fanin.get("inputs"))
-    return _mapping(_mapping(inputs.get(USBSINK_INPUT_LABEL)).get("resampler"))
+def _runtime_resampler(airplay_health: Any) -> Mapping[str, Any]:
+    current = as_mapping(as_mapping(airplay_health).get("current"))
+    fanin = as_mapping(current.get("fanin"))
+    inputs = as_mapping(fanin.get("inputs"))
+    return as_mapping(as_mapping(inputs.get(USBSINK_INPUT_LABEL)).get("resampler"))
 
 
-def _runtime_host_clock(airplay_health: Any) -> dict[str, Any]:
-    current = _mapping(_mapping(airplay_health).get("current"))
-    return _mapping(_mapping(current.get("fanin")).get("host_clock"))
+def _runtime_host_clock(airplay_health: Any) -> Mapping[str, Any]:
+    current = as_mapping(as_mapping(airplay_health).get("current"))
+    return as_mapping(as_mapping(current.get("fanin")).get("host_clock"))
 
 
 def _usb_session_active(
@@ -163,12 +160,12 @@ def _usb_session_active(
     ladder = host_clock.get("ladder")
     if ladder in {"l0_locked", "l1_warn", "l2_fallback"}:
         return True
-    probe = _mapping(host_clock.get("probe"))
+    probe = as_mapping(host_clock.get("probe"))
     return ladder == "probing" and probe.get("waiting_for_lock") is True
 
 
 def applied_mode_from_resampler(resampler: Mapping[str, Any]) -> str | None:
-    decay = _mapping(resampler.get("decay"))
+    decay = as_mapping(resampler.get("decay"))
     enabled = decay.get("enabled")
     if enabled is False:
         return "high"
@@ -206,7 +203,7 @@ def classify_runtime(
     clock = host_clock or {}
     applied = applied_mode_from_resampler(resampler)
     held_frames = _integer(resampler.get("held_target_frames"))
-    floor_frames = _integer(_mapping(resampler.get("decay")).get("floor_frames"))
+    floor_frames = _integer(as_mapping(resampler.get("decay")).get("floor_frames"))
     locked = resampler.get("locked") is True
     session_active = _usb_session_active(resampler, clock)
     effective = (
@@ -233,7 +230,7 @@ def classify_runtime(
         phase = "idle"
     elif not locked:
         phase = "starting"
-    elif _mapping(resampler.get("decay")).get("frozen_reason") == "backoff":
+    elif as_mapping(resampler.get("decay")).get("frozen_reason") == "backoff":
         phase = "buffer_held"
     elif buffer_above_floor:
         phase = "buffer_adjusting"
@@ -302,7 +299,7 @@ def read_state(
         if effective is not None and resampler.get("locked") is True:
             state = "applied"
             detail = f"{PRESETS[effective].label} is active. Checking USB timing in the background."
-        elif runtime.phase == "checking" and _mapping(resampler.get("decay")).get("active") is True:
+        elif runtime.phase == "checking" and as_mapping(resampler.get("decay")).get("active") is True:
             state = "recovery"
             detail = "Reducing input delay while checking USB timing."
         else:

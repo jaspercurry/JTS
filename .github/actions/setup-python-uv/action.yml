@@ -36,7 +36,7 @@ runs:
     - name: Install JTS from committed uv lock
       if: ${{ inputs.install-full == 'true' }}
       shell: bash
-      run: uv sync --locked --extra full --extra dev --group openwakeword-onnx
+      run: uv sync --locked --extra full --group dev --group openwakeword-onnx
 
     - name: Install openwakeword without its tflite-runtime dep
       # openwakeword 0.6.0 hard-requires tflite-runtime, which has no

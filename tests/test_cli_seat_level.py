@@ -26,11 +26,13 @@ from jasper.active_speaker import seat_level_sweep as sweep
 from jasper.active_speaker.auto_level import MAX_STEP_DB, MIC_RESPONSE_MIN_RISE_DB, reading_budget
 from jasper.active_speaker.crossover_v2 import composition
 from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
-from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
+from jasper.active_speaker.session_volume_plan import SessionVolumePlan, SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity, resolve_mic_sensitivity
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.program import FrequencyBand, RoleBand, KIND_COURTESY_TONE
-from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredRecording, WiredSplCeilingExceeded
+from jasper.audio_measurement.wired_capture import (
+    CODE_CAPTURE_GAIN_UNVERIFIED, WiredCaptureError, WiredCaptureGainUnverified, WiredRecording, WiredSplCeilingExceeded,
+)
 from jasper.cli import seat_level
 from tests._log_events import event_fields
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
@@ -139,6 +141,10 @@ def box(tmp_path, monkeypatch):
                             install=install, restore=restore)
     candidate = _candidate(preset=_rear_pair("mono")[0], bass_extension=BASS_EXTENSION,
                            rear_calibration=_rear_document())
+    state.candidate_fingerprint = candidate.fingerprint
+    state.pose = {"geometry": {"speaker_height_m": 1.0, "mic_height_m": 1.0, "distance_m": 2.0}, "arm_offset_deg": 12.5}
+    monkeypatch.setattr(seat_level, "read_pose", lambda **kw: dict(state.pose))
+    monkeypatch.setattr(seat_level, "TurntableMover", lambda **kw: SimpleNamespace(offset_deg=lambda: 12.5))
     context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={}, declared_sensitivities={"tweeter": 94.1},
         playback_device="fake", roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),
@@ -271,7 +277,7 @@ def box(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('outcome', ['converged', 'stop', 'ambient_stop', 'ambient_start_lost', 'ambient_reads_lost', 'missing_spl',
-                                            'cancelled', 'error', 'bundle_failed'])
+                                            'ambient_gain_unverified', 'cancelled', 'error', 'bundle_failed'])
 def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     if outcome == 'stop':
         box.level = 86.0
@@ -280,6 +286,9 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
     elif outcome.startswith('ambient_') and outcome.endswith('_lost'):
         box.ambient_failure = WiredCaptureError("failed N consecutive reads")
         box.ambient_start_fails = outcome == 'ambient_start_lost'
+    elif outcome == 'ambient_gain_unverified':
+        box.ambient_failure = WiredCaptureGainUnverified("short of full scale")
+        box.ambient_start_fails = True
     elif outcome == 'missing_spl':
         box.missing_spl = True
     elif outcome == 'cancelled':
@@ -299,6 +308,9 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
             assert result['restored'] is True
             if outcome in ('ambient_start_lost', 'ambient_reads_lost', 'missing_spl'):
                 assert result['reason'] == 'mic_feed_lost'
+            if outcome == 'ambient_gain_unverified':
+                assert result['reason'] == CODE_CAPTURE_GAIN_UNVERIFIED
+                assert result['reason'] in seat_level.REASON_REGISTRY
             if 'stop' in outcome:
 
                 assert result['reason'] == 'spl_ceiling_exceeded'
@@ -330,7 +342,11 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert provenance == {'program_id': second.program_id, 'phase': second.phase,
             'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
             'statistic': 'loudest_half_second_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
-        assert json.loads(box.reference_path.read_text())['stimulus'] == provenance
+        record = json.loads(box.reference_path.read_text())
+        assert record['stimulus'] == provenance
+        assert record['pose'] == box.pose
+        assert record['graph'] == {'candidate_fingerprint': box.candidate_fingerprint,
+            'compiled_graph_sha256': hashlib.sha256(b'accepted graph').hexdigest()}
         assert box.bank.call_args.kwargs['measured_db_spl'] == 75.0
         ambient = json.loads(box.reference_path.read_text())['ambient_report']
         assert ambient == result['ambient_report']
@@ -655,6 +671,24 @@ def test_sweep_fader_readback_refusals_are_distinct(box, monkeypatch, capsys, ga
     assert result['detail']['restored'] is True
     assert reason in seat_level.REASON_REGISTRY
     assert not box.admissions
+
+
+@pytest.mark.parametrize("phase", ["context", "volume"])
+def test_unreachable_camilla_refuses_with_registered_code(box, monkeypatch, capsys, phase):
+    failure = seat_level.CamillaUnavailable("offline")
+    if phase == "context":
+        monkeypatch.setattr(seat_level, "resolve_conductor_context", Mock(side_effect=failure))
+    else:
+        cam = seat_level.primary_controller()
+        cam.get_volume_db = AsyncMock(side_effect=failure)
+        monkeypatch.setattr(seat_level, "SessionVolumePlan", SessionVolumePlan)
+        monkeypatch.setattr(seat_level, "DEFAULT_SESSION_VOLUME_STATE_PATH", box.bundle_dir / "volume.json")
+    assert seat_level.main([]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "refused"
+    assert result["reason"] == "measurement_graph_unavailable"
+    assert result["reason"] in seat_level.REASON_REGISTRY
+    assert not box.bank.called and not box.programs
 
 
 def test_repeated_sweep_reuses_render_but_installs_and_admits_each_time(box, monkeypatch):

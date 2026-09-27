@@ -60,6 +60,7 @@ from tests.crossover_v2_fixtures import (
     _way1_conductor,
     _way1_measure_analysis,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 
 def _way1_index_phase_map() -> dict[int, str]:
     return _plan.build_v2_cloud_index_phase_map(
@@ -161,7 +162,6 @@ def test_the_one_way_preset_emits_a_protected_neutral_program_graph():
     """One program channel to the one physical output, captured at the ring's
     full width; the tweeter protection proof is ABSENT rather than waived — no
     branch here is what it protects."""
-    from jasper.active_speaker.branch_chain import CrossoverSection
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_program_config
 
     config = yaml_lib.safe_load(emit_active_speaker_program_config(

@@ -21,29 +21,30 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence
 from jasper.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
+from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 
 from .angle_capture import (
-    REGIME_PER_DRIVER, REGIME_SUMMED,
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
-    AngleCaptureRequest, AngleStop, ResolvedStop, LateralWalkRefused,
-    design_axis_spec, resolve_request, stop_specs,
+    AngleCaptureRequest, LateralWalkRefused,
+    resolve_request, stop_specs,
 )
+from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
-from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_LATERAL, PHASE_MEASURE
+from .crossover_v2.journey import PHASE_CHECK
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED, TakeVerdict, exception_detail,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_RETRIES_SPENT, REASON_USER_STOPPED, TakeVerdict,
+    exception_detail,
 )
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
@@ -51,7 +52,7 @@ from .crossover_v2.planning import analysis_json
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
 from .measurement_programs import (
-    BASE_CANDIDATE, BRANCH_PAIR_DRIVERS, POSE_KIND_BEARING, PURPOSE_SPEAKER, candidate_identity,
+    BASE_CANDIDATE,
 )
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest
@@ -118,59 +119,6 @@ def request_fingerprint(request: AngleCaptureRequest) -> str:
     return json_fingerprint(request.to_dict())
 
 
-@dataclass(frozen=True)
-class PlanCapture:
-    stop: AngleStop
-    spec: MeasureSpec
-    repeat: int = 1
-
-    def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
-        return resolve_request(replace(request, stops=(self.stop,),
-            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
-
-
-def prepare_plan_captures(
-    request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = (),
-) -> tuple[PlanCapture, ...]:
-    """Derive preparation and requested captures together (ADR-0297)."""
-    resolved = resolve_request(request)
-    placed = stop_specs(request,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
-                        roles_bands=roles_bands)
-    captures: list[PlanCapture] = []
-    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
-        captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER),
-            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
-        ))
-    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE and stop.purpose == PURPOSE_SPEAKER), None)
-    # The speaker flow needs an entry baseline; other rounds use their first take as the level reference.
-    if base_stop is not None:
-        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
-                               candidates=(), repeats=1)
-        base_spec, = stop_specs(base_request,
-                                prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
-                                roles_bands=roles_bands)
-        assert base_spec is not None
-        captures.extend(PlanCapture(base_request.stops[0], replace(
-            base_spec, graph_scope="timing", program_phase=PHASE_ENTRY_BASELINE,
-        ), repeat) for repeat in range(1, request.repeats + 1))
-    for offset, spec in enumerate(placed):
-        stop = request.stops[offset // request.repeats]
-        if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
-            if stop.driver:
-                spec = replace(spec, branch_target_ids=(stop.driver,), regime=stop.regime)
-        captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
-        )), offset % request.repeats + 1))
-    return tuple(captures)
-
-
 @dataclass
 class RunDoor:
     hold: AbstractAsyncContextManager[IsolationHold]
@@ -179,7 +127,7 @@ class RunDoor:
     device: Any
     ceiling_db_spl: float | None
     current: TuningSession | None = None
-    opened: OpenMeasurementDoor | None = None
+    isolation: IsolationHold | None = None
     program_for_spec: Callable[..., ExcitationProgram] | None = None
 
     @property
@@ -408,9 +356,7 @@ async def _run(
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
 ) -> RunManifest:
     def default_admit(index: int, attempt: int, entry: Any, ledger: SlotAttempts) -> None:
-        if ledger.charge != "none":
-            ledger.spend(ledger.charge)
-        ledger.admitted += 1
+        ledger.admit()
 
     def failure_reason(exc: BaseException) -> str:
         classified = classify_program_failure(exc)
@@ -451,7 +397,7 @@ async def _run(
         if door is not None:
             if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
-            hold = await stack.enter_async_context(door.hold)
+            hold = door.isolation = await stack.enter_async_context(door.hold)
         while offset < len(work):
             if signals.complete.is_set():
                 manifest.reason = "complete_requested"
@@ -462,22 +408,21 @@ async def _run(
                 offset = next(i for i, row in enumerate(work) if row.pose_index == pose)
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
-                if work[offset].stop["pose"].get("driver"):
-                    # A redo places a driver's pose again from its start with its retries (ADR-0361).
-                    # Admission charges every attempt after a take's first, so each take it
-                    # replays carries one retry; before any take played it only asks again.
-                    replayed = sum(1 for index, row in enumerate(work) if row.pose_index == pose and attempts[index])
-                    ledgers[pose] = SlotAttempts(retries_per_pose=retries + replayed)
-                    if not replayed:
-                        retry = None
-                        grant_epoch += 1
-                        if gate:
-                            gate.abandon_hold()
+                manifest.discard_pose(pose)
+                if not attempts[offset]:
+                    # Before any take played, a redo only asks for the placement again.
+                    retry = None
+                    grant_epoch += 1
+                    if gate:
+                        gate.abandon_hold()
+                elif work[offset].stop["pose"].get("driver"):
+                    # A driver's pose starts over with its retries, so its redo is free (ADR-0361).
+                    ledgers[pose] = SlotAttempts(retries_per_pose=retries)
             item = work[offset]
             at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
             if retry is not None:
-                if not ledger.can_retry(retry.charge):
+                if not ledger.can_admit(retry.charge):
                     if (retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES
                             and item.spec.program_phase != PHASE_CHECK):
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
@@ -485,7 +430,7 @@ async def _run(
                         retry_was_measured = False
                         offset += 1
                         continue
-                    manifest.reason = retry.fault or "retries_spent"
+                    manifest.reason = retry.fault or REASON_RETRIES_SPENT
                     break
                 if retry.next == "fix_and_retake":
                     if gate is None:
@@ -527,7 +472,9 @@ async def _run(
             try:
                 if signals.stop.is_set():
                     raise CaptureStopped("capture stopped")
-                ledger.charge = retry.charge if retry is not None else "none"
+                # A take spends a retry only when it retries a pose that already admitted one (#5722).
+                ledger.charge = retry.charge if retry is not None and ledger.admitted else "replay"
+                spent = ledger.by_household + ledger.by_speaker
                 if gate:
                     gate.publish(progress)
                 await _grant(gate, offset + 1, offset + 1 + grant_epoch, entry, signals,
@@ -542,18 +489,18 @@ async def _run(
                         topology=None, preset=None, sensitivity=door.sensitivity, device=door.device,
                         resolved_ceiling_db_spl=door.ceiling_db_spl,
                     )
-                    door.opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
-                    session = door.build_session(door.opened, manifest.allocate_take_id)
+                    opened = await stack.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
+                    session = door.build_session(opened, manifest.allocate_take_id)
                     door.current = session
                     await stack.enter_async_context(session)
                 assert session is not None
                 take_started = clock()
-                if retry is not None:
-                    progress["budget"] = ledger.to_payload()
-                    if gate:
-                        gate.publish(progress)
+                progress["budget"] = ledger.to_payload()
+                if gate:
+                    gate.publish(progress)
                 attempts[offset] = attempt
-                manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
+                manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
+                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent)
                 token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
                 try:
                     outcome = await measure(session, spec) if measure else await session.measure(spec)

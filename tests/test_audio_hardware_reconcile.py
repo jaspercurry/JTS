@@ -25,6 +25,7 @@ from unittest import mock
 import pytest
 
 from jasper.audio_hardware import reconcile as reconcile_module
+from jasper.audio_hardware import reconcile_env_files, reconcile_units
 from jasper.audio_hardware.dac import final_edge_format_for
 from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
@@ -35,6 +36,7 @@ from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
 from jasper.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
+from tests.active_speaker_fixtures import driver_domain_graph
 from tests.systemd_unit_helpers import values_for
 from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
@@ -625,9 +627,7 @@ def _active_graph_env(
 def _active_leader_graph_env(
     tmp_path: Path, *, channels: int = 2, write_crossover_statefile: bool = True
 ) -> dict[str, str]:
-    """Stage camilla#1 program bake + camilla#2 endpoint graph for the gate."""
     from jasper.active_speaker import (
-        emit_active_speaker_driver_domain_config,
         emit_active_speaker_program_bake_config,
     )
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
@@ -643,7 +643,7 @@ def _active_leader_graph_env(
     )
     crossover_config = tmp_path / "grouping_active_leader_crossover.yml"
     crossover_config.write_text(
-        emit_active_speaker_driver_domain_config(
+        driver_domain_graph(
             preset,
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             program_channel="mono",
@@ -885,7 +885,7 @@ def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
     The fake logs each verb AFTER doing its work, so the transcript's order is
     completion order, and a killed stop leaves no line at all.
     """
-    monkeypatch.setattr(reconcile_module, "SYSTEMCTL_TIMEOUT_SEC", 0.5)
+    monkeypatch.setattr(reconcile_units, "SYSTEMCTL_TIMEOUT_SEC", 0.5)
     slow = _script(
         tmp_path,
         "slow-systemctl",
@@ -971,7 +971,7 @@ def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
     any pair converges against the previous topology's bytes or gates units on
     a lane no graph proved."""
     order: list[str] = []
-    gate = reconcile_module.Pass.gate_role_services
+    gate = reconcile_units.gate_role_services
 
     def recorded_gate(run: reconcile_module.Pass) -> None:
         order.append("gate")
@@ -986,7 +986,7 @@ def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
         return _converged(**kwargs)
 
     with mock.patch.object(
-        reconcile_module.Pass, "gate_role_services", recorded_gate
+        reconcile_units, "gate_role_services", recorded_gate
     ):
         result = _run_reconcile(
             tmp_path,
@@ -1082,7 +1082,7 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     # failed observation (#i2s-hat-intent).
     for extra_env, patches in (
         ({"JASPER_OUTPUT_HARDWARE_STATE_PATH": str(tmp_path)}, None),
-        (None, {"jasper.audio_hardware.reconcile.observe": _statusless_observation}),
+        (None, {"jasper.audio_hardware.reconcile_hardware.observe": _statusless_observation}),
         (None, None),
     ):
         for marker_present in (False, True):
@@ -1217,7 +1217,7 @@ def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
         "--print-env",
-        patches={"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))},
+        patches={"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))},
     )
 
     assert result.returncode == 0, result.stderr
@@ -1253,7 +1253,8 @@ _PRINT_ENV_NO_DAC = {
 
 def _parse_print_env(stdout: str) -> dict[str, str]:
     """Parse `--print-env`'s `KEY=value` lines, unquoting each value the way
-    a `bash eval` of install.sh's consumer would (deploy/install.sh:893)."""
+    a `bash eval` of install.sh's consumer would (select_audio_hardware_roles
+    in deploy/lib/install/alsa.sh)."""
     parsed: dict[str, str] = {}
     for line in stdout.splitlines():
         key, _, raw_value = line.partition("=")
@@ -1307,9 +1308,9 @@ def _parse_print_env(stdout: str) -> dict[str, str]:
 def test_print_env_pins_the_install_contract(
     tmp_path: Path, listing: str, expected: dict[str, str]
 ):
-    """`--print-env` is install.sh's contract with this script (install.sh:893
-    evals it and exports every key; deploy/lib/install/systemd-units.sh:1331,
-    1650 call it too). #4478 ports this script to Python -- pin the exact key
+    """`--print-env` is install.sh's contract with this script
+    (select_audio_hardware_roles in deploy/lib/install/alsa.sh evals it and
+    exports every key). #4478 ports this script to Python -- pin the exact key
     set and values here so that port cannot silently change this surface."""
     result = _run_reconcile(tmp_path, listing, "--print-env")
 
@@ -1775,9 +1776,10 @@ def test_print_env_degrades_to_the_no_dac_row_when_the_pass_cannot_start(
     tmp_path: Path, rc: int
 ) -> None:
     """install.sh evals this output and reads every key under `set -u`
-    (deploy/install.sh:893), so an unstartable interpreter must degrade to the
-    unrecognized-DAC answer with rc 0 rather than abort the install on an
-    empty eval. Only 126/127 mean "no pass ran"; see the sibling below."""
+    (select_audio_hardware_roles in deploy/lib/install/alsa.sh), so an
+    unstartable interpreter must degrade to the unrecognized-DAC answer with
+    rc 0 rather than abort the install on an empty eval. Only 126/127 mean
+    "no pass ran"; see the sibling below."""
     result = _run_shim(
         tmp_path, "", "--print-env", extra_env=_failing_interpreter(tmp_path, rc)
     )
@@ -1895,7 +1897,7 @@ def test_a_signalled_pass_names_the_signal_and_exits_128_plus_it(
         APPLE_LISTING,
         "--reason",
         "test",
-        patches={"jasper.audio_hardware.reconcile.observe": _signal_self(signum)},
+        patches={"jasper.audio_hardware.reconcile_hardware.observe": _signal_self(signum)},
     )
 
     assert result.returncode == status, result.stderr
@@ -3414,7 +3416,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
         ),
         _captured_events() as events,
     ):
-        assert run.validate_outputd_env_stage() is True
+        assert reconcile_env_files.validate_outputd_env_stage(run) is True
     assert stderr_event(
         events.getvalue(), "audio_hardware_reconcile.outputd_env_note"
     )["detail"] == _log_token(out.strip()[len("ok note=") :])
@@ -3892,7 +3894,7 @@ _LANE_CAP_ANSWERS_FOUR = _lane_cap(lambda _id: 4)
 # is why the shell reconciler marked degraded only when the probe could not be
 # reached at all.
 _PROBE_FAILURES = {
-    "observe": ({"jasper.audio_hardware.reconcile.observe": _raises(OSError("no /proc"))}, 0),
+    "observe": ({"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))}, 0),
     "outputd_env_validator": (
         {"jasper.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
         78,

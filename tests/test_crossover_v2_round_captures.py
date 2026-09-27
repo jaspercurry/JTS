@@ -6,9 +6,8 @@
 
 Every fixture here is built, not banked — a program sweep, a known impulse
 response, and the convolution of the two written as a capture — so the
-binding the loader has to get right is known in advance. The two verbs that
-read a round through it (``gate_sweep``, ``close_reference``) pin their own
-answers; what is pinned here is the loader.
+binding the loader has to get right is known in advance. The views that read
+a round through it pin their own answers; what is pinned here is the loader.
 """
 
 from __future__ import annotations
@@ -279,6 +278,12 @@ def test_a_missing_input_is_refused_by_name(
         discover_captures(make(tmp_path))
     assert excinfo.value.reason == reason
     assert excinfo.value.detail.items() >= evidence.items()
+
+
+def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path: Path) -> None:
+    with pytest.raises(RoundCapturesRefused) as excinfo:
+        select_capture(tmp_path / "absent")
+    assert excinfo.value.reason == round_captures.REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
 
 
 @pytest.mark.parametrize(

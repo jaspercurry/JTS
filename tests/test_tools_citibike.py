@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from jasper.citibike import StationStatus
+from jasper.transit.citibike import StationStatus
 from jasper.tools import build_tool
 from jasper.tools.citibike import make_citibike_tools
 from jasper.transit.base import TransitError

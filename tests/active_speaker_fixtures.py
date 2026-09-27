@@ -6,21 +6,41 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.candidate_bank import bank_candidate
+import re
+from pathlib import Path
 
 import pytest
 
-from pathlib import Path
-
+from jasper.active_speaker import emit_active_speaker_baseline_config
+from jasper.active_speaker.camilla_yaml.decorate_dynamic_bass import _with_dynamic_bass
+from jasper.active_speaker.candidate_bank import bank_candidate
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
+from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
+from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_channel_select_mixer, emit_gain_filter
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )
+
+
+def driver_domain_graph(preset, *, playback_device, program_channel, pair_trim_db=0.0,
+                        bass_extension=None, **kwargs):
+    """Relocate a baseline for verifier tests, preserving its text-mutation seams."""
+    text = emit_active_speaker_baseline_config(preset, playback_device=playback_device, **kwargs)
+    text = text.replace(ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
+    text = re.sub(r"  active_baseline_headroom:\n(?:    [^\n]*\n)+", "", text)
+    text = text.replace("active_baseline_headroom", DRIVER_DOMAIN_PAIR_TRIM_FILTER)
+    text = text.replace("filters:\n", "filters:\n" + "\n".join(
+        emit_gain_filter(DRIVER_DOMAIN_PAIR_TRIM_FILTER, -pair_trim_db)) + "\n", 1)
+    text = text.replace("mixers:\n", "mixers:\n" + emit_channel_select_mixer(program_channel) + "\n", 1)
+    text = text.replace("pipeline:\n", f"pipeline:\n  - type: Mixer\n    name: {CHANNEL_SELECT_MIXER}\n", 1)
+    text = f"# program_channel={program_channel}\n# pair_trim_db={pair_trim_db:.3f}\n" + text
+    return _with_dynamic_bass(text, preset, bass_extension)
 
 
 def valid_camilla_config(path: str | Path) -> CamillaConfigValidationResult:

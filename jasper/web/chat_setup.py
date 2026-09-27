@@ -12,6 +12,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..platform import systemd
+from . import _wizard_cli
 from ..conversation_history import ConversationStore, read_settings, write_settings
 from ._common import (
     begin_request,
@@ -214,14 +216,11 @@ def make_server(target) -> ThreadingHTTPServer:
     ``target`` is a socket / ``(host, port)`` tuple / int port per
     ``systemd.make_http_server``'s contract.
     """
-    from ..platform import systemd
 
     return systemd.make_http_server(target, _make_handler())
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _wizard_cli
-
     return _wizard_cli.run_wizard_cli(
         "jasper-chat-web",
         "Conversation history dashboard at /assistant/chat/ for JTS",

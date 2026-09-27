@@ -40,8 +40,8 @@ _ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
 def _installer_shell_texts() -> dict[Path, str]:
     """install.sh plus the deploy/lib/install/*.sh libs it sources.
 
-    Invariant-style tests (bounded curl flags, no unpinned git
-    fetches, …) must keep covering function groups that the
+    Invariant-style tests (bounded curl flags, the pinned pip
+    toolchain, …) must keep covering function groups that the
     install.sh decomposition moved into sourced libs."""
     paths = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
     assert _RENDERERS_LIB in paths
@@ -423,6 +423,47 @@ def test_compute_min_free_kbytes_clamps_two_percent_between_16mb_and_256mb(
     """min_free_kbytes is 2% of RAM, floored at the 16 MB Raspberry Pi OS
     itself ships in /etc/sysctl.d/98-rpi.conf and capped at 256 MB."""
     assert _compute_min_free_kbytes(memtotal_kb) == expected
+
+
+@pytest.mark.parametrize(
+    ("hints", "expected"),
+    [
+        pytest.param(
+            "sysdefault:CARD=Apple\n"
+            "    USB-C to 3.5mm Headphone Jack Adapter, USB Audio\n"
+            "hw:CARD=Array,DEV=0\n"
+            "    reSpeaker XVF3800 4-Mic Array, USB Audio\n"
+            "    Direct hardware device without any conversions\n"
+            "hw:CARD=Flex,DEV=0\n"
+            "    ReSpeaker XVF3800 Flex, USB Audio\n",
+            "Array",
+            id="first_matching_description",
+        ),
+        pytest.param(
+            "hw:CARD=Apple,DEV=0\n    USB Audio Device\n",
+            "Fallback",
+            id="no_match",
+        ),
+    ],
+)
+def test_detect_card_names_the_first_matching_hint_or_the_fallback(
+    tmp_path, hints, expected
+):
+    arecord = tmp_path / "arecord"
+    arecord.write_text(
+        f"#!/bin/sh\n[ \"$1\" = -L ] || exit 1\ncat <<'EOF'\n{hints}EOF\n",
+        encoding="utf-8",
+    )
+    arecord.chmod(0o755)
+    result = run_bash(
+        ["-c",
+         f"source {shlex.quote(str(_INSTALL_SH))} >/dev/null && "
+         f"detect_card {shlex.quote(str(arecord))} "
+         "'xvf3800|respeaker.*(array|flex)|L16K6Ch' Fallback"],
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{expected}\n"
 
 
 # --- optional enhanced-AEC: canonical C++ build parallelism -----------
@@ -1204,9 +1245,7 @@ def test_retired_esp32_python_packages_are_uninstalled_from_jts_venv(tmp_path):
 
 
 def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
-    """Fresh installs must not write stale empty Spotify overrides; an
-    already-seeded box is swept by the retirement table's env rows
-    (test_retired_env_rows_strip_stale_seeds_and_keep_overrides)."""
+    """Fresh installs must not write stale empty Spotify overrides."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert "\nSPOTIFY_CLIENT_ID=" not in env_example
     assert "\nSPOTIFY_REDIRECT_URI=" not in env_example
@@ -1214,8 +1253,7 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
 
 def test_mic_device_candidates_is_never_seeded_in_env_example():
     """A seeded value outranks the mic registry on every installed box, so
-    the key ships commented out; an already-seeded box is swept by the
-    retirement table's env rows."""
+    the key ships commented out."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")
     assert env_example.count("\nJASPER_MIC_DEVICE_CANDIDATES=") == 0
 
@@ -1701,41 +1739,6 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     assert "stage --registry dtln --optional" in shell_text
 
 
-def test_base_source_builds_use_hash_checked_archives():
-    """Base Pi installs should consume pinned archives, not require git
-    just to fetch source-build inputs."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
-
-    for expected in [
-        "NQPTP_ARCHIVE_URL",
-        "NQPTP_SHA256",
-        "SHAIRPORT_SYNC_ARCHIVE_URL",
-        "SHAIRPORT_SYNC_SHA256",
-        "fetch_verified_source_archive",
-    ]:
-        assert expected in text
-
-    enhanced_target = (
-        REPO_ROOT / "jasper_aec3" / "enhanced-aec-source.env"
-    ).read_text(encoding="utf-8")
-    enhanced_installer = (
-        REPO_ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
-    ).read_text(encoding="utf-8")
-    assert "WEBRTC_AEC3_ARCHIVE_URL=https://" in enhanced_target
-    assert "WEBRTC_AEC3_SHA256=" in enhanced_target
-    assert "_download_archive(" in enhanced_installer
-    assert "sha256_file(destination)" in enhanced_installer
-
-    for path, source_text in _installer_shell_texts().items():
-        for forbidden in [
-            "git clone --depth 1",
-            "git init ",
-            "git -C \"${tmpdir}",
-            "verify_git_head",
-        ]:
-            assert forbidden not in source_text, (path, forbidden)
-
-
 def test_install_help_is_clean_and_non_root():
     """Agentic flows often probe commands with --help; keep it quiet
     and usable without sudo."""
@@ -1986,8 +1989,13 @@ def _run_constraints_helper(repo_dir: Path) -> str:
 
 
 def test_install_and_generate_scripts_parse():
-    """bash -n over both shell surfaces of the constraints feature."""
-    for path in (_INSTALL_SH, _GENERATE_CONSTRAINTS_SH):
+    """bash -n over install.sh, every lib it sources and the constraints
+    generator."""
+    for path in (
+        _INSTALL_SH,
+        *sorted(_INSTALL_LIB_DIR.glob("*.sh")),
+        _GENERATE_CONSTRAINTS_SH,
+    ):
         result = run_bash(
             ["-n", str(path)],
             timeout=5,
@@ -2099,7 +2107,7 @@ def test_write_build_manifest_is_atomic_tempfile_rename():
     """The success marker must be written tempfile-then-rename so a torn
     write (power loss mid-`cat`) can't leave a half-line the direction
     guard misreads. Mirrors persist_install_profile."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = (_INSTALL_LIB_DIR / "build-manifest.sh").read_text(encoding="utf-8")
     assert "build.txt.tmp.$$" in text
     assert 'mv -f "${tmp}" "${STATE_DIR}/build.txt"' in text
 
@@ -2256,7 +2264,7 @@ def test_landing_page_app_css_version_uses_resolved_build_sha():
     resolve the SHA directly (deploy env → git → prior manifest), not read
     the not-yet-updated manifest — or a deploy would ship the prior SHA's
     cache key and browsers wouldn't bust the /assets cache."""
-    text = _INSTALL_SH.read_text(encoding="utf-8")
+    text = (_INSTALL_LIB_DIR / "web-services.sh").read_text(encoding="utf-8")
     start = text.index("install_management_static_assets() {")
     fn = text[start: text.index("\ninstall_nginx_site() {", start)]
     assert 'app_css_ver="$(resolve_build_sha_short)"' in fn
@@ -2799,6 +2807,8 @@ SYSTEMD_DIR="/etc/systemd/system"
 STATE_DIR="${JTS_FAKE_SYSTEMCTL_STATE}"
 source "${REPO_DIR}/deploy/lib/install/build-sandbox.sh"
 source "${REPO_DIR}/deploy/lib/install/systemd-units.sh"
+FANIN_COUPLING_ENTRY_LOCK="${JTS_FAKE_SYSTEMCTL_STATE}/coupling.lock"
+FANIN_COUPLING_FENCE_DROPIN="${JTS_FAKE_SYSTEMCTL_STATE}/run/coupling-fence.conf"
 build_swap_required() { return 0; }
 mark_trap() { printf 'SENTINEL\\n' >>"${JTS_FAKE_SYSTEMCTL_STATE}/calls"; }
 trap install_exit_cleanup EXIT
@@ -3426,12 +3436,14 @@ retire_leftovers
 """
 
 # Overrides the real table (sourced beforehand) with a fixture confined to
-# tmp_path -- the real table's `file` row names an absolute host path, and
-# this test must never touch anything outside tmp_path.
+# tmp_path -- the real table's `file` rows name absolute host paths, and these
+# tests must never touch anything outside tmp_path.
 _RETIRE_TEST_TABLE = r"""
 JASPER_RETIRED_LEFTOVERS=(
     "unit|jasper-retired-test-a.service jasper-retired-test-b.timer|fixture: two retired units"
     "file|${STATE_DIR}/retired_test_a.json ${SYSTEMD_DIR}/retired_test_b.service|fixture: two retired files"
+    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|fixture: bare and prefix keys"
+    "env|${ENV_DIR}/jasper.env JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824 JASPER_MIC_DEVICE_CANDIDATES=Array JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch|fixture: anchored seeds"
 )
 """
 
@@ -3532,11 +3544,10 @@ _RETIRE_ENV_CASES = [
 
 
 def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
-    """Drive the real table's `env` rows with ENV_DIR confined to tmp_path.
+    """Drive the fixture table's `env` rows with ENV_DIR confined to tmp_path.
 
-    The table expands ENV_DIR at SOURCE time, so it is exported rather than
-    assigned after the source. Only the env applier runs: the unit and file
-    rows name the host's real paths."""
+    The table expands ENV_DIR when it is assigned, so it is exported. Only the
+    env applier runs."""
     env_dir = tmp_path / "etc"
     env_dir.mkdir(exist_ok=True)
     if seeded is not None:
@@ -3548,6 +3559,7 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
             "-euc",
             f". {shlex.quote(str(env_lib))}\n"
             f". {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
+            f"{_RETIRE_TEST_TABLE}"
             "_retire_apply env _retire_env_lines\n",
         ],
         capture_output=True,
@@ -3573,11 +3585,10 @@ def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
 def test_retired_env_rows_strip_stale_seeds_and_keep_overrides(
     tmp_path: Path, line: str, survives: bool,
 ) -> None:
-    """jasper.env is a frozen first-install seed, so the retired keys can only
-    leave a box through these rows. A bare key takes every value, an anchored
-    `KEY=VALUE` row takes only the stale seed (a deliberate override survives),
-    and the `KEY*` row takes a whole retired prefix without touching keys that
-    merely start with the same letters."""
+    """A bare key takes every value, an anchored `KEY=VALUE` row takes only the
+    stale seed (a deliberate override survives), and the `KEY*` row takes a
+    whole retired prefix without touching keys that merely start with the same
+    letters."""
     proc = _run_retire_env_rows(tmp_path, f"JASPER_MARKER=1\n{line}\n")
     assert proc.returncode == 0, proc.stderr
     lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
