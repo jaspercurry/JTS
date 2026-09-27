@@ -69,13 +69,9 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_RETRIES_SPENT,
     PhaseVerdict,
     TakeVerdict,
-    reason_diagnosis,
     reason_message,
 )
-from jasper.active_speaker.crossover_v2.spatial import (
-    POSITION_ROLE_OFFAX,
-    LateralPose,
-)
+from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_OFFAX
 from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import (
@@ -240,7 +236,6 @@ class CrossoverV2Session:
         # CHECK's measured room floor, held for the MEASURE and lateral priors.
         # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
-        self._lateral_poses: list[LateralPose] = []
         try:
             validated_lateral_consumer(
                 lateral_consumer,
@@ -300,11 +295,6 @@ class CrossoverV2Session:
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
-        # Positions the flow GAVE UP on, so the group closes with what it has instead
-        # of the session dying at the mic.
-        self._group_unresolved: dict[str, dict[int, str]] = {
-            phase: {} for phase in self._journey.plan.group_indexes
-        }
         self._armed_capture: tuple[int, int] | None = None
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
@@ -571,16 +561,10 @@ class CrossoverV2Session:
             else "operator",
         )
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
-            assert ledger is not None
-            code = decision.code
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
-                code,
-                _admission.extras_spent_message(
-                    ledger,
-                    diagnosis=reason_diagnosis(REASON_REGISTRY[code]),
-                    outcome=self._spent_slot_outcome(phase, index),
-                ),
+                decision.code,
+                reason_message(decision.code, REASON_REGISTRY[decision.code]),
             )
         if decision.kind != _admission.ADMIT:
             log_event(
@@ -621,16 +605,6 @@ class CrossoverV2Session:
             extra_used=ledger.extras_used,
             extra_allowed=ledger.retries_per_pose,
             extra_by_speaker=ledger.by_speaker,
-        )
-
-    def _spent_slot_outcome(self, phase: str, index: int) -> str:
-        """The state after an exhausted slot, derived from session state."""
-        is_group = self._journey.plan.is_group(phase)
-        return _admission.spent_slot_outcome(
-            is_group=is_group,
-            index=index,
-            unresolved=self._group_unresolved[phase] if is_group else (),
-            retained=self._retained_group_indexes(phase) if is_group else (),
         )
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
@@ -717,12 +691,6 @@ class CrossoverV2Session:
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
         return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
-
-    def _retained_group_indexes(self, phase: str) -> set[int]:
-        """Which indexes of one group already hold evidence."""
-        if phase == PHASE_LATERAL:
-            return {pose.index for pose in self._lateral_poses}
-        return set()
 
     def rearm_measure_after_transient(
         self, verdict: PhaseVerdict | TakeVerdict

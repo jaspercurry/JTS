@@ -24,10 +24,10 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.audio_measurement.timing_verification import timing_verification
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
     reason_message,
-    verify_inconclusive_message,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.round_copy import RUN_ENDED, round_lines
@@ -463,16 +463,16 @@ def test_per_band_lines_empty_or_malformed_input_renders_nothing():
     assert _per_band_flatness_lines([{"within_target": None}, "not a mapping"]) == []
 
 
-def test_the_registry_holds_the_cause_unknown_rendering_not_a_literal():
-    """SSOT: the sentence has ONE writer, and the registry entry is that
-    writer's cause-unknown output rather than a second copy of the words that
-    could drift from it. Any reader of REASON_REGISTRY therefore gets copy that
-    is true, not copy that guesses."""
-    assert (
-        REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
-        == verify_inconclusive_message(None)
-    )
-    assert "reflection" not in REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
+@pytest.mark.parametrize("code", [REASON_LOCATE_FAILED, REASON_VERIFY_INCONCLUSIVE])
+def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code):
+    """A state file from an older build may still carry the retired evidence keys."""
+    env = build_crossover_envelope_v2(_status(
+        applied=False,
+        failure={"code": code, "pilot_heard": True},
+        verify={"gate": {"reflection_measured": True}},
+    ))
+
+    assert env["verdict_text"] == REASON_REGISTRY[code].message
 
 
 def test_no_registry_sentence_names_undo():

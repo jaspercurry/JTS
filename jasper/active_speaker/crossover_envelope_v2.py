@@ -82,23 +82,6 @@ _PHASE_STEP = {
 }
 
 
-def _verify_gate(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    """VERIFY's persisted gate record (``{"disclosure",
-    "reflection_measured"}``). Empty when the state carries none — a
-    legacy file, or a capture that could not be gated.
-    """
-    return as_mapping(as_mapping(_v2(status).get("verify")).get("gate"))
-
-
-def _verify_gate_reflection_measured(status: Mapping[str, Any]) -> bool | None:
-    """Whether VERIFY's gate actually found a reflection, or ``None``
-    unknown — the fact the inconclusive copy branches on (#1974). ``None``
-    is a third state, not a falsy second one.
-    """
-    measured = _verify_gate(status).get("reflection_measured")
-    return measured if isinstance(measured, bool) else None
-
-
 def _band_edges(value: Any) -> tuple[float, float] | None:
     """``(lo_hz, hi_hz)`` from a persisted two-element band pair, or
     ``None``. One spelling for the several band pairs a ``flatness`` block
@@ -360,8 +343,6 @@ def _retake_action() -> dict[str, Any]:
             "endpoint": RETAKE_ENDPOINT, "body": {}, "show_during_capture": True}
 
 
-
-
 def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """The compact CLOUD-VERIFY entry of the ``cloud`` block, or empty.
 
@@ -524,16 +505,6 @@ def _awaiting_plan_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
-    """Whether the failed capture's pilot pair was heard — or ``None``, unknown.
-
-    ``locate_failed``'s copy branches on this (#2085). ``None`` is a third
-    state, not falsy — a failure that ran no capture simply does not say.
-    """
-    heard = as_mapping(_v2(status).get("failure")).get("pilot_heard")
-    return heard if isinstance(heard, bool) else None
-
-
 def _failure_failed_roles(status: Mapping[str, Any]) -> tuple[str, ...]:
     """The drivers the failed capture names; empty for a record written before they were kept."""
     roles = as_mapping(_v2(status).get("failure")).get("failed_roles")
@@ -543,13 +514,8 @@ def _failure_failed_roles(status: Mapping[str, Any]) -> tuple[str, ...]:
 def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
-    """Use the registry's copy with recorded evidence (issues #1974, #2085, #1922)."""
-    return reason_message(
-        code, spec,
-        pilot_heard=_failure_pilot_heard(status),
-        reflection_measured=_verify_gate_reflection_measured(status),
-        failed_roles=_failure_failed_roles(status),
-    )
+    """Use the registry's copy with recorded evidence (issue #1922)."""
+    return reason_message(code, spec, failed_roles=_failure_failed_roles(status))
 
 
 def _reset_action() -> dict[str, Any]:
