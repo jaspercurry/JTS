@@ -48,6 +48,7 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
 from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
 from jasper.audio_measurement.program import build_measure_program
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
@@ -1085,6 +1086,45 @@ def test_host_binds_session_level_only_to_check_priors(
     if target is not None:
         assert float(events[0]["anchor_db_spl"]) == anchor + offset
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
+
+
+@pytest.mark.parametrize("pose,purpose,readable,band", [
+    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", True, ("gate_floor", "far_field_ceiling", ())),
+    ({"pose_kind": "close", "mark_distance_m": 0.015, "pose_driver": "woofer:rear"}, "reference", True,
+     (None, "near_field_limit", ())),
+    ({"pose_kind": "seat", "mark_distance_m": None}, "room", True, (None, None, ())),
+    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", False, None),
+])
+def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, purpose, readable, band):
+    """A banked take carries the band it trusts, from its pose, the declared
+    cone of the drivers that played and the declared room; an unreadable room
+    banks the take without one and says so (ADR-0366 §3)."""
+    records = SimpleNamespace(enrich=None, after_bank=None)
+
+    def declared_room():
+        if not readable:
+            raise ValueError("unreadable")
+        return DeclaredGeometry(speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0)
+
+    monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
+    monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
+    monkeypatch.setattr(correction_run_host, "predictive_program_for_spec", lambda _context: None)
+    monkeypatch.setattr(correction_run_host, "load_declared_geometry", declared_room)
+    correction_run_host.bind_run_door(
+        host=SimpleNamespace(session_volume_plan=lambda: None),
+        device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
+        production=SimpleNamespace(graph=None), conductor=_conductor(FlowSeams(), index_phase_map={1: "verify"}),
+        refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
+        context=SimpleNamespace(radiating_diameter_mm_by_role={"woofer": 114.0, "tweeter": 25.0}),
+    )
+
+    record = records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+                                   "measurement_purpose": purpose, **pose})
+
+    banked = record.get("trusted_band")
+    assert (None if banked is None else (banked["low_source"], banked["high_source"], banked["undeclared"])) == band
+    assert [event["error_type"] for event in event_field_maps(caplog, "correction.take_band_not_banked")] == (
+        [] if readable else ["ValueError"])
 
 
 @pytest.mark.parametrize("scope, phase", [
