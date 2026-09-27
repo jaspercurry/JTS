@@ -519,6 +519,9 @@ def _load_programs(
         key = (program_id, size)
         if key in programs:
             raise ValueError(f"measurement plan repeats program {program_id}/{size}")
+        levels = row.get("levels")
+        if levels not in (None, "auto"):
+            raise ValueError(f"program {program_id}/{size} levels must be 'auto', got {levels!r}")
         co_purposes = row.get("co_purposes", [])
         if not isinstance(co_purposes, list):
             raise ValueError("co_purposes must be a list")
@@ -529,7 +532,7 @@ def _load_programs(
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
-            layout=layout, levels=row.get("levels"),
+            layout=layout, levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),

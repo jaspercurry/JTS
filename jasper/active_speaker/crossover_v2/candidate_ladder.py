@@ -95,7 +95,7 @@ def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
     if frequency_path.is_file():
         run = frequency_run_from_view(json.loads(frequency_path.read_text()))
         viewed: dict[str, list[Mapping[str, Any]]] = {}
-        for curve in run.series:
+        for curve in run.series if run else ():
             take_id = str(curve.details.get("take_id") or "")
             if take_id in records:
                 viewed.setdefault(take_id, []).append(curve.to_dict())

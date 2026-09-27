@@ -277,6 +277,22 @@ def get_volume(
     return get("/volume", base_url=base_url, timeout=timeout)
 
 
+def read_output_volume() -> dict[str, float | bool]:
+    """The household output's mute, and its level when reported, as measurement
+    evidence (``muted``, ``household_percent``); ``{}`` when jasper-control cannot say."""
+    try:
+        response = get_volume()
+        state = response.json() if response.ok else None
+    except (ControlError, ValueError):
+        return {}
+    if not isinstance(state, dict) or not isinstance(state.get("muted"), bool):
+        return {}
+    evidence: dict[str, float | bool] = {"muted": state["muted"]}
+    if isinstance(state.get("percent"), (int, float)):
+        evidence["household_percent"] = state["percent"]
+    return evidence
+
+
 def get_state(
     *, base_url: str = DEFAULT_BASE_URL, timeout: float = DEFAULT_TIMEOUT
 ) -> dict:
