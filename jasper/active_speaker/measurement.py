@@ -6,20 +6,14 @@
 
 from __future__ import annotations
 
-import json
-import hashlib
 from typing import Any, Mapping, Sequence
 
 from jasper.output_topology import (
     OutputTopology,
+    canonical_fingerprint,
     main_speaker_groups,
     topology_is_subless_passive_mains,
 )
-
-
-def _fingerprint(payload: Mapping[str, Any]) -> str:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _crossover_groups(topology: OutputTopology) -> list[Any]:
@@ -54,7 +48,7 @@ def _target_fingerprint(
 ) -> str:
     """Fingerprint the physical output target that measurement evidence proves."""
 
-    return _fingerprint({
+    return canonical_fingerprint({
         "topology_id": topology.topology_id,
         "hardware": _hardware_payload(topology),
         "speaker_group_id": target.get("speaker_group_id"),
@@ -129,7 +123,7 @@ def _summed_fingerprint(
     group: Any,
     driver_targets: list[dict[str, Any]],
 ) -> str:
-    return _fingerprint({
+    return canonical_fingerprint({
         "topology_id": topology.topology_id,
         "hardware": _hardware_payload(topology),
         "speaker_group_id": group.id,

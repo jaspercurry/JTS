@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Collection, Mapping
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Read size for :func:`sha256_file` — bounded for the 415 MB Pi Zero 2 W.
 _HASH_CHUNK_BYTES = 1 << 16
@@ -101,15 +102,32 @@ def sha256_file(path: str | os.PathLike[str]) -> str:
     return digest.hexdigest()
 
 
-def json_fingerprint(mapping: Mapping[str, Any]) -> str:
-    """SHA-256 hex of one mapping's canonical JSON: sorted keys, no spaces."""
-    canonical = json.dumps(
-        mapping,
+def require_sha256_hex(
+    value: Any, *, field: str, error: Callable[[str], Exception] = ValueError,
+) -> str:
+    """``value`` when it is a lowercase SHA-256 hex digest, else ``error``
+    naming ``field`` — never a repair: padding and uppercase are refused."""
+    if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
+        return value
+    raise error(f"{field} must be a lowercase SHA-256 fingerprint")
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """The one canonical JSON encoding identities hash and persist: sorted
+    keys, no whitespace, ASCII only, finite numbers only (``ValueError`` on
+    NaN or infinity). Any change re-fingerprints every persisted record."""
+    return json.dumps(
+        value,
+        allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    ).encode("utf-8")
+
+
+def json_fingerprint(mapping: Mapping[str, Any]) -> str:
+    """SHA-256 hex of one mapping's :func:`canonical_json_bytes`."""
+    return hashlib.sha256(canonical_json_bytes(mapping)).hexdigest()
 
 
 class CodedFieldError(ValueError):

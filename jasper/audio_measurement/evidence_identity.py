@@ -15,15 +15,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
+from jasper.json_fields import canonical_json_bytes, require_sha256_hex
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 ACTIVE_RAW_NORMALIZATION_DOMAIN = "camilladsp_active_raw"
 ACTIVE_RAW_NORMALIZATION_ALGORITHM_ID = "jts_active_raw_canonical_json"
 ACTIVE_RAW_NORMALIZATION_ALGORITHM_VERSION = "1"
@@ -36,14 +35,6 @@ class EvidenceIdentityError(ValueError):
 def _text(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise EvidenceIdentityError(f"{field_name} must be a non-empty trimmed string")
-    return value
-
-
-def _sha256(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise EvidenceIdentityError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
     return value
 
 
@@ -80,13 +71,8 @@ def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -
 
     if not isinstance(value, Mapping) or not value:
         raise EvidenceIdentityError(f"{field_name} must be a non-empty mapping")
-    canonical = json.dumps(
-        _freeze_json(value, field_name=field_name),
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = canonical_json_bytes(_freeze_json(value, field_name=field_name))
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
@@ -119,7 +105,7 @@ class ArtifactIdentity(FingerprintedRecord):
             raise EvidenceIdentityError(
                 "relative_path must be a normalized bundle-relative POSIX path"
             )
-        digest = _sha256(self.sha256, field_name="sha256")
+        digest = require_sha256_hex(self.sha256, field="sha256", error=EvidenceIdentityError)
         if type(self.byte_size) is not int or self.byte_size < 0:
             raise EvidenceIdentityError("byte_size must be a non-negative integer")
         object.__setattr__(self, "bundle_kind", bundle_kind)
@@ -184,13 +170,7 @@ class NormalizedActiveRawIdentity(FingerprintedRecord):
             frozen = DspPredecessor(normalized_active_raw)
         except NullWalkError as exc:
             raise EvidenceIdentityError(str(exc)) from exc
-        active_raw = frozen.state
-        active_raw_json = json.dumps(
-            active_raw,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+        active_raw_json = canonical_json_bytes(frozen.state).decode("ascii")
         object.__setattr__(self, "normalization_domain", normalization_domain)
         object.__setattr__(
             self,

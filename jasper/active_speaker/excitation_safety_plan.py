@@ -29,11 +29,10 @@ from jasper.audio_measurement.admission.excitation_admission import (
     FrequencyBand,
 )
 from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
-from jasper.json_fields import require_finite
+from jasper.json_fields import require_finite, require_sha256_hex
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import require_sha256_hex
 from .driver_protection import (
     FULL_RANGE_ROLES,
     HIGH_FREQUENCY_ROLES,
@@ -97,12 +96,7 @@ def _request_refusals(
 
 
 def _sha256(value: Any, *, field: str) -> str:
-    return require_sha256_hex(
-        value,
-        field,
-        ExcitationSafetyPlanError,
-        message=f"{field} must be a lowercase SHA-256",
-    )
+    return require_sha256_hex(value, field=field, error=ExcitationSafetyPlanError)
 
 
 def _finite(value: Any, *, field: str) -> float:

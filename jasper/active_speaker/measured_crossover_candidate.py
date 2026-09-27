@@ -47,9 +47,8 @@ from jasper.audio_measurement.room_limits import (
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import PeqFilter, total_positive_boost_db
-from jasper.json_fields import finite_float, issue
+from jasper.json_fields import finite_float, issue, require_sha256_hex
 
-from ._common import require_sha256_hex
 from .camilla_names import driver_delay_name as _driver_delay_name
 from .camilla_yaml import (
     _channels_for_role,
@@ -245,9 +244,7 @@ def _validated_room_correction(
     if not isinstance(basis["round_id"], str) or not basis["round_id"].strip():
         _refuse(_ROOM_INVALID, "basis.round_id must be a non-empty string")
     try:
-        require_sha256_hex(
-            basis[ROOM_MEDIAN_FIELD], f"basis.{ROOM_MEDIAN_FIELD}", ValueError
-        )
+        require_sha256_hex(basis[ROOM_MEDIAN_FIELD], field=f"basis.{ROOM_MEDIAN_FIELD}")
     except ValueError as exc:
         _refuse(_ROOM_INVALID, str(exc))
     if not isinstance(basis["admitted_boosts_hz"], list):

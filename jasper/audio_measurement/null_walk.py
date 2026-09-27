@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
-from jasper.json_fields import require_finite
+from jasper.json_fields import canonical_json_bytes, require_finite
 
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
@@ -76,14 +76,8 @@ def _canonical_state(
             ]
         raise NullWalkError(f"{field_name} contains a non-JSON value at {path}")
 
-    frozen = freeze(state, path="$")
-    canonical = json.dumps(
-        frozen,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = canonical_json_bytes(freeze(state, path="$"))
+    return canonical.decode("ascii"), hashlib.sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True, init=False)
@@ -147,23 +141,17 @@ def _finite(value: Any, *, field: str) -> float:
     return require_finite(value, field=field, error=NullWalkError)
 
 
-def _canonical_payload(payload: Mapping[str, Any]) -> str:
+def _canonical_payload(payload: Mapping[str, Any]) -> bytes:
     """Serialize one already-validated JSON payload for strict identity."""
 
     try:
-        return json.dumps(
-            dict(payload),
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+        return canonical_json_bytes(dict(payload))
     except (TypeError, ValueError) as exc:
         raise NullWalkError("null-walk payload is not canonical JSON data") from exc
 
 
 def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical_payload(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_payload(payload)).hexdigest()
 
 
 @dataclass(frozen=True)

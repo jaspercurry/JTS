@@ -21,9 +21,11 @@ from jasper.json_fields import (
     JsonFields,
     _HASH_CHUNK_BYTES,
     as_float,
+    canonical_json_bytes,
     finite_float,
     json_fingerprint,
     require_finite,
+    require_sha256_hex,
     sha256_file,
     utc_now_iso,
 )
@@ -96,6 +98,25 @@ def test_json_fingerprint_ignores_key_order_but_not_values():
         {"b": [2, {"c": 3}], "a": 1}
     )
     assert json_fingerprint({"a": 1}) != json_fingerprint({"a": 2})
+
+
+def test_canonical_json_bytes_is_sorted_compact_ascii_and_finite_only():
+    assert canonical_json_bytes({"b": [1.5, None], "a": "é"}) == b'{"a":"\\u00e9","b":[1.5,null]}'
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"a": float("nan")})
+
+
+@pytest.mark.parametrize("value,accepted", [
+    ("0123456789abcdef" * 4, True), ("A" * 64, False), (" " + "a" * 63, False),
+    ("a" * 64 + "\n", False), ("a" * 63, False), ("g" * 64, False),
+    ("\u0660" * 64, False), (b"a" * 64, False), (None, False),
+])
+def test_require_sha256_hex_answers_only_a_lowercase_digest(value, accepted):
+    if accepted:
+        assert require_sha256_hex(value, field="x", error=_Refused) == value
+    else:
+        with pytest.raises(_Refused):
+            require_sha256_hex(value, field="x", error=_Refused)
 
 
 @pytest.mark.parametrize("error_type", [

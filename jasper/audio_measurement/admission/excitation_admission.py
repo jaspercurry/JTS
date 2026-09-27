@@ -4,16 +4,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from jasper.json_fields import require_finite
+from jasper.json_fields import json_fingerprint, require_finite, require_sha256_hex
 
 SCHEMA_VERSION = 2
-_FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _finite_number(value: object, *, field: str) -> float:
@@ -33,38 +29,15 @@ def _positive_int(value: object, *, field: str) -> int:
     return value
 
 
-def _required_fingerprint(value: object, *, field: str) -> str:
-    if not isinstance(value, str) or _FINGERPRINT_RE.fullmatch(value) is None:
-        raise ValueError(f"{field} must be a canonical lowercase SHA-256 fingerprint")
-    return value
-
-
 def _optional_fingerprint(value: object, *, field: str) -> str | None:
     if value is None:
         return None
-    return _required_fingerprint(value, field=field)
-
-
-def _canonical_json(value: object) -> bytes:
-    try:
-        return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("artifact must contain canonical JSON data") from exc
-
-
-def _content_fingerprint(payload: Mapping[str, object]) -> str:
-    return hashlib.sha256(_canonical_json(dict(payload))).hexdigest()
+    return require_sha256_hex(value, field=field)
 
 
 def _with_fingerprint(payload: Mapping[str, object]) -> dict[str, object]:
     result = dict(payload)
-    result["fingerprint"] = _content_fingerprint(payload)
+    result["fingerprint"] = json_fingerprint(payload)
     return result
 
 
@@ -153,7 +126,7 @@ class ExcitationRequest:
 
     @property
     def fingerprint(self) -> str:
-        return _content_fingerprint(self._payload())
+        return json_fingerprint(self._payload())
 
     def to_dict(self) -> dict[str, object]:
         return _with_fingerprint(self._payload())
@@ -205,7 +178,7 @@ class ExcitationLimits:
             object.__setattr__(
                 self,
                 field,
-                _required_fingerprint(getattr(self, field), field=field),
+                require_sha256_hex(getattr(self, field), field=field),
             )
         object.__setattr__(self, "maximum_effective_peak_dbfs", peak)
         object.__setattr__(self, "maximum_duration_s", duration)
@@ -230,7 +203,7 @@ class ExcitationLimits:
     def fingerprint(self) -> str:
         """Content-derived authority identity used at both admission boundaries."""
 
-        return _content_fingerprint(self._payload())
+        return json_fingerprint(self._payload())
 
     def to_dict(self) -> dict[str, object]:
         return _with_fingerprint(self._payload())

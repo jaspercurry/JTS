@@ -11,14 +11,13 @@ The reconciler reads these facts through `python -m jasper.cli.xvf_profile`.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from math import pi
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.env_load import parse_bool_value
+from jasper.json_fields import json_fingerprint
 from jasper.mics.profile_ids import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC
 
 
@@ -345,8 +344,9 @@ def chip_aec_fixed_profile_fingerprint(plan: ChipBeamPlan) -> str:
             "transform": CHIP_AEC_REFERENCE_TRANSFORM,
         },
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return json_fingerprint(payload)
+
+
 CHIP_BEAM_PLANS: dict[str, ChipBeamPlan] = {
     SQUARE_FIXED_150_210_PLAN.plan_id: SQUARE_FIXED_150_210_PLAN,
 }
