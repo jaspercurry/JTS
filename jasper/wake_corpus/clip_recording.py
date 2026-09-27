@@ -290,6 +290,21 @@ def _owns_pending_locked(
     return backend._pending_stop_generation == generation
 
 
+def _clear_current_locked(backend: RecordingBackend) -> None:
+    """Free the recording slot and cancel the clip's timers. A timer holds
+    its arguments, and with them the clip's task and buffers, until it is
+    cancelled; firing does not release them."""
+    for timer in (backend._auto_stop_handle, backend._mute_poll_handle):
+        if timer is not None:
+            timer.cancel()
+    backend._auto_stop_handle = None
+    backend._mute_poll_handle = None
+    backend._current = None
+    backend._current_clip_id = None
+    backend._current_meta = None
+    backend._current_plan_conformance = None
+
+
 def _quiesce_current_capture(
     backend: RecordingBackend,
     generation: StopGeneration,
@@ -308,6 +323,17 @@ def _quiesce_current_capture(
             pass
 
 
+def _clear_pending_locked(backend: RecordingBackend) -> threading.Timer | None:
+    """Forget the deferred stop; returns its retry Timer for the caller to
+    cancel outside the state lock."""
+    handle = backend._stop_retry_handle
+    backend._pending_stop = None
+    backend._pending_stop_generation = None
+    backend._stop_retry_handle = None
+    backend._stop_retry_attempts = 0
+    return handle
+
+
 def clear_pending_stop(
     backend: RecordingBackend,
     generation: StopGeneration | None = None,
@@ -318,11 +344,7 @@ def clear_pending_stop(
             and not _owns_pending_locked(backend, generation)
         ):
             return
-        handle = backend._stop_retry_handle
-        backend._pending_stop = None
-        backend._pending_stop_generation = None
-        backend._stop_retry_handle = None
-        backend._stop_retry_attempts = 0
+        handle = _clear_pending_locked(backend)
     if handle is not None:
         handle.cancel()
 
@@ -357,17 +379,12 @@ def _schedule_stop_retry(
         if attempt > STOP_RETRY_MAX_ATTEMPTS:
             abandoned_attempts = attempt - 1
             abandoned_clip_id = backend._current_clip_id
-            backend._pending_stop = None
-            backend._pending_stop_generation = None
-            backend._stop_retry_handle = None
-            backend._stop_retry_attempts = 0
+            # No retry Timer is in flight here (checked above).
+            _clear_pending_locked(backend)
             # The lifecycle owner never released; the clip is lost, but
             # the recorder must stay usable for the next one — clear the
             # in-progress slot `start_recording()` checks.
-            backend._current = None
-            backend._current_clip_id = None
-            backend._current_meta = None
-            backend._current_plan_conformance = None
+            _clear_current_locked(backend)
         else:
             exponent = min(attempt - 1, 8)
             delay = min(
@@ -544,22 +561,10 @@ def _stop_recording(
         capture_plan_id = str(capture_plan.get("plan_id") or "")
         capture_plan_conformance = dict(backend._current_plan_conformance or {})
         audio_context = dict(backend._audio_context or {})
-        # Cancel the auto-stop timer if it hasn't fired yet.
-        if backend._auto_stop_handle is not None and not auto:
-            backend._auto_stop_handle.cancel()
-        backend._auto_stop_handle = None
-        # The mute watch dies with the recording (cancelling an
-        # already-fired handle is a harmless no-op).
-        if backend._mute_poll_handle is not None:
-            backend._mute_poll_handle.cancel()
-        backend._mute_poll_handle = None
         # Clear state up-front: while the clip saves, is_recording(),
         # /api/status and the safety stops' generation checks already
         # treat it as stopped.
-        backend._current = None
-        backend._current_clip_id = None
-        backend._current_meta = None
-        backend._current_plan_conformance = None
+        _clear_current_locked(backend)
 
     # Long operations (await stop, write WAVs) happen OUTSIDE the
     # lock — other API calls can read state concurrently.

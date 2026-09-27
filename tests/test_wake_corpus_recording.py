@@ -1248,33 +1248,40 @@ def test_stop_retry_gives_up_after_max_attempts(
     monkeypatch: pytest.MonkeyPatch,
     caplog,
 ) -> None:
-    """A lifecycle owner that never releases is abandoned, not retried forever."""
+    """A lifecycle owner that never releases is abandoned, not retried
+    forever, and the given-up clip leaves no timer holding its task and
+    buffers."""
     monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_ATTEMPTS", 3)
+    # Long enough that the poll handle captured below is still the live one.
+    monkeypatch.setattr(clip_recording, "MUTE_POLL_INTERVAL_SEC", 60.0)
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     with backend._lock:
         task = backend._current
         clip_id = backend._current_clip_id
+        timers = (backend._auto_stop_handle, backend._mute_poll_handle)
     generation = (clip_id, task)
 
-    monkeypatch.setattr(clip_recording, "_stop_with_recovery", lambda *a, **k: False)
+    def quiesce_but_never_publish(backend, generation, **_) -> bool:
+        clip_recording._quiesce_current_capture(backend, generation)
+        return False
+
+    monkeypatch.setattr(clip_recording, "_stop_with_recovery", quiesce_but_never_publish)
 
     clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
 
-    def _gave_up() -> bool:
-        with backend._lock:
-            return (
-                backend._pending_stop is None
-                and backend._stop_retry_handle is None
-            )
-
-    wait_until_sync(_gave_up)
+    # Logged after the give-up clears its state.
+    wait_until_sync(
+        lambda: bool(event_records(caplog, "wake_corpus.stop_retry_abandoned")),
+    )
     with backend._lock:
+        assert backend._pending_stop is None
         assert backend._stop_retry_attempts == 0
     fields = event_fields(caplog, "wake_corpus.stop_retry_abandoned")
     assert fields["attempts"] == "3"
+    assert [timer.cancelled() for timer in timers] == [True, True]
 
 
 def test_recorder_usable_after_stop_retry_abandoned(
