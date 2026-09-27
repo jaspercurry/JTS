@@ -37,7 +37,7 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     write_program_wav,
 )
-from jasper.json_fields import sha256_file
+from jasper.json_fields import finite_float, sha256_file
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from jasper.audio_measurement import deconv
@@ -127,21 +127,6 @@ DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
 PROBE_FREQUENCIES_HZ: tuple[float, ...] = (
     150.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1000.0,
     1500.0, 2000.0, 3000.0, 4000.0, 6000.0, 8000.0,
-)
-
-#: Session volumes tried when solving the program id: -40..0 dB in half-dB
-#: steps, ~80 program builds per courtesy-prelude value, and
-#: :func:`rebuild_measure_program` tries at most two.
-#:
-#: **This grid does NOT cover every value the flow can compose.**
-#: ``session_volume_plan.session_measurement_volume_db`` returns an
-#: UNQUANTIZED float over the open interval (-60, 0], so the grid covers
-#: exactly the codified -20 dB default and a banked seat-level reference
-#: that happens to land on a half-dB. Anything else fails the solve, and
-#: :data:`PROGRAM_NOT_REPRODUCIBLE` names that cause explicitly. The
-#: durable fix is for the round to BANK its session volume.
-_DOWNSTREAM_GRID_DB: tuple[float, ...] = tuple(
-    round(-40.0 + 0.5 * step, 1) for step in range(81)
 )
 
 #: Sidecar diagnostics compared against the replay. Each is a value the banked
@@ -321,12 +306,27 @@ def round_bands_hz(
     return {role: overrides[role] for role in roles}
 
 
-def rebuild_measure_program(
-    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
-):
-    """Return (program, downstream gain, prelude), proved by the banked id.
+def _measure_program_at(state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]],
+                        session_volume_db: float, prelude: bool) -> ExcitationProgram:
+    """The MEASURE program this round's state composes at one session volume."""
+    roles, gains = banked_roles(state), state["gain_plan_db"]
+    roles_bands = tuple(RoleBand(role, index, FrequencyBand(*bands[role])) for index, role in enumerate(roles))
+    # Both pilot rules asked of the composer, never restated here.
+    pilot_role = leading_pilot_role(roles_bands)
+    return build_measure_program(
+        {role: float(gains[role]) for role in roles}, roles_bands,
+        sweep_durations=_banked_sweep_durations_s(state, bands), downstream_gain_db=session_volume_db,
+        leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])), leading_pilot_role=pilot_role,
+        courtesy_prelude=prelude,
+    )
 
-    Solve unbanked volume and prelude; use banked sweep durations when present.
+
+def rebuild_measure_program(
+    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]], session_volume_db: float | None,
+) -> tuple[ExcitationProgram, bool]:
+    """Return (program, prelude) at a capture's recorded session volume, proved by the banked id.
+
+    Solve the prelude; use banked sweep durations when present.
     Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
 
@@ -357,10 +357,9 @@ def rebuild_measure_program(
                 "program_id": want[:12],
             },
         )
-    roles_bands = tuple(
-        RoleBand(role, index, FrequencyBand(*bands[role]))
-        for index, role in enumerate(roles)
-    )
+    if session_volume_db is None:
+        raise HarmonicEvidenceRefused(
+            PROGRAM_NOT_REPRODUCIBLE, {"program_id": want[:12], "missing": "provenance.session_volume_db"})
     # WHETHER the state carries a banking attempt at all, independent of whether
     # that attempt turned out usable: :func:`_banked_sweep_durations_s`
     # collapses "never banked" and "banked something unusable" to the same
@@ -370,21 +369,10 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
-    # Both pilot rules asked of the composer, never restated here.
-    pilot_role = leading_pilot_role(roles_bands)
     for prelude in (shipped, not shipped):
-        for downstream in _DOWNSTREAM_GRID_DB:
-            program = build_measure_program(
-                {role: float(gains[role]) for role in roles},
-                roles_bands,
-                sweep_durations=banked_durations,
-                downstream_gain_db=float(downstream),
-                leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])),
-                leading_pilot_role=pilot_role,
-                courtesy_prelude=prelude,
-            )
-            if program.program_id == want:
-                return program, float(downstream), bool(prelude)
+        program = _measure_program_at(state, bands, session_volume_db, prelude)
+        if program.program_id == want:
+            return program, bool(prelude)
     if not banked_durations_present:
         duration_cause = (
             "this round's sweeps were FITTED to a declared duration limit "
@@ -408,7 +396,7 @@ def rebuild_measure_program(
             "this round banked its realized sweep durations (#2923) and "
             "this replay composed at exactly them, so a duration fit is a "
             "LESS LIKELY cause here than it is for an unbanked round — "
-            "check (1), (3), and (4) first — but it is not ruled out: a "
+            "check (2) and (3) first — but it is not ruled out: a "
             "hand-edited banked value, or a genuine duration-limit change "
             "replayed against a byte-identical band, could still leave the "
             "banked figure wrong for this program"
@@ -418,8 +406,7 @@ def rebuild_measure_program(
         {
             "program_id": want[:12],
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
-            "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
-            "downstream_grid_step_db": 0.5,
+            "session_volume_db": session_volume_db,
             # Two booleans, not one: "was anything banked" and "was what was banked
             # usable" are different facts (#2923). Absent from banking is
             # (False, False); banked-something-unusable is (True, False); banked and
@@ -429,19 +416,13 @@ def rebuild_measure_program(
             "measure_sweep_durations_banked": banked_durations_present,
             "measure_sweep_durations_usable": banked_durations is not None,
             "note": (
-                "no session volume in the grid reproduces the banked program id "
-                "with the courtesy prelude either on or off. Four causes, and "
-                "the FIRST is the one an operator will hit on a real box: (1) "
-                "the session volume is not on the solve grid — this round's "
-                "volume is unbanked and brute-forced over half-dB steps from "
-                "-40 dB, while the composer derives it as an unquantized float "
-                "anywhere above the -60 dB floor, so a seat-level reference of "
-                f"e.g. -24.7 dB is simply unreachable here; (2) {duration_cause}; "
-                "(3) the driver bands supplied are wrong for this round; (4) "
-                "this state does not describe a MEASURE round. Only (3) and "
-                "(4) are fixable by re-invoking — (1) needs the round to bank "
-                "its session volume, and (2) needs the round to bank its sweep "
-                "durations (#2923) when it has not already"
+                "the recorded session volume does not reproduce the banked "
+                "program id with the courtesy prelude either on or off. Three "
+                f"causes: (1) {duration_cause}; (2) the driver bands supplied "
+                "are wrong for this round; (3) this state does not describe a "
+                "MEASURE round. Only (2) and (3) are fixable by re-invoking — "
+                "(1) needs the round to bank its sweep durations (#2923) when "
+                "it has not already"
             ),
         },
     )
@@ -916,6 +897,12 @@ def _capture_program_identity(
     return proof, None
 
 
+def _session_volume_db(sidecar: Mapping[str, Any]) -> float | None:
+    """The session volume a capture recorded playing at, or ``None``."""
+    provenance = sidecar.get("provenance")
+    return finite_float(provenance.get("session_volume_db")) if isinstance(provenance, Mapping) else None
+
+
 def read_round_harmonics(
     round_dir: Path,
     dumps_dir: Path,
@@ -962,12 +949,18 @@ def read_round_harmonics(
         if sidecar.get("graph_scope") == "candidate_branches":
             program = ExcitationProgram.from_dict(sidecar["program"])
             sweep = program.segment("sweep_w")
-            downstream_db = sweep.effective_peak_dbfs - sweep.gain_db
             prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
-            return program, downstream_db, prelude
+            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude
         if measure is None:
-            measure = rebuild_measure_program(state, round_bands_hz(state, bands))
-        return measure
+            round_bands = round_bands_hz(state, bands)
+            recorded = (_session_volume_db(capture["sidecar"]) for capture in captures
+                        if capture["sidecar"].get("graph_scope") != "candidate_branches")
+            first = next((volume for volume in recorded if volume is not None), None)
+            measure = (*rebuild_measure_program(state, round_bands, first), round_bands)
+        proven, prelude, round_bands = measure
+        volume_db = _session_volume_db(sidecar)
+        program = proven if volume_db is None else _measure_program_at(state, round_bands, volume_db, prelude)
+        return program, volume_db, prelude
 
     program_hashes: dict[str, str] = {}
     calibration, calibration_note = _calibration_for(captures, calibration_text)
@@ -987,7 +980,7 @@ def read_round_harmonics(
             "position_deg": capture["sidecar"].get("position_deg"),
         }
         sidecar = capture["sidecar"]
-        program, downstream_db, prelude = program_for(sidecar)
+        program, volume_db, prelude = program_for(sidecar)
         provenance = sidecar.get("provenance")
         stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
         if isinstance(stimulus, Mapping) and stimulus.get("wav_sha256"):
@@ -1034,8 +1027,8 @@ def read_round_harmonics(
         read.append({**take, "identity": proof, "fidelity_fields_compared": compared,
                      "program": {
                          "program_id": program.program_id,
-                         "solved_downstream_gain_db": (
-                             downstream_db if proof["program_id_status"] == "matched" else None
+                         "session_volume_db": (
+                             volume_db if proof["program_id_status"] == "matched" else None
                          ),
                          "solved_courtesy_prelude": prelude,
                      }})
@@ -1054,6 +1047,9 @@ def read_round_harmonics(
                 block["drive"]["reason"] = "stimulus_program_identity_missing"
             else:
                 block["drive"]["status"] = "program_declared"
+                if volume_db is None:
+                    block["drive"]["effective_peak_dbfs"] = None
+                    block["drive"]["reason"] = "session_volume_unrecorded"
             blocks.append(block)
 
     if not blocks:
