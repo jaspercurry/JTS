@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from jasper.json_fields import as_float
+
 from ._common import issue as _issue
 from .driver_protection import (
     driver_protection_payload,
@@ -148,13 +150,8 @@ def protective_tweeter_highpass_frequency_hz(
 
 
 def _finite_positive(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(out) or out <= 0:
-        return None
-    return out
+    out = as_float(value)
+    return out if out is not None and math.isfinite(out) and out > 0 else None
 
 
 def _edge(

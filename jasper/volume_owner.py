@@ -68,7 +68,7 @@ from .volume_latch import (
     read_fader_db,
     set_and_confirm_volume,
 )
-from .json_fields import finite_float
+from .json_fields import require_finite
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -140,10 +140,7 @@ def _finite(value: Any, what: str) -> float:
     """A finite dB number, or a refusal. A ``bool`` is not a level: read as
     ``1.0`` it would be a POSITIVE level the 0 dB ceiling can never carry.
     """
-    number = finite_float(value)
-    if number is None:
-        raise VolumeClaimRefused(f"{what} must be a finite number, got {value!r}")
-    return number
+    return require_finite(value, field=what, error=VolumeClaimRefused)
 
 
 def _fmt_db(value: float | None) -> str:

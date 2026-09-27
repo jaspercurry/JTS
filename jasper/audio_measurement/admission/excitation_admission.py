@@ -10,26 +10,21 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 
 SCHEMA_VERSION = 2
 _FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
 
 
 def _finite_number(value: object, *, field: str) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise ValueError(f"{field} must be a finite number")
+    number = require_finite(value, field=field)
     # JSON distinguishes -0.0 from 0.0 even though the safety policy does not.
     # Normalize it so equal numeric authority has one canonical fingerprint.
     return 0.0 if number == 0.0 else number
 
 
 def _positive_number(value: object, *, field: str) -> float:
-    number = _finite_number(value, field=field)
-    if number <= 0.0:
-        raise ValueError(f"{field} must be positive")
-    return number
+    return require_finite(value, field=field, positive=True)
 
 
 def _positive_int(value: object, *, field: str) -> int:

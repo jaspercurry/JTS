@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
@@ -144,10 +144,7 @@ def geometry_seed_us(
 
 
 def _finite(value: Any, *, field: str) -> float:
-    out = finite_float(value)
-    if out is None:
-        raise NullWalkError(f"{field} must be a finite number")
-    return out
+    return require_finite(value, field=field, error=NullWalkError)
 
 
 def _canonical_payload(payload: Mapping[str, Any]) -> str:
