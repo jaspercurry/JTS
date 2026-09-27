@@ -50,10 +50,9 @@ def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
     The shipped cloud table is already mixed — seven lateral rows and four
     raised ones. Banking an elevation must not move what the horizontal-only
     consumers see, and the mechanism that guarantees it is ``position_deg``
-    staying ``None`` on a raised seat: every pooled bearing set in the tree
-    (``evidence_packet._angle_deg_block`` is the one a reader sees) is built by
-    filtering for an ``int`` bearing, so a raised seat is excluded there and
-    included, AS LABELLED, everywhere a seat is listed.
+    staying ``None`` on a raised seat: every pooled bearing set in the tree is
+    built by filtering for an ``int`` bearing, so a raised seat is excluded
+    there and included, AS LABELLED, everywhere a seat is listed.
     """
     geometries = [capture_plan.position_geometry(p) for p in CLOUD_POSITION_PROMPTS]
     bearings = [g.degrees for g in geometries if isinstance(g.degrees, int)]

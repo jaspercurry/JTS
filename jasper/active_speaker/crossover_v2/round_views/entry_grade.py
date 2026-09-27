@@ -15,7 +15,6 @@ import numpy as np
 
 from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 from jasper.active_speaker.flat_spec import FlatSpecReport, evaluate_flat_spec
-from jasper.audio_measurement.gating import ENTANGLEMENT_SOURCE_UNKNOWN
 
 from .banked import BankedRound
 
@@ -37,14 +36,12 @@ class EntryStateGrade:
     A reader, not a new capture and not a second grader: the entry-baseline take
     is write-once (ruling S3's offline promise) and ``report`` is a real
     :class:`~jasper.active_speaker.flat_spec.FlatSpecReport` from the shipped
-    evaluator, so it reads side by side with the round's own ``spec`` block.
+    evaluator.
 
-    **The frame is the ROUND's, the exclusion mask is the TAKE's.** The mask is
-    :func:`~.round_evidence._validity_clamp`'s output — the bins below THIS
-    capture's own reflection gate — not the cloud's interference screen over a
-    different capture. Grading this curve through the round's post-apply
-    exclusions would report deviations at bins nobody vouched for.
-    :func:`_entry_frame` owns what a round that graded no after is stated in.
+    The exclusion mask is the TAKE's: :func:`~.round_evidence._validity_clamp`'s
+    output, the bins below THIS capture's own reflection gate. No round grades
+    an after, so the frame is none: unsmoothed and unclamped, which the report
+    echoes as ``None`` clamps on its face.
 
     ``round_ordinal`` / ``round_ordinal_epoch`` are read from the banked flow
     state; ``None`` is "not recorded". They ride here because "the entry state
@@ -126,39 +123,16 @@ def _banked_series_position(state_path: Path | None) -> tuple[int | None, int | 
     return ordinal, _count(state.get("round_ordinal_epoch"))
 
 
-def _entry_frame(report: FlatSpecReport | None) -> tuple[int, dict[str, Any]]:
-    """``(smoothing_fraction, frame_kwargs)`` for an entry baseline — the round's
-    own when it graded one, nothing when it did not.
-
-    The frame is the ROUND's so a before and an after are stated over one span. A
-    round that banked no cloud group graded no after, so the honest frame is no
-    frame: unclamped, on ``0``, this module's spelling for *not attested*. The
-    emitted report echoes both clamps as ``None`` on its face, so the grade
-    discloses which frame produced it. The room's floor is READ BACK rather than
-    re-derived: a floor recomputed here would be a second opinion about one room.
-    """
-    if report is None:
-        return 0, {
-            "trusted_floor_hz": None,
-            "trusted_ceiling_hz": None,
-            "entanglement_floor_hz": None,
-            "entanglement_floor_source": ENTANGLEMENT_SOURCE_UNKNOWN,
-        }
-    return report.smoothing_fraction, report.frame_kwargs
-
-
 def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
     """Grade the entry state this round measured before it applied anything.
 
     Reads the banked entry-baseline take out of the round's evidence packet,
     rehydrates it through :meth:`~.round_evidence.EntryBaseline.from_dict` and
     hands the arrays to the shipped
-    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`. It requires no
-    cloud group, which is what makes it reachable: the measure stage is the only
-    stage that banks an entry baseline and the only one that banks no cloud
-    (#3478). ``packet["entry_baseline"]`` is indexed rather than fetched with a
-    default, so a missing key lands in the ``KeyError`` arm the CLI already
-    treats as an unreadable round.
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`.
+    ``packet["entry_baseline"]`` is indexed rather than fetched with a default,
+    so a missing key lands in the ``KeyError`` arm the CLI already treats as an
+    unreadable round.
     """
 
     ordinal, epoch = _banked_series_position(banked.inputs.state_path)
@@ -174,13 +148,11 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
             ENTRY_STATE_UNREADABLE,
             round_ordinal=ordinal, round_ordinal_epoch=epoch,
         )
-    smoothing_fraction, frame_kwargs = _entry_frame(banked.report)
     report = evaluate_flat_spec(
         np.asarray(baseline.curve.hz, dtype=float),
         np.asarray(baseline.curve.db, dtype=float),
         np.asarray(baseline.excluded, dtype=bool),
-        smoothing_fraction=smoothing_fraction,
-        **frame_kwargs,
+        smoothing_fraction=0,
     )
     return EntryStateGrade(
         available=True,

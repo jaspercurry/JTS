@@ -22,23 +22,16 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundViewsError,
     round_inputs,
 )
-from jasper.active_speaker.flat_spec import FlatSpecReport
 from jasper.audio_measurement.program_analysis import DriverResponse
 
 
 @dataclass(frozen=True)
 class BankedRound:
     """One round — banked or still live on the box — read once, ready for every
-    view below.
-
-    ``report`` carries the round's own grading frame, and is ABSENT on a round
-    that banked no cloud group: that is a round SHAPE rather than a defect
-    (#3478), since only the verify stage banks one.
-    """
+    view below."""
 
     round_dir: Path
     inputs: RoundInputs
-    report: FlatSpecReport | None
     packet: Mapping[str, Any] = field(repr=False)
 
     @property
@@ -64,10 +57,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
         packet = round_evidence(inputs)
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
-
-    spec_block = packet.get("spec") or {}
-    report = FlatSpecReport.from_dict(spec_block) if spec_block.get("bands") else None
-    return BankedRound(round_dir=round_dir, inputs=inputs, report=report, packet=packet)
+    return BankedRound(round_dir=round_dir, inputs=inputs, packet=packet)
 
 
 def response_from_banked_curve(curve: Mapping[str, Any]):

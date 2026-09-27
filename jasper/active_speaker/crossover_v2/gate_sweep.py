@@ -971,10 +971,9 @@ def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, A
             "grey_below": RESOLUTION_GREY_CYCLES,
         },
         "uncertainty": {
-            # Empty for the reason the packet's cross-seat block is: nothing
-            # here is a random OR a systematic uncertainty, and filing a
-            # pooled spread as either would be exactly the pooling these
-            # labels exist to prevent.
+            # Empty: nothing here is a random OR a systematic uncertainty,
+            # and filing a pooled spread as either would be exactly the
+            # pooling these labels exist to prevent.
             "fields": {},
             "unseparated": {
                 field: dict(entry)

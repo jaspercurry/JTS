@@ -535,7 +535,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
     for view, _, _ in bookkeeping_views(purpose)
 ])
 def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
-    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
+    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir
 
     monkeypatch.chdir(tmp_path)
     if purpose == "bass":
@@ -547,10 +547,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         if view == "room-grade":
             assert run_bookkeeping("room", target)["status"] == "written"
     else:
-        target = _make_round_dir(tmp_path, "run", position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3)),
-        }, position_degrees={"cloud_verify_02": 0, "cloud_verify_04": 20})
+        target = _make_round_dir(tmp_path, "run", baseline=True)
         write_manifest(target, program=purpose)
     answer = run_bookkeeping(view, target)
     assert answer["status"] == "written", answer

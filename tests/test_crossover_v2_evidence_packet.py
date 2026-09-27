@@ -37,7 +37,6 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,
     UNCERTAINTY_SYSTEMATIC,
-    UNCERTAINTY_UNSEPARATED,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_evidence import (
@@ -55,23 +54,13 @@ from tests.test_crossover_v2_driver_prescription import _classification
 from tests.test_crossover_v2_harmonic_evidence import _artifact as _harmonics
 
 
-@pytest.mark.parametrize("overrides, digest, fingerprint", [
-    ({}, "e684d556fea97e0df7486210bc35f6ab7f5a1d86a1a3c904d1b8d23d36bed4df",
-     "7f4af7498bd62d001eb2144ae555fef04fdfa9893aeb27f944cda194db120e46"),
-    ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
-        "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "e42cc01f96c84b5470740a95d15649cfd0b756616a2ad5a8ab2bfebe6a8815e6",
-     "57d674be906df33ecef2cf19ad027ba40ae5731426f214bf63a7f4b80c412a4e"),
-    ({"cloud_over": {"positions": {}}},
-     "808a38a43a57e65c72c2d004b6ebcff41f1b0a6c7b8af67314d3a2fe0df27033",
-     "3e17338bef4510fd21399ba6bb8010a27cb0004633a058dc5d662d028d2c7075"),
-], ids=["default", "gate-and-seat-spread", "positions-absent"])
-def test_packet_json_bytes(tmp_path, overrides, digest, fingerprint):
+def test_packet_json_bytes(tmp_path):
     # A plain-box packet carries no rear contract (report H R3).
-    session, _ = _bundle(tmp_path, **overrides)
+    session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
-    assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == digest
-    assert packet["packet_fingerprint"] == fingerprint
+    assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
+        "22154631539207f18529c1e7c51b56a44274c8f3359216b3f3715cc1422a0f6f")
+    assert packet["packet_fingerprint"] == "225267ee3e64f9c9b2e588fcda5bfcfd62572d11e9e5539c0369ff33528b540b"
 
 
 def test_a_round_that_filed_view_outputs_in_its_evidence_still_feeds_the_gate(tmp_path):
@@ -95,30 +84,10 @@ def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     components = packet["accuracy_budget"]["components"]
-    assert set(components) == {
-        "cross_seat_position_spread",
-        "in_capture_repeat_floor",
-        "mic_calibration_tier",
-    }
-    # UNCERTAINTY_KINDS is the closed random/systematic set and deliberately
-    # excludes UNSEPARATED (the substrate rule's third, non-poolable label).
-    valid_kinds = UNCERTAINTY_KINDS | {UNCERTAINTY_UNSEPARATED}
+    assert set(components) == {"in_capture_repeat_floor", "mic_calibration_tier"}
     for name, entry in components.items():
-        assert entry["kind"] in valid_kinds, name
+        assert entry["kind"] in UNCERTAINTY_KINDS, name
         assert isinstance(entry["available"], bool), name
-
-
-def test_cross_seat_component_points_at_the_positions_block_it_mirrors(tmp_path):
-    """The default fixture's 4 onax/offax positions give cross_seat_sigma a
-    real reading; this component juxtaposes it rather than re-embedding it."""
-    session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
-    entry = packet["accuracy_budget"]["components"]["cross_seat_position_spread"]
-    assert entry["kind"] == UNCERTAINTY_UNSEPARATED
-    assert entry["available"] is True
-    assert entry["n_seats"] == packet["positions"]["cross_seat_sigma"]["n_seats"]
-    assert entry["reason"] == ""
-    assert "per_bin_sigma_db" not in entry
 
 
 AGGREGATE = "shipped_linear_pool_db"
@@ -654,7 +623,6 @@ def test_explicit_state_only_supplies_claims_for_its_capture(tmp_path, capture_i
     })
     packet = build_crossover_evidence_packet(session, state_path=state_path)
     assert bool(packet["identity"]["calibration"]) is (capture_id == "cap_TESTONLY")
-    assert packet["positions"]["available"] is True
 
 
 def test_a_banked_draft_with_garbage_topology_keeps_the_packet_readable(tmp_path):

@@ -759,8 +759,8 @@ def _median(values: Sequence[float]) -> float:
 def _spread(values: Sequence[float]) -> float | None:
     """Sample standard deviation across in-capture repeats, or ``None``.
 
-    ``None`` below two real values rather than 0.0, on the cross-seat block's
-    rule: a sample standard deviation is UNDEFINED at n=1 and a zero would say
+    ``None`` below two real values rather than 0.0: a sample standard
+    deviation is UNDEFINED at n=1 and a zero would say
     the repeats agreed. ``statistics.stdev`` RAISES at n < 2 instead of
     returning a silent NaN, and the ``len < 2`` guard stands in front of it.
     """

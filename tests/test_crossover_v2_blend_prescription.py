@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import math
-import statistics
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -61,24 +60,11 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_prescription_bytes,
 )
 from jasper.active_speaker.crossover_v2 import position_cycle
-from jasper.audio_measurement.evidence_reasons import (
-    REASON_TOO_FEW_SEATS,
-    REASON_CROSS_SEAT_SPREAD_OVERFLOW,
-    REASON_NO_CURVE_GRID,
-)
 from jasper.biquad import EVALUABLE_Q_MAX
-from jasper.active_speaker.crossover_v2.feature_classification import (
-    UNCERTAINTY_KINDS,
-    UNCERTAINTY_RANDOM,
-    UNCERTAINTY_SYSTEMATIC,
-    UNCERTAINTY_UNSEPARATED,
-)
-from jasper.audio_measurement.spatial_combine import BandSpread
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION,
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
-    packet_positional_evidence,
 )
 from jasper.active_speaker.crossover_v2.spatial import (
     LateralPose,
@@ -103,80 +89,6 @@ pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 
 REPO = Path(__file__).resolve().parents[1]
 BAND = (824.35, 3297.4)
-REFERENCE_DB = -23.575
-#: A grid spanning the region with enough bins that the composed-cap check
-#: reads the packet's own axis rather than falling back to its synthetic sweep.
-GRID = [700.0 + 40.0 * i for i in range(80)]
-
-
-def _magnitudes(
-    dip_hz: float | None, *, depth_db: float = 4.0, grid: list[float] | None = None
-) -> list[float]:
-    """A flat curve at the reference, optionally with one dip written into it."""
-    out = []
-    for freq in grid if grid is not None else GRID:
-        value = REFERENCE_DB
-        if dip_hz is not None and abs(freq - dip_hz) < 60.0:
-            value -= depth_db
-        out.append(value)
-    return out
-
-
-def _cloud(
-    dip_at: list[float | None], *, grid: list[float] | None = None
-) -> dict[str, Any]:
-    """A cloud_verify document whose positions dip where the caller says."""
-    grid = grid if grid is not None else GRID
-    return {
-        "kind": "jts_crossover_v2_cloud_evidence",
-        "schema_version": 1,
-        "trusted_floor_hz": 357.14,
-        "validity_floor_hz": 142.86,
-        "curve": {"freqs_hz": grid, "magnitude_db": _magnitudes(None, grid=grid)},
-        "flatness": {"evaluable": True, "n_bins": 1688, "n_excluded": 0, "rms_db": 0.51},
-        "spec": {
-            "reference_db": REFERENCE_DB,
-            "reference_band_hz": [250.0, 8000.0],
-            "trusted_floor_hz": 357.14,
-            "bands": [
-                {
-                    "f_lo_hz": 250.0, "f_hi_hz": 2000.0, "evaluable": True,
-                    "n_excluded": 0, "graded_lo_hz": 357.14, "n_bins": 1121,
-                    "passed": False, "max_deviation_db": -1.11,
-                }
-            ],
-        },
-        "merged_excluded_bands_hz": [],
-        "screen_excluded_bands_hz": [],
-        "null_registry": {"classification": "insufficient_evidence", "nulls": []},
-        "null_registry_crossover_region": {"classification": "insufficient_evidence"},
-        "carve_outs": [],
-        "geometry": {"reason": "thin_evidence", "n_positions": len(dip_at)},
-        "positions": {
-            "available": True,
-            "schema": "jts_attribution_position_evidence/1",
-            "curve_grid": {
-                "freqs_hz": grid, "fractional_octave": 6,
-                "smoothing_fraction": 0.1667, "floor_hz": 142.86,
-                "floor_source": "search_span_bound",
-            },
-            "field_descriptions": {"role": "prose the packet should drop"},
-            "positions": [
-                {
-                    "position_id": f"cloud_verify_{i:02d}", "index": i, "attempt": 1,
-                    "role": "onax" if i % 2 else "offax",
-                    "take_id": f"take{i}", "wav_sha256": f"{i:064x}",
-                    "wav_path": "/var/lib/jasper/active_speaker/secret.wav",
-                    "validity_floor_hz": 142.86, "gate_disclosure": "no reflection found",
-                    "gate_floor_source": "search_span_bound", "gate_window_ms": 7.0,
-                    "gating_applied": True, "glitch_detected": False,
-                    "summed_ripple_db": 0.4, "echo": {"refusal": "thin"},
-                    "magnitude_db": _magnitudes(dip, grid=grid),
-                }
-                for i, dip in enumerate(dip_at)
-            ],
-        },
-    }
 
 
 def _receipt() -> dict[str, Any]:
@@ -200,24 +112,8 @@ def _receipt() -> dict[str, Any]:
     }
 
 
-def _bundle(
-    tmp_path: Path,
-    *,
-    dip_at: list[float | None] | None = None,
-    state: dict[str, Any] | None = None,
-    grid: list[float] | None = None,
-    cloud_over: dict[str, Any] | None = None,
-    position_over: dict[str, Any] | None = None,
-) -> tuple[Path, Path | None]:
-    """A commissioning bundle on disk, in the real tree shape.
-
-    ``cloud_over`` replaces top-level keys of the cloud artifact and
-    ``position_over`` merges into every position row, so a test can vary one
-    banked fact (a fitted null ladder, a capture's gate numbers) without
-    restating the whole shape.
-    """
-    if dip_at is None:
-        dip_at = [1000.0, 1000.0, 1000.0, 1000.0]
+def _bundle(tmp_path: Path, *, state: dict[str, Any] | None = None) -> tuple[Path, Path | None]:
+    """A commissioning bundle on disk, in the real tree shape."""
     session = tmp_path / "session"
     round_dir = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
     round_dir.mkdir(parents=True)
@@ -238,16 +134,6 @@ def _bundle(
         },
     }))
     (round_dir / "round_receipt.json").write_text(json.dumps(_receipt()))
-    cloud = _cloud(dip_at, grid=grid)
-    if position_over:
-        for row in cloud["positions"]["positions"]:
-            row.update(position_over)
-    cloud.update(cloud_over or {})
-    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-    (round_dir / "findings_cloud_verify.json").write_text(json.dumps({
-        "findings": [], "field_descriptions": {"finding": {"band_hz": "prose"}},
-        "produced_by": "jasper.attribution.promotion.promote_carve_outs",
-    }))
     state_path = None
     if state is not None:
         state_path = tmp_path / "state.json"
@@ -267,7 +153,6 @@ def _gate(packet: dict[str, Any], document: Any, band_hz: tuple[float, float] | 
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
         band_hz=band_hz,
-        positional_evidence=packet_positional_evidence(packet),
     )
 
 
@@ -301,27 +186,6 @@ def test_the_packet_names_every_question_this_round_cannot_answer(packet):
         assert entry["reason"].strip(), f"{entry['field']} claims absence with no reason"
 
 
-def test_the_gate_numbers_reach_the_packet_beside_the_sentence(tmp_path):
-    """Ticket 1.5's first two fields, at the reader's end of the wire.
-
-    Two allowlists sit between the capture and here — ``_RECORD_FIELDS`` into
-    the cloud artifact and ``_POSITION_FIELDS`` into the packet — and a field
-    missing from either is dropped in silence, which is exactly how a number
-    stays trapped in prose. Asserted on the packet's own rows.
-    """
-    session, _ = _bundle(tmp_path, position_over={
-        "gate_moved_rms_db": 1.37, "gate_reflection_delay_ms": 5.33,
-    })
-    packet = build_crossover_evidence_packet(session)
-    rows = packet["positions"]["positions"]
-
-    assert rows
-    assert all(row["gate_moved_rms_db"] == 1.37 for row in rows)
-    assert all(row["gate_reflection_delay_ms"] == 5.33 for row in rows)
-    # Not withheld, which is what an un-allowlisted field would look like.
-    assert "gate_moved_rms_db" not in packet["positions"]["redacted_fields"]
-
-
 def test_the_vertical_plane_is_disclosed_once_and_refuses_nothing(packet):
     """Owner ruling, 2026-08-21: the boost door is open on exactly this risk.
 
@@ -348,10 +212,8 @@ def test_a_missing_state_file_is_reported_not_papered_over(tmp_path):
 
 
 @pytest.mark.parametrize("needle", [
-    pytest.param("/var/lib/jasper", id="an-absolute-capture-path"),
     pytest.param("my flat, second bedroom", id="household-authored-prose"),
     pytest.param("should-be-redacted", id="an-identity-field-off-the-allowlist"),
-    pytest.param("prose the packet should drop", id="duplicated-field-descriptions"),
 ])
 def test_the_packet_emits_no_path_no_prose_and_nothing_off_the_allowlist(
     tmp_path, needle
@@ -379,12 +241,12 @@ def test_the_packet_reports_what_it_withheld_rather_than_narrowing_silently(tmp_
         "comparison_set_id"
     ] or "comparison_set_id" in packet["identity"]["redacted_fields"]
     assert packet["privacy"]["withheld_state_fields"] == ["household_findings"]
-    assert "wav_path" in packet["positions"]["redacted_fields"]
 
 
 def test_two_different_rounds_do_not_share_a_fingerprint(tmp_path):
-    a, _ = _bundle(tmp_path / "a", dip_at=[1000.0, 1000.0, 1000.0, 1000.0])
-    b, _ = _bundle(tmp_path / "b", dip_at=[1000.0, None, None, None])
+    a, _ = _bundle(tmp_path / "a")
+    b, _ = _bundle(tmp_path / "b")
+    _bank_lateral_walk(b, [0])
     pa = build_crossover_evidence_packet(a)
     pb = build_crossover_evidence_packet(b)
     assert pa["packet_fingerprint"] != pb["packet_fingerprint"]
@@ -515,31 +377,6 @@ def test_a_cloud_sidecar_is_never_read_as_a_lateral_pose(tmp_path):
     assert "cloud_verify_01_a01" not in {
         take["take_id"] for take in packet["lateral_poses"]["takes"]
     }
-
-
-def test_a_pre_geometry_cloud_record_still_loads_and_says_it_banks_no_bearing(
-    tmp_path,
-):
-    """(d) A round banked before the geometry fields existed still reads.
-
-    ``_bank_cloud_sidecar`` writes the OLD shape deliberately — no
-    ``position_deg``, no ``position_axis``, no ``mark_distance_m`` — which is
-    every cloud sidecar in every round banked before 2026-08-24. The packet must
-    build, and its ``angle_deg`` block must fall back to the narrow disclosure
-    rather than publishing a ``null`` bearing or dying on a missing key.
-    """
-    session, _ = _bundle(tmp_path)
-    old = json.loads(_bank_cloud_sidecar(session).read_text())
-    assert not {"position_deg", "position_axis", "mark_distance_m"} & set(old)
-
-    angle = build_crossover_evidence_packet(session)["positions"]["angle_deg"]
-
-    assert angle["available"] is False
-    assert angle["status"] == "not_evaluated"
-    # The reason states what is CHECKABLE — this round's rows carry none — and
-    # names the fields that separate "banked too early" from "commanded none".
-    assert "no position row in this round carries position_deg" in angle["reason"]
-    assert "position_axis" in angle["reason"]
 
 
 def test_the_corpus_wide_angle_claim_closes_when_a_walk_was_banked(tmp_path):
@@ -962,286 +799,6 @@ def test_a_round_whose_takes_carry_no_analysis_says_so_rather_than_looking_empty
 
 
 # --------------------------------------------------------------------------- #
-# cross-seat sigma — the packet's one computed statistic
-# --------------------------------------------------------------------------- #
-
-
-def _sigma_block(tmp_path: Path, **over: Any) -> dict[str, Any]:
-    session, _ = _bundle(tmp_path, **over)
-    packet = build_crossover_evidence_packet(session)
-    return packet["positions"]["cross_seat_sigma"]
-
-
-def test_the_seats_own_disagreement_is_published_bin_by_bin(tmp_path):
-    """Reproducible from the packet alone, which is the point of computing it here.
-
-    The spread is taken over the rows the packet PUBLISHES rather than over the
-    artifact behind them, so a reader holding only the packet can recompute
-    every value. That is asserted the only way it can be — by recomputing them —
-    rather than by asserting a shape.
-    """
-    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1000.0, None, None])
-    positions = build_crossover_evidence_packet(session)["positions"]
-    block = positions["cross_seat_sigma"]
-
-    assert block["available"] is True
-    assert (block["n_seats"], block["n_seats_excluded"]) == (4, 0)
-    # Index-aligned with the grid in the same block, and no other grid exists
-    # here to align it with by accident.
-    assert len(block["per_bin_sigma_db"]) == len(positions["curve_grid"]["freqs_hz"])
-
-    curves = [row["magnitude_db"] for row in positions["positions"]]
-    recomputed = [
-        round(statistics.stdev(curve[i] for curve in curves), 4)
-        for i in range(len(curves[0]))
-    ]
-    assert block["per_bin_sigma_db"] == recomputed
-    # Two seats dip 4 dB and two do not, so the dipped bins are exactly where
-    # the seats disagree and the flat bins are where they do not. The dipped
-    # figure is also the ddof pinned by arithmetic rather than by assertion:
-    # the SAMPLE deviation of two-at--27.575 and two-at--23.575 is
-    # sqrt(16/3) = 2.3094, where the population one would be 2.0.
-    assert max(block["per_bin_sigma_db"]) == pytest.approx(math.sqrt(16.0 / 3.0), abs=5e-5)
-    assert min(block["per_bin_sigma_db"]) == 0.0
-
-
-def test_the_spread_is_uncentred_so_a_louder_seat_raises_it(tmp_path):
-    """Deliberate, and the difference from the in-capture repeat sigma.
-
-    ``linearization_envelope.compute_sigma_curve`` centres each occurrence to
-    its own in-band mean, because a level offset between two sweeps at ONE pose
-    is not repeat noise. Between two SEATS it is exactly the thing being
-    measured: a seat sitting 3 dB up on its neighbours is a seat that disagrees.
-    Centring here would silently delete that half of the answer, so it is pinned
-    rather than left to a future tidy-up.
-    """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
-    rows = cloud["positions"]["positions"]
-    rows[0]["magnitude_db"] = [value + 3.0 for value in rows[0]["magnitude_db"]]
-    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-
-    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
-
-    # A pure level offset on one of four otherwise-identical seats.
-    assert min(block["per_bin_sigma_db"]) == pytest.approx(1.5)
-
-
-@pytest.mark.parametrize("overrides, reason, n_seats", [
-    ({"dip_at": [1000.0]}, REASON_TOO_FEW_SEATS, 1),
-    ({"cloud_over": {"positions": {}}}, REASON_NO_CURVE_GRID, 0),
-])
-def test_missing_seat_evidence_refuses_instead_of_publishing_zero(tmp_path, overrides, reason, n_seats):
-    block = _sigma_block(tmp_path, **overrides)
-
-    assert block["available"] is False
-    assert block["status"] == "not_evaluated"
-    assert block["n_seats"] == n_seats
-    assert "per_bin_sigma_db" not in block
-    assert block["reason"] == reason
-
-
-def test_a_refused_spread_reaches_the_honesty_block_by_name(tmp_path):
-    """The edges list is where a reader finds what the packet could not answer."""
-    session, _ = _bundle(tmp_path, dip_at=[1000.0])
-    packet = build_crossover_evidence_packet(session)
-
-    stated = [
-        entry for entry in packet["not_evaluated"]
-        if entry["field"] == "positions.cross_seat_sigma"
-    ]
-    assert len(stated) == 1
-    assert stated[0]["reason"] == packet["positions"]["cross_seat_sigma"]["reason"]
-    # …and it is silent when the block DID answer, rather than printing "we did
-    # not look" beside the thing that was looked at.
-    answered = build_crossover_evidence_packet(_bundle(tmp_path / "b")[0])
-    assert not [
-        entry for entry in answered["not_evaluated"]
-        if entry["field"] == "positions.cross_seat_sigma"
-    ]
-
-
-@pytest.mark.parametrize("broken, why", [
-    pytest.param([-23.0] * 3, "a-curve-shorter-than-the-grid", id="wrong-length"),
-    pytest.param(None, "a-row-with-no-curve-at-all", id="absent"),
-    pytest.param("flat", "a-curve-that-is-not-a-list", id="not-a-list"),
-])
-def test_a_member_curve_the_block_cannot_use_is_counted_not_averaged_in(
-    tmp_path, broken, why
-):
-    """All-or-nothing per row, and the row is counted — the capture_snr rule.
-
-    A curve admitted for the bins it could supply would make its seat present in
-    some bins and absent in others, so one ``n_seats`` could not be the count the
-    spread was taken over in every bin. The row is refused whole AND counted,
-    because a reader seeing three seats where the round had four would otherwise
-    have no way to know.
-    """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
-    if broken is None:
-        cloud["positions"]["positions"][0].pop("magnitude_db")
-    else:
-        cloud["positions"]["positions"][0]["magnitude_db"] = broken
-    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-
-    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
-
-    assert (block["n_seats"], block["n_seats_excluded"]) == (3, 1), why
-    assert len(block["per_bin_sigma_db"]) == len(GRID)
-
-
-def test_a_boolean_sample_is_refused_rather_than_read_as_one_decibel(tmp_path):
-    """``bool`` subclasses ``int``, so ``true`` would otherwise be 1.0 dB.
-
-    The same trap the lateral_poses block names for a bearing. It is not
-    re-guarded here: ``feature_classification.finite_number`` is the one reader
-    for "a real number out of banked JSON", and this asserts the packet actually
-    goes through it rather than through a second copy that forgot.
-    """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
-    cloud["positions"]["positions"][0]["magnitude_db"][0] = True
-    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-
-    block = build_crossover_evidence_packet(session)["positions"]["cross_seat_sigma"]
-
-    assert (block["n_seats"], block["n_seats_excluded"]) == (3, 1)
-
-
-def test_a_member_curve_at_the_float_ceiling_costs_the_block_not_the_packet(tmp_path):
-    """``statistics.stdev`` raises rather than returning ``inf``; it is caught.
-
-    Reachable rather than defensive: it computes in exact arithmetic, so a
-    spread that will not fit a float is an ``OverflowError`` on the way out. This
-    module's rule is that a bad artifact is a fact it REPORTS — letting the
-    exception through would leave a round with no packet at all over one
-    hand-edited sample.
-    """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    cloud = json.loads((round_dir / "cloud_verify.json").read_text())
-    rows = cloud["positions"]["positions"]
-    # Half the seats at each end of the float range: every sample is a finite
-    # float, so nothing is excluded, and the spread between them is not.
-    for index, row in enumerate(rows):
-        row["magnitude_db"] = [1.7e308 if index % 2 else -1.7e308] * len(GRID)
-    (round_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-
-    packet = build_crossover_evidence_packet(session)
-    block = packet["positions"]["cross_seat_sigma"]
-
-    assert block["available"] is False
-    assert block["n_seats"] == 4, "every sample is finite; the SPREAD is not"
-    assert block["reason"] == REASON_CROSS_SEAT_SPREAD_OVERFLOW
-    # The packet itself survives, fingerprint and all.
-    assert packet["packet_fingerprint"]
-
-
-def test_the_cross_seat_spread_declares_that_it_pools_two_kinds(tmp_path):
-    """Wave-1's enrichment rule, on the one case that has no single-kind answer.
-
-    A cross-seat spread contains the field's real seat-to-seat variation AND the
-    per-capture measurement noise, and this round cannot separate them —
-    separating them needs a repeat spread at a fixed pose, which is the banked
-    repeat floor the accuracy budget reads. The rule bars publishing a pooled number
-    AS a kind, so the block publishes it as neither: ``fields`` is empty, and the
-    figure is declared under ``unseparated`` with a label deliberately kept OUT
-    of the closed kind set, so a reader applying the set test concludes "not one
-    of the two" — which is the truth.
-    """
-    block = _sigma_block(tmp_path)
-
-    assert block["uncertainty"]["fields"] == {}
-    declared = block["uncertainty"]["unseparated"]["per_bin_sigma_db"]
-    assert declared["kind"] == UNCERTAINTY_UNSEPARATED
-    assert UNCERTAINTY_UNSEPARATED not in UNCERTAINTY_KINDS
-    assert {UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC} == set(UNCERTAINTY_KINDS)
-    # Both halves named, and what would separate them.
-    assert "seat to seat" in declared["of"]
-    assert "measurement noise" in declared["of"]
-    assert "never as a random or a systematic one" in declared["of"]
-    assert "never pooled" in block["uncertainty"]["note"]
-    # n IS published here — unlike the classification block, which says it does
-    # not publish one — so the obvious quotient has to be disclaimed.
-    assert "standard error of nothing" in (
-        block["uncertainty"]["not_uncertainties"]["n_seats"]
-    )
-
-
-def test_every_field_this_block_publishes_is_covered_by_a_declaration(tmp_path):
-    """The enrichment rule made checkable, for a block whose keys are literals.
-
-    ``capture_snr`` needs a runtime ``undeclared_fields`` because its column
-    NAMES are composed by a producer this module cannot enumerate. This block's
-    keys are literals in one function, so the check that nothing travels
-    unlabelled belongs here instead — and it fails the day a key is added
-    without a declaration.
-    """
-    block = _sigma_block(tmp_path)
-    declared = (
-        set(block["uncertainty"]["fields"])
-        | set(block["uncertainty"]["not_uncertainties"])
-        | set(block["uncertainty"]["unseparated"])
-    )
-    # Everything that is not prose about the block itself.
-    described = {"available", "source", "note", "uncertainty"}
-
-    assert set(block) - described == declared
-
-
-def test_the_packet_applies_the_analysis_kernels_estimator_not_its_own(tmp_path):
-    """The plan's "one owner per policy" for σ definitions, made checkable.
-
-    The kernel (``jasper/audio_measurement/``) owns what a cross-position spread
-    IS, and ``spatial_combine._band_spread`` spells it ``np.std(stacked,
-    axis=0, ddof=1)``. The packet applies that definition to curves the kernel
-    never sees — the combiner's per-bin array is reduced to one worst bin per
-    octave band and the round's writer keeps even that out of the artifacts —
-    and reaches for ``statistics.stdev`` because it must RAISE at n<2 rather
-    than return a silent NaN.
-
-    Two implementations of one definition is exactly the shape that drifts, so
-    it is pinned numerically rather than by comment: same curves, both routes,
-    same numbers.
-    """
-    session, _ = _bundle(tmp_path, dip_at=[1000.0, 1400.0, None, 2200.0])
-    positions = build_crossover_evidence_packet(session)["positions"]
-
-    stacked = np.asarray(
-        [row["magnitude_db"] for row in positions["positions"]], dtype=float
-    )
-    kernel = np.std(stacked, axis=0, ddof=1)
-
-    assert positions["cross_seat_sigma"]["per_bin_sigma_db"] == [
-        round(float(value), 4) for value in kernel
-    ]
-
-
-def test_the_spread_the_packet_names_is_not_the_combiners(tmp_path):
-    """One question, one set of words — and these are two questions.
-
-    ``spatial_combine`` owns ``sigma_db`` (cross-position spread of a band's
-    POWER LEVEL) and ``max_sigma_db`` (worst single bin in a band). Neither is
-    this. Both are ``BandSpread`` fields, so the words are live elsewhere in the
-    tree and pinned here as NOT reused, rather than as merely absent today.
-    """
-    block = _sigma_block(tmp_path)
-
-    assert "sigma_db" not in block
-    assert "max_sigma_db" not in block
-    assert "per_bin_sigma_db" in block
-    # The combiner's own two names, so a rename there fails this rather than
-    # letting the packet quietly adopt a word that moved.
-    assert {"sigma_db", "max_sigma_db"} <= set(
-        BandSpread.__dataclass_fields__
-    )
-
-
-# --------------------------------------------------------------------------- #
 # prompt injection — the instructions are a constant, by construction
 # --------------------------------------------------------------------------- #
 
@@ -1484,29 +1041,23 @@ def test_the_composed_boost_cap_is_evaluated_the_same_way(packet):
     assert excinfo.value.reason == "composed_boost_exceeded"
 
 
-#: An 8-bin log axis across the region — the sparsest a packet could offer and
-#: still be read. Its bins are ~1/4 octave apart, so a Q=2.0 filter sitting at
-#: a log midpoint is sampled only on its shoulders.
+#: An 8-bin log axis across the region. Its bins are ~1/4 octave apart, so a
+#: Q=2.0 filter sitting at a log midpoint is sampled only on its shoulders.
 _SPARSE_GRID = [
     824.35, 1004.89, 1224.98, 1493.27, 1820.31, 2218.99, 2704.97, 3297.4,
 ]
 
 
-def test_the_composed_cap_is_read_on_the_denser_axis_not_the_supplied_one(tmp_path):
-    """N1: a coarse packet axis can step over a narrow filter's peak.
+def test_the_composed_cap_is_read_on_a_dense_sweep(packet):
+    """N1: a coarse axis can step over a narrow filter's peak.
 
     Measured on this exact case: two Q=2.0 boosts at 2986.53 Hz read
-    **3.9955 dB** on the 8-bin axis — inside the 4.0 dB ceiling — and
-    **4.6599 dB** on a 512-point sweep of the same region. A 0.66 dB
-    under-read is a safety bound reading low because the evidence document was
-    thin, so the cap is evaluated on whichever axis is denser.
+    **3.9955 dB** on an 8-bin axis — inside the 4.0 dB ceiling — and
+    **4.6599 dB** on a 512-point sweep of the same region.
 
-    The frequencies and gains are literals: deriving them from the grid at run
-    time would let the case drift off the peak it was chosen to sit on.
+    The frequencies and gains are literals: deriving them at run time would let
+    the case drift off the peak it was chosen to sit on.
     """
-    session, _ = _bundle(tmp_path, grid=_SPARSE_GRID)
-    packet = build_crossover_evidence_packet(session)
-    assert packet["positions"]["curve_grid"]["freqs_hz"] == _SPARSE_GRID
     straddling = [
         _cut(gain=2.33, freq=2986.5332, q=2.0),
         _cut(gain=2.33, freq=2986.5332, q=2.0),
@@ -1517,111 +1068,11 @@ def test_the_composed_cap_is_read_on_the_denser_axis_not_the_supplied_one(tmp_pa
     assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(4.66, abs=0.05)
 
 
-def _evaluated_grid(packet: dict[str, Any], filters: list[dict[str, Any]]):
-    """The axis ``_check_composed`` actually evaluated the cascade on.
-
-    Read by spying on ``chain_response`` — the ONE biquad evaluator — rather
-    than by re-deriving the selection rule here, which would make the test a
-    copy of the branch it is checking.
-    """
-    with mock.patch.object(
-        bp, "chain_response", wraps=bp.chain_response
-    ) as evaluator:
-        _gate(packet, _document(filters, packet))
-    assert evaluator.call_args is not None, "the composed cap never ran"
-    return evaluator.call_args[0][1]
-
-
-def test_a_dense_packet_axis_is_the_one_the_composed_cap_is_evaluated_on(tmp_path):
-    """The other direction of N1, pinned on the SELECTION not the outcome.
-
-    Two dense axes agree on the composed extreme to about a thousandth of a
-    dB, so no assertion about the *verdict* can tell which one was used — an
-    earlier version of this test claimed to pin this and did not. What is
-    observable is which grid reached the evaluator, so that is what is
-    asserted: a well-populated round must be judged on the axis it actually
-    measured, or "denser of the two" quietly becomes "always the synthetic
-    sweep".
-    """
-    dense = [800.0 + 3.0 * i for i in range(900)]
-    session, _ = _bundle(tmp_path, grid=dense)
-    packet = build_crossover_evidence_packet(session)
-    in_region = [f for f in dense if BAND[0] <= f <= BAND[1]]
-    assert len(in_region) > 512, "fixture must out-densify the fallback to prove it"
-
-    grid = _evaluated_grid(packet, [_cut(-1.5)])
-    assert len(grid) == len(in_region)
-    assert list(grid) == pytest.approx(in_region)
-
-
-def test_a_sparse_packet_axis_is_replaced_by_the_denser_fallback(tmp_path):
-    """The selection's other branch, asserted the same way."""
-    session, _ = _bundle(tmp_path, grid=_SPARSE_GRID)
-    packet = build_crossover_evidence_packet(session)
-    grid = _evaluated_grid(packet, [_cut(-1.5)])
-    assert len(grid) == 512
-    assert list(grid) != pytest.approx(
-        [f for f in _SPARSE_GRID if BAND[0] <= f <= BAND[1]]
-    )
-
-
-# --------------------------------------------------------------------------- #
-# hostile numbers in the BANKED artifacts, not just in the prescription
-# --------------------------------------------------------------------------- #
-
-#: A JSON integer too large to become a float. It survives a JSON round trip as
-#: a Python ``int`` (``json.dumps`` writes arbitrary-precision ints out in
-#: full), passes every ``isinstance(x, (int, float))`` check, and then raises
-#: ``OverflowError`` from ``float()``.
-_BIGNUM = 10 ** 400
-
-_ROUND_REL = "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
-
-
-def _edit_artifact(session: Path, name: str, mutate) -> None:
-    """Rewrite one banked artifact through a structural edit.
-
-    Structural rather than textual: the first textual occurrence of a field
-    name is rarely the one that matters. A hand-edited banked artifact is a
-    real input — the packet builder reads whatever is on disk and its
-    allowlist copies position rows verbatim.
-    """
-    path = session / _ROUND_REL / name
-    document = json.loads(path.read_text())
-    mutate(document)
-    path.write_text(json.dumps(document))
-
-
-def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_path):
-    """R2: pins ``packet_positional_evidence``'s own OverflowError guard.
-
-    Reverting that guard's ``OverflowError`` — or moving ``float(reference)``
-    back outside it — turns this into a traceback.
-    """
-    session, _ = _bundle(tmp_path)
-    _edit_artifact(
-        session, "cloud_verify.json",
-        lambda d: d["spec"].update(reference_db=_BIGNUM),
-    )
-    packet = build_crossover_evidence_packet(session)
-    assert packet_positional_evidence(packet) is None
-    # Unavailable evidence still reaches the route.
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-    # A cut still works: it needs no positional evidence.
-    assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
-
-
-def test_a_bignum_grid_bin_makes_the_positional_evidence_unavailable(tmp_path):
-    """R2: the grid half of the same guard."""
-    session, _ = _bundle(tmp_path)
-    _edit_artifact(
-        session, "cloud_verify.json",
-        lambda d: d["positions"]["curve_grid"]["freqs_hz"].__setitem__(0, _BIGNUM),
-    )
-    packet = build_crossover_evidence_packet(session)
-    assert packet_positional_evidence(packet) is None
+@pytest.mark.parametrize("supplied, dense", [(_SPARSE_GRID, False), ([800.0 + 3.0 * i for i in range(900)], True)])
+def test_the_composed_grid_is_the_denser_of_the_supplied_axis_and_the_sweep(supplied, dense):
+    in_band = [f for f in supplied if BAND[0] <= f <= BAND[1]]
+    grid = bp.composed_grid(BAND, supplied)
+    assert list(grid) == (pytest.approx(in_band) if dense else pytest.approx(list(np.geomspace(*BAND, 512))))
 
 
 def test_no_region_refuses_rather_than_inventing_a_band(packet):
@@ -1720,13 +1171,6 @@ def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
         "blend_stage_is_not_a_headroom_term",
         "per_driver_seam_needs_a_banked_defect_boostable_verdict",
     }
-
-
-def test_a_cut_needs_no_positional_evidence(tmp_path):
-    """Cutting a null flattens the region everywhere; feeding one does not."""
-    session, _ = _bundle(tmp_path, dip_at=[None, None])
-    packet = build_crossover_evidence_packet(session)
-    assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
 
 
 # --------------------------------------------------------------------------- #
@@ -2136,12 +1580,6 @@ def test_the_builder_reads_a_real_banked_round():
         _CORPUS, state_path=_CORPUS_STATE if _CORPUS_STATE.exists() else None
     )
     assert packet["artifact_schema_version"] == PACKET_SCHEMA_VERSION
-    evidence = packet_positional_evidence(packet)
-    assert evidence is not None
-    positions, freqs, reference = evidence
-    assert len(positions) == 4
-    assert len(freqs) == 89
-    assert reference == pytest.approx(-23.575, abs=1e-3)
     blob = json.dumps(packet)
     for needle in ("wav_path", "/var/lib", "/home/", "household_findings"):
         assert needle not in blob

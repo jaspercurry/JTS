@@ -15,7 +15,6 @@ import argparse
 import json
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2.round_frequency_view import frequency_run
 from jasper.active_speaker.frequency_view import frequency_run_from_view
 from jasper.active_speaker.frequency_plot import DEFAULT_REF_BAND_HZ
 from jasper.active_speaker.measurement_archive import (
@@ -30,7 +29,6 @@ from jasper.cli._refusal import EXIT_UNREADABLE, stage
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_TOOL_ERRORS,
-    _load_round,
     _write,
     answer,
     subject,
@@ -85,12 +83,9 @@ def _frequency_source(
             state=str(info.get("state") or "") or None,
         ))
     else:
-        banked = _load_round(path)
-        direct = load_measurement(ArchivedMeasurement(
-            id=path.name, bundle_dir=banked.session_dir, started_at=None, state=None,
+        run = load_measurement(ArchivedMeasurement(
+            id=path.name, bundle_dir=round_inputs(path).session_dir, started_at=None, state=None,
         ))
-        run = direct if any(curve.details.get("phase") == "lateral" and curve.details.get("candidate_id")
-                            for curve in direct.series) else frequency_run(banked.packet)
     if not run.series:
         raise ValueError(f"{path}: no usable frequency-response curves")
     return run

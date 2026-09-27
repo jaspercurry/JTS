@@ -40,7 +40,7 @@ from . import room_prescription as room
 from . import topology_prescription as topology
 from .capture_prediction import capture_prediction
 from .forward_model import ForwardModelError
-from .evidence_packet.readers import packet_feature_classifications, packet_positional_evidence
+from .evidence_packet.readers import packet_feature_classifications
 from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
@@ -188,7 +188,6 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         prescription_blend = blend.read_blend_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             band_hz=speaker["blend"]["bounds"]["band_hz"],
-            positional_evidence=packet_positional_evidence(packet),
         )
         assert prescription_blend is not None
         return blend.blend_prescription_to_candidate_fields(prescription_blend)["blend_correction"], prescription_blend.to_dict()
