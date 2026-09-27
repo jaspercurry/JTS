@@ -94,10 +94,9 @@ CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
 # The hold is read inside the measurement gate's write lock, which
-# MEASURE_PAUSE's `note_measurement_active` must take within the voice
-# daemon's setup budget
-# (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`, 2.25 s);
-# the control client's 2 s default would spend nearly all of it.
+# MEASURE_PAUSE's `note_measurement_active` must take within the voice daemon's
+# setup budget (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`,
+# 2.25 s); the control client's 2 s default would spend nearly all of it.
 MEASUREMENT_HOLD_READ_TIMEOUT_S = 0.5
 
 

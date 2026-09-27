@@ -15,7 +15,6 @@ import logging
 
 from .log_event import log_event
 from .voice import measurement_hold as voice_measurement
-from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_owner import VolumeClaimRefused
 
 logger = logging.getLogger(__name__)
@@ -62,7 +61,7 @@ class MeasurementGate:
         if not self.active:
             return False
         held_for = voice_measurement._measurement_monotonic() - self._active_at
-        if held_for < MEASUREMENT_AUTOCLEAR_SEC:
+        if held_for < voice_measurement.MEASUREMENT_AUTOCLEAR_SEC:
             return True
         if not self._lapse_logged:
             self._lapse_logged = True
@@ -70,7 +69,7 @@ class MeasurementGate:
                 logger,
                 "volume.measurement_flag_expired",
                 held_for_s=f"{held_for:.1f}",
-                autoclear_s=f"{MEASUREMENT_AUTOCLEAR_SEC:.1f}",
+                autoclear_s=f"{voice_measurement.MEASUREMENT_AUTOCLEAR_SEC:.1f}",
                 level=logging.WARNING,
             )
         return False
