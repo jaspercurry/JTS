@@ -15,11 +15,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, DspApplyState, apply_dsp_config, dsp_writer_lock
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology, canonical_fingerprint as _fingerprint
 
-from ._common import issue as _issue
 from .baseline_profile import applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state
 from .baseline_record import protection_projection
 from .driver_base_trim import bank_applied_base_trim

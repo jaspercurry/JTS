@@ -27,10 +27,10 @@ from typing import Any, Awaitable, Callable, Iterable
 import yaml
 
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
-from ._common import issue as _issue
 from .calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     MIN_TEST_LEVEL_DBFS,

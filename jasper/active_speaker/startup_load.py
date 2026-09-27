@@ -19,11 +19,11 @@ from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     validate_camilla_config,
 )
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 
-from ._common import gate as _gate, issue as _issue
+from ._common import gate as _gate
 from .calibration_level import (
     MIN_TEST_LEVEL_DBFS,
     load_calibration_level_state,

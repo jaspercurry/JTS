@@ -43,9 +43,9 @@ from jasper.audio_measurement.room_limits import (
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import PeqFilter, total_positive_boost_db
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, issue
 
-from ._common import issue, require_sha256_hex
+from ._common import require_sha256_hex
 from .camilla_names import driver_delay_name as _driver_delay_name
 from .camilla_yaml import (
     _channels_for_role,

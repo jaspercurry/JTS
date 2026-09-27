@@ -39,6 +39,7 @@ from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
 from jasper.camilla_config_contract import playback_is_pipe
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
+from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
 from jasper.multiroom.snapfifo import SNAPFIFO
 
@@ -50,7 +51,6 @@ from jasper.output_topology_store import load_output_topology_strict, stamp_stat
 from jasper import paths
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
-from ._common import issue as _issue
 from .camilla_yaml import _reserialize_keeping_header
 from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name as _commission_mute_name
 from .graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE, _active_graph_evidence

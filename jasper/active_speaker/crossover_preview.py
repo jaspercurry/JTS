@@ -9,10 +9,9 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-from jasper.json_fields import as_float
+from jasper.json_fields import as_float, issue as _issue
 from jasper.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint
 from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
-from ._common import issue as _issue
 from .design_inputs import resolved_draft_inputs
 from .driver_protection import (
     LOW_LIMIT_DECLARED,

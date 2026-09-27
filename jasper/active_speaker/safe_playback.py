@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import parse_utc_iso
+from jasper.json_fields import issue as _issue, parse_utc_iso
 from jasper.paths import resolve_state_path
 
-from ._common import coerce_finite_float, issue as _issue
+from ._common import coerce_finite_float
 from .calibration_level import MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1

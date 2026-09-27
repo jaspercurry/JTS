@@ -16,7 +16,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ._common import coerce_finite_float, issue as _issue
+from jasper.json_fields import issue as _issue
+
+from ._common import coerce_finite_float
 from .calibration_level import MAX_TEST_LEVEL_DBFS, MIN_TEST_LEVEL_DBFS
 
 SCHEMA_VERSION = 1

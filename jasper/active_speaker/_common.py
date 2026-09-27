@@ -10,7 +10,7 @@ import math
 import re
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
-from jasper.json_fields import JsonFields
+from jasper.json_fields import JsonFields, issue
 
 if TYPE_CHECKING:
     from jasper.output_topology import SpeakerGroup
@@ -77,10 +77,6 @@ def software_guard_needed(groups: Sequence[SpeakerGroup]) -> bool:
         channel.role == "tweeter"
         for group in groups for channel in group.channels
     )
-
-
-def issue(severity: str, code: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "message": message}
 
 
 def blocker_issue(code: str, message: str) -> dict[str, str]:

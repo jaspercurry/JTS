@@ -22,7 +22,7 @@ from typing import Any, Callable
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.camilla_config_contract import read_camilla_devices_config
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
@@ -30,7 +30,7 @@ from jasper.output_topology import (
     subwoofer_speaker_groups,
 )
 
-from ._common import gate as _gate, issue as _issue, software_guard_needed as _software_guard_needed
+from ._common import gate as _gate, software_guard_needed as _software_guard_needed
 from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,

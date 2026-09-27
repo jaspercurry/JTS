@@ -20,11 +20,12 @@ from jasper.dsp_apply import (
     same_config_file,
     validate_camilla_config,
 )
+from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
-from ._common import gate as _gate, issue as _issue
+from ._common import gate as _gate
 from .camilla_yaml import COMMISSIONING_FILTER_MODE, COMMISSIONING_HEADROOM_DB
 from .camilla_names import STARTUP_MUTE_GAIN_DB
 from .environment import read_camilla_statefile_config_path
