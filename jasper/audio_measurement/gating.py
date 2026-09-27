@@ -14,9 +14,8 @@ Pipeline stage: **derive**. No I/O, no state; owns detection, the window, both f
 classification ledger. Does NOT own the *proof* the window helped — that needs the DUT's
 radiated band, one stage out in :mod:`~jasper.audio_measurement.gate_disclosure`.
 
-Imported lazily by :mod:`jasper.active_speaker.driver_acoustics`, and ``scipy`` lazily inside
-:func:`analytic_signal`, so the socket-activated ``/sound/`` wizard stays light until a
-measurement runs.
+``scipy`` is imported lazily inside :func:`analytic_signal`, so the socket-activated
+``/sound/`` wizard stays light until a measurement runs.
 
 The gating contract (issue #1969): every gating block carries, beside the window chosen,
 ``floor_source`` (WHY the window is what it is — :data:`FLOOR_MEASURED` / :data:`FLOOR_SEARCH_BOUND`
