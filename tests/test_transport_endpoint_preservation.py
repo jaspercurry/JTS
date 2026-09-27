@@ -1018,11 +1018,10 @@ async def test_the_ramp_gate_holds_identically_on_a_ring_graph():
     audible = set(audible_outputs_for_role(preset, "woofer"))
 
     def _emit_at(device: str, gain: float) -> str:
-        # Every ActiveEmitDevices field maps 1:1 onto an emitter parameter.
         return emit_active_speaker_commissioning_config(
             preset,
             playback_device=device,
-            **dataclasses.asdict(active_emit_devices(device)),
+            **active_emit_devices(device).emit_kwargs(),
             audible_outputs=audible,
             audible_gain_db=gain,
             startup_headroom_db=COMMISSIONING_HEADROOM_DB,

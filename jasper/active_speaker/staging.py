@@ -723,20 +723,10 @@ def _stage_protected_startup_config_locked(
             # real path: this same config is what later freezes as the durable
             # profile. Per-driver unmute is a transient runtime load, never the
             # frozen boot config — so the staged candidate is fully muted.
-            #
-            # Every device field is named EXPLICITLY, like the applied path's
-            # emit: a field added to `ActiveEmitDevices` and not added here is
-            # the subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
-                capture_device=devices.capture_device,
-                capture_format=devices.capture_format,
-                playback_format=devices.playback_format,
-                chunksize=devices.chunksize,
-                target_level=devices.target_level,
-                queuelimit=devices.queuelimit,
-                enable_rate_adjust=devices.enable_rate_adjust,
+                **devices.emit_kwargs(),
                 audible_outputs=frozenset(),
                 out_path=out_path,
             )
@@ -1053,19 +1043,10 @@ def prepare_driver_commissioning_config(
     ):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            # Every device field is named EXPLICITLY, like the anchor's emit: a
-            # field added to `ActiveEmitDevices` and not added here is the
-            # subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
-                capture_device=devices.capture_device,
-                capture_format=devices.capture_format,
-                playback_format=devices.playback_format,
-                chunksize=devices.chunksize,
-                target_level=devices.target_level,
-                queuelimit=devices.queuelimit,
-                enable_rate_adjust=devices.enable_rate_adjust,
+                **devices.emit_kwargs(),
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
                 volume_limit_db=volume_limit_db,
