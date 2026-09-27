@@ -136,7 +136,8 @@ EVALUABLE_Q_MAX = 1e6
 
 
 def biquad_coeffs(
-    biquad_type: str, freq: float, gain_db: float, q: float | None
+    biquad_type: str, freq: float, gain_db: float, q: float | None,
+    *, sample_rate_hz: float = RESPONSE_SAMPLE_RATE_HZ,
 ) -> tuple[float, float, float, float, float, float]:
     """RBJ Audio EQ Cookbook biquad coefficients (un-normalised).
 
@@ -158,8 +159,11 @@ def biquad_coeffs(
     for a shelf), so the explicit-shelf-q branch is unreachable from it and the
     JS twin does not carry it. Both are checked against
     tests/fixtures/peq_response_fixture.json.
+
+    ``sample_rate_hz`` is the emitted graph's rate unless a caller filters a
+    signal recorded at another.
     """
-    w0 = 2.0 * math.pi * max(freq, 1e-6) / RESPONSE_SAMPLE_RATE_HZ
+    w0 = 2.0 * math.pi * max(freq, 1e-6) / sample_rate_hz
     cw = math.cos(w0)
     sw = math.sin(w0)
     if q is None:
