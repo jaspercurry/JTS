@@ -4093,11 +4093,11 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
-    from jasper.active_speaker.measurement_programs import program
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_preset
+    from jasper.active_speaker.measurement_programs import preset
 
-    selected = program("bass")
-    body = {"plan": request_for_program(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
+    selected = preset("bass")
+    body = {"plan": request_for_preset(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan

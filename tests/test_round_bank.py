@@ -207,7 +207,7 @@ def test_a_round_its_bookkeeping_refuses_leaves_no_half_built_round(tmp_path):
     session_dir, state_path = _live_session(tmp_path)
     write_manifest(session_dir, program="close/woofer")
 
-    with pytest.raises(measurement_programs.UnknownProgramError):
+    with pytest.raises(measurement_programs.UnknownPresetError):
         bank_round(session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path)
 
     assert not any((tmp_path / "campaigns").iterdir())
@@ -482,7 +482,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
         state = None
         for group in groups:
             records = []
-            for index, pose in enumerate(measurement_programs.program("rear", "seat").poses):
+            for index, pose in enumerate(measurement_programs.preset("rear/seat").poses):
                 record_id = asyncio.run(bank(
                     f"{group['set_id']}-{index}", candidate=group["capture_basis"]["candidate_id"],
                     phase="lateral", measurement_purpose="rear", gating_applied=False,

@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from jasper.active_speaker.angle_capture import request_for_program
+from jasper.active_speaker.angle_capture import request_for_preset
 from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused, build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
@@ -22,7 +22,7 @@ from jasper.active_speaker.measurement_analysis import decoded_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measurement_programs import (
-    gate_exemption, load_programs, program, run_program, validated_capture_purpose,
+    gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
 )
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -58,7 +58,7 @@ def bass_fixture():
 
 def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
-    return build_bass_program(excitation, program("bass").stimulus,
+    return build_bass_program(excitation, preset("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
 
 
@@ -84,7 +84,7 @@ def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
     excitation = replace(bass_fixture[3], roles=tuple(RoleBand(role, i, FrequencyBand(20, 20000))
                                                    for i, role in enumerate(roles)))
     with pytest.raises(BassStimulusRefused) as exc:
-        build_bass_program(excitation, program("bass").stimulus,
+        build_bass_program(excitation, preset("bass").stimulus,
                            safety_profile=bass_fixture[1], role_targets={})
     assert exc.value.code == "bass_stimulus_targets_missing"
 
@@ -98,15 +98,15 @@ def _replay(bass, raw, tmp_path, monkeypatch):
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
-    rows = load_programs().values()
+    rows = load_presets().values()
     for row in rows:
         assert (row.stimulus is not None) == (row.purpose == "bass")
     bass, = (row for row in rows if row.purpose == "bass")
     assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")
     for layout in bass.layouts:
-        run = run_program("bass", layout)
+        run = run_preset("bass", layout)
         assert run.stimulus == {"ceiling_hz": 1100.0}
-        request = request_for_program(run, mover=run.mover or "human", candidates=("trial",))
+        request = request_for_preset(run, mover=run.mover or "human", candidates=("trial",))
         assert all(capture.spec.stimulus == run.stimulus for capture in prepare_plan_captures(request))
 
 
@@ -149,8 +149,8 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
 
 def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     _, safety, targets, excitation = bass_fixture
-    row = program("bass", "axis")
-    request = request_for_program(row, mover=row.mover, candidates=("trial",))
+    row = preset("bass/axis")
+    request = request_for_preset(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     played = compose_plan_program(SimpleNamespace(excitation=excitation, set_program=lambda *args: None),

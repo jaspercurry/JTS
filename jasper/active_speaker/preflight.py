@@ -35,7 +35,7 @@ from .measured_crossover_candidate import (
 )
 from .movers import MOVER_ARM
 from .measurement_programs import (
-    BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD, UnknownProgramError,
+    BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD, UnknownPresetError,
     candidate_identity, cleared_layers, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
@@ -169,7 +169,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     # A round banks under its program id (ADR-0277).
     try:
         run_purposes(plan.program)
-    except UnknownProgramError as exc:
+    except UnknownPresetError as exc:
         add(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, str(exc))
     valid_shape = True
     try:

@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    MeasurementProgram, ProgramPose, run_program,
+    Preset, ProgramPose, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -674,8 +674,8 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
 
 @pytest.mark.parametrize("layout,poses", [("baseline_express", 5), ("baseline_full", 13)])
 def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, poses):
-    program = run_program("speaker", layout)
-    request = ac.request_for_program(program, repeats=2)
+    program = run_preset("speaker", layout)
+    request = ac.request_for_preset(program, repeats=2)
     captures = plan_run.prepare_plan_captures(request)
     timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
     assert [(capture.stop.angle_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
@@ -703,8 +703,8 @@ def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
 
 
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
-    program = run_program("speaker", poses="0,-20,20")
-    request = ac.request_for_program(program, mover=ac.MOVER_ARM)
+    program = run_preset("speaker", poses="0,-20,20")
+    request = ac.request_for_preset(program, mover=ac.MOVER_ARM)
     _, safety, targets = _profile_and_targets(woofer_floor=30)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
         safety, fingerprint, program_admission=True)[0])
@@ -763,10 +763,10 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     at every pose (the front and rear woofer at one distance included), and
     every take banks as reference evidence at its driver (ADR-0360)."""
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
-    program = MeasurementProgram("nearfield", "custom", tuple(
+    program = Preset("nearfield/each", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
         purpose="reference", regime="near_field")
-    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_program(program).to_dict())))
+    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_preset(program).to_dict())))
     captures = plan_run.prepare_plan_captures(request)
     gate = AnsweredGate()
 
@@ -874,7 +874,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     the solved peak; the rest of that placement starts there, a re-placement
     starts with its probe again, and in-band re-seats are never
     sent back as drift, though each banks its reading (ADR-0361)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
     readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
@@ -893,7 +893,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     """A take its ceiling played under the peak it asked for is kept too quiet:
     a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+    request = ac.request_for_preset(Preset("nearfield/each", (
         ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purpose="reference", regime="near_field"))
 
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
@@ -907,7 +907,7 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
     80 dB at each distance. A placement's finding shows in the round's facts and
     lines from the next pose on; the ended round shows each in its facts, lines
     and packet lines, and logs each once (#5714)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
         for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purpose="reference", regime="near_field"))
 
@@ -957,7 +957,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     probe, with its retries, so redos past the pose's budget never end the
     round, even one with no retries; the page is told which plays are the
     probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 1), (30, 2))), purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
@@ -988,7 +988,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     take played only asks for the placement again; one the pose cannot pay for
     ends the round with its retries spent."""
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
-    request = (ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+    request = (ac.request_for_preset(Preset("nearfield/each", (
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
         purpose="reference", regime="near_field"), retries_per_pose=retries) if driver else
         replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
@@ -1010,7 +1010,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     ("rear", "rear_express", False, 3),
 ])
 def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
-    request = ac.request_for_program(run_program(purpose, layout))
+    request = ac.request_for_preset(run_preset(purpose, layout))
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
@@ -1020,13 +1020,13 @@ def test_program_entry_baseline_and_placement_count(purpose, layout, entry, pose
 
 async def test_a_run_banks_its_preset_and_its_layout():
     """The banked record names the preset and, in its own field, the layout it walked (ADR-0366 §6)."""
-    result, _ = await _run_gated(ac.request_for_program(run_program("tournament", "tournament_full")))
+    result, _ = await _run_gated(ac.request_for_preset(run_preset("tournament", "tournament_full")))
     assert {key: result.to_dict()[key] for key in ("program", "layout")} == {
         "program": "tournament/express", "layout": "tournament_full"}
 
 
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
-    request = ac.request_for_program(run_program("room", "seat_express"))
+    request = ac.request_for_preset(run_preset("room", "seat_express"))
     captures = plan_run.prepare_plan_captures(request)
     manifest = RunManifest("run", _Store(FakeSeams().records), program=request.program)
     for index, (capture, observed, accepted, action, delta) in enumerate(zip(
@@ -1342,10 +1342,10 @@ async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile, r
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     candidate = _room_candidate(tuning_profile)
-    program = run_program("room")
+    program = run_preset("room")
     levels = (-10.0, -20.0)
     rung_spl[-20] = {"loudest_half_second_db_spl": 73, "max_window_db_spl": 73, "ceiling_db_spl": 95}
-    request = ac.request_for_program(program, candidates=("base", candidate.fingerprint), levels=levels)
+    request = ac.request_for_preset(program, candidates=("base", candidate.fingerprint), levels=levels)
     report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
     assert not report.blocking
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
@@ -1497,7 +1497,7 @@ def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    request = ac.request_for_program(run_program("tournament", "tournament_full"), repeats=repeats)
+    request = ac.request_for_preset(run_preset("tournament", "tournament_full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
     assert facts["measurements"] == len(captures) == walk_price(request, roles_bands=context.roles_bands)["captures"]

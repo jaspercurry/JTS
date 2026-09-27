@@ -10,13 +10,13 @@ from dataclasses import replace
 from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, LevelPolicy, LateralWalkRefused,
     WALK_CANDIDATE_NOT_MEASURABLE, WALK_LEVEL_POLICY_INVALID,
-    default_run_level, request_for_program,
+    default_run_level, request_for_preset,
 )
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
 from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED
 from jasper.active_speaker.measurement_programs import (
-    PURPOSE_REAR, REGIME_BRANCHES, near_field_drivers, run_program,
+    PURPOSE_REAR, REGIME_BRANCHES, near_field_drivers, run_preset,
 )
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
@@ -61,7 +61,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
             raise ValueError("plan must be an object")
         request = AngleCaptureRequest.from_mapping(document)
         return preflight_levels(request, _facts(request, args))
-    program = run_program(args.program or "speaker", args.layout, args.poses)
+    program = run_preset(args.program or "speaker", args.layout, args.poses)
     if args.repeats is not None:
         try:
             program = replace(program, poses=tuple(replace(pose, repeats=args.repeats) for pose in program.poses))
@@ -77,7 +77,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
             raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
     operator_level = args.level_db is not None
     level, level_source = default_run_level(program, state_path=seat_level_reference_state_path())
-    request = request_for_program(
+    request = request_for_preset(
         program, candidates=candidates,
         level=LevelPolicy(level_db=args.level_db) if operator_level else level,
         level_source="operator" if operator_level else level_source,
