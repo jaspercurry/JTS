@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
+from jasper.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig, total_positive_boost_db
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -60,18 +61,38 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any])
     return max(0.0, dynamic_bass_gain_reserve_db(candidate) - dynamic_bass_gain_reserve_db(applied))
 
 
+def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float]) -> float:
+    """The most a graph without ``room_peqs`` plays above one with them across
+    ``band_hz``: their positive-boost charge less their lowest response there
+    (ADR-0370). Never negative, since the charge bounds their peak."""
+    if not room_peqs:
+        return 0.0
+    low, high = band_hz
+    steps = max(1, math.ceil(48 * math.log2(high / low)))
+    grid = sorted({*(low * (high / low) ** (step / steps) for step in range(steps + 1)),
+                   *(peq.freq for peq in room_peqs if low <= peq.freq <= high)})
+    trig = freq_trig(grid)
+    response = [sum(values) for values in zip(*(
+        filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
+        for peq in room_peqs))]
+    return total_positive_boost_db(room_peqs) - min(response)
+
+
 def predicted_rung_admission(
     fader_db: float, anchor: ResolvedLevel, candidates: Mapping[str, Mapping[str, Any]], *,
-    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float,
+    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float, room_off_rise_db: float | None = None,
 ) -> dict[str, Any]:
+    """``room_off_rise_db`` is how much louder a take with the room layer cleared
+    plays than the anchor's graph, for a plan that clears it (ADR-0370)."""
     lift, name = max((rung_lift_bound_db(descriptor, applied), name) for name, descriptor in candidates.items())
-    margin = tolerance_db + lift
+    margin = tolerance_db + lift + (room_off_rise_db or 0.0)
     bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
     predicted = anchor.db_spl_at(fader_db)
     # 1e-9 dB clears db_spl_at's rounding; a one-ulp fader step can round back above the bound.
     level = fader_db - (predicted - bound) - 1e-9 if predicted > bound else fader_db
     return {"level_db": level, "admitted_db_spl": anchor.db_spl_at(level), "candidate_id": name,
             "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
+            **({"room_off_rise_db": room_off_rise_db} if room_off_rise_db is not None else {}),
             "margin_db": margin, "margin_bound_db_spl": bound,
             **({"bound_by": "commissioning_margin"} if level < fader_db else {})}
 

@@ -511,6 +511,18 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
 
 
+@pytest.mark.parametrize("purpose,base,cleared", [
+    (mp.PURPOSE_BASS, True, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_BASS, False, ("room_correction",)),
+    (mp.PURPOSE_SPEAKER, True, ()), (mp.PURPOSE_ROOM, True, ()), (mp.PURPOSE_REAR, False, ()),
+    (mp.PURPOSE_REFERENCE, True, ()), (None, True, ()),
+])
+def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, cleared) -> None:
+    """A bass take plays the applied speaker layer with room off, and its base
+    plays bass off too; every other purpose plays its layers as composed (ADR-0370)."""
+    assert mp.cleared_layers(purpose, base=base) == cleared
+
+
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
     """The pair take is the rear express geometry, played as two branches
     (issue #5330). Naming it leaves the default rear size alone."""
