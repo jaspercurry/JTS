@@ -300,9 +300,6 @@ class CrossoverV2Session:
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
-        # The capture evidence paired with each slot's last rejection; exhaustion reads
-        # this rather than the global pair, which can belong to a different position.
-        self._last_pilot_evidence: dict[str, tuple[str, bool | None, bool | None]] = {}
         # Positions the flow GAVE UP on, so the group closes with what it has instead
         # of the session dying at the mic.
         self._group_unresolved: dict[str, dict[int, str]] = {
@@ -311,10 +308,6 @@ class CrossoverV2Session:
         self._armed_capture: tuple[int, int] | None = None
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
-        self._last_failure_code: str | None = None
-        # The pilot evidence belonging to ``_last_failure_code``, ALWAYS written with
-        # it. ``None`` is "no pilot evidence for this failure".
-        self._last_failure_pilot_heard: bool | None = None
 
     @property
     def source_preset(self) -> Any:
@@ -452,50 +445,6 @@ class CrossoverV2Session:
         return self._measure_entry_baseline
 
     @property
-    def last_failure_code(self) -> str | None:
-        """The most recent rejection's reason code (host persistence reads it)."""
-        return self._last_failure_code
-
-    @property
-    def last_failure_pilot_heard(self) -> bool | None:
-        """Pilot evidence for :attr:`last_failure_code` — the host persists it.
-
-        This getter checks nothing: the pairing that CAN diverge is with the code a
-        caller chooses to persist, and ``persist_conductor_state`` makes that check.
-        """
-        return self._last_failure_pilot_heard if self._last_failure_code else None
-
-    def _pilot_heard_for(
-        self,
-        code: str | None,
-        *,
-        slot: str | None = None,
-    ) -> bool | None:
-        """The pilot evidence recorded WITH ``code``, else ``None`` (#2085)."""
-        if slot is not None:
-            paired = self._last_pilot_evidence.get(slot)
-        elif self._last_failure_code is None:
-            paired = None
-        else:
-            paired = (
-                self._last_failure_code,
-                self._last_failure_pilot_heard,
-                None,
-            )
-        return _admission.pilot_heard_for(code, paired)
-
-    def _reflection_measured_for(
-        self,
-        code: str | None,
-        *,
-        slot: str,
-    ) -> bool | None:
-        """The gate discriminator recorded with ``code`` at ``slot``."""
-        return _admission.reflection_measured_for(
-            code, self._last_pilot_evidence.get(slot)
-        )
-
-    @property
     def armed_capture(self) -> tuple[int, int] | None:
         """The last authorized ``(index, attempt)``: the host addresses the terminal
         ``capture_result`` host event at a play-seam failure to it.
@@ -624,22 +573,12 @@ class CrossoverV2Session:
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
             assert ledger is not None
             code = decision.code
-            spec = REASON_REGISTRY[code]
-            diagnosis = reason_diagnosis(
-                code,
-                spec,
-                pilot_heard=self._pilot_heard_for(code, slot=slot),
-                reflection_measured=self._reflection_measured_for(
-                    code,
-                    slot=slot,
-                ),
-            )
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 code,
                 _admission.extras_spent_message(
                     ledger,
-                    diagnosis=diagnosis,
+                    diagnosis=reason_diagnosis(REASON_REGISTRY[code]),
                     outcome=self._spent_slot_outcome(phase, index),
                 ),
             )

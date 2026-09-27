@@ -444,11 +444,6 @@ def build_conductor_state(
 
     snap = conductor.snapshot()
     measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
-    failure_pilot_heard = (
-        getattr(conductor, "last_failure_pilot_heard", None)
-        if failure_code == getattr(conductor, "last_failure_code", None)
-        else None
-    )
     if (
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
@@ -496,11 +491,6 @@ def build_conductor_state(
                 **(
                     {"refusals": [str(slug) for slug in failure_refusals]}
                     if failure_refusals
-                    else {}
-                ),
-                **(
-                    {"pilot_heard": bool(failure_pilot_heard)}
-                    if failure_pilot_heard is not None
                     else {}
                 ),
                 **({"failed_roles": [str(role) for role in failure_roles]} if failure_roles else {}),

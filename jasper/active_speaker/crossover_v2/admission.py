@@ -28,8 +28,6 @@ __all__ = [
     "SlotAttempts",
     "assess_begin",
     "extras_spent_message",
-    "pilot_heard_for",
-    "reflection_measured_for",
     "spent_slot_outcome",
 ]
 
@@ -170,33 +168,6 @@ def spent_slot_outcome(
             "produced a clean read."
         )
     return "The measurement cannot continue because this step needs a clean read."
-
-
-def pilot_heard_for(
-    code: str | None, paired: tuple[str, bool | None, bool | None] | None,
-) -> bool | None:
-    """The pilot evidence recorded WITH ``code``, else ``None`` (#2085).
-
-    ``paired`` is the ``(code, pilot_heard, reflection_measured)`` triple the
-    session holds for the position being described. The code is re-checked
-    because the failure being described is not always the one last consumed —
-    the flow's ``_refuse`` can name a code the capture loop never produced, and
-    a replayed begin can address an older slot — and attaching one capture's
-    evidence to another's code would put a confident, wrong sentence in front
-    of a household.
-    """
-    if code is None or paired is None or paired[0] != code:
-        return None
-    return paired[1]
-
-
-def reflection_measured_for(
-    code: str | None, paired: tuple[str, bool | None, bool | None] | None,
-) -> bool | None:
-    """The gate discriminator recorded with ``code`` at this position."""
-    if code is None or paired is None or paired[0] != code:
-        return None
-    return paired[2]
 
 
 def assess_begin(
