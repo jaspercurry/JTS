@@ -11,7 +11,7 @@ from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.run_manifest import driver_level_mismatches, view_sets
+from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_NO_NEAR_FIELD_TAKES
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
@@ -55,6 +55,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
     if not document["takes"]:
         return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])
     document["level_mismatches"] = driver_level_mismatches(manifest)
+    document["parameters"] = {**document["parameters"], "level_mismatch_db": LEVEL_MISMATCH_DB}
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write({"round_dir": str(round_dir), **document}, args.out,
                      default_out(inputs, round_dir, spec.artifact, None), schema=spec.schema)

@@ -468,7 +468,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         lambda p, a: p["step_us"] == a["landscape"]["spec"]["step_us"]),
     "inventory": _ViewRun(_on_fixture_round(lambda r: ["inventory", str(r.measured)])),
     "nearfield": _ViewRun(
-        _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_tolerance_db"}),
+        _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_tolerance_db", "level_mismatch_db"}),
         frozenset({"take_ids"}),
         lambda p, a: p["step_tolerance_db"] == a["parameters"]["step_tolerance_db"]),
 }

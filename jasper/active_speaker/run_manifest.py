@@ -19,7 +19,7 @@ from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
-from .measurement_programs import BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
+from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
 
 RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -37,26 +37,30 @@ def room_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             and row["capture_basis"].get("role") in (None, "summed")]
 
 
-#: dB two drivers of one role, so of one declared size, may play apart at one
-#: placement for the same drive before a round shows it: two such drivers
-#: should match within their tolerance, well inside it, and jts3's two woofers
-#: of one model play 6.2 dB apart (#5714).
+#: dB two drivers of one role (so of one declared size) may play apart for the
+#: same drive, each measured close to its own cone, before a round shows it.
+#: Matched drivers sit well inside it; jts3's two woofers of one model play
+#: 6.2 dB apart (#5714).
 LEVEL_MISMATCH_DB = 3.0
 
 
 def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each placement (a pose less its driver) where the drivers of one role play
-    more than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
+    """Each near-field microphone position (a close pose less its driver, which
+    ``pose_place`` counts once per driver) where the drivers of one role play more
+    than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
     ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
     located sweeps read (ADR-0364) less the stimulus gain and the fader it played
-    at. A finding, never a refusal (#5714)."""
+    at. Only close poses compare: from one far bearing a rear-facing driver also
+    reads its own off-axis loss and the cabinet's shadow. A finding, never a
+    refusal (#5714)."""
     heard: dict[tuple[str, str], dict[str, list[float]]] = {}
     for take in (take for group in view_sets(manifest) for take in group["takes"] if take.get("selected")):
         pose, level = take.get("pose") or {}, take.get("level") or {}
         spl, gain, fader = (finite_float(value) for value in (
             ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
             level.get("stimulus_dbfs"), level.get("level_db")))
-        if pose.get("driver") and spl is not None and gain is not None and fader is not None:
+        if (pose.get("driver") and pose.get("kind") == POSE_KIND_CLOSE
+                and spl is not None and gain is not None and fader is not None):
             place = json.dumps({key: value for key, value in pose.items() if key not in {"driver", "place"}},
                                sort_keys=True)
             heard.setdefault((measurement_target_parts(pose["driver"])[0], place), {}).setdefault(
