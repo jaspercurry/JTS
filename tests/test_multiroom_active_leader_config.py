@@ -75,7 +75,7 @@ def _stable_live_graph_authority(monkeypatch):
             config_path=str(expected_config_path),
         )
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -553,7 +553,7 @@ def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
         assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", refuse)
     cam = _FakeCamilla(current=prior)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:

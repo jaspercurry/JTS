@@ -69,7 +69,7 @@ def _spotify_account_cache_fingerprint(registry) -> tuple:
     return tuple(entries)
 
 
-def _build_spotify_router_or_none():
+def build_spotify_router_or_none():
     """Build a multi-account Spotify router for accessory-driven volume.
     Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
     been authorized — _set_spotify in the coordinator treats None as
@@ -155,7 +155,7 @@ async def with_coordinator(
         ),
         # Web API because librespot 0.8.0 has no local HTTP control; None
         # (no client id / no authorized account) makes Spotify a no-op.
-        spotify_router=_build_spotify_router_or_none(),
+        spotify_router=build_spotify_router_or_none(),
         duck_active_probe=duck_active_probe,
     )
     # Nothing here is closable: RendererClient is a stateless probe wrapper
@@ -215,7 +215,7 @@ def make_duck_active_probe(
 async def dispatch_transport(
     action: str,
     *,
-    spotify_router_factory: Callable[[], Any] = _build_spotify_router_or_none,
+    spotify_router_factory: Callable[[], Any] = build_spotify_router_or_none,
 ) -> dict:
     """Dispatch one transport action against clients built in this loop.
 

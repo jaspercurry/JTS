@@ -320,7 +320,7 @@ async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
             ),
         )
         try:
-            await follower_config._prove_live_bass_extension_graph(
+            await follower_config.prove_live_bass_extension_graph(
                 cam,
                 expected_config_path=LEADER_BAKE_CONFIG_PATH,
                 expected_classification=GRAPH_PROGRAM_BAKE_PIPE,
