@@ -992,6 +992,8 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert 60 not in result['freqs_hz']
     band = next(b for b in result['bands'] if b['band_hz'] == [50, 63])
     assert band['qualified_bins'] == 1
+    # 80 Hz sits on the top edge of [63, 80]: the band's median reads it, so its count does.
+    assert next(b for b in result['bands'] if b['band_hz'] == [63, 80])['qualified_bins'] == 2
     assert band['fundamental_output_change_db'] == pytest.approx(1)
     assert band['combined_compression_db'] == (None if change == 'candidate' else 2)
     assert (band['harmonics']['3']['qualified_bins'], band['harmonics']['3']['change_db']) == (1, 0)

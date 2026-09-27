@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
-from jasper.audio_measurement.series_stats import band_change_db
+from jasper.audio_measurement.series_stats import curve_difference
 from jasper.json_fields import finite_float
 
 from .crossover_v2.measurement_context import CAPTURE_FIELDS, GRAPH_FIELDS, capture_basis, compare_capture_basis
@@ -81,19 +81,19 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
     harmonics = {order: common_bass_bins(before["harmonics"][order], after["harmonics"][order], "relative_db", "qualified")
                  for order in before["harmonics"].keys() & after["harmonics"].keys()}
     for lo, hi in BASS_BANDS_HZ:
-        mask = (f >= lo) & (f < hi)
-        transfer = band_change_db(f, b, a, (lo, hi))
+        read = curve_difference(f, b, f, a, band_hz=(lo, hi))
+        transfer = None if read is None else read.level_offset_db
         output = transfer + stimulus_delta if transfer is not None and stimulus_delta is not None else None
-        row: dict[str, Any] = {"band_hz": [lo, hi], "qualified_bins": int(mask.sum()),
+        row: dict[str, Any] = {"band_hz": [lo, hi], "qualified_bins": 0 if read is None else read.freqs_hz.size,
             "transfer_change_db": transfer, "fundamental_output_change_db": output,
             "combined_compression_db": input_delta - output if input_delta is not None and output is not None and change in {"volume", "demand"} else None,
             "harmonics": {}}
         for order, (hf, ha, hb) in harmonics.items():
-            hm = (hf >= lo) & (hf < hi)
-            row["harmonics"][order] = {"qualified_bins": int(hm.sum()),
-                "before_relative_db": float(np.median(ha[hm])) if hm.any() else None,
-                "after_relative_db": float(np.median(hb[hm])) if hm.any() else None,
-                "change_db": band_change_db(hf, hb, ha, (lo, hi))}
+            read = curve_difference(hf, hb, hf, ha, band_hz=(lo, hi))
+            row["harmonics"][order] = {"qualified_bins": 0 if read is None else read.freqs_hz.size,
+                "before_relative_db": None if read is None else float(np.median(read.against_db)),
+                "after_relative_db": None if read is None else float(np.median(read.curve_db)),
+                "change_db": None if read is None else read.level_offset_db}
         result["bands"].append(row)
     return {**result, "available": bool(f.size), "freqs_hz": f.tolist(), "transfer_change_db": delta.tolist(),
             "requested_input_change_db": input_delta,
