@@ -15,7 +15,7 @@ from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, stubbed_capabilities
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.measurement_analysis import decoded_measurements
@@ -374,13 +374,6 @@ def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purp
                         lambda _program, capture, _offset: capture)
     assert len({json.dumps(asdict(a), default=lambda array: array.tobytes().hex(), sort_keys=True)
                 for a in (result, analyze())}) == 1
-
-
-@pytest.mark.parametrize("scope,expected", [("drivers", ("near_field_splice_not_implemented",)), ("candidate", ())])
-def test_nearfield_splice_stub_only_applies_to_driver_captures(scope, expected):
-    spec = MeasureSpec(kind="baseline", graph_scope=scope, regime="near_field",
-                       candidate_id="trial" if scope == "candidate" else "")
-    assert tuple(stub.code for stub in stubbed_capabilities(spec)) == expected
 
 
 @pytest.mark.parametrize("passes,fault,check,status", [

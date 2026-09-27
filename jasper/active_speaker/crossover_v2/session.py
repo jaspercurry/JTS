@@ -32,7 +32,6 @@ from .measure_spec import (
     inverted_roles_for,
     level_trims_for,
     measurement_delays_for,
-    stubbed_capabilities,
 )
 
 from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
@@ -161,11 +160,10 @@ class MeasureOutcome:
     the ids actually banked — never a second list to keep in step.
 
     ``record_ids`` is shorter than ``stimuli`` whenever a stimulus banked
-    nothing, and each such entry says why in its own ``incident``: a stub
-    stopped the whole call before anything played (``stimuli`` is then empty),
-    the play transaction did not complete ``play``, or it played and the fader
-    could not be proven — refusing to CLAIM (ADR-0231 §4), the one that leaves
-    a played stimulus with no record.
+    nothing, and each such entry says why in its own ``incident``: the play
+    transaction did not complete ``play``, or it played and the fader could not
+    be proven — refusing to CLAIM (ADR-0231 §4), the one that leaves a played
+    stimulus with no record.
     """
 
     spec: MeasureSpec
@@ -333,30 +331,24 @@ class TuningSession:
         One verb for all three kinds. The order is fixed and each step is
         somebody's invariant:
 
-        1. **Stubs first** (ruling S12). A stub whose ``captured`` is ``False``
-           means there is no stimulus to play at all, and ABORTS the call:
-           ``stimuli`` is empty and nothing played.
-        2. **One play transaction per stimulus**, ready → admit → lock → play →
+        1. **One play transaction per stimulus**, ready → admit → lock → play →
            restore, with **the graph proven-or-reinstalled immediately before
            each one** (the idempotent ``install`` IS the health check),
            because between two stimuli another DSP writer may have replaced it.
            The record's ``graph_fingerprint`` is that prove's answer. The unit is
            position × ladder rung: a ladder moves the stimulus level, never the
            claim.
-        3. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
+        2. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
            between two positions of one walk, so a single proof taken before the
            walk would stamp an unverified level into every record after it. An
            unproven fader refuses to BANK that stimulus and nothing else — the
            stimulus still plays, the next rung is still attempted, and the entry
            says :data:`UNPROVEN_LEVEL`.
-        4. **Bank what played.** A transaction that never completed ``play`` has
+        3. **Bank what played.** A transaction that never completed ``play`` has
            no evidence, and banking a record for it would be the dishonest kind
            of completeness.
         """
         self._require_open()
-        if any(not stub.captured for stub in stubbed_capabilities(spec)):
-            return MeasureOutcome(spec=spec, stimuli=())
-
         prompts = spec.pose_prompts
         rungs: tuple[float | None, ...] = spec.level_ladder_dbfs or (None,)
 
