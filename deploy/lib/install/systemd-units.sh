@@ -796,6 +796,7 @@ fence_fanin_coupling() {
 # The explicit unlock matters: install children inherit descriptor 8.
 release_fanin_coupling_fence() {
     if [[ "${_FANIN_COUPLING_LOCKED}" == 1 ]]; then
+        : >"${FANIN_COUPLING_ENTRY_LOCK}"
         flock -u 8
         exec 8>&-
         _FANIN_COUPLING_LOCKED=0

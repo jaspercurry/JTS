@@ -32,7 +32,7 @@ from jasper.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
 )
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import event_field_maps, event_fields
+from tests._log_events import event_field_maps, event_fields, event_records
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.output_topology_store import save_output_topology
 
@@ -710,20 +710,24 @@ def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
     rc = cr.main(argv)
     assert rc == 0
     assert observed == {"held": True}
-    # ...and released after the pass: a fresh acquire succeeds immediately.
+    # ...and released after the pass, its pid stamp cleared: a fresh acquire
+    # succeeds immediately and a later contention line names no finished pass.
+    assert lock_path.read_text() == ""
     again = cr._acquire_entry_lock(lock_path, timeout_seconds=0.2)
     assert again.outcome == "acquired"
     again.fh.close()
 
 
-def test_cli_auto_aborts_loudly_on_entry_lock_contention(
-    monkeypatch, tmp_path, capsys, caplog
+@pytest.mark.parametrize(
+    ("argv", "exit_code", "level"),
+    [(["--auto"], 0, logging.WARNING), ([COUPLING_SHM_RING], 1, logging.ERROR)],
+)
+def test_cli_entry_lock_contention_stops_before_the_verb(
+    monkeypatch, tmp_path, caplog, argv, exit_code, level
 ):
-    """`--auto` (a requested CHANGE) that loses the lock race aborts BEFORE any
-    env write or daemon op, exits non-zero (the oneshot lands `failed` ->
-    doctor-visible), and says why on stderr + an ERROR event."""
-    import logging
-
+    """#5868: a verb that loses the lock race stops BEFORE any env write or
+    daemon op. `--auto` exits 0, so its oneshot never lands `failed` while the
+    holder converges the box; the operator verb fails for the person watching."""
     from jasper.fanin import coupling_reconcile as cr
 
     lock_path = tmp_path / "entry.lock"
@@ -731,23 +735,21 @@ def test_cli_auto_aborts_loudly_on_entry_lock_contention(
     monkeypatch.setattr(cr, "ENTRY_LOCK_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
-    monkeypatch.setattr(
-        cr,
-        "reconcile_auto",
-        lambda *a, **k: pytest.fail("verb ran despite lock contention"),
-    )
+    for verb in ("reconcile_auto", "reconcile_coupling"):
+        monkeypatch.setattr(
+            cr, verb, lambda *a, **k: pytest.fail("verb ran despite lock contention")
+        )
 
     held = cr._acquire_entry_lock(lock_path, timeout_seconds=0.5)
     assert held.outcome == "acquired"
     try:
-        with caplog.at_level(logging.ERROR, logger="jasper.fanin.coupling_reconcile"):
-            rc = cr.main(["--auto"])
+        with caplog.at_level(logging.WARNING, logger="jasper.fanin.coupling_reconcile"):
+            assert cr.main(argv) == exit_code
     finally:
         held.fh.close()
 
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert str(lock_path) in err and "another reconcile pass" in err
+    (record,) = event_records(caplog, "fanin.coupling_reconcile")
+    assert record.levelno == level
     fields = event_fields(caplog, "fanin.coupling_reconcile")
     assert fields["result"] == "entry_lock_contended"
 

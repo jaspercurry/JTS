@@ -1447,7 +1447,7 @@ class EntryLock:
     ``outcome`` is ``acquired`` (``fh`` holds the advisory flock — the caller
     keeps it open for the WHOLE pass and closes it after), ``contended``
     (another reconcile pass held the lock past the bounded wait — the caller
-    must abort loudly before touching env or daemons), or ``unavailable`` (the
+    must stop before touching env or daemons), or ``unavailable`` (the
     lock file could not be opened — fail-open: proceed unserialized rather than
     brick the reconcile; already logged at WARNING inside the helper).
     ``detail`` carries the holder pid / open error for the log line.
@@ -1482,7 +1482,7 @@ def _acquire_entry_lock(
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
     unserialized at WARNING. The holder stamps its pid into the file so the
-    contention log can name it.
+    contention log can name it, and clears it on release.
     """
     p = Path(path)
     try:
@@ -1598,9 +1598,6 @@ def main(argv: "list[str] | None" = None) -> int:
     if not any(_modes):
         parser.error("give an explicit coupling or --auto")
 
-    # Serialize the WHOLE pass against the sibling entry verbs — see
-    # _acquire_entry_lock. On contention past the bounded wait, do NOT touch env
-    # or daemons.
     lock = _acquire_entry_lock(
         ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
@@ -1612,11 +1609,19 @@ def main(argv: "list[str] | None" = None) -> int:
         return _run_entry_verb(args)
     finally:
         if lock.fh is not None:
+            try:
+                lock.fh.truncate(0)  # before close, or it could wipe the next holder's stamp
+            except OSError:
+                pass  # the stamp is diagnostic only
             lock.fh.close()
 
 
 def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
-    """Abort an apply verb that could not acquire the coupling entry lock."""
+    """Stop a verb that lost the entry lock, before any env write or daemon op.
+
+    ``--auto`` exits 0 at WARNING: the pass holding the lock converges the box
+    (#5868). The operator verb keeps ERROR and exit 1: a person is watching.
+    """
     log_event(
         logger,
         "fanin.coupling_reconcile",
@@ -1625,8 +1630,10 @@ def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
         lock_path=ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
         detail=detail or None,
-        level=logging.ERROR,
+        level=logging.WARNING if args.auto else logging.ERROR,
     )
+    if args.auto:
+        return 0
     print(
         "fan-in coupling reconcile: another reconcile pass holds "
         f"{ENTRY_LOCK_PATH} ({detail or 'unknown holder'}); "
