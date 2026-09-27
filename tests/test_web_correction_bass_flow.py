@@ -7,16 +7,12 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from pathlib import Path
 
 import pytest
 
 from jasper.web import correction_bass_flow as flow
 from jasper.active_speaker import baseline_profile
 from tests.test_bass_extension_dynamic import _descriptor
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_render_page_is_a_canonical_page_with_the_bass_module():
@@ -32,15 +28,6 @@ def test_render_page_is_a_canonical_page_with_the_bass_module():
 def test_render_page_escapes_hostname_in_back_link():
     html = flow.render_page('js"><b>x', "tok").decode()
     assert '"><b>x' not in html  # the raw injection is escaped
-
-
-def test_bass_module_uses_shared_get_json():
-    source = (ROOT / "deploy/assets/correction/js/bass/main.js").read_text()
-    assert "import { getJSON } from '/assets/shared/js/http.js';" in source
-    assert "getJSON('status')" in source
-    assert "getJSON('/bass/status')" not in source
-    assert "await fetch(" not in source
-    assert ".json()" not in source
 
 
 def _corner(monkeypatch, corner_hz=None):

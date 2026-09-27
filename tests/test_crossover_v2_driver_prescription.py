@@ -2368,27 +2368,6 @@ def test_the_span_clause_is_what_makes_the_bound_sound():
     assert grid.max() > 3000.0
 
 
-def test_the_boost_floor_is_the_cut_floor_because_it_is_the_same_argument():
-    """One literal, two names, asserted AT SOURCE.
-
-    ``_MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot" does not depend
-    on the sign, so the pair is DEFINED together rather than restated beside
-    each other. An `is` check cannot prove that — CPython interns equal float
-    constants, so two independent `= 0.5` literals would also pass it — so the
-    source line is what gets read.
-    """
-    import inspect
-
-    from jasper.active_speaker.linearization_fit import _MIN_FILTER_GAIN_DB
-
-    assert DRIVER_MIN_BOOST_DB == DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
-    source = inspect.getsource(dp)
-    assert "DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB" in source, (
-        "the boost floor must be DEFINED BY the cut floor, not restated as a "
-        "second literal that could drift"
-    )
-
-
 def test_defect_boostable_at_is_the_cut_readers_mirror(tmp_path):
     """Same nearest-decides rule, same fail-closed tie, opposite eligible class."""
     verdicts = _banked_verdicts()

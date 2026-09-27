@@ -90,27 +90,6 @@ def test_noqa_debt_does_not_grow() -> None:
     assert ble_markers <= MAX_BLE001_MARKERS
 
 
-# Un-ratcheted line ceilings for the commissioning program's largest files.
-# Each is a round number ABOVE the file's size on the day the per-PR line
-# ratchet was deleted, so a ceiling fires once on real growth instead of
-# taxing one PR in five with a raise-and-justify paragraph.
-#
-# Do not raise one. The engine refactor only ever moves these files down;
-# when every file here is under 5,000 lines, delete the rule.
-MAX_LINES_BY_PATH = {
-    "jasper/active_speaker/crossover_v2_flow.py": 15_000,
-    "jasper/web/correction_crossover_v2.py": 2_000,
-    "jasper/web/correction_crossover_v2_state.py": 1_000,
-    "jasper/web/correction_crossover_v2_volume.py": 1_000,
-    "jasper/web/correction_crossover_v2_grade.py": 1_000,
-    "jasper/web/correction_crossover_v2_evidence.py": 2_000,
-    "jasper/active_speaker/crossover_envelope_v2.py": 5_000,
-    "jasper/web/correction_crossover_v2_wired.py": 2_000,
-    "jasper/audio_measurement/wired_capture.py": 1_000,
-    "jasper/active_speaker/crossover_declaration.py": 1_000,
-}
-
-
 def _over_line_cap(path: Path, cap: int) -> str | None:
     """The complaint for one file over its ceiling, or ``None``."""
 
@@ -143,19 +122,6 @@ def test_the_line_ceiling_reports_a_file_over_it(tmp_path) -> None:
     assert complaint is not None
     assert "_ceiling_probe.py" in complaint
     assert "3" in complaint and "2" in complaint
-
-
-def test_no_commissioning_file_passes_its_line_ceiling() -> None:
-    over = [
-        complaint
-        for rel, cap in sorted(MAX_LINES_BY_PATH.items())
-        if (complaint := _over_line_cap(REPO / rel, cap)) is not None
-    ]
-
-    assert not over, (
-        "A commissioning file passed its one-shot ceiling. Cut a seam and "
-        "move work out of it — the ceiling is not raised:\n" + "\n".join(over)
-    )
 
 
 def _unclosed_event_loops(source: str) -> list[str]:

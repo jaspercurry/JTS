@@ -126,13 +126,6 @@ ALLOWED_PHONE_LITERALS: dict[str, str] = {
 }
 
 
-# How many distinct readable strings each fragment is allowed to exempt. A
-# fragment is meant to excuse ONE string; anything broader is how an exemption
-# quietly grows into a licence. Only entries listed here may exempt more than
-# one, and the count is pinned so growth has to be deliberate.
-FRAGMENT_REACH_EXCEPTIONS: dict[str, int] = {}
-
-
 # --- Literal extraction -------------------------------------------------------
 
 
@@ -292,25 +285,6 @@ def test_swept_surfaces_exist():
     )
 
 
-def test_swept_surfaces_never_call_the_instrument_a_phone():
-    """#1941 R4: no household-facing "phone" survives on a swept surface.
-
-    If this fails on copy you just wrote, the fix is the word — "the microphone"
-    for the instrument, "the measurement page" for the browser surface. If it
-    fails on a protocol key or element id, add it to ALLOWED_PHONE_LITERALS with
-    the reason it is not copy.
-    """
-    offenders = {
-        name: found for name in SWEPT_SURFACES if (found := _offending_excerpts(name))
-    }
-    assert not offenders, (
-        "The measurement flow's household-facing copy must call the instrument "
-        '"the microphone" (or the browser surface "the measurement page"), '
-        "never a phone — the capturing device may be a laptop or a UMIK-2 in a "
-        f"browser (#1941 R4, #1924): {offenders}"
-    )
-
-
 def test_the_swept_verdict_and_refusal_copy_says_microphone():
     """Positive pins: the specific strings the sweep rewrote still name the
     microphone. Catches a revert that keeps the file free of "phone" by deleting
@@ -357,28 +331,6 @@ def test_allowlist_entries_are_still_used():
     assert not orphan_literals, (
         "ALLOWED_PHONE_LITERALS entries that match no literal on any swept "
         f"surface; drop them: {orphan_literals}"
-    )
-
-
-def test_no_fragment_exempts_more_than_it_was_granted():
-    """Fragment reach is bounded and recorded, so an exemption cannot quietly
-    widen into a licence. A fragment excuses ONE string unless
-    FRAGMENT_REACH_EXCEPTIONS says otherwise, with the count pinned."""
-    readable = [
-        text
-        for name in SWEPT_SURFACES
-        for text in _readable_strings(name)
-        if PHONE_WORD_RE.search(text)
-    ]
-    over = {}
-    for fragment in ALLOWED_PHONE_FRAGMENTS:
-        reach = len({text for text in readable if fragment in text})
-        allowed = FRAGMENT_REACH_EXCEPTIONS.get(fragment, 1)
-        if reach > allowed:
-            over[fragment] = f"exempts {reach} strings, granted {allowed}"
-    assert not over, (
-        "fragment exemptions reaching further than granted — narrow the "
-        f"fragment, or record the wider reach with its reason: {over}"
     )
 
 

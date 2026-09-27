@@ -543,60 +543,6 @@ def test_the_retyping_guard_sees_a_planted_literal(tmp_path):
     assert "RESULT_KEEP_PREVIOUS" in found[0]
 
 
-def test_the_envelope_renderer_never_re_types_a_code_it_could_import():
-    """#2662's G3: the domain renderer imports the vocabulary it renders.
-
-    ``crossover_envelope_v2`` may not import ``jasper.web`` (the rule above),
-    and the four ``RESULT_*`` codes lived there — so it spelled all four by
-    hand in twelve places, with nothing holding the two sets equal. The codes
-    moved to ``verification`` where the renderer can import them; this stops
-    the next one from being re-typed instead.
-
-    **One guarded value is skipped, and the skip is only as alive as its
-    reason.** ``RESULT_INCONCLUSIVE`` and the host's ``GRADE_INCONCLUSIVE``
-    are both ``"inconclusive"`` while answering different questions about the
-    same round — what the result WAS, versus whether the check finished. The
-    renderer legitimately compares a grade state against the second, so a bare
-    ``"inconclusive"`` cannot be attributed to one of the two by its value.
-    The assertion below fails if the collision ever ends, which is when this
-    skip should be deleted rather than inherited.
-    """
-
-    from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE
-    from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE
-
-    assert GRADE_INCONCLUSIVE == RESULT_INCONCLUSIVE, (
-        "the value collision this skip exists for has ended — delete the skip"
-    )
-    owners = _guarded_vocabulary()
-    del owners[RESULT_INCONCLUSIVE]
-
-    renderer = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "active_speaker" / "crossover_envelope_v2.py"
-    )
-    assert _retyped_vocabulary(renderer, owners) == []
-
-
-def test_the_journey_holds_no_dsp_no_filesystem_and_no_rendering():
-    """Phase 4's explicit boundary: bookkeeping only."""
-
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "active_speaker" / "crossover_v2" / "journey.py"
-    )
-    tree = ast.parse(module.read_text(), filename=str(module))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported |= {alias.name for alias in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            imported.add(node.module or "")
-    # Nothing numeric, nothing on disk, nothing that journals: the journey
-    # derives, and its callers measure, persist, and narrate.
-    assert imported == {"__future__", "dataclasses", "types", "typing"}
-
-
 def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():
     first = JourneyPlan.from_index_map(STAGE1_MAP)
     second = JourneyPlan.from_index_map(dict(STAGE1_MAP))

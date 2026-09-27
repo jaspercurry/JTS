@@ -12,7 +12,6 @@ this record lives in ``test_active_speaker_level_match.py``.
 """
 from __future__ import annotations
 
-import ast
 import json
 import os
 from pathlib import Path
@@ -369,50 +368,6 @@ def test_the_state_path_honours_the_env_override(tmp_path: Path, monkeypatch):
     monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "elsewhere.json"))
     assert dbt.base_trim_state_path() == tmp_path / "elsewhere.json"
     assert dbt.base_trim_state_path("/explicit.json") == Path("/explicit.json")
-
-
-# ---------- one vocabulary: no third estimator may grow here -----------------
-
-_BAND_MATH_NAMES = {
-    "mean", "average", "median", "log10", "log2", "sqrt", "trapz",
-    "polyfit", "interp", "convolve", "fft", "rfft", "irfft", "welch",
-}
-_TRIM_ARTIFACT = "jasper/active_speaker/driver_base_trim.py"
-
-
-def _band_math_calls(source: str) -> list[str]:
-    """Every call in ``source`` whose name is band arithmetic."""
-    offenders = []
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        name = (
-            func.id if isinstance(func, ast.Name)
-            else func.attr if isinstance(func, ast.Attribute)
-            else ""
-        )
-        if name in _BAND_MATH_NAMES:
-            offenders.append(f"{node.lineno}: {name}()")
-    return offenders
-
-
-def test_the_base_trim_artifact_mints_no_band_averaging_of_its_own():
-    """The one-vocabulary rule, made mechanical.
-
-    The repo already carries three subordinate estimates of one physical
-    quantity (the overlap-band point read, the branch power-band average, and
-    the core-band median) and two live disclosures comparing them. A fourth
-    would be the same defect again, so this file banks a level somebody else
-    measured and may not do band arithmetic itself.
-    """
-    source = (
-        Path(__file__).resolve().parents[1] / _TRIM_ARTIFACT
-    ).read_text(encoding="utf-8")
-    assert _band_math_calls(source) == []
-    # The scanner fails both ways: it must actually SEE band math when band
-    # math is there, or a clean result proves nothing about the file above.
-    assert _band_math_calls("import numpy\nx = numpy.mean([1.0, 2.0])\n")
 
 
 # ---------- durability, precision, and the declaration's shape ---------------

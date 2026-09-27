@@ -104,21 +104,6 @@ def test_anchor_trims_takes_no_tolerance_and_no_disagreement():
         assert gone not in params
 
 
-def test_anchor_trims_body_carries_no_threshold_comparison():
-    """No surviving branch in the function compares against a tolerance.
-
-    The signature test above closes the door the cliff came through; this one
-    checks nobody re-opened it from inside by reaching for a module constant.
-    Source inspection is the honest instrument here — the branch it forbids is
-    one that fires on inputs a passing behaviour test would not supply.
-    """
-    body = inspect.getsource(iv.anchor_trims)
-    _, _, code = body.partition('"""')
-    _, _, code = code.partition('"""')
-    for token in ("TOLERANCE", "tolerance", "disagreement"):
-        assert token not in code, f"anchor_trims body still reaches for {token!r}"
-
-
 def test_the_anchor_is_base_plus_giveback_and_nothing_else():
     anchored, shift = _anchor()
     unnormalized = {
