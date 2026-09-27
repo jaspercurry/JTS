@@ -1006,6 +1006,8 @@ _RUNTIME_TAILS = {
                                       *_TAIL_TO_AEC, *_TAIL_AFTER_AEC),
     "install_systemd_units": (*_TAIL_TO_AEC, "fn reconcile_aec_state", *_TAIL_AFTER_AEC),
 }
+
+
 def _install_sh_recorders(tmp_path: Path, *, pass_restarts_input: bool) -> str:
     """install.sh, not the fragment, owns install_run_bounded, so the stub loop
     never sees it. Its recorder stands in for the accessory pass, which starts a
