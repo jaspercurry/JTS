@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAPTURE_FORMAT, resolve_enable_rate_adjust
@@ -120,6 +120,11 @@ class ActiveEmitDevices:
     target_level: int | None
     queuelimit: int | None
     enable_rate_adjust: bool
+
+    def emit_kwargs(self) -> dict[str, Any]:
+        """The whole block as the emitters' keyword arguments, so no emit can
+        forward half of it."""
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
 
 def active_emit_devices(
