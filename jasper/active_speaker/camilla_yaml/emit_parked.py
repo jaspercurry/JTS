@@ -11,14 +11,13 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_VOLUME_LIMIT_DB,
 )
-from jasper.camilla_emit import emit_gain_filter, emit_mixer
+from jasper.camilla_emit import emit_devices_block, emit_gain_filter, emit_mixer
 
 from ..camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
-from .devices import _camilla_latency, _finite_float, _positive_int, _yaml_string
+from .devices import _camilla_latency, _positive_int, _yaml_string
 from .document import _atomic_write_text
-from .gates import _assert_parked_outputs_muted, _assert_volume_limit
+from .gates import _assert_parked_outputs_muted
 
 # The PARKED graph's on-disk name + internal vocabulary — a generated,
 # topology-derived, all-muted boot graph. See emit_active_speaker_parked_config
@@ -51,7 +50,6 @@ def emit_active_speaker_parked_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
 ) -> str:
     """Build the PARKED (all-muted, DAC-less) active-speaker graph.
@@ -85,8 +83,6 @@ def emit_active_speaker_parked_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, None, chunksize, target_level, None
     )
-    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
-    _assert_volume_limit(volume_limit_db)
 
     filter_lines: list[str] = []
     pipeline_lines = [
@@ -124,6 +120,13 @@ def emit_active_speaker_parked_config(
             f"# topology_id={_yaml_string(topology_id, 'topology_id')}"
         )
     metadata_yaml = "\n".join(metadata_comments)
+    devices_yaml = emit_devices_block(
+        samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
+        target_level=target_level, enable_rate_adjust=False,
+        capture_channels=2, capture_device=capture_device, capture_format=capture_format,
+        playback_channels=output_count, playback_target=PARKED_SINK_PATH,
+        playback_format=DEFAULT_PIPE_SINK_FORMAT, file_sink=True,
+    )
 
     yaml = f"""---
 # Auto-generated active-speaker PARKED config.
@@ -137,23 +140,7 @@ def emit_active_speaker_parked_config(
 # stage a startup graph, or reset output setup and choose an explicit passive
 # layout.
 
-devices:
-  samplerate: {sample_rate}
-  chunksize: {chunksize}
-  queuelimit: {queuelimit}
-  target_level: {target_level}
-  volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: false
-  capture:
-    type: Alsa
-    channels: 2
-    device: "{capture_device}"
-    format: {capture_format}
-  playback:
-    type: File
-    channels: {output_count}
-    filename: "{PARKED_SINK_PATH}"
-    format: {DEFAULT_PIPE_SINK_FORMAT}
+{devices_yaml}
 
 filters:
 {filter_yaml}

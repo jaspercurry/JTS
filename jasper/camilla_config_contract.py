@@ -101,23 +101,15 @@ def resolve_enable_rate_adjust(playback_device: str | None) -> bool:
     return playback_device is not None and playback_device not in RING_PCM_DEVICES
 
 
-# CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
-# JTS treats 0 dB as the hard software ceiling; source/headroom logic
-# should attenuate below this, never boost above full scale.
-DEFAULT_VOLUME_LIMIT_DB = 0.0
-
-
 def ensure_volume_limit_db(value: float) -> float:
     """Validate a ``devices.volume_limit`` value against the JTS safety
     ceiling and return it as a float.
 
     0 dB is the project-wide hard software ceiling (AGENTS.md
-    non-negotiable 1): generated configs must never let the main fader
-    boost above full scale. Both JTS emitter families (``jasper.sound``
-    and ``jasper.active_speaker``) route their build-time refusal through
-    here, so the threshold has one home. Raises ``ValueError`` — config
-    generation is a programming/caller error surface, not a runtime
-    degrade-gracefully path.
+    non-negotiable 1): a graph must never let the main fader boost above
+    full scale. The graph doors (:func:`check_volume_limit` and the delay
+    graph's) ask here, so the threshold has one home. Raises ``ValueError``,
+    which each door restates in its own error type.
     """
     try:
         out = float(value)

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -321,7 +320,6 @@ def build_driver_commission_load_preflight(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
@@ -362,7 +360,6 @@ def build_driver_commission_load_preflight(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         config_dir=config_dir,
         config_path=config_path,
@@ -566,7 +563,6 @@ async def load_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     staged_config: dict[str, Any] | None = None,
@@ -635,7 +631,6 @@ async def load_driver_commissioning_config(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=prior_config_path,
@@ -763,7 +758,6 @@ async def load_driver_commissioning_config(
             crossover_preview=crossover_preview,
             playback_device=playback_device,
             audible_gain_db=audible_gain_db,
-            volume_limit_db=volume_limit_db,
             filter_mode=filter_mode,
             config_dir=config_dir,
             config_path=config_path,

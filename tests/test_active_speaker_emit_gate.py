@@ -68,6 +68,8 @@ from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from tests.test_rear_output_foundation import _rear_pair
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
+from jasper.sound.camilla_yaml import emit_sound_config
+from jasper.sound.profile import SoundProfile
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -783,18 +785,25 @@ _VOLUME_LIMIT_EMITTERS = [
         ),
         id="baseline",
     ),
+    pytest.param(lambda **kw: emit_sound_config(SoundProfile(enabled=False), **kw), id="sound"),
+    pytest.param(
+        lambda **kw: emit_sound_config(
+            SoundProfile(enabled=False), playback_pipe_path="/run/snapfifo", **kw
+        ),
+        id="sound_pipe",
+    ),
 ]
 
 
 @pytest.mark.parametrize("emit", _VOLUME_LIMIT_EMITTERS)
-def test_every_emitter_writes_a_zero_volume_limit_and_refuses_a_boost(
-    emit: Callable[..., str],
-) -> None:
-    # The default emit succeeds, so the only thing that can make the second call
-    # raise is the ceiling itself — no error-prose match needed.
-    assert yaml.safe_load(emit())["devices"]["volume_limit"] == 0.0
-    with pytest.raises(ActiveSpeakerConfigError):
-        emit(volume_limit_db=0.5)
+def test_every_emitter_writes_exactly_a_zero_volume_limit(emit: Callable[..., str]) -> None:
+    """Non-negotiable 1: no emitter can spell another limit, so the one line
+    is the same in every config JTS writes."""
+    text = emit()
+    assert [line for line in text.splitlines() if "volume_limit" in line] == ["  volume_limit: 0.0"]
+    assert yaml.safe_load(text)["devices"]["volume_limit"] == 0.0
+    with pytest.raises(TypeError):
+        emit(volume_limit_db=-3.0)
 
 
 _PARK_TEST_TWO_WAY = _preset("mono", 2)

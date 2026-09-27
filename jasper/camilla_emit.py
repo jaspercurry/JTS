@@ -48,6 +48,11 @@ import json
 import math
 from collections.abc import Sequence
 
+# CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
+# JTS treats 0 dB as the hard software ceiling; source/headroom logic
+# should attenuate below this, never boost above full scale.
+DEFAULT_VOLUME_LIMIT_DB = 0.0
+
 
 def fmt(value: float) -> str:
     """Format a float for CamillaDSP YAML — 4 decimal places.
@@ -60,6 +65,51 @@ def fmt(value: float) -> str:
 
 def _bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def emit_devices_block(
+    *,
+    samplerate: int,
+    chunksize: int,
+    queuelimit: int,
+    target_level: int,
+    enable_rate_adjust: bool,
+    capture_channels: int,
+    capture_device: str,
+    capture_format: str,
+    playback_channels: int,
+    playback_target: str,
+    playback_format: str,
+    file_sink: bool = False,
+) -> str:
+    """The ``devices:`` block every JTS CamillaDSP config carries.
+
+    ``volume_limit`` is always :data:`DEFAULT_VOLUME_LIMIT_DB` (0.0): no caller
+    can spell another, which is AGENTS.md non-negotiable 1 by construction.
+    ``playback_target`` is an ALSA device, or with ``file_sink`` the file a
+    File sink writes (a snapserver pipe, the parked sink). Returns the block
+    without a trailing newline.
+    """
+    sink_type, target_key = ("File", "filename") if file_sink else ("Alsa", "device")
+    return (
+        "devices:\n"
+        f"  samplerate: {samplerate}\n"
+        f"  chunksize: {chunksize}\n"
+        f"  queuelimit: {queuelimit}\n"
+        f"  target_level: {target_level}\n"
+        f"  volume_limit: {DEFAULT_VOLUME_LIMIT_DB!r}\n"
+        f"  enable_rate_adjust: {_bool(enable_rate_adjust)}\n"
+        "  capture:\n"
+        "    type: Alsa\n"
+        f"    channels: {capture_channels}\n"
+        f"    device: \"{capture_device}\"\n"
+        f"    format: {capture_format}\n"
+        "  playback:\n"
+        f"    type: {sink_type}\n"
+        f"    channels: {playback_channels}\n"
+        f"    {target_key}: \"{playback_target}\"\n"
+        f"    format: {playback_format}"
+    )
 
 
 def emit_gain_filter(

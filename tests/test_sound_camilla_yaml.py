@@ -202,29 +202,6 @@ def test_extract_room_peqs_ignores_sound_peaking_filters():
     ]
 
 
-def test_emit_sound_config_rejects_positive_volume_limit():
-    """Loud-output safety (audit C6): the emitter refuses to build a
-    config whose master fader could boost above full scale. Mirrors the
-    guard in jasper.active_speaker.camilla_yaml."""
-    import pytest
-
-    with pytest.raises(ValueError, match="must not exceed 0 dB"):
-        emit_sound_config(
-            SoundProfile(enabled=False), volume_limit_db=1.0,
-        )
-
-
-def test_emit_sound_config_rejects_non_finite_volume_limit():
-    import math
-
-    import pytest
-
-    with pytest.raises(ValueError, match="must be finite"):
-        emit_sound_config(
-            SoundProfile(enabled=False), volume_limit_db=math.nan,
-        )
-
-
 # ---------------------------------------------------------------------------
 # room_peqs_right — the multi-room leader-bake axis.
 # Only the ROOM segment is per-channel (per-seat correction); preference EQ

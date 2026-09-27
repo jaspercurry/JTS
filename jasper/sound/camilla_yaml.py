@@ -28,8 +28,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_VOLUME_LIMIT_DB,
-    ensure_volume_limit_db,
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import PeqFilter
@@ -37,6 +35,7 @@ from jasper.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     FLAT_PROGRAM_WIDTH,
     MONO_SUM_GAIN_DB,
+    emit_devices_block,
     emit_gain_filter,
     emit_master_gain_pipeline,
     fmt,
@@ -338,7 +337,6 @@ def emit_sound_config(
     chunksize: int | None = None,
     queuelimit: int | None = None,
     target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
     output_trim_db: float = 0.0,
@@ -437,9 +435,6 @@ def emit_sound_config(
     **byte-identical** to before this parameter existed (the solo-impact
     contract)."""
 
-    # Loud-output safety: refuse to emit a config whose master fader
-    # could boost above full scale. Mirrors the active_speaker emitter.
-    volume_limit_db = ensure_volume_limit_db(volume_limit_db)
     width = _normalize_width(width)
     # The sink this call actually emits: `None` is the clockless File sink, the
     # vocabulary both resolvers below read. `is not None`, the same predicate
@@ -597,31 +592,20 @@ def emit_sound_config(
         pipeline_yaml = _program_pipeline_yaml(
             chain_names, chain_names_right, program_dests=program_dests
         )
-    rate_adjust_literal = "true" if enable_rate_adjust else "false"
     header_id = f" (id={profile_id})" if profile_id else ""
-    # Playback sink: ALSA loopback (solo — the default, byte-identical)
-    # or the bonded-leader File/pipe sink feeding snapserver. Identical
-    # indentation so the surrounding template is sink-agnostic.
-    if playback_pipe_path is not None:
-        # D4: pinned to DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see
-        # the guard above and the constant's own comment
-        # (jasper.camilla_config_contract).
-        playback_yaml = f"""  playback:
-    type: File
-    channels: {width}
-    filename: "{playback_pipe_path}"
-    format: {DEFAULT_PIPE_SINK_FORMAT}"""
-    else:
-        playback_yaml = f"""  playback:
-    type: Alsa
-    channels: {width}
-    device: "{playback_device}"
-    format: {playback_format}"""
-    capture_yaml = f"""  capture:
-    type: Alsa
-    channels: {FLAT_PROGRAM_WIDTH}
-    device: "{capture_device}"
-    format: {capture_format}"""
+    # Playback sink: ALSA loopback (solo — the default, byte-identical) or the
+    # bonded-leader File/pipe sink feeding snapserver. D4: a pipe is pinned to
+    # DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see the guard above and
+    # the constant's own comment (jasper.camilla_config_contract).
+    devices_yaml = emit_devices_block(
+        samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
+        target_level=target_level, enable_rate_adjust=enable_rate_adjust,
+        capture_channels=FLAT_PROGRAM_WIDTH, capture_device=capture_device,
+        capture_format=capture_format, playback_channels=width,
+        playback_target=playback_device if playback_pipe_path is None else playback_pipe_path,
+        playback_format=playback_format if playback_pipe_path is None else DEFAULT_PIPE_SINK_FORMAT,
+        file_sink=playback_pipe_path is not None,
+    )
     # The header's mixer sentence tracks the mixer it describes. Byte-identical
     # when nothing folds; a folded graph must not carry the identity claim.
     mixer_note = (
@@ -644,15 +628,7 @@ def emit_sound_config(
 {mixer_note}
 # output_trim_db={trim_db:.3f}
 
-devices:
-  samplerate: {sample_rate}
-  chunksize: {chunksize}
-  queuelimit: {queuelimit}
-  target_level: {target_level}
-  volume_limit: {volume_limit_db:.1f}
-  enable_rate_adjust: {rate_adjust_literal}
-{capture_yaml}
-{playback_yaml}
+{devices_yaml}
 
 filters:
 {filter_yaml}

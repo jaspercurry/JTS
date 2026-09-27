@@ -105,7 +105,6 @@ from .gates import (
     _assert_tweeter_crossover_hp_satisfies_floor as _assert_tweeter_crossover_hp_satisfies_floor,
     _assert_tweeter_outputs_protected as _assert_tweeter_outputs_protected,
     _assert_view_tweeters_protected as _assert_view_tweeters_protected,
-    _assert_volume_limit as _assert_volume_limit,
     _validate_program_role_channels as _validate_program_role_channels,
     preset_target_ids as preset_target_ids,
 )

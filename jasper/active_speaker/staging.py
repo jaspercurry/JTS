@@ -20,10 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.camilla_config_contract import (
-    DEFAULT_VOLUME_LIMIT_DB,
-    read_camilla_devices_config,
-)
+from jasper.camilla_config_contract import read_camilla_devices_config
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
@@ -916,7 +913,6 @@ def prepare_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
@@ -1068,7 +1064,6 @@ def prepare_driver_commissioning_config(
                 enable_rate_adjust=devices.enable_rate_adjust,
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
-                volume_limit_db=volume_limit_db,
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
                 filter_mode=filter_mode,
