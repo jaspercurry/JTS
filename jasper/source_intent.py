@@ -341,6 +341,11 @@ def _failed_siblings(sources: Mapping[str, Any], source: Source) -> str:
     return "; ".join(failures)[:300]
 
 
+def intent_fingerprint(text: str) -> str:
+    """The fingerprint web and the reconciler compare to agree on one intent file."""
+    return sha256_text(text)
+
+
 _INTENT_ENV_OWNER = "JTS /sources intent control"
 
 
@@ -409,7 +414,7 @@ def request_source_intent(
             request_started_ns = time.monotonic_ns()
             write(env_path, {key: value})
             try:
-                fingerprint = sha256_text(read_intent(env_path))
+                fingerprint = intent_fingerprint(read_intent(env_path))
             except RuntimeError as exc:
                 log_event(
                     logger,

@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared field helpers for versioned JSON artifacts."""
+"""Shared field helpers for versioned JSON artifacts, and the one owner of their
+identity rules: canonical JSON bytes, the strict and lenient fingerprints, the
+strict freeze, SHA-256 hex checks and text/file hashing."""
 
 from __future__ import annotations
 
