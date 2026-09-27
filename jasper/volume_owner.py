@@ -46,10 +46,12 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from .volume_latch import (
     FADER_IO_ERRORS,
@@ -82,6 +84,9 @@ GetFaderDb = Callable[[], Awaitable[Any]]
 #: across a fader round-trip — today an acquire can, bounded by
 #: ``CamillaController``'s 5 s attempt budget and its one retry.
 RELEASE_WAIT_DISCLOSE_S = 1.0
+
+# Only a contended acquire sleeps, so this latency is paid only under contention.
+_LOCK_POLL_S = 0.01
 
 
 class ClaimKind(Enum):
@@ -136,6 +141,21 @@ def _fmt_db(value: float | None) -> str:
     return "" if value is None else f"{value:.6f}"
 
 
+@asynccontextmanager
+async def _holding(lock: threading.Lock) -> AsyncIterator[None]:
+    """Hold ``lock`` from any thread's event loop.
+
+    Polls instead of parking a worker thread on ``acquire``: a task cancelled
+    while parked there leaves the worker holding a lock nobody will release.
+    """
+    while not lock.acquire(blocking=False):
+        await asyncio.sleep(_LOCK_POLL_S)
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 class VolumeOwner:
     """Every fader write in this process, arbitrated by rank.
 
@@ -161,7 +181,10 @@ class VolumeOwner:
         self._get_fader_db = get_fader_db
         self._claims: dict[int, VolumeClaimHandle] = {}
         self._tokens = itertools.count(1)
-        self._lock = asyncio.Lock()
+        # Not an asyncio.Lock, which binds to one event loop: jasper-web
+        # shares the registered owner across request threads, each running
+        # its own asyncio.run.
+        self._lock = threading.Lock()
 
     # ---- the synchronous readers -----------------------------------------
 
@@ -201,7 +224,7 @@ class VolumeOwner:
                 "the household level is declared, not acquired"
             )
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             if any(claim.kind is kind for claim in self._claims.values()):
                 raise VolumeClaimConflict(
                     f"a {kind.value} level claim is already held"
@@ -241,7 +264,7 @@ class VolumeOwner:
         it again.
         """
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             previous = self.declared_level_db()
             for token, claim in list(self._claims.items()):
                 if claim.kind is ClaimKind.HOUSEHOLD:
@@ -278,7 +301,7 @@ class VolumeOwner:
         physical level may have moved before confirmation failed.
         """
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             if self._claims.get(handle.token) != handle:
                 raise VolumeClaimRefused("that claim is no longer held")
             del self._claims[handle.token]
@@ -365,7 +388,7 @@ class VolumeOwner:
         contract ``session_seams.VolumeClaim.release`` states.
         """
         waited_from = time.monotonic()
-        async with self._lock:
+        async with _holding(self._lock):
             waited_s = time.monotonic() - waited_from
             if waited_s > RELEASE_WAIT_DISCLOSE_S:
                 log_event(
@@ -411,7 +434,7 @@ class VolumeOwner:
         Under the owner's lock for the whole body, so no claim change lands
         between the reading and the verdict.
         """
-        async with self._lock:
+        async with _holding(self._lock):
             expected = handle.level_db
             observed = await self._read()
             if self._claims.get(handle.token) != handle:
