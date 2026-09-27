@@ -434,7 +434,7 @@ def check_correction_state_dirs() -> CheckResult:
         reason=REASON_UPLOADED_CALIBRATION_SIGN_REVIEW,
     )
 
-def _active_camilla_config_path() -> tuple[Path, str | None]:
+def active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
 
     The path comes from ``jasper.paths``' one resolver and the parse from
@@ -453,7 +453,7 @@ def check_correction_current_config() -> CheckResult:
         is_jts_generated_config,
     )
 
-    statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
+    statefile, config_path = evidence.get("camilla_config", active_camilla_config_path)
     if config_path is None:
         return CheckResult(
             "current correction", "warn",

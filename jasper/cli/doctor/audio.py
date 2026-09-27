@@ -29,7 +29,7 @@ from ._registry import doctor_check
 from ._shared import (
     REASON_TOPOLOGY_UNREADABLE,
     CheckResult,
-    _parked_follower_result,
+    parked_follower_result,
     run,
 )
 from ...service_units import JASPER_VOICE_SERVICE
@@ -211,7 +211,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     positional shorthand (``hw:7,1``) take different lookup paths. install.sh
     autodetects on the Pi, and with the AEC bridge enabled the mic moves to a
     UDP-form device (`udp:9876`), which skips the card check."""
-    parked = _parked_follower_result("mic ALSA card")
+    parked = parked_follower_result("mic ALSA card")
     if parked is not None:
         return parked
     # No usable mic: the reconciler's single source of truth already classified
@@ -301,7 +301,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     devices (the AEC bridge transport) are not PortAudio devices and skip the
     same way.
     """
-    parked = _parked_follower_result("mic capture")
+    parked = parked_follower_result("mic capture")
     if parked is not None:
         return parked
     # Intentionally idle, not broken: the reconciler's single source of truth

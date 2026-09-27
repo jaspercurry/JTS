@@ -205,10 +205,10 @@ def evidence_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
     # Lazy: at module scope this drags `correction` into every `--core` run.
-    from .correction import _active_camilla_config_path
+    from .correction import active_camilla_config_path
 
     statefile, _config_path = evidence.get(
-        "camilla_config", _active_camilla_config_path
+        "camilla_config", active_camilla_config_path
     )
     return statefile
 
