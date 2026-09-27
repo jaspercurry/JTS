@@ -276,6 +276,9 @@ def test_precheck_threads_pair_trim_into_leader_crossover(
 def test_precheck_refuses_uncommissioned_box_no_emit(monkeypatch, tmp_path) -> None:
     topology = _dual_apple_topology()
     draft = _draft(topology)
+    for driver in draft["driver_research"]["drivers"]:
+        driver.pop("recommended_highpass_hz", None)
+    draft = design_draft_mod.design_draft_view(draft)
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(design_draft_mod, "load_design_draft", lambda **kwargs: draft)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")

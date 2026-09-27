@@ -64,10 +64,7 @@ from jasper.active_speaker.camilla_yaml import (
     emit_active_speaker_startup_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.design_draft import (
-    DRIVER_RESEARCH_KIND,
-    build_design_draft,
-)
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND
 from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     protection_highpass_floor_satisfied,
@@ -90,6 +87,7 @@ from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields
 from tests.active_speaker_fixtures import (
     mono_output_topology,
+    research_design_draft,
     valid_camilla_config as _valid_config,
 )
 
@@ -141,7 +139,6 @@ def _driver_research(
     if woofer_floor_hz is not None:
         woofer["recommended_highpass_hz"] = woofer_floor_hz
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [woofer, tweeter],
         "crossover_candidates": [{
@@ -162,9 +159,9 @@ def _preview(
     woofer_floor_hz: float | None = None,
 ) -> dict[str, Any]:
     return build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             topology,
-            driver_research=_driver_research(
+            _driver_research(
                 fc_hz=fc_hz,
                 tweeter_floor_hz=tweeter_floor_hz,
                 woofer_floor_hz=woofer_floor_hz,

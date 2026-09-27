@@ -2158,18 +2158,20 @@ def test_subwoofer_crossover_fc_round_trips_through_topology_save(
 
 def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> dict:
     return {
-        "artifact_schema_version": 1,
+        "artifact_schema_version": 2,
         "kind": "jts_active_crossover_driver_research",
         "drivers": [
             {
+                "target_id": "mono:woofer",
                 "role": "woofer",
-                "model": "Epique E150HE-44",
+                "model": "Dayton Epique E150HE-44",
                 "recommended_lowpass_hz": frequency_hz,
                 "sources": ["https://example.test/woofer"],
             },
             {
+                "target_id": "mono:tweeter",
                 "role": "tweeter",
-                "model": "F110M-8",
+                "model": "Eminence F110M-8",
                 "recommended_highpass_hz": frequency_hz,
                 "do_not_test_below_hz": 1200,
                 "sources": ["https://example.test/tweeter"],

@@ -111,9 +111,7 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
 
 
 def _resolved_target_values(topology, manual_settings, driver_research):
-    # Legacy research is advisory; only v2 binds specifications to physical targets.
-    research = driver_research if (driver_research or {}).get("artifact_schema_version") == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else None
-    resolved = resolve_design_inputs(topology, manual_settings, research)
+    resolved = resolve_design_inputs(topology, manual_settings, driver_research)
     return {key: value for key, value in _manual_by_target(resolved).items()
             if resolved["bindings"][key] != "ambiguous"}
 
@@ -790,11 +788,6 @@ def _research_by_target(
     driver_research: Mapping[str, Any] | None,
 ) -> dict[str, Mapping[str, Any]]:
     if not isinstance(driver_research, Mapping):
-        return {}
-    if (
-        driver_research.get("artifact_schema_version")
-        != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-    ):
         return {}
     return {
         str(driver.get("target_id")): driver

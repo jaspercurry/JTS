@@ -55,6 +55,7 @@ from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import (
     mono_output_topology,
+    research_design_draft,
     valid_camilla_config as _valid_config,
 )
 
@@ -153,7 +154,6 @@ def _driver_research(
     *,
     frequency_hz: float = 2500,
     way_count: int = 2,
-    with_subwoofer: bool = False,
 ) -> dict:
     drivers = [
         {
@@ -215,17 +215,7 @@ def _driver_research(
                 "confidence": "medium",
             },
         ]
-    if with_subwoofer:
-        drivers.append({
-            "role": "subwoofer",
-            "manufacturer": "Example",
-            "model": "Sub driver",
-            "usable_frequency_range_hz": [20, 200],
-            "recommended_lowpass_hz": 80,
-            "sources": ["https://example.test/sub"],
-        })
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": drivers,
         "crossover_candidates": candidates,
@@ -237,19 +227,11 @@ def _crossover_preview(
     *,
     frequency_hz: float = 2500,
     way_count: int = 2,
-    with_subwoofer: bool = False,
 ) -> dict:
-    return build_crossover_preview(
-        build_design_draft(
-            topology,
-            driver_research=_driver_research(
-                frequency_hz=frequency_hz,
-                way_count=way_count,
-                with_subwoofer=with_subwoofer,
-            ),
-            created_at="2026-06-10T12:00:00Z",
-        ),
-    )
+    return build_crossover_preview(research_design_draft(
+        topology, _driver_research(frequency_hz=frequency_hz, way_count=way_count),
+        created_at="2026-06-10T12:00:00Z",
+    ))
 
 
 def test_default_active_speaker_preset_is_epique_f110m_safe_bringup() -> None:
@@ -605,9 +587,9 @@ def test_compile_preset_from_crossover_preview_stereo_delay_mismatch_blocks() ->
 
 def test_compile_preset_from_crossover_preview_manual_settings_end_to_end_sets_polarity_and_delay() -> None:
     topology = _topology()
-    draft = build_design_draft(
+    draft = research_design_draft(
         topology,
-        driver_research=_driver_research(frequency_hz=2500, way_count=2),
+        _driver_research(frequency_hz=2500, way_count=2),
         manual_settings={
             "drivers": [],
             "crossover_candidates": [{
@@ -644,9 +626,9 @@ def test_compile_preset_from_crossover_preview_manual_settings_reversed_between_
     # PHYSICAL role (tweeter) must end up inverted/delayed regardless of which
     # order the candidate (or a reversed research import) listed the pair in.
     topology = _topology()
-    draft = build_design_draft(
+    draft = research_design_draft(
         topology,
-        driver_research=_driver_research(frequency_hz=2500, way_count=2),
+        _driver_research(frequency_hz=2500, way_count=2),
         manual_settings={
             "drivers": [],
             "crossover_candidates": [{
@@ -712,7 +694,7 @@ def test_stage_protected_startup_config_arms_subwoofer_muted(
     # protected startup graph MUTED, exactly like the woofer/tweeter, rather than
     # blocking. The mains pick up the complementary bass-management high-pass.
     topology = _topology_with_subwoofer()
-    preview = _crossover_preview(topology, with_subwoofer=True)
+    preview = _crossover_preview(topology)
     out = tmp_path / "active_staged.yml"
 
     payload = stage_protected_startup_config(
@@ -781,7 +763,7 @@ def test_stage_protected_startup_config_blocks_misrouted_subwoofer(
     })
     raw["routing"]["subwoofer_group_ids"] = ["sub"]
     topology = OutputTopology.from_mapping(raw)
-    preview = _crossover_preview(topology, with_subwoofer=True)
+    preview = _crossover_preview(topology)
     out = tmp_path / "active_staged.yml"
 
     payload = stage_protected_startup_config(

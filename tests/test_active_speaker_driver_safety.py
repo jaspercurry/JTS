@@ -703,7 +703,7 @@ def test_missing_floor_and_duration_are_computed_issues() -> None:
     )
 
 @pytest.mark.parametrize("patch,code", [
-    ({"artifact_schema_version": True}, "invalid_design_draft"),
+    ({"artifact_schema_version": True}, "research_version_unsupported"),
     ({"kind": "other"}, "invalid_design_draft"),
     ({"drivers": [False]}, "field_not_object"),
     ({"drivers": {}}, "field_not_list"),
@@ -875,25 +875,6 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     )
 
 
-def test_legacy_research_remains_readable_but_advisory() -> None:
-    topology = mono_output_topology(card_id=None)
-    legacy = {
-        "artifact_schema_version": 1,
-        "kind": DRIVER_RESEARCH_KIND,
-        "drivers": [
-            {"role": "woofer", "model": "Legacy W6"},
-            {"role": "tweeter", "model": "Legacy T1"},
-        ],
-        "crossover_candidates": [],
-    }
-
-    draft = build_design_draft(topology, driver_research=legacy)
-
-    assert draft["driver_research"]["artifact_schema_version"] == 1
-    assert any(i["severity"] == "blocker" for i in design_draft_view(draft)["driver_safety_profile"]["issues"])
-    assert draft["safety"]["research_is_advisory"] is True
-
-
 def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() -> None:
     topology = _stereo_topology()
     legacy = _manual_settings()
@@ -929,11 +910,6 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
             "right:tweeter:target_specific_values_missing",
         }
     )
-    placeholders = {"drivers": [{"target_id": target["target_id"], "role": target["role"]}
-                                 for target in active_driver_targets(topology)]}
-    advisory = compute_driver_safety_profile(topology, placeholders, {"drivers": legacy["drivers"]})
-    assert any(issue["severity"] == "blocker" for issue in advisory["issues"])
-    assert all(target.get("measurement_band_hz") is None for target in advisory["targets"])
 
     explicit = compute_driver_safety_profile(
         topology,
