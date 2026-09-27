@@ -125,7 +125,6 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
     import jasper.multiroom.leader_config as leader_config_mod
 
     target = tmp_path / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     monkeypatch.setattr(reconcile_mod, "ARGS_FILE", str(target))
     monkeypatch.setattr(
         reconcile_mod,
