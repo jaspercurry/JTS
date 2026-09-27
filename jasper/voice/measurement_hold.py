@@ -88,8 +88,9 @@ MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC = 1.0
 # Test seam for deterministic lease-expiry interleavings without wall-clock
 # sleeps. Production retains asyncio.sleep exactly.
 _measurement_safety_sleep = asyncio.sleep
-# Same-purpose seam for aggregate-deadline arithmetic. Keeping it local avoids
-# patching ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
+# The measurement clock: this lease's aggregate deadlines and the age of
+# ``volume_measurement_gate``'s flag. One seam, so tests need not patch
+# ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
 _measurement_monotonic = time.monotonic
 
 

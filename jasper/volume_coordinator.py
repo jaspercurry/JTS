@@ -35,7 +35,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 from uuid import uuid4
@@ -58,13 +57,13 @@ from .music_sources import (
     volume_mode,
 )
 from . import volume_push_sources
-from .voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from .volume_echo import (
     is_own_echo,
     is_recent_cross_process_write,
     stamp_outbound,
 )
-from .volume_owner import VolumeClaimRefused, VolumeOwner
+from .volume_measurement_gate import MeasurementGate
+from .volume_owner import VolumeOwner
 from .volume_scales import native_to_listening_level
 from .volume_curve import (
     guard_in_effect,
@@ -88,19 +87,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Keep the measurement clock independent of asyncio clocks.
-_measurement_monotonic = time.monotonic
-
 
 # Cross-daemon Camilla-ownership probe. None fails open, so a wedged
 # jasper-voice cannot freeze the remote.
 CamillaLockProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
-# The hold is read inside `_reconcile_write_lock`, which MEASURE_PAUSE's
-# `note_measurement_active` must take within the voice daemon's setup budget
-# (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`, 2.25 s);
-# the control client's 2 s default would spend nearly all of it.
+# The hold is read inside the measurement gate's write lock, which
+# MEASURE_PAUSE's `note_measurement_active` must take within the voice daemon's
+# setup budget (`voice.measurement_hold.MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC`,
+# 2.25 s); the control client's 2 s default would spend nearly all of it.
 MEASUREMENT_HOLD_READ_TIMEOUT_S = 0.5
 
 
@@ -187,28 +183,12 @@ class VolumeCoordinator:
         # ducks renderer/program audio inside fan-in, leaving Camilla as a safe
         # user-volume surface for the final music+TTS mix.
         self._camilla_volume_locked: bool = False
-        # Correction-measurement gate for the voice daemon's own 1 Hz
-        # reconciler AND for the voice tools' level doors (set/adjust/unmute),
-        # which reach this object in-process and so never pass jasper-control's
-        # measurement hold. It does not turn this process-local flag into a
-        # cross-daemon Camilla lock, and never blocks an emergency user MUTE.
-        # It prevents any writer from replacing a ramp value with the persisted
-        # listening_level mid-measurement.
-        self._measurement_active: bool = False
-        # When the flag above was raised, so a missed lower can lapse rather
-        # than refuse for the life of the process. See
-        # :meth:`_measurement_holds_fader`.
-        self._measurement_active_at: float = 0.0
-        self._measurement_lapse_logged: bool = False
+        self._measurement = MeasurementGate()
         # Edge state for the three conditions this reconciler re-evaluates
         # every tick; each is reported once per episode, never at 1 Hz.
         self._reconcile_deferred: str | None = None
         self._write_failures: int = 0
         self._graph_probe_failures: int = 0
-        # Serializes the final reconciler write with MEASURE_PAUSE acquisition.
-        # Pause does not acknowledge until an already-started write has landed;
-        # after the flag flips, no new reconcile write may enter this lock.
-        self._reconcile_write_lock = asyncio.Lock()
         # Cross-daemon Camilla-ownership signal. jasper-control's per-
         # request coordinators set this to a UDS-probing callable
         # that asks jasper-voice's `session_status` whether a duck holder
@@ -383,74 +363,6 @@ class VolumeCoordinator:
     # Public API — set / adjust
     # ------------------------------------------------------------------
 
-    def _measurement_holds_fader(self) -> bool:
-        """True while a live measurement owns the fader; False once it lapses.
-
-        A pure predicate: it must not clear ``_measurement_active``, or a
-        volume write arriving after the lapse would also un-pause the 1 Hz
-        reconciler — which reads the raw flag — in the middle of a window that
-        is merely renewing late. The reconciler clears it on its own tick
-        instead (:meth:`_lapse_stranded_measurement_flag`).
-
-        The lapse itself exists because ``note_measurement_active(False)`` is
-        best-effort on the voice daemon's rollback path: past its aggregate
-        deadline the resume coroutine is closed unawaited and the safety task
-        is already cancelled, so the flag can stay raised with nothing left to
-        lower it. Treating it as lapsed after MEASUREMENT_AUTOCLEAR_SEC — the
-        backstop that would have cleared it — bounds a stranded flag's effect
-        on these doors to one window instead of the life of the process.
-        """
-        if not self._measurement_active:
-            return False
-        held_for = _measurement_monotonic() - self._measurement_active_at
-        if held_for < MEASUREMENT_AUTOCLEAR_SEC:
-            return True
-        if not self._measurement_lapse_logged:
-            self._measurement_lapse_logged = True
-            log_event(
-                logger,
-                "volume.measurement_flag_expired",
-                held_for_s=f"{held_for:.1f}",
-                autoclear_s=f"{MEASUREMENT_AUTOCLEAR_SEC:.1f}",
-                level=logging.WARNING,
-            )
-        return False
-
-    def _lapse_stranded_measurement_flag(self) -> None:
-        """Clear a stranded flag on the reconciler's OWN tick.
-
-        ``_measurement_holds_fader`` may not clear it — a volume write is the
-        wrong clock (see there). This 1 Hz tick is the right one: it runs on
-        the same schedule the flag pauses, so applying the same
-        MEASUREMENT_AUTOCLEAR_SEC bound here bounds a stranded flag's effect on
-        drift reconciliation to one window instead of the life of the process.
-        No await between the read and the write, so a window renewing
-        concurrently cannot have its fresh flag cleared.
-        """
-        if self._measurement_active and not self._measurement_holds_fader():
-            self._measurement_active = False
-
-    def _refuse_level_write_while_measuring(self) -> None:
-        """Refuse a level write while a measurement holds the fader.
-
-        These doors are reached IN-PROCESS — `jasper.tools.audio` calls them on
-        this coordinator whenever the box is not a bonded follower, so the
-        request never crosses HTTP and jasper-control's measurement hold never
-        sees it. While the hold is live the measurement OWNS the fader: it
-        drives camilla's main_volume directly and never writes the persistence
-        file, so no persisted level here can be compared against where the
-        fader actually sits, and a write in EITHER direction can land a
-        stimulus above the driver's declared cap. Raising is what makes the
-        refusal visible: `tools` turns the exception into the tool's
-        `{"error": ...}` payload, so the model says the speaker is busy. MUTE
-        stays open as the emergency door; unmute does not, because restoring
-        the household level is a level write.
-        """
-        if self._measurement_holds_fader():
-            raise VolumeClaimRefused(
-                "a measurement is in progress and holds the volume"
-            )
-
     async def set_listening_level(self, percent: int) -> int:
         """Set canonical listening_level to `percent` (clamped to 0..100).
         Dispatches to the active source (or camilla, if idle).
@@ -458,7 +370,7 @@ class VolumeCoordinator:
         target = max(0, min(100, int(percent)))
         async with self._mutation():
             self._refresh_from_disk()
-            self._refuse_level_write_while_measuring()
+            self._measurement.refuse_level_write()
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
             self._mute_token = None
@@ -484,7 +396,7 @@ class VolumeCoordinator:
         async with self._mutation():
             self._refresh_from_disk()
             target = max(0, min(100, self._level + int(delta)))
-            self._refuse_level_write_while_measuring()
+            self._measurement.refuse_level_write()
             self._level = target
             self._pre_mute_level = None
             self._mute_token = None
@@ -543,7 +455,7 @@ class VolumeCoordinator:
         refusal has to sit for `unmute`, `set_muted(False)` and a toggle that
         resolves to unmuted.
         """
-        self._refuse_level_write_while_measuring()
+        self._measurement.refuse_level_write()
         target = (
             self._pre_mute_level
             if self._pre_mute_level is not None
@@ -669,7 +581,7 @@ class VolumeCoordinator:
                     active.value,
                 )
                 return False
-            if level > 0 and self._measurement_holds_fader():
+            if level > 0 and self._measurement.holds_fader():
                 return False
             # Source observers live in jasper-voice while HTTP/accessory mute
             # may have landed through jasper-control. Inspect the persisted mute
@@ -1339,12 +1251,8 @@ class VolumeCoordinator:
 
     async def note_measurement_active(self, active: bool) -> None:
         """Pause/resume this process's 1 Hz Camilla drift reconciler and its
-        level doors (see :meth:`_refuse_level_write_while_measuring`)."""
-        async with self._reconcile_write_lock:
-            self._measurement_active = bool(active)
-            if self._measurement_active:
-                self._measurement_active_at = _measurement_monotonic()
-                self._measurement_lapse_logged = False
+        level doors (see :meth:`MeasurementGate.refuse_level_write`)."""
+        await self._measurement.note_active(active)
 
     async def get_camilla_target_db(self) -> float:
         """The absolute camilla.main_volume that should be in effect
@@ -1413,8 +1321,8 @@ class VolumeCoordinator:
         # A deferral spans consecutive ticks; a tick that returns before the
         # probes ends it, and a new reason opens a new episode.
         deferred, self._reconcile_deferred = self._reconcile_deferred, None
-        self._lapse_stranded_measurement_flag()
-        if self._voice_session_active or self._measurement_active:
+        self._measurement.lapse_stranded()
+        if self._voice_session_active or self._measurement.active:
             return
         # Refresh from disk on every tick, push-mode sources too: a remote twist
         # that landed via jasper-control must reach `_level` (the voice daemon
@@ -1433,7 +1341,7 @@ class VolumeCoordinator:
         # MEASURE_PAUSE can arrive while the Camilla read above is in flight.
         # Re-check at the write boundary so an already-running observer tick
         # cannot cross into the ramp after measurement has taken ownership.
-        if self._measurement_active:
+        if self._measurement.active:
             return
         if current_db is None:
             # Camilla restart blip; next tick retries.
@@ -1453,8 +1361,8 @@ class VolumeCoordinator:
         # routing/intent/physical fact inside both leases in case a
         # control-daemon command landed while the preflight read was in flight.
         async with self._mutation():
-            async with self._reconcile_write_lock:
-                if self._voice_session_active or self._measurement_active:
+            async with self._measurement.write_lock:
+                if self._voice_session_active or self._measurement.active:
                     return
                 try:
                     source = await self._active_source()
@@ -1471,7 +1379,7 @@ class VolumeCoordinator:
                 )
                 if (
                     self._voice_session_active
-                    or self._measurement_active
+                    or self._measurement.active
                     or current_db is None
                 ):
                     return
