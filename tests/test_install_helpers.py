@@ -689,7 +689,7 @@ def _run_install_streambox_jasper(
     epilogue: str = "",
     checkout: str | None = _MANIFEST,
     pip_rc: int = 0,
-    failing_mv: tuple[int, ...] = (),
+    failed_staged_entries: tuple[str, ...] = (),
     orphaned_done_tree: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
     """Run install_streambox_jasper against a scratch root.
@@ -704,9 +704,8 @@ def _run_install_streambox_jasper(
     and the staged-manifest reader run for real; `checkout=None` leaves REPO_DIR
     empty, which fails the rsync and stops the run at dir-prep.
     `orphaned_done_tree` plants the wreckage a publish whose delete was cut off
-    partway would leave. `failing_mv` holds the 1-based `mv` calls that fail,
-    which is how a publish is interrupted between its two renames (and how the
-    rollback itself is made to fail).
+    partway would leave. `failed_staged_entries` names entries whose publish
+    or `.prev` restore fails, independent of earlier move calls.
 
     The profile function runs as its own statement, so install.sh's errexit
     stays armed inside it even when an `epilogue` follows, and the EXIT trap is
@@ -782,24 +781,25 @@ def _run_install_streambox_jasper(
             )
         stub.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
         stub.chmod(0o755)
-    if failing_mv:
+    if failed_staged_entries:
         stub = bin_dir / "mv"
-        fails = " ".join(str(call) for call in failing_mv)
+        sources = "|".join(
+            shlex.quote(str(paths["install"] / ".staging" / name))
+            for name in failed_staged_entries
+        )
         stub.write_text(
             "#!/usr/bin/env bash\n"
-            'n=$(( $(cat "$JTS_MV_COUNT" 2>/dev/null || echo 0) + 1 ))\n'
-            'printf \'%s\' "$n" > "$JTS_MV_COUNT"\n'
-            f'case " {fails} " in *" $n "*) exit 1 ;; esac\n'
+            f'case "$1" in {sources}) exit 1 ;; esac\n'
             f'exec {shutil.which("mv")} "$@"\n',
             encoding="utf-8",
         )
         stub.chmod(0o755)
 
     env = os.environ.copy()
+    env["LC_ALL"] = "C"  # Publish glob order defines the early/late failure cases.
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["JTS_STUB_CALLS"] = str(paths["calls"])
     env["JTS_PIP_CALLS"] = str(paths["pip_calls"])
-    env["JTS_MV_COUNT"] = str(tmp_path / "mv.count")
     env["JASPER_HOSTNAME"] = "jts.local"
     staging = paths["install"] / ".staging"
     steps = [
@@ -914,11 +914,6 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
     and only then is each entry renamed in as a whole — and a run that dies
     partway through the publish is rolled back entry by entry, whether the entry
     was still parked or already swapped."""
-    failing_mv = {
-        "publish_interrupted_early": (2,),  # nothing published yet
-        "publish_interrupted_late": (4,),   # the first entry is already live
-        "repair_fails": (2, 3),             # ... and the rollback cannot run
-    }.get(scenario, ())
     result, paths = _run_install_streambox_jasper(
         tmp_path,
         checkout=(
@@ -927,7 +922,11 @@ def test_the_live_source_tree_changes_only_on_a_finished_install(
             else _MANIFEST
         ),
         pip_rc=1 if scenario == "dependency_install_fails" else 0,
-        failing_mv=failing_mv,
+        failed_staged_entries={
+            "publish_interrupted_early": ("README.md",),
+            "publish_interrupted_late": ("docs",),
+            "repair_fails": ("README.md", "README.md.prev"),
+        }.get(scenario, ()),
         orphaned_done_tree=scenario == "orphaned_done_tree",
     )
     install_dir = paths["install"]
