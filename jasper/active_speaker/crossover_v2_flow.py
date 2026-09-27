@@ -417,11 +417,6 @@ class CrossoverV2Session:
         return tuple(self._attempt_history)
 
     @property
-    def session_phases(self) -> tuple[str, ...]:
-        """The ordered phases this session runs (its ``index_phase_map``'s)."""
-        return self._journey.plan.phases
-
-    @property
     def applied(self) -> bool:
         return self._journey.applied
 
