@@ -27,18 +27,18 @@ from pathlib import Path
 import pytest
 
 from tests.install_surface import (
+    INSTALL_LIB_DIR as _INSTALL_LIB_DIR,
+    INSTALL_SH as _INSTALL_SH,
     JASPER_GROUP_STUBS,
+    REPO as REPO_ROOT,
     installer_shell_paths,
     installer_text,
 )
 from tests.shell_runner import run_bash
 
 
-_INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
-REPO_ROOT = _INSTALL_SH.parent.parent
-_INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
 _RENDERERS_LIB = _INSTALL_LIB_DIR / "renderers.sh"
-_ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
+_ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 
 def _installer_shell_texts() -> dict[Path, str]:
