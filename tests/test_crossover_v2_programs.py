@@ -682,6 +682,13 @@ def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     } == {rb.role: (rb.band.lower_hz, rb.band.upper_hz) for rb in excitation.roles}
 
 
+def test_the_measurement_band_unions_the_roles_in_any_order():
+    woofer = RoleBand("woofer", 0, FrequencyBand(45.0, 6000.0))
+    tweeter = RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0))
+    assert (programs.measurement_band_hz([woofer, tweeter])
+            == programs.measurement_band_hz([tweeter, woofer]) == (45.0, 20000.0))
+
+
 @pytest.mark.parametrize("floor", [20.0, 30.0, 45.0])
 def test_summed_room_band_reads_resolved_driver_bands(floor):
     _, safety, targets = _profile_and_targets(woofer_floor=floor, woofer_upper=4000)

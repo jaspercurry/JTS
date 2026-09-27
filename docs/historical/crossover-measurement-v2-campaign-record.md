@@ -2044,7 +2044,7 @@ survives the carve-out. `carve_outs` is the largest key on a `/state` cloud
 entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
 2026-07-27) because the copy strings ARE the disclosure; that cost is stated in
 `_compact_cloud_status`'s docstring and pinned by
-[`tests/test_crossover_v2_cloud_pipeline.py`](../../tests/test_crossover_v2_cloud_pipeline.py),
+`tests/test_crossover_v2_cloud_pipeline.py`,
 which also pins the copy discipline (no hardware nouns; the `position_invariant`
 wording names travels-with-the-speaker OR a fixed path, never one of the two).
 

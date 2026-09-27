@@ -33,7 +33,6 @@ from .crossover_v2.journey import (
     PRE_CLOUD_CAPTURE_PHASES,
     pending_capture_phase,
 )
-from .crossover_v2.spatial import _geometry_guidance_copy
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     ReasonSpec,
@@ -50,7 +49,7 @@ from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 17
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 18
 
 _STEP_IDS = (
     "speaker_setup",
@@ -82,303 +81,9 @@ _PHASE_STEP = {
 }
 
 
-def _band_edges(value: Any) -> tuple[float, float] | None:
-    """``(lo_hz, hi_hz)`` from a persisted two-element band pair, or
-    ``None``. One spelling for the several band pairs a ``flatness`` block
-    carries.
-    """
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        return None
-    lo, hi = _finite(value[0]), _finite(value[1])
-    return None if lo is None or hi is None else (lo, hi)
-
-
-_TILT_DIRECTION_FLOOR_DB = 0.005
-
-
-def _attribution_lines(
-    flatness: Mapping[str, Any], band_lo: float | None, band_hi: float | None,
-) -> list[str]:
-    """The two lines that stop the worst-band pointer from being read as
-    "here is the peak to EQ" (#1857). A band inside the pooled reference
-    that is uniformly off drags the shared zero and inflates every other
-    band's number (a corpus session read +4.84 dB @ 1339.6 Hz against a
-    woofer flat to +/-0.1 dB, because a ~5 dB dark tweeter pulled the
-    frame down). Line one splits the pointer into where the band SITS vs.
-    what the curve does INSIDE it; line two is the band-to-band step no
-    reference-frame choice can move — trust it when the two disagree
-    (ADR-0194). Disclosure only, decides nothing.
-    """
-    lines: list[str] = []
-    level_db = _finite(flatness.get("max_band_level_deviation_db"))
-    ripple_db = _finite(flatness.get("max_band_ripple_db"))
-    if level_db is not None and ripple_db is not None:
-        where = (
-            f"the whole {band_lo:.0f}–{band_hi:.0f} Hz band"
-            if band_lo is not None and band_hi is not None
-            else "the whole band"
-        )
-        lines.append(
-            f"of that, {level_db:+.2f} dB is where {where} sits; its own worst "
-            f"excursion from that level is {ripple_db:+.2f} dB"
-        )
-    tilt = flatness.get("tilt")
-    tilt = tilt if isinstance(tilt, Mapping) else {}
-    step_db = _finite(tilt.get("step_db"))
-    high = _band_edges(tilt.get("high_band_hz"))
-    low = _band_edges(tilt.get("low_band_hz"))
-    if tilt.get("evaluable") is True and step_db is not None:
-        direction = (
-            f": {high[0]:.0f}–{high[1]:.0f} Hz sits above "
-            f"{low[0]:.0f}–{low[1]:.0f} Hz"
-            if high is not None and low is not None
-            and step_db >= _TILT_DIRECTION_FLOOR_DB
-            else ""
-        )
-        lines.append(
-            f"band levels differ by {step_db:.2f} dB, a reading no reference "
-            f"choice moves{direction}"
-        )
-    return lines
-
-
-def _flatness_lines_from_block(flatness: Mapping[str, Any]) -> list[str]:
-    """The numeric flatness lines shared by both branches of the expert
-    disclosure — max/avg deviation plus the excluded-bin count. Extracted
-    so the post-apply claim (:func:`_flatness_details_lines`) and the
-    before-tuning claim (:func:`_pre_apply_flatness_lines`) compute
-    identical arithmetic. The line NAMES its reference frame (#1857): a
-    block without the key keeps the previous unqualified wording rather
-    than guessing at a frame. :func:`_attribution_lines` renders how much
-    of the number is the frame.
-    """
-    lines: list[str] = []
-    max_db = _finite(flatness.get("max_db"))
-    max_hz = _finite(flatness.get("max_hz"))
-    tolerance_db = _finite(flatness.get("tolerance_db"))
-    band = _band_edges(flatness.get("max_band_hz"))
-    band_lo, band_hi = band if band is not None else (None, None)
-    ref = _band_edges(flatness.get("reference_band_hz"))
-    ref_lo, ref_hi = ref if ref is not None else (None, None)
-    if max_db is not None:
-        where = f" at {max_hz:.0f} Hz" if max_hz is not None else ""
-        against = (
-            f" (spec {band_lo:.0f}–{band_hi:.0f} Hz, tolerance ±{tolerance_db:.1f} dB)"
-            if band_lo is not None and band_hi is not None and tolerance_db is not None
-            else ""
-        )
-        frame = (
-            f"the {ref_lo:.0f}–{ref_hi:.0f} Hz reference mean"
-            if ref_lo is not None and ref_hi is not None
-            else "the spec reference"
-        )
-        lines.append(f"flatness {max_db:+.2f} dB from {frame}{where}{against}")
-        lines.extend(_attribution_lines(flatness, band_lo, band_hi))
-    rms_db = _finite(flatness.get("rms_db"))
-    if rms_db is not None:
-        lines.append(f"flatness average error {rms_db:.2f} dB across the spec bands")
-    graded = flatness.get("n_bins")
-    excluded = flatness.get("n_excluded")
-    if isinstance(graded, int) and isinstance(excluded, int) and excluded > 0:
-        # Bins, not "regions": an interval count would over-report, since
-        # it spans the whole axis including frequencies no spec band grades.
-        lines.append(
-            f"{excluded} of {graded + excluded} spec-band bins excluded from "
-            "grading (interference, or below the measurement's validity floor)"
-        )
-    return lines
-
-
-def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
-    """Every graded band's OWN worst deviation, from the SAME reference the
-    pointer line above names (#1857). ``_flatness_lines_from_block`` names
-    ONE band, but a pooled reference lets an unrelated band's ripple read
-    as the LARGER deviation (a shipped verdict read "+4.84 dB @ 1339.6 Hz"
-    for the woofer band while the tweeter sat uniformly ~5 dB dark).
-    Disclosure only, copied verbatim from ``spec_bands``; unevaluable
-    bands are silently skipped.
-    """
-    if not isinstance(spec_bands, list):
-        return []
-    parts: list[str] = []
-    for band in spec_bands:
-        if not isinstance(band, Mapping):
-            continue
-        lo = _finite(band.get("f_lo_hz"))
-        hi = _finite(band.get("f_hi_hz"))
-        deviation_db = _finite(band.get("max_deviation_db"))
-        tolerance_db = _finite(band.get("tolerance_db"))
-        within_target = band.get("within_target")
-        if (
-            lo is None or hi is None or deviation_db is None
-            or tolerance_db is None or not isinstance(within_target, bool)
-        ):
-            continue
-        margin_db = abs(deviation_db) - tolerance_db
-        compare = f"{margin_db:.1f} dB outside" if not within_target else "within"
-        parts.append(
-            f"{lo:.0f}–{hi:.0f} Hz {deviation_db:+.2f} dB "
-            f"({compare} the ±{tolerance_db:.1f} dB target)"
-        )
-    if not parts:
-        return []
-    return ["every band from the same reference: " + ", ".join(parts)]
-
-
-def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
-    """The spec-facing flatness disclosure — "how flat is the speaker".
-
-    Reads the cloud group's persisted spec gauge — a reading of the same
-    ``evaluate_flat_spec`` report ``/state``, the doctor check and the bundle
-    artifact read — copied through :func:`compact_cloud_status` below, so the
-    number here and the number in the report are the same bytes.
-
-    **The choice is WHICH CLOUD EXISTS, not which tier** (#1965): post-apply
-    cloud if there is one, otherwise the pre-apply cloud. The pre-apply cloud
-    is the UNCORRECTED baseline, so its branch reads it under an
-    explicit BEFORE-TUNING frame and never as "how flat your speaker is now".
-
-    Empty when neither group has closed. The fallback vocabulary for a
-    post-apply group that closed but produced no usable gauge lives in
-    :func:`_flatness_unavailable_line`.
-
-    The carve-out lines close the sentence (PR-6b, owner decision 1): the
-    excluded-bin count says how much of the spectrum left grading,
-    :func:`_carve_out_expert_lines` says which ranges and why, with τ/r — on
-    every run, since carve-outs are a post-apply-persistent fact.
-    """
-    block = _cloud_verify_block(status)
-    if not block:
-        return _pre_apply_flatness_lines(status)
-    flatness = as_mapping(block.get("flatness"))
-    if not flatness:
-        return _flatness_unavailable_line(block)
-    if not flatness.get("evaluable"):
-        # The gauge ran and could not measure — read ``passed`` with
-        # ``evaluable``. Never render this as a pass or a fail. The carve-out
-        # lines ride along because in this state they ARE the explanation.
-        return [
-            "flatness could not be measured — every spec band was excluded "
-            "or out of range"
-        ] + _carve_out_expert_lines(block)
-    lines = _flatness_lines_from_block(flatness)
-    lines.extend(_per_band_flatness_lines(block.get("spec_bands")))
-    lines.extend(_carve_out_expert_lines(block))
-    return lines
-
-
-def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
-    """The BEFORE-TUNING flatness/carve-out disclosure — the branch
-    :func:`_flatness_details_lines` takes whenever no post-apply cloud exists.
-
-    Reads the CLOUD-MEASURE compact block and frames its numbers explicitly as
-    the BEFORE-TUNING state, never as "how flat your speaker is now" (that claim
-    needs a post-apply cloud). Carve-out lines render VERBATIM, unprefixed,
-    because they are a distinct post-apply-persistent fact required on every
-    run rather than a claim about the CURRENT state (#1965).
-
-    **The scope clause is a claim about the post-apply check, so it renders only
-    where one has PASSED.** "The applied correction targets these; the result was
-    confirmed at the mark only" says a correction is applied AND that the only
-    confirmation was the single anchor sweep, and a passing post-apply tracking
-    verify is exactly the state where both are true.
-    """
-    block = _cloud_measure_block(status)
-    flatness = as_mapping(block.get("flatness"))
-    if not flatness:
-        return []
-    if not flatness.get("evaluable"):
-        # Same capitalized lead as the evaluable arm below, which read as a
-        # fragment beside its sibling while lowercase.
-        return [
-            "Measured before tuning: flatness could not be measured — every "
-            "spec band was excluded or out of range"
-        ] + _carve_out_expert_lines(block)
-    numeric = "; ".join(
-        _flatness_lines_from_block(flatness)
-        + _per_band_flatness_lines(block.get("spec_bands"))
-    )
-    line = f"Measured before tuning: {numeric}"
-    if as_mapping(_v2(status).get("verify")).get("outcome") == "pass":
-        line += (
-            ". The applied correction targets these; the result was confirmed "
-            "at the mark only"
-        )
-    lines = [line]
-    lines.extend(_carve_out_expert_lines(block))
-    return lines
-
-
-def _carve_out_expert_lines(block: Mapping[str, Any]) -> list[str]:
-    """The carve-out τ/r lines (PR-6b, owner decision 1). The expert layer:
-    the line above says HOW MANY spec-band bins left grading, these say
-    WHICH ranges and WHY. Strings are copied from the persisted record, not
-    composed here; this only prefixes the band. Takes a compact cloud-phase
-    BLOCK, not ``status``, so the caller picks which cloud.
-    """
-    lines: list[str] = []
-    carve_outs = block.get("carve_outs")
-    if not isinstance(carve_outs, list):
-        return lines
-    for band in carve_outs:
-        if not isinstance(band, Mapping):
-            continue
-        expert = band.get("expert")
-        if not isinstance(expert, str) or not expert:
-            continue
-        edges = band.get("band_hz")
-        lo = _finite(edges[0]) if isinstance(edges, (list, tuple)) and edges else None
-        hi = (
-            _finite(edges[1])
-            if isinstance(edges, (list, tuple)) and len(edges) == 2
-            else None
-        )
-        where = f"{lo:.0f}–{hi:.0f} Hz " if lo is not None and hi is not None else ""
-        lines.append(f"{where}{expert}")
-    return lines
-
-
 def _retake_action() -> dict[str, Any]:
     return {"id": "crossover_v2_retake", "label": "Record the last spot again",
             "endpoint": RETAKE_ENDPOINT, "body": {}, "show_during_capture": True}
-
-
-def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The compact CLOUD-VERIFY entry of the ``cloud`` block, or empty.
-
-    ``PHASE_CLOUD_VERIFY`` is spelled through the shared phase constant, not
-    a literal, so this and the session cannot drift apart on the key name.
-    """
-    return as_mapping(as_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
-
-
-def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The compact CLOUD-MEASURE entry of the ``cloud`` block, or empty.
-
-    The only cloud group until the post-apply walk closes (#1965) — see
-    :func:`_pre_apply_flatness_lines`.
-    """
-    return as_mapping(as_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
-
-
-def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
-    """The honest gauge-absent rendering for a CLOUD-VERIFY block that
-    CLOSED but carries no usable flatness. Two states: the pipeline DID
-    run and carries no gauge (an older build; ``overall_within_target`` is
-    ``None``), or it never became available (a combine/DSP-step failure).
-    Neither quotes a number. A MISSING entry never reaches here (#1965) —
-    :func:`_flatness_details_lines` routes that to
-    :func:`_pre_apply_flatness_lines` first.
-    """
-    if entry.get("overall_within_target") is not None:
-        return [
-            "flatness not recorded for this measurement — it predates the "
-            "spec gauge; re-measure to see it"
-        ]
-    return [
-        "flatness not available for this measurement — the spatial "
-        "measurement could not be analysed"
-    ]
 
 
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -447,13 +152,11 @@ def _envelope(
     next_action: dict[str, Any] | None = None,
     alternate_actions: list[dict[str, Any]] | None = None,
     status: Mapping[str, Any],
-    expert_details: list[str] | None = None,
     advertise_capture: bool = True,
     busy: bool = False,
     terminal_status: str | None = None,
     round_ordinal: int | None = None,
 ) -> dict[str, Any]:
-    resting = screen in {"awaiting_plan", "finished"}
     # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632).
     timing_action = dict(as_mapping(as_mapping(status.get("timing")).get("next_action"))) or None
     if timing_action and timing_action.get("id") == "reset_timing":
@@ -471,7 +174,6 @@ def _envelope(
         "active": True,
         "steps": _step_payload(active_step, _done_before(active_step)),
         "nudges": nudges or [],
-        "expert_details": list(expert_details or []),
         "round_choices": status.get("round_choices", []),
         "next_action": next_action,
         "alternate_actions": alternate_actions or [],
@@ -485,13 +187,6 @@ def _envelope(
         "applied": _applied_chip(status),
         "round": None,
         "candidate_review": None,
-        # Compact per-group honesty verdict — the SAME projection
-        # ``crossover_v2_status_block`` serves at ``/state``. ``None``
-        # before any cloud group has closed.
-        "cloud": None if resting else _v2(status).get("cloud"),
-        # The before/after chart's decimated feed, kept off ``cloud`` so
-        # the doctor (which reads only ``cloud``) never parses curve data.
-        "cloud_chart": None if resting else _v2(status).get("cloud_chart"),
         "prediction": None,
         "findings": [],
     }
@@ -574,7 +269,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "applied": _applied_chip(status),
             "round": None,
             "candidate_review": None,
-            "cloud": None,
         }
 
     v2 = _v2(status)
@@ -689,20 +383,14 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_VERIFY:
-        verdict = (
-            "The crossover is applied. Put the microphone back where it "
-            "started and follow the measurement page to confirm the result"
-        )
-        # Express (M=1) has no post-apply cloud — this anchor is the WHOLE
-        # post-apply check, not the first of several (§1.3). Full says nothing
-        # extra here: its cloud walk follows.
-        verdict += "."
         env = _envelope(
             screen="verify", active_step=active_step,
-            verdict=verdict,
+            verdict=(
+                "The crossover is applied. Put the microphone back where it "
+                "started and follow the measurement page to confirm the result."
+            ),
             next_action=None,
             status=status,
-            expert_details=_flatness_details_lines(status),
         )
     elif phase == PHASE_CLOUD_VERIFY:
         env = _envelope(
@@ -751,153 +439,16 @@ def crossover_v2_phase(
     return PHASE_DONE
 
 
-def _provenance_note(measured_this_session: bool | None) -> str:
-    """Caption the provenance without treating missing evidence as measured."""
-    if measured_this_session is False:
-        return (
-            "This chart is from a previous session's measurement — "
-            "re-measure to see this session's own result."
-        )
-    return ""
-
-
-def compact_cloud_status(
-    cloud_state: Any,
-    *,
-    current_session_id: str | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(cloud_state, Mapping):
-        return None
-    out: dict[str, Any] = {}
-    for phase, block in cloud_state.items():
-        if not isinstance(block, Mapping):
-            continue
-        positions = block.get("positions")
-        geometry = block.get("geometry")
-        geometry = geometry if isinstance(geometry, Mapping) else {}
-        pipeline = block.get("pipeline")
-        pipeline = pipeline if isinstance(pipeline, Mapping) else {}
-        produced_by = block.get("session_id")
-        measured_this_session: bool | None = None
-        if isinstance(produced_by, str) and produced_by and current_session_id:
-            measured_this_session = produced_by == current_session_id
-        entry: dict[str, Any] = {
-            "geometry_locked": bool(geometry.get("locked")),
-            "thin_evidence": bool(geometry.get("thin_evidence")),
-            "geometry_guidance": _geometry_guidance_copy(geometry),
-            "spec_bands": [],
-            "overall_within_target": None,
-            "excluded_interval_count": None,
-            "flatness": None,
-            "reference_db": None,
-            "validity_floor_hz": None,
-            "carve_outs": [],
-            "provenance_note": _provenance_note(measured_this_session),
-            "positions_accepted": (
-                len(positions) if isinstance(positions, list) else None
-            ),
-            "positions_required": None,
-        }
-        if pipeline.get("available") is True:
-            spec = pipeline.get("spec")
-            spec = spec if isinstance(spec, Mapping) else {}
-            bands = spec.get("bands")
-            entry["spec_bands"] = [
-                {
-                    "f_lo_hz": b.get("f_lo_hz"),
-                    "f_hi_hz": b.get("f_hi_hz"),
-                    # The edges actually graded, beside the nominal ones. The
-                    # top band's now follows the session's microphone-trust
-                    # ceiling, so a row printing only the nominal pair states
-                    # a span this evaluation did not grade.
-                    "graded_lo_hz": b.get("graded_lo_hz"),
-                    "graded_hi_hz": b.get("graded_hi_hz"),
-                    "within_target": b.get("within_target"),
-                    "max_deviation_db": b.get("max_deviation_db"),
-                    # WHERE the worst bin sat. A dB with no frequency names
-                    # no defect to fix.
-                    "max_deviation_hz": b.get("max_deviation_hz"),
-                    "tolerance_db": b.get("tolerance_db"),
-                }
-                for b in bands
-                if isinstance(b, Mapping)
-            ] if isinstance(bands, list) else []
-            entry["overall_within_target"] = spec.get("overall_within_target")
-            entry["reference_db"] = _finite(spec.get("reference_db"))
-            merged = pipeline.get("merged_excluded_bands_hz")
-            entry["excluded_interval_count"] = (
-                len(merged) if isinstance(merged, list) else 0
-            )
-            flatness = pipeline.get("flatness")
-            # Copied, never re-derived — see this function's docstring.
-            entry["flatness"] = dict(flatness) if isinstance(flatness, Mapping) else None
-            floor = pipeline.get("validity_floor_hz")
-            entry["validity_floor_hz"] = (
-                float(floor) if isinstance(floor, (int, float)) else None
-            )
-            carve_outs = pipeline.get("carve_outs")
-            # Copied, never re-derived — same rule as ``flatness`` above. A
-            # durable state written by a build BETWEEN PR-4 and PR-6b has an
-            # available pipeline but no ``carve_outs`` key, and keeps the empty
-            # default — indistinguishable here from a group that genuinely
-            # carved nothing. ``excluded_interval_count`` is the tell for a
-            # reader who needs to know: > 0 alongside an empty carve-out list
-            # is the pre-PR-6b era, since a group that carved nothing has a
-            # count of 0. No repair is attempted from this projection: it is
-            # not an owner of the pipeline's data (see the docstring).
-            entry["carve_outs"] = (
-                [dict(band) for band in carve_outs if isinstance(band, Mapping)]
-                if isinstance(carve_outs, list)
-                else []
-            )
-        out[str(phase)] = entry
-    return out or None
-
-
 CHART_CURVE_MAX_JSON_POINTS = 256
 
 
 def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     """Stride a stored curve down to at most :data:`CHART_CURVE_MAX_JSON_POINTS`.
 
-    THE chart feed's decimation — extracted from :func:`chart_cloud_status`'s
-    body (two-stage commission D4) when the predicted curve became a second
-    curve on the same block. D4 asks for the prediction to ride "the existing
-    ``CHART_CURVE_MAX_JSON_POINTS`` path so the chart feed keeps one decimation
-    owner"; a second inline copy of this stride would be a second owner, and
-    two curves drawn in one frame at silently different densities is exactly
-    the drift that costs. ``None`` for anything that is not a usable pair, so a
-    caller never fabricates an empty curve out of malformed state.
-
-    **Ceiling-division stride, not floor (gate finding on #1858).** The
-    original shape here was ``step = n // CAP`` — a *soft* ceiling, documented
-    (and pinned, before this fix) as capable of overshooting by up to one
-    stride: 1031 raw points strode by 4 and yielded 258, not 256. That was
-    tolerable while every caller's persisted length always landed at or above
-    ``CAP * 2`` (``_decimate_sum``'s old raw stride always overshot to slightly
-    above its own 512-point cap). #1858's block-average fix to ``_decimate_sum``
-    changed that: block-averaging *undershoots* its cap instead of
-    overshooting it (a 32769-bin capture landed at 504, not 512-513), which
-    put the predicted curve's persisted length just BELOW ``CAP * 2`` — where
-    floor division gives ``step = 1``, i.e. no reduction at all (504 points
-    rendered, not ~252), breaking the soft-ceiling promise outright and
-    rendering the prediction at roughly double the cloud curves' density in
-    the same chart frame. Ceiling division (``-(-n // CAP)``, this module's
-    existing integer-ceiling idiom — see
-    :func:`~jasper.audio_measurement.spatial_combine._decimate_to_analysis_grid`)
-    makes ``len(rendered) <= CAP`` a TRUE hard bound for any input length,
-    closing the whole class rather than this one instance: it guarantees
-    ``step >= n / CAP`` by construction, so ``ceil(n / step) <= CAP`` always.
-    Both curve families now render through the identical formula, so neither
-    can silently outrun the other's density regardless of which side of any
-    boundary their own persisted length lands on.
-
-    ``None`` is reachable only from malformed durable state — a pipeline
-    marked ``available: True`` whose stored curve is empty — and it is the
-    honest direction: an empty curve renders as "we looked and there is
-    nothing there", which is the fabricated-clean-reading shape this module
-    forbids, whereas ``None`` says "no curve", which is what an empty stored
-    curve actually means.
+    The stride divides with ceiling, so the bound holds for every input
+    length: floor division let a curve persisted just under twice the cap
+    through undecimated (#1858). ``None`` when there is no usable pair: an
+    empty stored curve means no curve, never a measured flat one.
     """
     if not isinstance(freqs, list) or not isinstance(mags, list):
         return None
@@ -911,52 +462,17 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     }
 
 
-def chart_cloud_status(cloud_state: Any) -> dict[str, Any] | None:
-    """Bounded live curves using the shared display projection; absent curves stay None."""
-    if not isinstance(cloud_state, Mapping):
-        return None
-    out: dict[str, Any] = {}
-    for phase, block in cloud_state.items():
-        if not isinstance(block, Mapping):
-            continue
-        pipeline = block.get("pipeline")
-        pipeline = pipeline if isinstance(pipeline, Mapping) else {}
-        curve = None
-        if pipeline.get("available") is True:
-            raw_curve = pipeline.get("curve")
-            if isinstance(raw_curve, Mapping):
-                curve = decimate_curve_for_chart(
-                    raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"),
-                )
-                spec = pipeline.get("spec")
-                if curve is not None:
-                    curve = prepare_frequency_curve({**curve, "band_hz": raw_curve.get("band_hz")}, {
-                        **pipeline,
-                        "reference_db": spec.get("reference_db") if isinstance(spec, Mapping) else None,
-                        "excluded_bands_hz": pipeline.get("merged_excluded_bands_hz"),
-                    })
-        out[str(phase)] = {"curve": curve}
-    return out or None
-
-
 def prediction_status(state: Any) -> dict[str, Any] | None:
     """The PREDICTED post-apply response and its stored spec verdict, or
     ``None`` (two-stage commission D4).
 
-    Rides the adapter's returned dict beside ``cloud`` /
-    ``cloud_chart``. Both halves were already computed — the curve by
-    ``_decimate_sum`` at persist time, the verdict by the conductor's
-    accountability seam against the FULL-RESOLUTION tuple — and neither reached
-    any surface. This projects; it never grades.
-
-    **Nothing renders it yet.** It is the wire half of the two-stage flow's
-    review screen (the "what we predict" panel and the chart's third
-    curve), landed on its own rung so that screen is built against data already
-    proven on the wire rather than against a shape invented alongside it.
+    Both halves were already computed — the curve by ``_decimate_sum`` at
+    persist time, the verdict by the conductor's accountability seam against
+    the FULL-RESOLUTION tuple. This projects; it never grades.
 
     **``curve`` and ``spec`` are independently absent, and all four
-    combinations are reachable.** Enumerated because a consumer — the review
-    screen above all — has to render each one differently:
+    combinations are reachable.** Enumerated because a consumer has to read
+    each one differently:
 
     1. *Both present* — the ordinary closed session. Draw the curve, state the
        verdict.
@@ -973,18 +489,10 @@ def prediction_status(state: Any) -> dict[str, Any] | None:
        retired (``accountability``'s item 2); a pre-retirement state still
        carries it, and a consumer shows the verdict with no curve to draw.
 
-    So ``overall_within_target`` is ``None`` — not ``False`` — whenever no report was
-    stored, under the same never-fabricate-a-clean-reading rule
-    :func:`compact_cloud_status` states at length. ``None`` here means
-    "unknown", and a consumer must not read it as permission. ``False`` is the
-    opposite: a real graded verdict that the prediction misses the spec, which
-    is exactly what state 4 carries.
-
-    ``spec_bands`` / ``reference_db`` mirror the compact cloud block's own
-    vocabulary key-for-key on purpose: the review screen draws the measured
-    curve and this one in ONE deviation frame with one tolerance corridor, and
-    a second spelling of the same five per-band numbers is how the two frames
-    would drift apart.
+    So ``overall_within_target`` is ``None`` — not ``False`` — whenever no
+    report was stored. ``None`` here means "unknown", and a consumer must not
+    read it as permission. ``False`` is the opposite: a real graded verdict
+    that the prediction misses the spec, which is exactly what state 4 carries.
     """
     priors = (state or {}).get("verify_priors")
     if not isinstance(priors, Mapping):

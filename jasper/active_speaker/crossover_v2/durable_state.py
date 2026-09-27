@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 from jasper.json_fields import finite_float as _finite
 
 from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
-from .journey import GROUP_PHASES, PHASE_MEASURE
+from .journey import PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
@@ -498,7 +498,6 @@ def build_conductor_state(
             if failure_code
             else None
         ),
-        "cloud": None,
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             "predicted_spec": None,
@@ -533,16 +532,6 @@ def build_conductor_state(
             state["evidence"] = dict(prior["evidence"])
 
     conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
-    if not (conductor_session_phases & GROUP_PHASES):
-        if state["cloud"] is None and isinstance(prior.get("cloud"), Mapping):
-            state["cloud"] = dict(prior["cloud"])
-        prior_evidence = prior.get("evidence")
-        if isinstance(prior_evidence, Mapping) and "cloud_artifacts" in prior_evidence:
-            merged_evidence = dict(state["evidence"] or {})
-            merged_evidence.setdefault(
-                "cloud_artifacts", prior_evidence["cloud_artifacts"]
-            )
-            state["evidence"] = merged_evidence
     if PHASE_MEASURE not in conductor_session_phases:
         prior_evidence = prior.get("evidence")
         if (
