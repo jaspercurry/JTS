@@ -5,6 +5,7 @@
 """Read current facts for preflight. Live admission remains with resource owners."""
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any, Mapping
 
@@ -14,6 +15,8 @@ from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
 from jasper.biquad import PeqFilter
+from jasper.log_event import log_event
+from jasper.platform.control_client import read_output_volume
 
 from .angle_capture import AngleCaptureRequest
 from .arm_walk import TurntableMover
@@ -31,7 +34,6 @@ from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_
 from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
-from .program_failure import read_output_volume
 from .run_levels import prepare_level_captures
 from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
@@ -110,9 +112,12 @@ def read_preflight_facts(
         return tuple(programs)
 
     near_field = {stop.driver for stop in plan.stops if stop.regime == REGIME_NEAR_FIELD}
+    output_volume = read_output_volume()
+    if output_volume.get("muted"):
+        log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)
     return PreflightFacts(
         rig_clear_attested=rig_clear_attested, mover_available=mover_available,
-        output_volume=read_output_volume(),
+        output_volume=output_volume,
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
         anchor=anchor, summed_pilot_band_hz=pilot_band,

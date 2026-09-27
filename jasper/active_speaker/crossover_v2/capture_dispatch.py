@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
@@ -24,9 +25,10 @@ from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
-from jasper.active_speaker.program_failure import read_output_volume
+from jasper.platform.control_client import read_output_volume
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.json_fields import finite_float
+from jasper.log_event import log_event
 
 from . import refusal_copy as reasons
 from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict
@@ -155,6 +157,7 @@ def assess(
     if prior_verdict is None and verdict.fault == reasons.REASON_LOCATE_FAILED:
         output_volume = read_output_volume()
         if output_volume.get("muted") is True:
+            log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)
             verdict = replace(verdict, fault=reasons.REASON_MEASUREMENT_OUTPUT_MUTED,
                               next="stop", charge="none", next_gain_db=None,
                               evidence={**verdict.evidence, **output_volume})

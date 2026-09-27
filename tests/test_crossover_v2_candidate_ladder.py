@@ -225,8 +225,8 @@ def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline
 
 @pytest.mark.parametrize("fields", [
     {}, {"phase": "lateral", "position": None}, {"phase": "lateral"},
-    {"phase": "lateral", "position": {"deg": 7}},
-], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id"])
+    {"phase": "lateral", "position": {"deg": 7}}, None,
+], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id", "not-a-view"])
 def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
     round_dir = tmp_path / "r1"
     grid = np.array([500.0, 1000.0, 4000.0])
@@ -238,9 +238,9 @@ def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
         )
     expected = _ladder(round_dir)
     average = FrequencySeries("average", "Average", "measurement", tuple(grid), (0.0,) * 3,
-                              details={"phase_deg": [0.0] * 3, **fields})
+                              details={"phase_deg": [0.0] * 3, **(fields or {})})
     view = build_frequency_view(FrequencyRun("speaker", "speaker", (average,)))
-    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
+    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view if fields is not None else {"schema": "other"}))
     assert _ladder(round_dir) == expected
     assert expected["tables"][0]["played"] == ["cfg-a", "cfg-b"]
 

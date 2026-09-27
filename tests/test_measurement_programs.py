@@ -621,7 +621,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 @pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key",
                                     "mover", "room_sweep", "room_sweep_mode",
                                     "branch_pair", "branch_pair_regime", "co_unknown", "co_primary",
-                                    "co_regime", "co_not_list", "co_duplicate", "co_not_text"])
+                                    "co_regime", "co_not_list", "co_duplicate", "co_not_text", "levels"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken.startswith("co_"):
@@ -631,6 +631,8 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         }[broken])
         if broken == "co_regime":
             config["programs"][0]["regime"] = "branches"
+    elif broken == "levels":
+        config["programs"][0]["levels"] = "-28,-18"
     elif broken == "branch_pair":
         config["programs"][0].update(regime="branches", room_sweep=False, branch_pair="both")
     elif broken == "branch_pair_regime":

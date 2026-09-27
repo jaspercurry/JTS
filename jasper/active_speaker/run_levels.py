@@ -106,12 +106,10 @@ def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> Leve
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
                      levels: str | None = None) -> PreflightReport | LevelLadder:
-    if levels is not None:
-        if not isinstance(levels, str) or plan.level.level_db is not None:
+    if levels == "auto":
+        if plan.level.level_db is not None:
             raise ValueError("levels require a plan without level-db")
-        if levels == "auto":
-            return level_ladder(plan, facts)
-        plan = replace(plan, levels=tuple(float(value) for value in levels.split(",")))
+        return level_ladder(plan, facts)
     if plan.levels is None:
         return preflight(plan, facts)
     return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=value))

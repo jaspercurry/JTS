@@ -172,8 +172,11 @@ def build_frequency_view(
     }
 
 
-def frequency_run_from_view(document: Mapping[str, Any]) -> FrequencyRun:
-    """Read one saved frequency view through the shared series contract."""
+def frequency_run_from_view(document: Any) -> FrequencyRun | None:
+    """Read one saved frequency view through the shared series contract; ``None`` for
+    a document that is not one, so its reader falls back to the takes' own records."""
+    if not isinstance(document, Mapping) or document.get("schema") != SCHEMA:
+        return None
     if len(document["runs"]) != 1:
         raise FrequencyViewError("as an input, a frequency view must contain one run")
     raw = document["runs"][0]

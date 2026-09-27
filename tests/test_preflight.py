@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -31,6 +32,7 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_ga
 from jasper.speaker_layout import measurement_target_id
 from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
+from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
@@ -51,7 +53,7 @@ def ready_facts(plan, **changes):
 
 
 @pytest.mark.parametrize("muted", [True, False, None])
-def test_preflight_output_mute(monkeypatch, muted):
+def test_preflight_output_mute(monkeypatch, caplog, muted):
     response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
     read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
     monkeypatch.setattr(control_client, "get", read)
@@ -61,10 +63,13 @@ def test_preflight_output_mute(monkeypatch, muted):
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    caplog.set_level(logging.INFO)
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     report = preflight(plan, replace(ready, output_volume=facts.output_volume))
     read.assert_called_once_with("/volume", base_url=control_client.DEFAULT_BASE_URL, timeout=control_client.DEFAULT_TIMEOUT)
     assert report.blocking is (muted is True)
+    assert event_field_maps(caplog, "active_speaker.measurement_output_muted") == (
+        [{"muted": "true", "household_percent": "0"}] if muted else [])
     if muted:
         issue, = report.issues
         assert issue.code == "measurement_output_muted" and issue.blocking
