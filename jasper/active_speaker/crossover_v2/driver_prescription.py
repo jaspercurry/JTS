@@ -27,13 +27,14 @@ from typing import Any
 import numpy as np
 
 from jasper.json_fields import finite_float
-from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
+from jasper.biquad import (
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_NYQUIST_HZ, SHELF_Q,
+    PeqFilter,
+)
 
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     branch_chain_peak_db,
-    _GRID_EDGE_HI_HZ,
-    _GRID_EDGE_LO_HZ,
     _evaluation_grid,
     chain_response,
 )
@@ -179,16 +180,6 @@ _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 #: ``camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
 #: past it cannot be accepted here and refused at emission.
 DRIVER_MAX_FILTERS_PER_ROLE = 8
-
-#: The highest frequency the gate's biquad evaluator is defined for: half of
-#: :data:`~jasper.biquad.RESPONSE_SAMPLE_RATE_HZ`, imported rather than
-#: restated. It binds because a driver's DECLARED band is a datasheet fact and
-#: the evaluator's is an arithmetic one — a supertweeter published to 40 kHz is
-#: honest, and a bound evaluated past Nyquist is aliased rather than
-#: conservative. The declared upper edge is CLAMPED, never dropped, and the
-#: packet publishes the clamped value so a prescriber is shown the band it is
-#: judged against.
-_EVALUABLE_MAX_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 
 
 # --------------------------------------------------------------------------- #
@@ -456,7 +447,7 @@ def driver_passbands_from_safety_profile(
 
     ``measurement_band_hz`` (the driver's published response range) narrowed by
     the declared protective high-pass and low-pass, then clamped at
-    :data:`_EVALUABLE_MAX_HZ`. Neither protection edge is INVENTED where none
+    Nyquist. Neither protection edge is INVENTED where none
     is declared — an undeclared floor leaves the published lower edge standing,
     on ``declared_protection_highpass_floor_hz``'s never-nanny rule. A target
     with no readable band, or whose composed edges cross, is OMITTED rather
@@ -486,7 +477,10 @@ def driver_passbands_from_safety_profile(
         ceiling = declared_protection_lowpass_ceiling_hz(target)
         if ceiling is not None and ceiling < hi:
             hi = ceiling
-        hi = min(hi, _EVALUABLE_MAX_HZ)
+        # A declared band is a datasheet fact and the evaluator's is arithmetic: a
+        # supertweeter published to 40 kHz is honest, but a bound past Nyquist is
+        # aliased. The edge is clamped, never dropped, and the packet publishes it.
+        hi = min(hi, RESPONSE_NYQUIST_HZ)
         if not 0.0 < lo < hi:
             continue
         out[role.strip()] = (lo, hi)
@@ -713,9 +707,9 @@ def _check_bounds(
     magnitude ceiling and width. Neither sign has a magnitude FLOOR: a
     sub-threshold filter is counted, not refused, by :func:`_subaudible_filters`.
 
-    Only a boost is bounded by its role's declared band (ADR-0367). A cut
-    outside it is bounded to the evaluator's domain instead, and where the
-    speaker declares no band at all, ``branch_roles`` names its roles.
+    Only a boost is bounded by its role's declared band (ADR-0367). Every cut,
+    in band or not, is bounded to the evaluator's domain instead (#5795), and
+    where the speaker declares no band at all, ``branch_roles`` names its roles.
     """
     prescription_class = "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
     if prescription_class == "boost" and not passbands:
@@ -756,18 +750,18 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
-        # Past these edges the emitter refuses the corner or, at Q up to
-        # EVALUABLE_Q_MAX, round-off rises above the 24-bit floor. See ADR-0367.
-        if _outside_band(band, freq) and not _GRID_EDGE_LO_HZ <= freq <= _GRID_EDGE_HI_HZ:
+        # Past these edges the emitter refuses the corner, round-off at Q up to
+        # EVALUABLE_Q_MAX rises above the 24-bit floor, and a boost's realized
+        # peak outruns the f64 evaluator. See ADR-0374.
+        if not EVALUABLE_HZ_MIN <= freq <= EVALUABLE_HZ_MAX:
             refuse(
                 FILTER_MALFORMED,
-                f"filter {position} at {freq:g} Hz is a cut outside any band the "
-                f"{role} declares, so it must sit within {_GRID_EDGE_LO_HZ:g}-"
-                f"{_GRID_EDGE_HI_HZ:g} Hz, where this system builds and "
-                "evaluates it faithfully",
+                f"filter {position} at {freq:g} Hz is outside "
+                f"{EVALUABLE_HZ_MIN:g}-{EVALUABLE_HZ_MAX:g} Hz, where this system "
+                "builds and evaluates it faithfully",
                 role=role,
                 freq_hz=freq,
-                evaluable_hz=[_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ],
+                evaluable_hz=[EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX],
             )
         # The evaluator's own floor: below EVALUABLE_Q_MIN, `biquad_coeffs`
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
@@ -886,7 +880,7 @@ def _check_displaced(
             for entry in filters
             if entry["role"] == role
         ]
-        lo, hi = passbands.get(role, (_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ))
+        lo, hi = passbands.get(role, (EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX))
         # One grid over BOTH cascades, so neither extremum falls between the
         # other's sample points.
         grid = _composed_grid(role_filters + previous, lo, hi)
@@ -1356,8 +1350,9 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "protective high-pass it declares and capped by any protective "
                 "low-pass. A cut outside that band, or on a speaker that "
                 "declares none, is admitted and counted onto "
-                "prescription.cuts_outside_passband (ADR-0367); it must still "
-                f"sit within {_GRID_EDGE_LO_HZ:g}-{_GRID_EDGE_HI_HZ:g} Hz"
+                "prescription.cuts_outside_passband (ADR-0367). Every filter, "
+                f"cut or boost, must sit within {EVALUABLE_HZ_MIN:g}-"
+                f"{EVALUABLE_HZ_MAX:g} Hz (ADR-0374)"
             ),
             "composed_cap_is_evaluated": (
                 "the composed cap is checked per role on the evaluated biquad "

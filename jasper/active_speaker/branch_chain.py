@@ -21,7 +21,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.biquad import (
-    RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
+    FilterSpec,
+    filter_response_complex, freq_trig,
 )
 
 from .crossover_section import CrossoverSection
@@ -46,17 +48,6 @@ HEADROOM_MARGIN_DB: float = 1.0
 # biquads evaluate a cascade's analytic zero to a residue of order 1e-4 dB; 0.01 dB is
 # two orders above that.
 _PEAK_EPS_DB: float = 0.01
-
-# Domain every chain peak is taken over: essentially DC to Nyquist, appended to every
-# evaluation grid. A shelf's extreme is at an EDGE, not its corner (a 20 Hz/20 kHz grid
-# reads a +12 dB Lowshelf at 30 Hz as 9.69 dB); sampling both edges captures the
-# asymptote exactly.
-_GRID_EDGE_LO_HZ: float = 1.0
-_GRID_EDGE_HI_HZ: float = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
-
-# Top of the representable band, where a filter may still SIT (not where background
-# samples stop -- see ``_evaluation_grid``).
-_NYQUIST_HZ: float = 0.5 * RESPONSE_SAMPLE_RATE_HZ
 
 # BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
@@ -86,14 +77,14 @@ _GRID_HF_TAIL_STEP_HZ: float = 25.0
 # pays none of it.
 CHAIN_GRID_HZ: np.ndarray = np.unique(np.concatenate([
     np.geomspace(
-        _GRID_EDGE_LO_HZ,
-        _GRID_EDGE_HI_HZ,
+        EVALUABLE_HZ_MIN,
+        EVALUABLE_HZ_MAX,
         round(
             _CHAIN_GRID_POINTS_PER_OCTAVE
-            * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)
+            * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN)
         ) + 1,
     ),
-    np.arange(_GRID_HF_TAIL_FROM_HZ, _GRID_EDGE_HI_HZ, _GRID_HF_TAIL_STEP_HZ),
+    np.arange(_GRID_HF_TAIL_FROM_HZ, EVALUABLE_HZ_MAX, _GRID_HF_TAIL_STEP_HZ),
 ]))
 CHAIN_GRID_HZ.flags.writeable = False
 
@@ -110,19 +101,20 @@ def _evaluation_grid(
     filters: Sequence[Mapping[str, Any]], grid_hz: np.ndarray | None,
 ) -> np.ndarray:
     """``grid_hz`` (or :data:`CHAIN_GRID_HZ`) unioned with every filter's own centre frequency
-    and the two domain edges. Tamper hardening, not optional: a peak on a fixed log grid
-    is blind to anything narrower than its spacing (a +12 dB Q-2000 Peaking filter
-    between two bins reads -0.0 dB). A centre goes in at its OWN frequency up to
-    NYQUIST, not merely :data:`_GRID_EDGE_HI_HZ`; one at or above Nyquist is left to the
-    background grid, reading the mirrored extremum to within 0.103 dB. Each adjacent
-    centre pair's geometric midpoint goes in too -- centres alone under-read a
-    between-centres peak by up to 0.58 dB.
+    and the two domain edges, because a shelf's extreme is at an EDGE, not its corner (a
+    20 Hz/20 kHz grid reads a +12 dB Lowshelf at 30 Hz as 9.69 dB). Tamper hardening, not
+    optional: a peak on a fixed log grid is blind to anything narrower than its spacing (a
+    +12 dB Q-2000 Peaking filter between two bins reads -0.0 dB). A centre goes in at its
+    OWN frequency up to NYQUIST, not merely :data:`~jasper.biquad.EVALUABLE_HZ_MAX`; one at
+    or above Nyquist is left to the background grid, reading the mirrored extremum to
+    within 0.103 dB. Each adjacent centre pair's geometric midpoint goes in too -- centres
+    alone under-read a between-centres peak by up to 0.58 dB.
     """
     base = CHAIN_GRID_HZ if grid_hz is None else np.asarray(grid_hz, dtype=np.float64)
-    extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ]
+    extra = [EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX]
     centres = sorted(
         freq for entry in filters
-        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < _NYQUIST_HZ
+        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < RESPONSE_NYQUIST_HZ
     )
     extra.extend(centres)
     extra.extend(
@@ -135,7 +127,7 @@ def _evaluation_grid(
 def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
     """One sample per shelf, out past its corner where its extremum actually is (#2846).
 
-    Below ``_GRID_EDGE_LO_HZ`` for a Lowshelf, which is legal and deliberate: a grid
+    Below ``EVALUABLE_HZ_MIN`` for a Lowshelf, which is legal and deliberate: a grid
     point is a place to evaluate the digital cascade, not a claim about the domain. A
     Highshelf's sample is capped at Nyquist, where the bilinear transform lands its
     infinite-frequency asymptote exactly.
@@ -148,7 +140,7 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
             continue
         out.append(
             freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
-            else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
+            else min(freq * _SHELF_ASYMPTOTE_RATIO, RESPONSE_NYQUIST_HZ)
         )
     return out
 
@@ -408,7 +400,7 @@ def camilla_evaluation_grid(filters: Sequence[Mapping[str, Any]]) -> np.ndarray:
         for octaves in _CENTRE_NEIGHBOUR_OCTAVES:
             for ratio in (2.0 ** octaves, 2.0 ** -octaves):
                 freq = record["freq"] * ratio
-                if 0.0 < freq <= _NYQUIST_HZ:
+                if 0.0 < freq <= RESPONSE_NYQUIST_HZ:
                     neighbours.append(freq)
     grid = _evaluation_grid(records, None)
     if not neighbours:
