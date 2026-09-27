@@ -2,12 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-
 """Recording state, persistence, recovery, and audio-level tests."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import socket
@@ -35,8 +33,9 @@ from jasper.wake_corpus import (
 from jasper.wake_corpus.errors import NoRecordingError
 from jasper.web import wake_corpus_setup
 
-from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until, wait_until_sync
 from tests._log_events import event_fields, event_records
+from tests.fake_clock_fixtures import FakeClock
 from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
     _backend_fixture,
@@ -50,9 +49,13 @@ from tests.wake_corpus_setup_fixtures import (
 
 _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 
-# ---------------------------------------------------------------------------
-# RecordingTask — direct exercise
-# ---------------------------------------------------------------------------
+
+def _wait_for_recorded_frames(backend: recording_backend.RecordingBackend) -> None:
+    with backend._lock:
+        task = backend._current
+    wait_until_sync(
+        lambda: task is not None and bool(task._buffers) and all(task._buffers.values()),
+    )
 
 
 async def test_recording_task_collects_frames_per_leg() -> None:
@@ -61,7 +64,10 @@ async def test_recording_task_collects_frames_per_leg() -> None:
         ports={"on": 9876, "off": 9877, "dtln": 9878},
     )
     await task.start()
-    await asyncio.sleep(0.1)  # let the background task collect ~20 frames/leg
+    await wait_until(
+        lambda: bool(task._buffers) and all(task._buffers.values()),
+        timeout=DEFAULT_SIGNAL_TIMEOUT_S,
+    )
     pcm = await task.stop()
 
     assert set(pcm.keys()) == {"on", "off", "dtln"}
@@ -75,11 +81,13 @@ async def test_recording_task_collects_frames_per_leg() -> None:
     assert (dtln_samples == 33).all()
 
 
-async def test_recording_task_elapsed_grows() -> None:
+async def test_recording_task_elapsed_grows(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = FakeClock(start=1.0)
+    monkeypatch.setattr(clip_capture, "time", clock)
     task = clip_capture.RecordingTask(ports={"on": 9876})
     await task.start()
     assert task.elapsed_sec() < 0.05
-    await asyncio.sleep(0.1)
+    clock.now += 0.125
     assert task.elapsed_sec() >= 0.1
     await task.stop()
 
@@ -255,7 +263,7 @@ def test_start_stop_writes_wavs_to_correct_quadrant(
     backend.begin_session("jasper")
     result = backend.start_recording("music", "far")
     assert "clip_id" in result
-    time.sleep(0.1)  # collect ~20 frames per leg
+    _wait_for_recorded_frames(backend)
     clip = backend.stop_recording()
 
     # Files landed in aec_<leg>_music/ since condition=music
@@ -285,7 +293,7 @@ def test_start_stop_writes_wav_in_correct_format(
 ) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.1)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     wavs = list((tmp_path / "out").rglob("*.aec-on.wav"))
@@ -302,7 +310,7 @@ def test_sequential_clips_get_incrementing_seq(backend) -> None:
     seqs = []
     for _ in range(3):
         backend.start_recording("quiet", "near")
-        time.sleep(0.05)
+        _wait_for_recorded_frames(backend)
         clip = backend.stop_recording()
         seqs.append(clip.seq)
     assert seqs == [1, 2, 3]
@@ -316,10 +324,10 @@ def test_sequence_counts_deleted_clips(backend) -> None:
     """
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip1 = backend.stop_recording()
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip2 = backend.stop_recording()
     assert clip1.seq == 1
     assert clip2.seq == 2
@@ -327,7 +335,7 @@ def test_sequence_counts_deleted_clips(backend) -> None:
     backend.delete_clip(clip1.clip_id)
 
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip3 = backend.stop_recording()
     # Sequence is monotonic across the session, including deleted clips.
     assert clip3.seq == 3
@@ -335,7 +343,7 @@ def test_sequence_counts_deleted_clips(backend) -> None:
     backend.delete_clip(clip3.clip_id)
 
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     assert backend.stop_recording().seq == 4
 
 
@@ -349,7 +357,7 @@ def test_delete_clip_removes_wavs_and_marks_deleted(
 ) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip = backend.stop_recording()
 
     assert all(Path(p).is_file() for p in clip.files.values())
@@ -371,7 +379,7 @@ def test_delete_clip_idempotent_on_missing(backend) -> None:
 def test_delete_clip_idempotent_on_already_deleted(backend) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
     # Second delete returns False (already deleted)
@@ -386,7 +394,7 @@ def test_delete_clip_idempotent_on_already_deleted(backend) -> None:
 def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip = backend.stop_recording()
 
     metadata_path, data = _session_metadata(tmp_path)
@@ -414,7 +422,7 @@ def test_metadata_capture_plan_persists_missing_bridge_outputs(
 
     backend.begin_session("jasper", include_dtln=True, include_usb_mic=True)
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     _, data = _session_metadata(tmp_path)
@@ -510,7 +518,7 @@ def test_metadata_records_audio_context_snapshot(
         corpus_profile=runtime_probe.PROFILE_CHIP_AEC_COMPARISON,
     )
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     _, data = _session_metadata(tmp_path)
@@ -587,7 +595,7 @@ def test_audio_context_snapshot_uses_chip_aec_dac_gate(
 
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     _, data = _session_metadata(tmp_path)
@@ -633,7 +641,7 @@ def test_standard_metadata_marks_on_leg_as_chip_primary_when_runtime_active(
 
     backend.begin_session("jasper", include_dtln=False)
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     _, data = _session_metadata(tmp_path)
@@ -684,7 +692,7 @@ def test_validation_artifact_summary_rejects_wrong_current_dac(
 def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
 
@@ -698,7 +706,7 @@ def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
 def test_metadata_atomic_no_tmp_left_behind(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     md_dir = tmp_path / "out" / "metadata"
@@ -752,18 +760,11 @@ def test_auto_stop_fires_on_max_duration(
     ) as b:
         b.begin_session("jasper")
         b.start_recording("quiet", "near")
-        # Wait long enough for auto-stop to fire + the worker
-        # thread to complete the save.
-        time.sleep(0.8)
+        wait_until_sync(lambda: bool(b.list_clips()))
         assert not b.is_recording()
         clips = b.list_clips()
         assert len(clips) == 1
         assert clips[0].auto_stopped is True
-
-
-# ---------------------------------------------------------------------------
-# HTML rendering — quick sanity
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +868,10 @@ async def test_recording_task_stop_idempotent() -> None:
     _FakeUdpMicCapture.port_to_value = {9876: 7}
     task = clip_capture.RecordingTask(ports={"on": 9876})
     await task.start()
-    await asyncio.sleep(0.05)
+    await wait_until(
+        lambda: bool(task._buffers) and all(task._buffers.values()),
+        timeout=DEFAULT_SIGNAL_TIMEOUT_S,
+    )
     pcm_first = await task.stop()
     pcm_second = await task.stop()  # must not raise
 
@@ -1176,7 +1180,7 @@ def test_safety_stop_quiesces_then_retries_save_after_owner_releases(
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.2)
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.03)
+    _wait_for_recorded_frames(backend)
     with backend._lock:
         task = backend._current
         clip_id = backend._current_clip_id
@@ -1761,7 +1765,7 @@ def test_begin_session_refuses_while_stop_is_saving_clip(
     """The stop/WAV/metadata transaction stays bound to its session."""
     original_session_id = backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.03)
+    _wait_for_recorded_frames(backend)
 
     entered = threading.Event()
     release = threading.Event()
@@ -1834,7 +1838,7 @@ def test_ambient_clips_land_in_ambient_quadrant(
     downstream training can slice on the realistic-home condition."""
     backend.begin_session("jasper")
     backend.start_recording("ambient", "mid")
-    time.sleep(0.1)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     out = tmp_path / "out"
@@ -1853,7 +1857,7 @@ def test_quiet_clips_still_land_in_nomusic_quadrant(
     (extract-wake-corpus.py) keep working unchanged."""
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.1)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
 
     out = tmp_path / "out"
@@ -1931,8 +1935,7 @@ def test_get_current_rms_dbfs_returns_float_while_recording(
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
     try:
-        # Give the loop a few frames to populate the level
-        time.sleep(0.1)
+        wait_until_sync(lambda: backend.get_current_rms_dbfs() != -100.0)
         rms = backend.get_current_rms_dbfs()
         assert rms is not None
         # Half-scale on the AEC ON leg → ~-6 dBFS
@@ -1945,11 +1948,6 @@ def test_get_current_rms_dbfs_clears_after_stop(backend) -> None:
     """After stop_recording, the level meter goes back to None."""
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
-    time.sleep(0.05)
+    _wait_for_recorded_frames(backend)
     backend.stop_recording()
     assert backend.get_current_rms_dbfs() is None
-
-
-# ---------------------------------------------------------------------------
-# HTML — new UI affordances for ambient + mic-level + trash icon
-# ---------------------------------------------------------------------------
