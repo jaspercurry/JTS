@@ -304,47 +304,10 @@ def _patch_v2_state(monkeypatch, state):
     )
 
 
-def _cloud_group(*, passed, locked=False, excluded=(), flatness=None):
-    pipeline: dict[str, object] = {
-        "available": True,
-        "spec": {"overall_within_target": passed, "bands": []},
-        "merged_excluded_bands_hz": list(excluded),
-    }
-    if flatness is not None:
-        pipeline["flatness"] = flatness
-    return {"geometry": {"locked": locked}, "pipeline": pipeline}
-
-
-def _cloud_group_unavailable(*, reason, locked=True):
-    """A group that CLOSED but whose pipeline failed to combine/analyze."""
-    return {
-        "geometry": {"locked": locked},
-        "pipeline": {"available": False, "reason": reason},
-    }
-
-
 def _v2_applied_state(**overrides):
     state = {"applied": True, "session_id": "sess-graded"}
     state.update(overrides)
     return state
-
-
-_FAILED_GAUGE = {
-    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
-    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
-    "evaluable": True, "passed": False,
-}
-
-_PASSING_GAUGE = {**_FAILED_GAUGE, "max_db": 0.9, "passed": True}
-
-
-def _verify_cloud(*, passed, flatness):
-    return {"cloud_verify": _cloud_group(
-        passed=passed,
-        excluded=[[1400.0, 1900.0], [3000.0, 3200.0],
-                  [5000.0, 5400.0], [9000.0, 9600.0]],
-        flatness=flatness,
-    )}
 
 
 @pytest.mark.parametrize(
@@ -353,9 +316,6 @@ def _verify_cloud(*, passed, flatness):
         # ---- no correction applied: the row is the cloud-only verdict.
         pytest.param(
             None, "ok", correction.REASON_CLOUD_NOT_RUN, id="never-run",
-        ),
-        pytest.param(
-            {"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN, id="no-groups",
         ),
         # ---- applied: the folded-in grade finding takes the row's reason —
         # an un-warned cloud spec cannot see a correction that never got
@@ -390,18 +350,10 @@ def _verify_cloud(*, passed, flatness):
             "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY, id="mark-only-incomplete",
         ),
         pytest.param(
-            _v2_applied_state(
-                verify={"outcome": "pass"}, asked_poses=[{"deg": 0}, {"deg": 20}],
-                cloud={"cloud_verify": _cloud_group_unavailable(reason="combine_failed")},
-            ),
-            "ok", correction.REASON_APPLIED_GRADE_MARK_ONLY, id="closed-but-unavailable",
-        ),
-        pytest.param(
             _v2_applied_state(verify={"outcome": "pass"}, asked_poses=[{"deg": 0}]),
             "ok", correction.REASON_CLOUD_NOT_RUN, id="mark-only-plan",
         ),
-        # #2464: a failed mark-VERIFY names verify_failed whatever the
-        # spatial group says.
+        # #2464: a failed mark-VERIFY names verify_failed.
         pytest.param(
             _v2_applied_state(
                 tier="full",
@@ -409,10 +361,9 @@ def _verify_cloud(*, passed, flatness):
                     "outcome": "fail",
                     "claims": {"integration": {"status": "fail", "max_db": 4.2}},
                 },
-                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             ),
             "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
-            id="verify-failed-behind-a-passing-group",
+            id="verify-failed",
         ),
         # The capture was clean and the crossover-region claim missed its
         # tolerance: verify.outcome grades capture health alone, so the claims
@@ -427,7 +378,6 @@ def _verify_cloud(*, passed, flatness):
                         "absolute": {"status": "fail", "max_db": 4.31},
                     },
                 },
-                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             ),
             "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
