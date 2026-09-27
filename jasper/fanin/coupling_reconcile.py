@@ -55,10 +55,7 @@ from jasper.fanin.coupling_auto import (
     usb_combo_actions,
     usbsink_effectively_enabled,
 )
-from jasper.fanin.latency_mode import (
-    normalize_mode as normalize_usb_latency_mode,
-    read_requested_mode as read_usb_latency_mode,
-)
+from jasper.fanin.latency_mode import read_requested_mode as read_usb_latency_mode
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
@@ -870,7 +867,6 @@ def reconcile_auto(
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
-    usb_latency_mode: str | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
@@ -929,11 +925,7 @@ def reconcile_auto(
         usb_intent = usb_intent_enabled
     usb_latency_failure = ""
     try:
-        latency_mode = (
-            read_usb_latency_mode()
-            if usb_latency_mode is None
-            else normalize_usb_latency_mode(usb_latency_mode)
-        )
+        latency_mode = read_usb_latency_mode()
     except (OSError, UnicodeError, ValueError) as exc:
         latency_mode = "high"
         usb_latency_failure = (

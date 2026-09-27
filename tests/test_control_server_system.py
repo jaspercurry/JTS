@@ -29,6 +29,7 @@ import pytest
 
 from jasper.accessories import status as accessory_status
 from jasper.service_units import JASPER_VOICE_SERVICE
+from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
@@ -453,51 +454,42 @@ def test_system_audio_quality_rejects_missing_converter(
     assert body["error"] == "converter is required"
 
 
-def test_system_usb_latency_applies_fixed_mode(
+@pytest.mark.parametrize("started", [True, False])
+def test_system_usb_latency_saves_the_mode_then_starts_the_coupling_unit(
     monkeypatch,
     server_with_coordinator,
+    started,
 ):
+    """The coupling pass reads the saved mode, so the save comes first, then a
+    blocking broker start of the unit; a refused start answers 502."""
     base, _ = server_with_coordinator
     import jasper.control.handlers.system as system_mod
 
-    applied: list[str] = []
+    calls = _record_broker(monkeypatch, ok=started)
+    saved: list[tuple[str, int]] = []
     marked: list[str] = []
     monkeypatch.setattr(
         system_mod,
-        "apply_requested_mode",
-        lambda mode: applied.append(mode),
+        "write_requested_mode",
+        lambda mode: saved.append((mode, len(calls))),
     )
-    monkeypatch.setattr(
-        system_mod,
-        "_mark_usb_latency_applying",
-        lambda mode: marked.append(mode),
-    )
-
-    status, body = _post(f"{base}/system/usb-latency", {"mode": "medium"})
-
-    assert status == 200
-    assert applied == ["medium"]
-    assert marked == ["medium"]
-    assert body == {"ok": True, "action": "usb-latency", "mode": "medium"}
-
-
-def test_system_usb_latency_surfaces_apply_failure(
-    monkeypatch,
-    server_with_coordinator,
-):
-    base, _ = server_with_coordinator
-    import jasper.control.handlers.system as system_mod
-
-    def fail(_mode: str) -> None:
-        raise system_mod.LatencyApplyError("fan-in restart failed")
-
-    monkeypatch.setattr(system_mod, "apply_requested_mode", fail)
+    monkeypatch.setattr(system_mod, "_mark_usb_latency_applying", marked.append)
 
     status, body = _post(f"{base}/system/usb-latency", {"mode": "high"})
 
-    assert status == 502
-    assert body["selected_mode"] == "high"
-    assert "fan-in restart failed" in body["error"]
+    assert saved == [("high", 0)]  # saved before the broker was asked
+    assert calls == [(
+        "start",
+        [USB_COUPLING_UNIT],
+        unit_action_timeout_sec(USB_COUPLING_UNIT, "start"),
+        False,
+    )]
+    if started:
+        assert (status, body["mode"], marked) == (200, "high", ["high"])
+    else:
+        assert (status, body["code"], body["selected_mode"], marked) == (
+            502, "usb_latency_apply_failed", "high", [],
+        )
 
 
 def test_usb_forensics_persists_intent_and_queues_fixed_action(

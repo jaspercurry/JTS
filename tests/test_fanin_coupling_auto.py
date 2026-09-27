@@ -344,23 +344,6 @@ def test_usb_latency_local_fallback_can_recover_in_same_session(tmp_path):
     assert "next USB session" not in state["detail"]
 
 
-def test_usb_latency_apply_keeps_requested_mode_visible_on_reconcile_failure(
-    tmp_path,
-):
-    state_path = tmp_path / "usb_latency.env"
-
-    with pytest.raises(lm.LatencyApplyError, match="restart failed"):
-        lm.apply_requested_mode(
-            "high",
-            state_path=state_path,
-            reconcile=lambda **_kwargs: SimpleNamespace(
-                ok=False, detail="restart failed"
-            ),
-        )
-
-    assert lm.read_requested_mode(state_path) == "high"
-
-
 def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
     monkeypatch.setattr(
         ca,

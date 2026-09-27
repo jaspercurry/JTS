@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from jasper.atomic_io import atomic_write_text
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
@@ -65,10 +65,6 @@ class LatencyRuntime:
     ladder: str | None
     fallback_reason: str | None
     buffer_above_floor: bool
-
-
-class LatencyApplyError(RuntimeError):
-    """The preference was saved, but the live fan-in did not apply it."""
 
 
 def normalize_mode(raw: str | None) -> str:
@@ -367,32 +363,11 @@ def read_state(
     }
 
 
-def apply_requested_mode(
-    mode: str,
-    *,
-    state_path: str | os.PathLike[str] | None = None,
-    reconcile: Callable[..., Any] | None = None,
-) -> str:
-    """Save one preset and run the fan-in env's existing single writer."""
-    canonical = write_requested_mode(mode, state_path)
-    if reconcile is None:
-        from .coupling_reconcile import reconcile_auto  # lazy: cycle, coupling_reconcile imports this module
-
-        reconcile = reconcile_auto
-    result = reconcile(reason="usb_latency_mode", usb_latency_mode=canonical)
-    if not bool(getattr(result, "ok", False)):
-        detail = str(getattr(result, "detail", "") or "fan-in reconcile failed")
-        raise LatencyApplyError(detail)
-    return canonical
-
-
 __all__ = [
     "DEFAULT_MODE",
     "DEFAULT_STATE_PATH",
-    "LatencyApplyError",
     "PRESETS",
     "STATE_ENV_KEY",
-    "apply_requested_mode",
     "classify_runtime",
     "normalize_mode",
     "options",
