@@ -199,8 +199,7 @@ OPENWAKEWORD_FALLBACK_ASSET_KEYS = frozenset({
 # Order matters — this is the display order on the picker page. Put the
 # recommended default first so a new household lands on it.
 REGISTRY: tuple[WakeModelEntry, ...] = (
-    # Upstream terms verified 2026-06-12: the fwartner
-    # home-assistant-wakewords-collection repository is MIT-licensed
+    # fwartner/home-assistant-wakewords-collection is MIT-licensed
     # (copyright Florian Wartner), and this model is downloaded from the
     # pinned 8bcd2f20bb7b76c351b2eff871fa1ce873fe9be2 commit. The
     # jarvis_v2.onnx upstream blob at that commit is
