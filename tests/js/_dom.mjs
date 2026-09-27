@@ -23,7 +23,7 @@ import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
 
 // The 19 ids every crossover_*_test.mjs harness looks up via
 // document.getElementById, in the crossover screen's own render order. Not
-// every consumer needs the same set — some add cloud/legend ids, one drops
+// every consumer needs the same set — some add ids, one drops
 // "crossover-applied" — so this is a starting point files splice, not a
 // contract every file must use verbatim.
 export const CROSSOVER_IDS = [
@@ -67,7 +67,7 @@ const POSITION_UNITS_STUBS = {
 };
 
 // Installs a fixed-id document (default CROSSOVER_IDS) and loads main.js
-// with `extraStubs` (the harness's own getJSON/postJSON/renderCloud/...
+// with `extraStubs` (the harness's own getJSON/postJSON/...
 // globals — see POSITION_UNITS_STUBS above for the ones every harness needs
 // regardless of scenario) aliased alongside them. Returns the installed
 // `elements` map merged with main.js's requested `exportNames`.

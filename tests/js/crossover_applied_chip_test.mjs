@@ -18,14 +18,10 @@ import { crossoverMainModule } from "./_dom.mjs";
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
-// PR-7's before/after visualization (./cloud.js) is out of scope for this
-// harness — it only pins the applied chip — so a no-op stands in, same
 const { elements, render } = await crossoverMainModule({
   extraStubs: {
     getJSON: async () => ({}),
     postJSON: async () => ({}),
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
   },
 });
 

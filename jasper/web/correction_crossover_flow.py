@@ -26,7 +26,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     )
     body = f"""
 {header}
-<main class="page correction-measurement crossover-page" data-required-sr="48000">
+<main class="page correction-measurement" data-required-sr="48000">
   <section class="info-card info-card--accent">
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
@@ -42,26 +42,6 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   <section class="info-card" aria-label="Crossover calibration progress">
     <ol id="crossover-steps" class="wizard-steps"></ol>
     <div id="crossover-nudges" aria-live="polite"></div>
-  </section>
-
-  <section id="crossover-cloud" class="info-card" aria-label="Before and after measurement" hidden>
-    <p id="crossover-cloud-eyebrow" class="eyebrow">Before and after</p>
-    <h2 id="crossover-cloud-title" class="section__title">What the microphone heard</h2>
-    <p id="crossover-cloud-basis" class="form-hint" hidden></p>
-    <p id="crossover-cloud-provenance" class="form-hint"></p>
-    <div class="crossover-chart-wrap">
-      <canvas id="crossover-cloud-chart" aria-label="Frequency response before and after correction"></canvas>
-    </div>
-    <ul class="crossover-chart-legend">
-      <li id="crossover-chart-legend-measure"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
-      <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
-      <li id="crossover-chart-legend-predicted" hidden><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--predicted"></span>Expected after correction (not measured)</li>
-      <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
-      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Untrusted</li>
-    </ul>
-    <p id="crossover-cloud-pending" class="form-hint" hidden></p>
-    <p id="crossover-cloud-geometry" class="form-hint" hidden></p>
-    <div id="crossover-cloud-callouts"></div>
   </section>
 
   <section class="info-card" aria-live="polite">

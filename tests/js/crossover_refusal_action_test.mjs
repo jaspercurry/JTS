@@ -29,16 +29,6 @@ const ids = [
   "crossover-nudges",
   "crossover-review",
   "crossover-review-body",
-  "crossover-cloud",
-  "crossover-cloud-provenance",
-  "crossover-cloud-chart",
-  "crossover-cloud-geometry",
-  "crossover-cloud-callouts",
-  "crossover-cloud-pending",
-  "crossover-chart-legend-measure",
-  "crossover-chart-legend-verify",
-  "crossover-chart-legend-corridor",
-  "crossover-chart-legend-excluded",
   "crossover-action",
   "crossover-capture",
   "crossover-walk",
@@ -78,8 +68,6 @@ const { elements, render, runAction, setStatus } = await crossoverMainModule({
   },
   extraStubs: {
     getJSON: async () => ({ ...baseEnvelope }),
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
     postJSON: async () => {
       if (postRejection) throw postRejection;
       return { ...baseEnvelope };

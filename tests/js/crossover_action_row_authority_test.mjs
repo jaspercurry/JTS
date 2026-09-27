@@ -14,8 +14,6 @@ const { elements, render, runAction, stopCapture } = await crossoverMainModule({
   extraStubs: {
     getJSON: async () => nextEnvelope,
     postJSON: async () => postResponse,
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
   },
   exportNames: ["render", "runAction", "stopCapture"],
 });

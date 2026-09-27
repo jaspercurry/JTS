@@ -27,8 +27,6 @@ const { schedulePoll, render } = await crossoverMainModule({
   },
   extraStubs: {
     getJSON: async () => ({}),
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
     postJSON: async () => ({}),
   },
   exportNames: ["schedulePoll", "render"],

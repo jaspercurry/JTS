@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
-import { renderCloud, redrawCloudChart } from './cloud.js';
 import { positionDiagram, positionCaption } from './position-diagram.js';
 import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } from './units.js';
 
@@ -17,20 +16,6 @@ const els = {
   applied: document.getElementById('crossover-applied'),
   steps: document.getElementById('crossover-steps'),
   nudges: document.getElementById('crossover-nudges'),
-  cloud: document.getElementById('crossover-cloud'),
-  cloudEyebrow: document.getElementById('crossover-cloud-eyebrow'),
-  cloudTitle: document.getElementById('crossover-cloud-title'),
-  cloudBasis: document.getElementById('crossover-cloud-basis'),
-  cloudProvenance: document.getElementById('crossover-cloud-provenance'),
-  cloudChart: document.getElementById('crossover-cloud-chart'),
-  cloudGeometry: document.getElementById('crossover-cloud-geometry'),
-  cloudCallouts: document.getElementById('crossover-cloud-callouts'),
-  cloudPending: document.getElementById('crossover-cloud-pending'),
-  legendMeasure: document.getElementById('crossover-chart-legend-measure'),
-  legendVerify: document.getElementById('crossover-chart-legend-verify'),
-  legendPredicted: document.getElementById('crossover-chart-legend-predicted'),
-  legendCorridor: document.getElementById('crossover-chart-legend-corridor'),
-  legendExcluded: document.getElementById('crossover-chart-legend-excluded'),
   action: document.getElementById('crossover-action'),
   capture: document.getElementById('crossover-capture'),
   walk: document.getElementById('crossover-walk'),
@@ -167,20 +152,13 @@ function renderApplied(applied) {
   els.applied.className = isApplied ? 'badge badge--ok' : 'badge badge--idle';
 }
 
-function renderNudges(nudges, expertDetails) {
+function renderNudges(nudges) {
   const rows = (Array.isArray(nudges) ? nudges : []).map((nudge) =>
     el('p', {
       class: `wizard-nudge ${nudge.severity === 'warn' ? 'warn' : 'info'}`,
       text: nudge.text || '',
     }),
   );
-  const details = Array.isArray(expertDetails) ? expertDetails : [];
-  if (details.length) {
-    rows.push(el('details', {class: 'candidate-provenance'}, [
-      el('summary', {text: 'Expert details'}),
-      el('p', {class: 'measurement-row__meta', text: `${details.join('; ')}.`}),
-    ]));
-  }
   els.nudges.replaceChildren(...rows);
 }
 
@@ -471,13 +449,8 @@ function render(env) {
   renderRound(env);
   renderApplied(env.applied);
   renderSteps(env.steps);
-  renderNudges(env.nudges, env.expert_details);
+  renderNudges(env.nudges);
   const passive = env.screen === 'awaiting_plan' || env.screen === 'finished';
-  if (passive) {
-    renderCloud(els, {});
-  } else {
-    renderCloud(els, env);
-  }
   renderCapture(env.capture, {
     suppressConnectAffordance: screenOwnsLiveControl(env),
     round: env.pending,
@@ -648,24 +621,6 @@ if (typeof document !== 'undefined') {
       schedulePoll(RETRY_MS);
     });
   });
-}
-
-// Redraw the before/after chart on resize/orientation change — without this
-// the canvas's drawing surface stays at whatever size it had on the last
-// poll. Debounced at 150 ms (review S-4), so a
-// drag-resize does not force a style recalc + canvas buffer realloc +
-// ~1024-point redraw on every intermediate frame. Guarded separately from
-// the `document` check above: the small per-feature test harnesses for this
-// page (tests/js/crossover_*_test.mjs) stub `globalThis.document` but not
-// `globalThis.window`.
-if (typeof window !== 'undefined') {
-  let cloudResizeTimer = null;
-  function scheduleCloudChartRedraw() {
-    if (cloudResizeTimer) clearTimeout(cloudResizeTimer);
-    cloudResizeTimer = setTimeout(redrawCloudChart, 150);
-  }
-  window.addEventListener('resize', scheduleCloudChartRedraw);
-  window.addEventListener('orientationchange', scheduleCloudChartRedraw);
 }
 
 refresh().catch((error) => {
