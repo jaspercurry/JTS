@@ -233,7 +233,7 @@ def test_streambox_profile_uses_streambox_routes_at_http_layer(
 def test_cross_site_get_rejects_diagnostics_before_subprocess(
     server_with_coordinator, monkeypatch,
 ):
-    from jasper.control import aec_endpoints
+    from jasper.control.handlers import system as system_routes
 
     calls = []
 
@@ -241,7 +241,7 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
         calls.append((args, kwargs))
         raise AssertionError("diagnostics should not run")
 
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", fake_run)
+    monkeypatch.setattr(system_routes.subprocess, "run", fake_run)
 
     base, _ = server_with_coordinator
     status, body = _get(

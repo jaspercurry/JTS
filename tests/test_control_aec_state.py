@@ -34,9 +34,9 @@ _MAINTENANCE_UNIT = "jasper-enhanced-aec-install.service"
     ("probe", "state", "expected"),
     [
         # Job liveness: a Type=oneshot mid-run must not look interrupted.
-        ("_unit_active", "active", True),
-        ("_unit_active", "activating", True),
-        ("_unit_active", "inactive", False),
+        ("unit_active", "active", True),
+        ("unit_active", "activating", True),
+        ("unit_active", "inactive", False),
         # Bridge readiness: `activating` is not yet carrying reference audio.
         ("_aec_bridge_active", "active", True),
         ("_aec_bridge_active", "activating", False),
@@ -54,7 +54,7 @@ def test_aec_probes_choose_their_own_activating_verdict(
         ),
     )
     call = getattr(aec_endpoints, probe)
-    result = call(_MAINTENANCE_UNIT) if probe == "_unit_active" else call()
+    result = call(_MAINTENANCE_UNIT) if probe == "unit_active" else call()
     assert result is expected
 
 
@@ -76,7 +76,7 @@ def test_batched_probe_spawns_once_and_falls_back_on_an_unresolved_unit(monkeypa
         aec_endpoints.AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
     ):
         assert aec_endpoints._aec_bridge_active() is True
-        assert aec_endpoints._unit_active(_MAINTENANCE_UNIT) is True
+        assert aec_endpoints.unit_active(_MAINTENANCE_UNIT) is True
 
     assert len(spawns) == 2
     assert spawns[0] == [
@@ -978,7 +978,7 @@ def test_aec_full_status_commission_carries_last_run_verdict(
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    monkeypatch.setattr(aec_endpoints, "unit_active", lambda unit: False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
@@ -1013,7 +1013,7 @@ def test_aec_full_status_surfaces_required_xvf_firmware_update(
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    monkeypatch.setattr(aec_endpoints, "unit_active", lambda unit: False)
     monkeypatch.setattr(aec_endpoints, "_read_xvf_firmware_update_state", lambda: {})
     _stub_xvf_runtime(
         monkeypatch,
