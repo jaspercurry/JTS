@@ -208,103 +208,6 @@ class CrossoverV2Refused(ValueError):
         self.issues = [dict(issue) for issue in issues]
 
 
-def verify_inconclusive_cause(
-    code: str | None, reflection_measured: bool | None,
-) -> str:
-    """WHY a verify check could not settle, as one household clause.
-
-    THE single writer of that clause: it renders on the verify_fail screen's
-    reason copy and on the done screen's ungraded verdict, and two paraphrases
-    is how the bug this fixes stayed invisible.
-
-    Two things produce the "inconclusive" outcome:
-
-    * ``REASON_VERIFY_INCONCLUSIVE`` — VERIFY's own gate came out SHORTER than
-      MEASURE's, so the two captures cannot be compared like for like. WHY the
-      window is short is a separate fact: ``reflection_measured``, from
-      :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.gated_anything`,
-      the single owner of "is the reflections claim true here".
-    * ``REASON_VERIFY_LEVEL_SHIFT`` — the recording chain moved between
-      attempts; no reflection and no window are involved. It reaches the DONE
-      screen's copy only, which keys on the coarse outcome rather than the
-      code.
-
-    The two unknowns get different answers. ``code=None`` establishes nothing,
-    so the clause is EMPTY. ``reflection_measured=None`` collapses into the
-    no-reflection-claim branch, because the code alone already establishes the
-    observation; emptying it would leave
-    :func:`verify_inconclusive_message` reading "The check was inconclusive —
-    . Re-verify to try again."
-
-    Returned without terminal punctuation: the caller owns the sentence.
-    """
-    if code == REASON_VERIFY_LEVEL_SHIFT:
-        # Same vocabulary as that code's own ReasonSpec below: one cause must
-        # not have two names depending on which screen is being read.
-        return "the microphone's levels changed between measurements"
-    if code != REASON_VERIFY_INCONCLUSIVE:
-        return ""
-    if reflection_measured:
-        # The ONE state where blaming a reflection is true.
-        return (
-            "a reflection reached the microphone sooner than it did during "
-            "tuning, so there was less of the sound to compare"
-        )
-    # Reflection NOT measured, or not recorded. Both render the observation the
-    # rule made and stop: a window capped at the search ceiling proves nothing
-    # about reflections. The precise gate state is disclosed in expert details
-    # by ``gate_disclosure.describe_gate``.
-    return "this measurement had less usable sound to compare than the tuning did"
-
-
-def verify_inconclusive_diagnosis(reflection_measured: bool | None) -> str:
-    """What VERIFY established, without advice about the next action."""
-    cause = verify_inconclusive_cause(REASON_VERIFY_INCONCLUSIVE, reflection_measured)
-    return f"The check was inconclusive — {cause}."
-
-
-def verify_inconclusive_message(reflection_measured: bool | None) -> str:
-    """``REASON_VERIFY_INCONCLUSIVE``'s household sentence. Single writer.
-
-    The registry entry below holds this function's ``None`` (cause-unknown)
-    rendering; the envelope re-renders it with the persisted fact.
-    """
-    return f"{verify_inconclusive_diagnosis(reflection_measured)} Re-verify to try again."
-
-
-def locate_failed_diagnosis(pilot_heard: bool | None) -> str:
-    """What the locator established, without advice about the next action."""
-    if pilot_heard:
-        return (
-            "JTS could hear the speaker, but couldn't line up the test tones "
-            "in the recording."
-        )
-    return "Couldn't hear the speaker clearly."
-
-
-def locate_failed_message(pilot_heard: bool | None) -> str:
-    """``REASON_LOCATE_FAILED``'s household sentence. Single writer.
-
-    SELECTION, never composition — the shape
-    :func:`verify_inconclusive_message` uses, for the same reason: one code,
-    two honest causes, and a registry that cannot hold one literal true of
-    both. The copy names the operation that failed and asserts no cause.
-
-    ``pilot_heard`` is the discriminator:
-
-    * ``True`` — the pilot pair was measurably heard, so "couldn't hear the
-      speaker" is refuted BY THIS CAPTURE. Report the lining-up failure and
-      ask for one retry.
-    * ``False`` / ``None`` — the pilot failed too, or there is no pilot
-      evidence, so the level/microphone reading is supported or unknown. The
-      registry holds this rendering.
-    """
-    diagnosis = locate_failed_diagnosis(pilot_heard)
-    if pilot_heard:
-        return f"{diagnosis} Try again."
-    return f"{diagnosis} {LOCATE_RETRY_ACTION}"
-
-
 #: A ``channel_map_mismatch`` verdict's evidence names each driver whose pilot failed
 #: the check under this prefix (``channel_map_failed.tweeter``).
 CHANNEL_MAP_FAILED_PREFIX = "channel_map_failed."
@@ -338,12 +241,9 @@ def channel_map_mismatch_message(failed_roles: Sequence[str]) -> str:
 
 @dataclass(frozen=True)
 class RetryableReasonCopy:
-    """One retryable reason's diagnosis and still-available action.
+    """One retryable reason's copy: what was observed, then the action that may clear it.
 
-    ``diagnosis`` is the observation that remains true after the slot's last
-    extra attempt; ``retry_action`` is appended only where an attempt is still
-    available. ``strip_before_join`` supports the em-dash sentences, whose
-    standalone diagnosis ends with a period the retryable rendering removes.
+    ``strip_before_join`` comes off the diagnosis's end before an em-dash ``joiner``.
     """
 
     diagnosis: str
@@ -384,10 +284,6 @@ class ReasonSpec:
     # ``PreflightIssue.from_code``). Shape is the mapping the envelope emits:
     # ``{"id", "label", "href"}``.
     next_action: Mapping[str, Any] | None = None
-    # Structured only for retryable rows. ``message``/``banner`` above is
-    # derived from this value by :func:`_retriable_reason`, so the diagnosis
-    # used at exhaustion and the one inside retry copy have one writer.
-    retry_copy: RetryableReasonCopy | None = None
     # True only for measured-and-rejected recording quality, never a level or safety fault.
     capture_quality: bool = False
 
@@ -410,7 +306,6 @@ def _retriable_reason(
         retry_budget,
         copy.message if auto_retry else "",
         "" if auto_retry else copy.message,
-        retry_copy=copy,
         capture_quality=capture_quality,
     )
 
@@ -675,15 +570,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_LOCATE_FAILED: _retriable_reason(
         REASON_LOCATE_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
-        # NOT a literal: the sentence's one writer is
-        # ``locate_failed_message``, and what the registry holds is its
-        # no-pilot-evidence rendering, true for any reader with no capture in
-        # hand. The capture verdict and the envelope re-render it with the
-        # measured fact.
-        RetryableReasonCopy(
-            locate_failed_diagnosis(None),
-            LOCATE_RETRY_ACTION,
-        ),
+        RetryableReasonCopy("Couldn't hear the speaker clearly.", LOCATE_RETRY_ACTION),
         capture_quality=True,
     ),
     REASON_VOLUME_UNRESOLVED: ReasonSpec(
@@ -1041,12 +928,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
         REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
-        # NOT a literal: the sentence's one writer is
-        # ``verify_inconclusive_message``, and what the registry holds is its
-        # cause-unknown rendering, true for any reader with no gate record.
-        # The envelope re-renders it with the persisted fact.
+        # Names no reflection: a gate window capped at the search ceiling proves
+        # nothing about one (gate_disclosure.describe_gate discloses the gate).
         RetryableReasonCopy(
-            verify_inconclusive_diagnosis(None),
+            "The check was inconclusive — this measurement had less usable sound "
+            "to compare than the tuning did.",
             "Re-verify to try again.",
         ),
     ),
@@ -1151,47 +1037,24 @@ TRANSIENT_AUTO_RETRY_CODES = frozenset(
 
 
 def reason_message(
-    code: str,
-    spec: ReasonSpec,
-    *,
-    pilot_heard: bool | None = None,
-    reflection_measured: bool | None = None,
-    failed_roles: Sequence[str] = (),
+    code: str, spec: ReasonSpec, *, failed_roles: Sequence[str] = (),
 ) -> str:
-    """The household sentence for ``code``, given what the capture measured.
+    """The household sentence for ``code``, given what the failure recorded.
 
     THE single copy selector: one failure is narrated on surfaces that never
-    see each other — the capture verdict,
-    the envelope (``crossover_envelope_v2._reason_message``), and the
-    apply-seam refusal — and a household looking at two of them after ONE
-    failure must not be handed two accounts of it. Adding a third
-    evidence-keyed code means adding a branch HERE; a caller that renders
-    ``spec.message`` directly re-opens the gap.
+    see each other — the capture verdict, the envelope, and the apply-seam
+    refusal — and a household looking at two of them after ONE failure must
+    not be handed two accounts of it. An evidence-keyed code adds its branch
+    HERE; a caller that renders ``spec.message`` directly re-opens the gap.
 
     ``spec`` is passed in rather than looked up so each caller keeps its own
     existence guard.
-
-    Facts are keyword-only and default to "not established", so a caller
-    holding none of them gets the registry's own renderings.
     """
-    if code == REASON_LOCATE_FAILED:
-        message = locate_failed_message(pilot_heard)
-    elif code == REASON_VERIFY_INCONCLUSIVE:
-        message = verify_inconclusive_message(reflection_measured)
-    elif code == REASON_CHANNEL_MAP_MISMATCH:
-        message = channel_map_mismatch_message(failed_roles)
-    else:
-        # ``or spec.banner`` for the silent-auto-retry codes, whose household
-        # text IS the banner and whose ``message`` is empty by construction.
-        message = spec.message or spec.banner
-    return message
-
-
-def reason_diagnosis(spec: ReasonSpec) -> str:
-    """The observation inside a retryable reason, without retry advice: the
-    diagnosis its :class:`RetryableReasonCopy` stores, ``""`` for a row with none.
-    """
-    return spec.retry_copy.diagnosis if spec.retry_copy is not None else ""
+    if code == REASON_CHANNEL_MAP_MISMATCH:
+        return channel_map_mismatch_message(failed_roles)
+    # ``or spec.banner`` for the silent-auto-retry codes, whose household
+    # text IS the banner and whose ``message`` is empty by construction.
+    return spec.message or spec.banner
 
 
 # Conditions no extra attempt can clear.

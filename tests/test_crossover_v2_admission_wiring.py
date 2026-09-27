@@ -14,12 +14,10 @@ wiring mistake would actually show up.
 
 import pytest
 
-from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
-from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -186,34 +184,3 @@ def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
     )
 
     assert from_fresh_ledger == from_no_ledger == admission.BeginDecision(admission.ADMIT)
-
-
-def _lateral_conductor(fakes):
-    return _conductor(fakes, index_phase_map=capture_plan.build_v2_cloud_index_phase_map(
-        include_lateral=True,
-    ))
-
-
-@pytest.mark.parametrize("unresolved,retained,reads", [
-    (False, False, ["unresolved", "retained"]),
-    (False, True, ["unresolved", "retained"]),
-    (True, False, ["unresolved"]),
-    (True, True, ["unresolved"]),
-])
-def test_the_spent_slot_outcome_tells_left_out_from_kept(monkeypatch, unresolved, retained, reads):
-    conductor = _lateral_conductor(FakeSeams())
-    seen = []
-
-    class Membership:
-        def __init__(self, name, present):
-            self.name, self.present = name, present
-
-        def __contains__(self, index):
-            seen.append(self.name)
-            assert index == 3
-            return self.present
-
-    conductor._group_unresolved[PHASE_LATERAL] = Membership("unresolved", unresolved)
-    monkeypatch.setattr(conductor, "_retained_group_indexes", lambda phase: Membership("retained", retained))
-    conductor._spent_slot_outcome(PHASE_LATERAL, 3)
-    assert seen == reads

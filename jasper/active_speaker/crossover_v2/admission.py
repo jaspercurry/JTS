@@ -15,7 +15,7 @@ docs/historical/crossover-measurement-v2-campaign-record.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Container, Literal
+from typing import Any, Literal
 
 from .refusal_copy import TakeCharge
 
@@ -27,8 +27,6 @@ __all__ = [
     "BeginDecision",
     "SlotAttempts",
     "assess_begin",
-    "extras_spent_message",
-    "spent_slot_outcome",
 ]
 
 
@@ -124,50 +122,6 @@ class BeginDecision:
 
     kind: str
     code: str = ""
-
-
-def extras_spent_message(
-    ledger: SlotAttempts, *, diagnosis: str, outcome: str,
-) -> str:
-    """The household sentence for a position whose extras are gone.
-
-    Deliberately does NOT reuse the full registry ``message``: retriable rows
-    end by inviting an action the flow will no longer grant.
-    """
-    used = ledger.by_household + ledger.by_speaker
-    tries = "try" if used == 1 else "tries"
-    count = (
-        f"JTS measured this spot {ledger.admitted} times — the planned one "
-        f"plus {used} extra {tries} — and still could not get a clean read."
-    )
-    return " ".join(part for part in (diagnosis, count, outcome) if part)
-
-
-def spent_slot_outcome(
-    *,
-    is_group: bool,
-    index: int,
-    unresolved: Container[int],
-    retained: Container[int],
-) -> str:
-    """The state after an exhausted slot, derived from session state.
-
-    The three facts arrive stated; the session reads them off
-    ``_group_unresolved`` and ``_retained_group_indexes``, which remain its own.
-    """
-    if is_group:
-        if index in unresolved:
-            return "This position was left out and the group continued."
-        if index in retained:
-            return (
-                "JTS kept the earlier measurement for this position and "
-                "the group continued."
-            )
-        return (
-            "The measurement cannot continue because too few positions "
-            "produced a clean read."
-        )
-    return "The measurement cannot continue because this step needs a clean read."
 
 
 def assess_begin(

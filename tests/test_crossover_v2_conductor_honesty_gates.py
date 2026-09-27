@@ -39,6 +39,7 @@ def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, refu
         with pytest.raises(CaptureBeginRefused) as refusal:
             conductor.authorize_begin(1, 2, executor_ledger=ledger)
         assert refusal.value.code == refused
+        assert refusal.value.user_message == REASON_REGISTRY[refused].message
     else:
         conductor.authorize_begin(1, 2, executor_ledger=ledger)
     assert ledger.by_household == (1 if charge == "operator" and not refused else 0)
