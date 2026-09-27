@@ -16,14 +16,10 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
-from .volume_curve import percent_to_db
+from .volume_curve import guard_in_effect, main_mute_for_level, percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 
 logger = logging.getLogger(__name__)
-
-
-def main_mute_for_level(level: int) -> bool:
-    return int(level) <= 0
 
 
 @dataclass(frozen=True)
@@ -414,15 +410,8 @@ class VolumeHandoff:
             return False
         previous_db = self._persisted_main_volume_db()
         current_db, current_mute = await self._read_camilla_volume_and_mute()
-        persisted_guard_active = (
-            previous_db is not None
-            and previous_db < -RECONCILE_DRIFT_DB
-        )
-        live_guard_active = (
-            current_db is not None
-            and current_db < -RECONCILE_DRIFT_DB
-        )
-        volume_guard_active = persisted_guard_active or live_guard_active
+        persisted_guard_active = guard_in_effect(previous_db)
+        volume_guard_active = persisted_guard_active or guard_in_effect(current_db)
         mute_guard_active = current_mute is True
         if not volume_guard_active and not mute_guard_active:
             return False
@@ -520,15 +509,8 @@ class VolumeHandoff:
         previous_db = self._persisted_main_volume_db()
         needs_clear = (
             current_mute is True
-            or (
-                include_live_guard
-                and current_db is not None
-                and current_db < -RECONCILE_DRIFT_DB
-            )
-            or (
-                previous_db is not None
-                and previous_db < -RECONCILE_DRIFT_DB
-            )
+            or (include_live_guard and guard_in_effect(current_db))
+            or guard_in_effect(previous_db)
         )
         if not needs_clear:
             return True, False

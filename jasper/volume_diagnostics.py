@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from .music_sources import Source, VolumeMode, volume_mode
-from .volume_floor import RECONCILE_DRIFT_DB
+from .volume_curve import guard_in_effect
 
 
 def _source_from_state(
@@ -43,20 +43,10 @@ def build_volume_policy_snapshot(
     mode = volume_mode(source)
     persisted_guard_db = (
         persisted_main_volume_db
-        if (
-            persisted_main_volume_db is not None
-            and float(persisted_main_volume_db) < -RECONCILE_DRIFT_DB
-        )
+        if guard_in_effect(persisted_main_volume_db)
         else None
     )
-    live_guard_db = (
-        main_volume_db
-        if (
-            main_volume_db is not None
-            and float(main_volume_db) < -RECONCILE_DRIFT_DB
-        )
-        else None
-    )
+    live_guard_db = main_volume_db if guard_in_effect(main_volume_db) else None
     guard_db = persisted_guard_db if persisted_guard_db is not None else live_guard_db
     push_guard_active = (
         mode == VolumeMode.PUSH

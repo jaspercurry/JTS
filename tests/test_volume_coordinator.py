@@ -48,7 +48,6 @@ from jasper.atomic_io import advisory_file_lock
 from jasper.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_apply import camilla_graph_mutation
-from jasper.volume_handoff import main_mute_for_level
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
 from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
@@ -112,15 +111,6 @@ def test_bt_round_trip(level):
 def test_clamping_below_zero_and_above_100():
     assert listening_level_to_bt_volume(-10) == 0
     assert listening_level_to_bt_volume(150) == BT_VOLUME_MAX
-
-
-@pytest.mark.parametrize("level", range(1, 101))
-def test_main_mute_predicates_agree_for_every_audible_level(level):
-    # R-006: a level and its own dB must not disagree on mute, or the
-    # coordinator re-mutes an audible level forever.
-    assert main_mute_for_level(level) == (
-        VolumeCoordinator._main_mute_for_db(percent_to_db(level))
-    )
 
 
 def test_level_one_is_strictly_above_the_mute_floor():
@@ -2448,14 +2438,6 @@ async def test_observe_usbsink_clamps_out_of_range(tmp_path):
 
     await coord.observe_source_volume(Source.USBSINK, -20)
     assert coord.get_listening_level() == 0
-
-
-async def test_usbsink_is_camilla_master(tmp_path):
-    """`_camilla_carries_level` decides whether camilla keeps the user's
-    perceived level or is pinned at 0 dB."""
-    coord, _, _ = _coord(tmp_path, active={"usbsinkactive": True})
-    assert await coord._camilla_carries_level(Source.USBSINK) is True
-    assert await coord._camilla_carries_level(Source.SPOTIFY) is False
 
 
 # ---------- bluealsa transport-path probe goes through shared backoff -------

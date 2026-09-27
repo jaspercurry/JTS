@@ -18,15 +18,19 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TypeGuard
 
 from .sound import settings as sound_settings
 from .volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
+    RECONCILE_DRIFT_DB,
     VOLUME_CEILING_DB,
     normalize_volume_floor_db,
 )
 
 logger = logging.getLogger(__name__)
+
+MUTE_DB_EPSILON = 1e-6
 
 _SETTINGS_FLOOR_LOCK = threading.Lock()
 _SETTINGS_FLOOR_CACHE: tuple[str, int | None, int | None, float] | None = None
@@ -115,3 +119,22 @@ def db_to_percent(db: float, *, floor_db: float | None = None) -> int:
         return 100
     span = VOLUME_CEILING_DB - floor
     return max(1, min(100, round(1.0 + (value - floor) / span * 99.0)))
+
+
+def main_mute_for_level(level: int) -> bool:
+    """0% asserts Camilla ``main_mute``; the dB floor alone is not silence."""
+    return int(level) <= 0
+
+
+def main_mute_for_db(db: float) -> bool:
+    """The dB twin of :func:`main_mute_for_level`; they agree for every level."""
+    return float(db) <= percent_to_db(0) + MUTE_DB_EPSILON
+
+
+def guard_in_effect(db: float | None) -> TypeGuard[float]:
+    """Whether a push-mode Camilla level is a deliberate guard.
+
+    Push-mode pins Camilla at 0 dB; a level further below it than the drift
+    dead band is a degraded-safe guard to keep, not jitter.
+    """
+    return db is not None and float(db) < -RECONCILE_DRIFT_DB

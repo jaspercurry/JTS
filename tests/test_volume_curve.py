@@ -12,7 +12,13 @@ import pytest
 
 import jasper.volume_curve as volume_curve
 from jasper.sound import settings as sound_settings
-from jasper.volume_curve import configured_volume_floor_db, db_to_percent, percent_to_db
+from jasper.volume_curve import (
+    configured_volume_floor_db,
+    db_to_percent,
+    main_mute_for_db,
+    main_mute_for_level,
+    percent_to_db,
+)
 from jasper.volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
@@ -26,6 +32,13 @@ def test_zero_is_mute_one_is_audible_above_floor():
     assert percent_to_db(0) == DEFAULT_VOLUME_FLOOR_DB
     assert percent_to_db(1) > DEFAULT_VOLUME_FLOOR_DB
     assert percent_to_db(100) == 0.0
+
+
+@pytest.mark.parametrize("level", range(1, 101))
+def test_main_mute_predicates_agree_for_every_audible_level(level):
+    # R-006: a level and its own dB must not disagree on mute, or the
+    # coordinator re-mutes an audible level forever.
+    assert main_mute_for_level(level) == main_mute_for_db(percent_to_db(level))
 
 
 def test_nonzero_percent_round_trips_above_floor():
