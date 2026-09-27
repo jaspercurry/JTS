@@ -161,18 +161,19 @@ GENERATED_BY = "jasper.active_speaker.crossover_v2.feature_classifier"
 
 
 #: The primary analysis window. ``gating.SEARCH_T_MAX_MS`` is the product's own
-#: reflection search ceiling AND the window it falls back to when no reflection
-#: is found, so a fixed window of that length is the longest one the product
-#: ever calls reflection-free. Overridable per run.
+#: reflection search ceiling with no room declared AND the window it falls back
+#: to when no reflection is found, so a fixed window of that length is the
+#: longest one the product calls reflection-free without a declared room.
+#: Overridable per run.
 DEFAULT_GATE_MS = SEARCH_T_MAX_MS
 
 #: What :func:`excess_group_delay` actually windows with. Research 03's
 #: pitfall is real — a SHORT gate biases the Hilbert min-phase
 #: reconstruction — but the window this instrument reads EGD through is
 #: ``DEFAULT_GATE_MS`` (``== gating.SEARCH_T_MAX_MS``), the longest window
-#: the product ever calls reflection-free, so there is no longer clean
-#: window to move to. It is also the exact window the C1/C3 controls are
-#: calibrated on, on THIS round's own IR.
+#: the product calls reflection-free without a declared room, so there is no
+#: longer clean window to move to. It is also the exact window the C1/C3
+#: controls are calibrated on, on THIS round's own IR.
 EGD_WINDOW_KIND = "fixed_reflection_free_gate"
 
 TRUSTED_CEILING_HZ = 16000.0

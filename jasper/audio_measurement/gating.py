@@ -21,7 +21,9 @@ measurement runs.
 The gating contract (R9, issue #1969): every gating block carries, beside the window chosen,
 ``floor_source`` (WHY the window is what it is — :data:`FLOOR_MEASURED` / :data:`FLOOR_SEARCH_BOUND`
 / ``None``; deliberately no ``geometric`` value, since JTS never derives a bound from assumed
-room geometry, owner ruling #1966), ``f_valid_floor_hz``/``f_trusted_hz`` (the ``1/T`` and
+room geometry, owner ruling #1966), ``search_bound_ms``/``search_bound_source`` (how far the
+search ran, and whether the declared room's first bounce or the default set it, #3665 item 10),
+``f_valid_floor_hz``/``f_trusted_hz`` (the ``1/T`` and
 ``2.5/T`` floors side by side), ``internal_reflection_ledger`` (early features classified
 rather than gated, see :func:`detect_first_reflection`), and ``pre_post_gate_delta`` (built one
 stage out and merged in by the single caller with both). A window length alone can't
@@ -117,7 +119,8 @@ REFLECTION_THRESHOLD_DB = 12.0
 # LOWER Q brings the early false detects back; HIGHER Q rejects real reflections, falling back
 # to the 7 ms ceiling and over-claiming low-frequency validity.
 REFLECTION_PROMINENCE_DB = 7.5
-# Search span after the direct peak, in ms. t_max covers domestic floor bounces (~4-5 ms).
+# Search span after the direct peak, in ms. t_max covers domestic floor bounces (~4-5 ms)
+# where no room is declared; a declared room's first bounce replaces it (#3665 item 10).
 # Below t_min, gating destroys low-frequency resolution. Timing alone cannot attribute
 # these ungated features: nearby room boundaries can arrive this early too (issue #2103).
 SEARCH_T_MIN_MS = 0.5
@@ -180,6 +183,10 @@ ENTANGLEMENT_SOURCES = frozenset(
         ENTANGLEMENT_SOURCE_UNKNOWN,
     }
 )
+#: Where a gate's search bound came from: the declared room's first bounce at the
+#: capture's distance, or :data:`SEARCH_T_MAX_MS` with no room declared.
+SEARCH_BOUND_DECLARED = ENTANGLEMENT_SOURCE_DECLARED
+SEARCH_BOUND_DEFAULT = "search_default"
 NEAR_FIELD_EXEMPT = "near_field"
 #: A seat take is the room's own measurement, so its reflections stay in
 #: (ADR-0260).
@@ -422,7 +429,9 @@ def detect_first_reflection(
 
     ``direct_peak_idx`` defaults to ``argmax(|ir|)``. Returns ``floor_source=None``
     (ungateable) for a silent/NaN capture or no room to search; :data:`FLOOR_SEARCH_BOUND` when
-    nothing survived the vote before the bound; :data:`FLOOR_MEASURED` when accepted.
+    nothing survived the vote before the bound, or when the bound falls inside ``t_min_ms``
+    (a declared first bounce that early still ends the window, #3665 item 10);
+    :data:`FLOOR_MEASURED` when accepted.
     """
     ab = np.abs(np.asarray(ir, dtype=np.float64))
     n = ab.size
@@ -454,8 +463,10 @@ def detect_first_reflection(
     t_max = int(round(t_max_ms * 1e-3 * sr))
     end = min(n - 1, p + t_max)
     if p + t_min >= end:
-        # No usable room after the direct peak to search.
-        return ReflectionDetection(p, None, None)
+        # No usable room after the direct peak to search, unless the bound itself sits
+        # inside t_min: then the window still ends at it.
+        blind = 0 < t_max <= t_min and p + t_max <= n - 1
+        return ReflectionDetection(p, None, FLOOR_SEARCH_BOUND if blind else None)
 
     # Analytic (ETC) envelope: a different quantity from the smoothed RMS one the hysteresis
     # search runs on. Computed once for reporting only; never read by the decision below.
@@ -521,12 +532,15 @@ def _fragment(
     trusted_floor_hz: float | None,
     floor_source: str | None,
     internal_reflection_ledger: tuple[dict[str, Any], ...] = (),
+    bound_ms: float | None = None,
+    bound_source: str | None = None,
 ) -> dict[str, Any]:
     """THE single writer of a gating block's shape (everything but ``applied``/
-    ``exempt_reason``, which the caller supplies). All times ms from the analysed IR's start.
-    ``first_reflection_ms`` is the ARRIVAL (envelope peak, schema 2); ``reflection_onset_ms`` is
-    where the window ENDS. ``internal_reflection_ledger`` is a list, possibly empty, never
-    ``None`` — empty means "looked, found nothing", not "nothing looked"."""
+    ``exempt_reason``, which the caller supplies). All times ms from the analysed IR's start,
+    except ``search_bound_ms``, from the direct peak. ``first_reflection_ms`` is the ARRIVAL
+    (envelope peak, schema 2); ``reflection_onset_ms`` is where the window ENDS.
+    ``internal_reflection_ledger`` is a list, possibly empty, never ``None`` — empty means
+    "looked, found nothing", not "nothing looked"."""
     return {
         "schema_version": GATING_SCHEMA_VERSION,
         "direct_peak_ms": direct_peak_ms,
@@ -537,6 +551,8 @@ def _fragment(
         "f_valid_floor_hz": floor_hz,
         "f_trusted_hz": trusted_floor_hz,
         "floor_source": floor_source,
+        "search_bound_ms": bound_ms,
+        "search_bound_source": bound_source,
         "internal_reflection_ledger": [dict(e) for e in internal_reflection_ledger],
     }
 
@@ -608,6 +624,13 @@ def gated_segment(
     return segment * window, lead
 
 
+def search_bound_ms(declared_first_bounce_s: float | None) -> float:
+    """How far after the direct peak the reflection search runs: the declared room's
+    first bounce at the capture's distance, or :data:`SEARCH_T_MAX_MS` with no room
+    declared (#3665 item 10)."""
+    return SEARCH_T_MAX_MS if declared_first_bounce_s is None else 1000.0 * float(declared_first_bounce_s)
+
+
 def gate_impulse_response(
     ir: np.ndarray,
     sample_rate: int,
@@ -617,14 +640,15 @@ def gate_impulse_response(
     threshold_db: float = REFLECTION_THRESHOLD_DB,
     prominence_db: float = REFLECTION_PROMINENCE_DB,
     t_min_ms: float = SEARCH_T_MIN_MS,
-    t_max_ms: float = SEARCH_T_MAX_MS,
+    declared_first_bounce_s: float | None = None,
     smooth_ms: float = ENVELOPE_SMOOTH_MS,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Returns ``(gated_ir, fragment)``. ``gated_ir`` is the SAME length as ``ir``: 1.0 through
     the direct peak, a flat plateau, a half-Hann taper into the detected reflection (or the
     search-span bound), then 0. ``fragment`` is the SC-2 block MINUS ``applied``/
     ``exempt_reason`` (caller derives: ``applied = fragment["floor_source"] is not None``,
-    ``exempt_reason = None`` — this is only called for reference-axis captures).
+    ``exempt_reason = None`` — this is only called for reference-axis captures). The search
+    runs to :func:`search_bound_ms` of ``declared_first_bounce_s``, and the block says so.
 
     When the IR is ungateable, the input is returned unchanged and every fragment field except
     ``direct_peak_ms``/``internal_reflection_ledger`` is ``None``. The window is sized from the
@@ -633,6 +657,7 @@ def gate_impulse_response(
     ir_arr = np.asarray(ir)
     n = ir_arr.shape[0] if ir_arr.ndim == 1 else 0
     sr = float(sample_rate)
+    t_max_ms = search_bound_ms(declared_first_bounce_s)
 
     det = detect_first_reflection(
         ir_arr,
@@ -708,6 +733,8 @@ def gate_impulse_response(
         trusted_floor_hz=trusted_floor_hz,
         floor_source=det.floor_source,
         internal_reflection_ledger=det.internal_reflections,
+        bound_ms=t_max_ms,
+        bound_source=SEARCH_BOUND_DEFAULT if declared_first_bounce_s is None else SEARCH_BOUND_DECLARED,
     )
     return gated, fragment
 

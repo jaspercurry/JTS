@@ -369,6 +369,10 @@ class MeasurementGeometry:
     #: :mod:`~jasper.audio_measurement.gating`'s exemption words
     #: (``SEAT_EXEMPT``) analyzes it ungated and says so in its gating block.
     gate_exempt_reason: str | None = None
+    #: The declared room's first bounce at this capture's distance, in seconds:
+    #: the gate searches for a reflection up to it, and to
+    #: ``gating.SEARCH_T_MAX_MS`` with no room declared (#3665 item 10).
+    declared_first_bounce_s: float | None = None
     position_deg: float | None = None
     vertical_deg: float | None = None
 

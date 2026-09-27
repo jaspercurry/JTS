@@ -68,15 +68,20 @@ def analysis_provenance(
     }
 
 
+def take_distance_m(kind: str | None, distance_m: float | None) -> float | None:
+    """How far a take's microphone sits from its pose's reference: a seat
+    states no distance; any other pose that states none sits at the mark."""
+    return None if kind == POSE_KIND_SEAT else MARK_DISTANCE_M if distance_m is None else float(distance_m)
+
+
 def take_trusted_band(
     *, purpose: str | None, kind: str | None, distance_m: float | None, driver: str,
     roles: Sequence[str], diameters_mm_by_role: Mapping[str, float], room: DeclaredGeometry | None,
 ) -> TrustedBand:
     """The band a take trusts, from its pose, the drivers that played (its
     ``driver`` alone, or every one of ``roles``) and the declared room
-    (ADR-0366 §3). A seat states no distance; any other pose that states none
-    sits at the mark."""
-    distance = None if kind == POSE_KIND_SEAT else MARK_DISTANCE_M if distance_m is None else float(distance_m)
+    (ADR-0366 §3), at :func:`take_distance_m`."""
+    distance = take_distance_m(kind, distance_m)
     played = (measurement_target_parts(driver)[0],) if driver else tuple(roles)
     return trusted_band(
         distance_m=distance, driver=driver, room=room,

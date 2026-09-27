@@ -160,7 +160,7 @@ def analyze_program_capture(
         analysis = ProgramAnalysis(phase=program.phase, program_id=program.program_id, locations=tuple(locations))
     elif is_branch_program(program):
         analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
-                                    gate_exempt_reason=geometry.gate_exempt_reason)
+                                    geometry=geometry)
     elif program.phase == PROGRAM_PHASE_CHECK:
         analysis = _analyze_check(
             program, capture, sample_rate, global_offset, locations, priors,
@@ -347,7 +347,7 @@ def _repeat_driver_responses(
     n_fft: int,
     impulses: Mapping[str, RecordedImpulse],
     alignment_band_hz: tuple[float, float] | None = None,
-    gate_exempt_reason: str | None = None,
+    geometry: MeasurementGeometry = MeasurementGeometry(),
 ) -> tuple[DriverResponse, ...]:
     """Per-repeat responses for ``linearization_envelope.compute_sigma_curve``."""
     out: list[DriverResponse] = []
@@ -363,7 +363,7 @@ def _repeat_driver_responses(
             capture_segment=_raw_sweep_segment(
                 capture, seg, global_offset + seg.start_sample,
             ),
-            gate_exempt_reason=gate_exempt_reason,
+            geometry=geometry,
         )
         out.append(replace(resp, repeat_index=repeat_index, impulse=impulses[seg.segment_id]))
     return tuple(out)
@@ -428,7 +428,7 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg, global_offset + seg.start_sample,
                 ),
-                gate_exempt_reason=geometry.gate_exempt_reason,
+                geometry=geometry,
             ),
             impulse=impulses[seg.segment_id],
             repeat_responses=_repeat_driver_responses(
@@ -438,7 +438,7 @@ def _analyze_measure(
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft, impulses=impulses,
                 alignment_band_hz=alignment_band_hz,
-                gate_exempt_reason=geometry.gate_exempt_reason,
+                geometry=geometry,
             ),
         )
         for seg, full_ir in branches
@@ -532,8 +532,11 @@ def _build_candidate(
     repeat_responses: tuple[DriverResponse, ...] = (),
     geometry: MeasurementGeometry | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
-    freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
-    _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
+    bounce_s = geometry.declared_first_bounce_s if geometry is not None else None
+    freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration,
+                                          declared_first_bounce_s=bounce_s)
+    _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration,
+                                        declared_first_bounce_s=bounce_s)
     lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=tweeter_sweep_lo_hz, woofer_sweep_hi_hz=woofer_sweep_hi_hz,
     )
@@ -904,7 +907,7 @@ def _analyze_verify(
         "summed", full_ir, sample_rate,
         calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
         radiated_band_hz=_radiated_band_hz(seg),
-        gate_exempt_reason=geometry.gate_exempt_reason,
+        geometry=geometry,
     )
     summed = replace(
         summed, late_energy=impulse_late_energy(full_ir, sample_rate_hz=sample_rate),

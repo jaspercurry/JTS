@@ -22,7 +22,7 @@ from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import (
-    analysis_blocks, enrich_capture_record, take_trusted_band,
+    analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_band,
 )
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
@@ -77,16 +77,33 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         index = record.get("capture_index", record["index"])
         return capture_indexes[index - 1] if capture_indexes else index
 
+    def declared_room(record: Any) -> tuple[float | None, dict[str, Any] | None]:
+        """The take's first bounce in the declared room, which bounds its gate
+        (#3665 item 10), and the band it banks (ADR-0366 §3), from one read."""
+        kind, distance_m = record.get("pose_kind"), record.get("mark_distance_m")
+        try:
+            room = load_declared_geometry()
+            band = asdict(take_trusted_band(
+                purpose=record.get("measurement_purpose"), kind=kind, distance_m=distance_m,
+                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_role=diameters, room=room))
+            return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), band
+        except (OSError, ValueError) as exc:
+            # The take gates to the default bound and banks no band; its reader states one.
+            log_event(logger, "correction.take_band_not_banked", level=logging.WARNING,
+                      take_id=record["take_id"], error_type=type(exc).__name__)
+            return None, None
+
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         captured = provenance.take() if provenance is not None else None
         record = manifest.capture_record(record)
+        first_bounce_s, band = declared_room(record)
         program = getattr(capture, "program", None) or record.get("program")
         fields: dict[str, Any] = {}
         result: Any = KeyError("program")
         if program is not None:
             try:
                 phase = conductor.phase_of_index(index_of(record))
-                result = analyze_capture({**record, "program": program}, capture)
+                result = analyze_capture({**record, "program": program}, capture, first_bounce_s)
                 fields = evidence.get("capture_provenance", {}).get(phase, {})
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
@@ -96,15 +113,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             fields = {**fields, **analysis_blocks(result),
                       **_kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
-        try:
-            fields["trusted_band"] = asdict(take_trusted_band(
-                purpose=record.get("measurement_purpose"), kind=record.get("pose_kind"),
-                distance_m=record.get("mark_distance_m"), driver=record.get("pose_driver") or "",
-                roles=roles, diameters_mm_by_role=diameters, room=load_declared_geometry()))
-        except (OSError, ValueError) as exc:
-            # The take banks without a band; its reader states one (ADR-0366 §3).
-            log_event(logger, "correction.take_band_not_banked", level=logging.WARNING,
-                      take_id=record["take_id"], error_type=type(exc).__name__)
+        if band is not None:
+            fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),
@@ -120,7 +130,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     records.enrich, records.after_bank = enrich, after_bank
 
-    def analyze_capture(record: Any, capture: Any) -> Any:
+    def analyze_capture(record: Any, capture: Any, first_bounce_s: float | None) -> Any:
         index = index_of(record)
         phase = conductor.phase_of_index(index)
         priors = (conductor.check_priors() if phase == PHASE_CHECK else
@@ -130,7 +140,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
         analysis = conductor.analyze(
             ExcitationProgram.from_dict(record["program"]), capture, priors,
-            conductor.capture_geometry(phase, index), phase=phase,
+            replace(conductor.capture_geometry(phase, index), declared_first_bounce_s=first_bounce_s), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),

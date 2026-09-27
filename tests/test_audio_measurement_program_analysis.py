@@ -5285,6 +5285,28 @@ def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
     assert np.ptp(response.magnitude_db[bass]) > 5
 
 
+@pytest.mark.parametrize("geometry,bound_ms,source", [
+    (None, 7.0, gating.SEARCH_BOUND_DEFAULT),
+    (MeasurementGeometry(declared_first_bounce_s=0.009), 9.0, gating.SEARCH_BOUND_DECLARED),
+    (MeasurementGeometry(declared_first_bounce_s=0.0003), 0.3, gating.SEARCH_BOUND_DECLARED),
+])
+def test_a_take_searches_for_a_reflection_as_far_as_the_declared_rooms_first_bounce(geometry, bound_ms, source):
+    """A declared room's first bounce at 9 ms gates a take with no earlier
+    reflection at 9 ms; with no room declared it gates at 7 ms, and a bounce
+    too early for the search to look still ends the window there. The gate
+    says which bound it searched to and where that came from (#3665 item 10)."""
+    prog = build_verify_program(FC_HZ, sweep_band_hz=(20, 20000), sweep_s=1.5)
+    ir = np.zeros(SR // 4)
+    ir[200] = 0.5
+    cap = np.concatenate([np.zeros(800), fftconvolve(render_program_pcm(prog)[:, 0], ir), np.zeros(5000)])
+    cap += np.random.default_rng(5).normal(0.0, 1e-8, cap.size)
+
+    gate = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(), geometry=geometry).summed_response.gating
+
+    assert (gate["window_ms"], gate["floor_source"], gate["search_bound_ms"], gate["search_bound_source"]) == (
+        pytest.approx(bound_ms, abs=0.01), gating.FLOOR_SEARCH_BOUND, pytest.approx(bound_ms), source)
+
+
 def test_a_one_driver_take_under_the_near_field_exemption_reads_every_sweep_ungated():
     """A near-field take is too close for the room to matter (ADR-0360): its
     primary sweep and both repeats are read ungated, claiming no floor, over a
@@ -6612,6 +6634,23 @@ def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
     assert fields["tweeter_band_hz"] == "(2000.0, 4000.0)"
     assert "level_w_db" in fields
     assert "level_t_db" in fields
+
+
+@pytest.mark.parametrize("geometry,woofer_band_hz", [
+    (None, "(250.0, 500.0)"),
+    (MeasurementGeometry(declared_first_bounce_s=0.003), "(333.3, 500.0)"),
+])
+def test_the_sum_prediction_gates_each_branch_as_far_as_its_take(caplog, geometry, woofer_band_hz):
+    """The prediction's branches search for a reflection as far as the take's
+    own gate, so a declared room's 3 ms first bounce floors the level match's
+    woofer band at 1/3 ms (#3665 item 10)."""
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    woofer_ir, tweeter_ir = _lr_pair_irs(500.0, order=4)
+    _build_candidate(
+        woofer_ir, tweeter_ir, SR, _n_fft_for(woofer_ir, tweeter_ir), 500.0, "woofer", "tweeter",
+        _candidate_alignment(), None, **_one_sided_sweeps(500.0), geometry=geometry,
+    )
+    assert event_fields(caplog, "program_analysis.branch_level_match")["woofer_band_hz"] == woofer_band_hz
 
 
 @pytest.mark.parametrize("excursion_db", [-4.0, 4.0])

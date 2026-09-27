@@ -12,12 +12,12 @@ import numpy as np
 
 from .check import _pilot_verdicts
 from .drift import _estimate_drift
-from .model import ProgramAnalysis
+from .model import MeasurementGeometry, ProgramAnalysis
 from .response import _deconvolve_window, _driver_response, _n_fft_for, _radiated_band_hz, recorded_impulse
 
 
 def analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
-                     gate_exempt_reason=None):
+                     geometry=MeasurementGeometry()):
     drift = _estimate_drift(program, capture, sample_rate, locations)
     epsilon = drift.epsilon_ppm / 1e6
     segments = [program.segment(name) for name in ("sweep_w", "sweep_t", "sweep_verify")]
@@ -33,7 +33,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
             role, ir, sample_rate, calibration=calibration, ambient_report=None,
             fc_hz=priors.crossover_fc_hz, n_fft=n_fft,
             radiated_band_hz=_radiated_band_hz(seg), preserve_timing=True,
-            gate_exempt_reason=gate_exempt_reason,
+            geometry=geometry,
         )
         # Remove accumulated clock drift, retaining physical branch delay.
         response = replace(response, complex_tf=response.complex_tf * np.exp(
