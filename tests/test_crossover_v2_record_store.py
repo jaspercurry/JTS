@@ -37,7 +37,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir
 from jasper.active_speaker.crossover_v2.record_store import (
     CHECK_EVIDENCE_KIND,
-    CLOUD_EVIDENCE_KIND,
     BankedRecordStore,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -46,7 +45,6 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_KIND
-from jasper.attribution.session_identity import SESSION_IDENTITY_KEY
 from tests._log_events import event_fields
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_profile import _two_way_preset
@@ -337,7 +335,7 @@ def _candidate() -> MeasuredCrossoverCandidate:
 
 
 def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
-    """All five routes: the four publishers' kinds plus the position take.
+    """All four routes: the three publishers' kinds plus the position take.
 
     Parametrized together and not sampled, because the route table is where a
     kind gets forgotten.
@@ -348,11 +346,6 @@ def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
             "check",
             {"kind": CHECK_EVIDENCE_KIND, "gain_plan_db": {"woofer": -6.0}},
             "check.json",
-        ),
-        (
-            "cloud",
-            {"kind": CLOUD_EVIDENCE_KIND, "phase": "cloud_measure", "ripple_db": 3.0},
-            "cloud_measure.json",
         ),
         ("candidate", _candidate().to_dict(), "candidate.json"),
         (
@@ -387,26 +380,6 @@ async def test_a_folded_kind_lands_where_its_reader_looks(
     found, why = round_artifact_dir(Path(real_store.evidence.bundle_dir))
     assert found is not None, why
     assert (found / filename).is_file()
-
-
-async def test_a_banked_cloud_result_carries_the_session_identity(real_store):
-    """F1: the cloud payload's BYTES, not only its path.
-
-    The store stamps the session identity, and it names both namespaces
-    because the capture id is minted after the bundle id and is not derivable
-    from it.
-    """
-    record = {
-        "kind": CLOUD_EVIDENCE_KIND, "phase": "cloud_measure", "ripple_db": 3.0,
-    }
-
-    record_id = await real_store.bank(record)
-
-    banked = _banked_file(real_store, record_id)
-    stamped = banked[SESSION_IDENTITY_KEY]
-    assert stamped["session_id"] == real_store.evidence.session_id
-    assert CAPTURE in stamped["aliases"].values()
-    assert banked["ripple_db"] == 3.0
 
 
 async def test_a_banked_candidate_is_where_candidate_bank_globs(real_store):

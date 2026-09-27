@@ -20,7 +20,7 @@ enters in exactly one block, quarantined and named in ``privacy`` — see
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -498,10 +498,8 @@ def build_crossover_evidence_packet(
             ),
         },
         "session": {
-            "bundle_session_id": info_raw.get("session_id"),
+            **_bundle_session(info_raw),
             "capture_session_id": round_dir.name,
-            "state": info_raw.get("state"),
-            "started_at": info_raw.get("started_at"),
             "declared_geometry": _declared_geometry_block(declared_geometry_path),
             "note": (
                 "bundle_session_id and capture_session_id are different id "
@@ -597,14 +595,22 @@ def _bundle_info(session_dir: Path) -> dict[str, Any]:
     return info_raw
 
 
+def _bundle_session(info_raw: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``session`` fields the bundle's own ``info.json`` states."""
+    return {
+        "bundle_session_id": info_raw.get("session_id"),
+        "state": info_raw.get("state"),
+        "started_at": info_raw.get("started_at"),
+    }
+
+
 def entry_evidence(session_dir: Path, rows: Sequence[Measurement]) -> dict[str, Any]:
     """The packet's ``entry_baseline`` block and the ``session`` and ``identity``
     fields a frequency view reads, from a bundle and its take ``rows``."""
     info_raw = _bundle_info(session_dir)
     identity, _ = _copy_allowed(_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS)
     return {
-        "session": {key: info_raw.get(key) for key in ("state", "started_at")}
-        | {"bundle_session_id": info_raw.get("session_id")},
+        "session": _bundle_session(info_raw),
         "identity": identity,
         "entry_baseline": _entry_baseline_block(session_dir, rows),
     }
