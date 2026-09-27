@@ -283,15 +283,15 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
     contract = contracts["bass"]
-    assert set(contract["schema"]["properties"]) == dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS | {"round_id"}
+    assert set(contract["schema"]["properties"]) == dynamic.REQUIRED_FIELDS | dynamic.OPTIONAL_FIELDS | {"round_id"}
     assert set(contract["refusal_codes"]) == {
         "bass_descriptor_malformed", "bass_linkwitz_transform_invalid",
         "bass_delta_highpass_hz_invalid", "bass_detector_lowpass_hz_invalid", "bass_compressor_threshold_dbfs_invalid",
         "bass_compressor_factor_invalid", "bass_compressor_attack_s_invalid", "bass_compressor_release_s_invalid",
         "bass_low_boost_db_invalid", "bass_reference_level_db_invalid",
     }
-    assert contract["schema"]["required"] == sorted(dynamic._REQUIRED_FIELDS)
-    assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic._OPTIONAL_FIELDS} == {
+    assert contract["schema"]["required"] == sorted(dynamic.REQUIRED_FIELDS)
+    assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic.OPTIONAL_FIELDS} == {
         "compressor_factor": 10.0, "compressor_attack_s": 0.01, "compressor_release_s": 0.25}
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
     assert contract["shared_headroom"]["adr"] == "ADR-0257"
@@ -324,7 +324,7 @@ def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():
     assert prescription_contracts()["speaker"]["evidence_declarations"]["harmonics"]["fields"][field]["kind"] == "random"
 
 
-@pytest.mark.parametrize("name", sorted(dynamic._REQUIRED_FIELDS | dynamic._OPTIONAL_FIELDS))
+@pytest.mark.parametrize("name", sorted(dynamic.REQUIRED_FIELDS | dynamic.OPTIONAL_FIELDS))
 def test_bass_schema_edges_match_the_unchanged_validator(name):
     contract = prescription_contracts()["bass"]
     prop = contract["schema"]["properties"][name]

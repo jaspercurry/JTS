@@ -363,12 +363,12 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         }, sorted(field.name for field in fields(bass.LinkwitzTransform))),
     }
     for field in fields(bass.DynamicBassDescriptor):
-        if field.name in bass._OPTIONAL_FIELDS:
+        if field.name in bass.OPTIONAL_FIELDS:
             properties[field.name]["default"] = field.default
     properties.update({name: {"type": "string", "minLength": 1, "description": description}
                        for name, description in format_["optional_top_level"].items()})
     return {
-        "schema": _object(properties, sorted(bass._REQUIRED_FIELDS)),
+        "schema": _object(properties, sorted(bass.REQUIRED_FIELDS)),
         "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
                    "linkwitz_transform": {"adr": "ADR-0359", "target_hz_exclusive_upper_field": "source_hz"}},
         "refusal_codes": format_["refusal_reasons"],
