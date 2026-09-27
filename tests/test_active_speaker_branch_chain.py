@@ -24,8 +24,6 @@ from jasper.active_speaker.branch_chain import (
     _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
-    _GRID_EDGE_HI_HZ,
-    _GRID_EDGE_LO_HZ,
     _PEAK_EPS_DB,
     _evaluation_grid,
     branch_chain_peak,
@@ -49,7 +47,7 @@ from jasper.active_speaker.graph.active_verifier import (
     _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
 )
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+from jasper.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
 from tests.test_rear_output_foundation import _rear_document
 
 # --------------------------------------------------------------------------- #
@@ -449,8 +447,8 @@ def test_the_grid_spans_the_whole_domain_the_peak_is_taken_over():
     sampling has to reach both domain edges, because appending the edges
     themselves bounds a monotonic shelf's asymptote and nothing else.
     """
-    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(_GRID_EDGE_LO_HZ)
-    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(_GRID_EDGE_HI_HZ)
+    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(EVALUABLE_HZ_MIN)
+    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(EVALUABLE_HZ_MAX)
     assert branch_chain_peak_db(
         (_peaking(60.0, 2.0, 5.0),)
     ) == pytest.approx(5.0, abs=0.05)
@@ -482,14 +480,14 @@ def test_the_background_resolution_is_never_coarser_than_it_was():
         pytest.param(
             (_peaking(20_000.0, 0.5, 3.0),) * 5 + (_peaking(18_182.0, 1.0, -8.0),) * 3,
             (CrossoverSection(1600.0, 4, highpass=True),),
-            (15_000.0, _GRID_EDGE_HI_HZ),
+            (15_000.0, EVALUABLE_HZ_MAX),
             0.8596,
             id="ultrasonic",
         ),
         pytest.param(
             (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3,
             (CrossoverSection(1600.0, 4, highpass=False),),
-            (_GRID_EDGE_LO_HZ, 60.0),
+            (EVALUABLE_HZ_MIN, 60.0),
             1.4733,
             id="subsonic",
         ),
@@ -525,7 +523,7 @@ def test_a_cascade_peaking_outside_the_audio_band_is_charged_for_it(
 
 
 def test_a_filter_centred_in_the_nyquist_sliver_is_read_at_its_full_gain():
-    """The 4.8 Hz between ``_GRID_EDGE_HI_HZ`` and Nyquist is a place a filter
+    """The 4.8 Hz between ``EVALUABLE_HZ_MAX`` and Nyquist is a place a filter
     can SIT, and the background grid's top is not a bound on that.
 
     The bilinear prewarp compresses frequency without bound approaching
@@ -537,12 +535,12 @@ def test_a_filter_centred_in_the_nyquist_sliver_is_read_at_its_full_gain():
     """
     sliver = (_peaking(23_999.0, 8.0, 12.0),)
 
-    assert _GRID_EDGE_HI_HZ < 23_999.0 < 0.5 * RESPONSE_SAMPLE_RATE_HZ
+    assert EVALUABLE_HZ_MAX < 23_999.0 < 0.5 * RESPONSE_SAMPLE_RATE_HZ
     assert branch_chain_peak_db(sliver) == pytest.approx(12.0, abs=1e-6)
     # ...and the edge sample alone is the under-read this closes, so the pin
     # cannot pass by the grid happening to be dense up there.
     assert float(np.max(20.0 * np.log10(np.abs(
-        chain_response(sliver, np.asarray([_GRID_EDGE_HI_HZ]))
+        chain_response(sliver, np.asarray([EVALUABLE_HZ_MAX]))
     )))) < 0.05
 
 
@@ -636,12 +634,12 @@ def _background_only_read_db(filters) -> float:
         freq for entry in filters
         if 0.0 < (freq := float(entry["freq"])) < 0.5 * RESPONSE_SAMPLE_RATE_HZ
     )
-    extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ, *centres]
+    extra = [EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX, *centres]
     extra.extend(math.sqrt(a * b) for a, b in zip(centres, centres[1:]))
     grid = np.unique(np.concatenate([
         np.geomspace(
-            _GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ,
-            round(48 * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)) + 1,
+            EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX,
+            round(48 * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN)) + 1,
         ),
         np.asarray(extra, dtype=np.float64),
     ]))
@@ -981,8 +979,8 @@ def test_a_rails_legal_pair_near_nyquist_still_under_reads_past_the_margin():
 @pytest.mark.parametrize(
     ("filters", "sweep_hz"),
     [
-        pytest.param(_ULTRASONIC_CASCADE, (15_000.0, _GRID_EDGE_HI_HZ), id="ultrasonic"),
-        pytest.param(_SUBSONIC_CASCADE, (_GRID_EDGE_LO_HZ, 60.0), id="subsonic"),
+        pytest.param(_ULTRASONIC_CASCADE, (15_000.0, EVALUABLE_HZ_MAX), id="ultrasonic"),
+        pytest.param(_SUBSONIC_CASCADE, (EVALUABLE_HZ_MIN, 60.0), id="subsonic"),
     ],
 )
 def test_the_two_cascades_are_knowingly_refused_and_recovered_by_re_emit(

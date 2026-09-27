@@ -134,6 +134,14 @@ EVALUABLE_Q_MIN = 1e-4
 # algebra that assumes infinite precision.
 EVALUABLE_Q_MAX = 1e6
 
+# The frequency span every chain peak is taken over, and the one a per-driver
+# prescribed cut must sit in, Hz: essentially DC to Nyquist. At its edges a
+# Peaking cut at EVALUABLE_Q_MAX lifts f64 round-off to about -146 dBFS, under
+# the 24-bit floor; at the extremes the emitter spells (1e-4 Hz,
+# 23,999.9999 Hz), to about -28 dBFS (ADR-0367).
+EVALUABLE_HZ_MIN = 1.0
+EVALUABLE_HZ_MAX = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
+
 
 def biquad_coeffs(
     biquad_type: str, freq: float, gain_db: float, q: float | None,

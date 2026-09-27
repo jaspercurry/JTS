@@ -979,6 +979,9 @@ def test_a_role_the_speaker_declares_no_band_for_is_refused_by_name(packet):
 
 
 _BANDS = {"woofer": WOOFER_BAND, "tweeter": TWEETER_BAND}
+# A tweeter band reaching both extremes the emitter spells, so the rows that use
+# it are IN-band cuts.
+_EDGE_BANDS = {**_BANDS, "tweeter": (1e-4, 24000.0)}
 
 
 @pytest.mark.parametrize(("filters", "passbands", "pins", "reason", "outside"), [
@@ -998,9 +1001,20 @@ _BANDS = {"woofer": WOOFER_BAND, "tweeter": TWEETER_BAND}
     pytest.param([_cut(freq=0.5)], _BANDS, {}, dp.FILTER_MALFORMED, None, id="cut below the evaluable range"),
     pytest.param([_cut(freq=23999.0)], _BANDS, {}, dp.FILTER_MALFORMED, None,
                  id="cut past the evaluable range"),
+    pytest.param([_cut(freq=1e-4, q=1e6)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band below the evaluable range"),
+    pytest.param([_cut(freq=23999.9999, q=1e6)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band past the evaluable range"),
+    pytest.param([_cut(q=5e-5)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band below the evaluable Q"),
+    pytest.param([_cut(q=2e6)], _EDGE_BANDS, {}, dp.FILTER_Q_OUT_OF_RANGE, None,
+                 id="cut in band past the evaluable Q"),
 ])
 def test_the_declared_band_bounds_a_boost_and_discloses_a_cut(filters, passbands, pins, reason, outside):
-    """ADR-0367: every boost refusal stands; a cut outside the band is admitted and counted."""
+    """ADR-0367: every boost refusal stands; a cut outside the band is admitted and counted.
+
+    Every cut, in band or not, stays inside the evaluator's domain and Q range (#5795).
+    """
     document = _document(filters, {"packet_fingerprint": "fp"}, pinned_trim_db=pins)
     args = dict(packet_fingerprint="fp", passbands_hz=passbands, classifications=None,
                 incumbent_filters={"tweeter": INCUMBENT_TWEETER}, branch_context=BRANCH_CONTEXT)
