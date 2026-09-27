@@ -47,6 +47,7 @@ from jasper.sound.settings import (
     output_trim_db as _output_trim,  # aliased so local `output_trim_db` vars don't shadow it
     save_sound_settings,
 )
+from jasper.volume_owner import volume_owner
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +395,7 @@ async def _reconcile_volume_curve_after_settings(
         backend=RendererClient(
             librespot_state_path=librespot_state.configured_path(),
         ),
+        volume_owner=volume_owner(),
     )
     coord.load_persisted_level()
     await coord.maybe_reconcile_camilla()

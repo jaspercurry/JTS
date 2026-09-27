@@ -62,12 +62,12 @@ from .volume_echo import (
     is_recent_cross_process_write,
     stamp_outbound,
 )
+from .volume_carrier import CamillaCarrier
 from .volume_measurement_gate import MeasurementGate
 from .volume_owner import VolumeOwner
 from .volume_scales import native_to_listening_level
 from .volume_curve import (
     guard_in_effect,
-    main_mute_for_db,
     main_mute_for_level,
     percent_to_db,
 )
@@ -114,6 +114,10 @@ class VolumeCoordinator:
     Inbound observers are separate ``VolumeObserver`` instances owned by
     the voice daemon. The coordinator does not create or own observer tasks;
     short-lived control-daemon instances therefore need no observer cleanup.
+
+    Short-lived builders in a process that registered a fader owner pass it
+    as ``volume_owner``; ``None`` builds this coordinator's own
+    (``CamillaCarrier``).
     """
 
     def __init__(
@@ -127,14 +131,12 @@ class VolumeCoordinator:
         volume_context_publisher: VolumeContextPublisher | None = None,
         handoff_settle_sec: float = 0.45,
         push_settle_sec: float = 0.75,
+        volume_owner: VolumeOwner | None = None,
     ) -> None:
         self._camilla = camilla
         # The coordinator holds the HOUSEHOLD claim — the standing level the
         # speaker plays at when nothing outranks it.
-        self._volume_owner = VolumeOwner(
-            set_fader_db=self._write_fader_db,
-            get_fader_db=self._read_fader_db,
-        )
+        self._carrier = CamillaCarrier(camilla=camilla, volume_owner=volume_owner)
         self._persistence = persistence
         self._backend = backend
         # Multi-account Spotify router for Web API volume control.
@@ -178,7 +180,7 @@ class VolumeCoordinator:
         self._volume_context_publisher = volume_context_publisher
         self._handoff = VolumeHandoff(
             effective_level=lambda: self.get_volume_state().effective_percent,
-            read_carrier=lambda: self._read_camilla_volume_and_mute(),
+            read_carrier=lambda: self._carrier.read_volume_and_mute(),
             persisted_carrier=lambda: self._persisted_main_volume_db(),
             write_guard=lambda db, *, context, persist: self._set_camilla_db(
                 db, context=context, persist=persist,
@@ -313,7 +315,7 @@ class VolumeCoordinator:
             if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                 await self._set_camilla(target_level)
             else:
-                pin_db = 0.0 if target_level > 0 else percent_to_db(0)
+                pin_db = percent_to_db(0) if main_mute_for_level(target_level) else 0.0
                 await self._set_camilla_db(
                     pin_db,
                     context="boot_push_pin",
@@ -359,7 +361,7 @@ class VolumeCoordinator:
                 source, target, muted=main_mute_for_level(target),
             )
             if main_mute_for_level(target):
-                await self._set_camilla_main_mute(
+                await self._carrier.write_main_mute(
                     True, context="set_listening_level_intent",
                 )
             await self._dispatch(target, persist=True, source=source)
@@ -385,7 +387,7 @@ class VolumeCoordinator:
                 source, target, muted=main_mute_for_level(target),
             )
             if main_mute_for_level(target):
-                await self._set_camilla_main_mute(
+                await self._carrier.write_main_mute(
                     True, context="adjust_listening_level_intent",
                 )
             await self._dispatch(target, persist=True, source=source)
@@ -411,7 +413,7 @@ class VolumeCoordinator:
         await self._publish_user_intent_context(source, saved, muted=True)
         # Final-output mute is local and safety-critical; never wait for a
         # Spotify/BT cloud or protocol round trip before asserting it.
-        await self._set_camilla_main_mute(
+        await self._carrier.write_main_mute(
             True, context="mute_intent",
         )
         await self._dispatch(0, persist=False, source=source)
@@ -450,7 +452,7 @@ class VolumeCoordinator:
             source, target, muted=main_mute_for_level(target),
         )
         if main_mute_for_level(target):
-            await self._set_camilla_main_mute(
+            await self._carrier.write_main_mute(
                 True, context="unmute_intent",
             )
         await self._dispatch(target, persist=True, source=source)
@@ -723,7 +725,7 @@ class VolumeCoordinator:
         """
         expected_db = percent_to_db(level)
         expected_mute = main_mute_for_level(level)
-        current_db, current_mute = await self._read_camilla_volume_and_mute()
+        current_db, current_mute = await self._carrier.read_volume_and_mute()
         mute_drift = (
             current_mute is not None
             and current_mute != expected_mute
@@ -1037,7 +1039,7 @@ class VolumeCoordinator:
             # unreadable Camilla observation. A false hardware read may never
             # lower an already-known mute assertion.
             muted = state.muted
-            current_db, current_mute = await self._read_camilla_volume_and_mute()
+            current_db, current_mute = await self._carrier.read_volume_and_mute()
             if current_db is None:
                 source = await self._active_source()
                 if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
@@ -1136,7 +1138,7 @@ class VolumeCoordinator:
                 current_db = None
             else:
                 current_db, current_mute = (
-                    await self._read_camilla_volume_and_mute()
+                    await self._carrier.read_volume_and_mute()
                 )
             if current_db is None:
                 record = self._persistence.load()
@@ -1295,7 +1297,7 @@ class VolumeCoordinator:
         expected_level = self._effective_level()
         expected_db = percent_to_db(expected_level)
         expected_mute = main_mute_for_level(expected_level)
-        current_db, current_mute = await self._read_camilla_volume_and_mute()
+        current_db, current_mute = await self._carrier.read_volume_and_mute()
         # MEASURE_PAUSE can arrive while the Camilla read above is in flight.
         # Re-check at the write boundary so an already-running observer tick
         # cannot cross into the ramp after measurement has taken ownership.
@@ -1333,7 +1335,7 @@ class VolumeCoordinator:
                 expected_db = percent_to_db(expected_level)
                 expected_mute = main_mute_for_level(expected_level)
                 current_db, current_mute = (
-                    await self._read_camilla_volume_and_mute()
+                    await self._carrier.read_volume_and_mute()
                 )
                 if (
                     self._voice_session_active
@@ -1360,7 +1362,7 @@ class VolumeCoordinator:
                 if self._defer_for_dsp_writer(reported=deferred):
                     return
                 try:
-                    ok = await self._write_camilla_db_with_mute(
+                    ok = await self._carrier.write_db_with_mute(
                         expected_db,
                         context="reconcile",
                     )
@@ -1502,86 +1504,20 @@ class VolumeCoordinator:
             return Source.USBSINK
         return Source.IDLE
 
-    async def _read_camilla_volume_and_mute(
-        self,
-    ) -> tuple[float | None, bool | None]:
-        result = await self._camilla.get_volume_and_mute(best_effort=True)
-        if result is not None:
-            db, muted = result
-            return float(db), bool(muted)
-        return None, None
-
-    async def _set_camilla_main_mute(
-        self, muted: bool, *, context: str,
-    ) -> bool:
-        target = bool(muted)
-        ok = await self._camilla.set_main_mute(target, best_effort=True)
-        if ok:
-            log_event(
-                logger,
-                "volume.main_mute",
-                muted=str(target).lower(),
-                context=context,
-                result="accepted",
-                level=logging.DEBUG,
-            )
-            return True
-        log_event(
-            logger,
-            "volume.main_mute",
-            muted=str(target).lower(),
-            context=context,
-            result="failed",
-            level=logging.WARNING,
-        )
-        return False
-
     @property
     def volume_owner(self) -> VolumeOwner:
         """This process's fader owner, for the claim holders that share it.
 
-        Separate coordinators have separate claim ledgers.
+        Coordinators built without one have separate claim ledgers.
         """
-        return self._volume_owner
-
-    async def _write_fader_db(self, db: float) -> bool:
-        return await self._camilla.set_volume_db(db, best_effort=True)
-
-    async def _read_fader_db(self) -> float | None:
-        return await self._camilla.get_volume_db(best_effort=True)
-
-    async def _write_camilla_db_with_mute(
-        self, db: float, *, context: str,
-    ) -> bool:
-        """Land the household level, and the mute that goes with it.
-
-        The dB half is the owner's — this is the coordinator declaring the
-        HOUSEHOLD claim, and every fader write it makes goes through that one
-        arbiter. The mute half stays here: ``main_mute`` is a separate flag
-        with its own two writers, and folding it into a level claim would give
-        the owner a second question to answer.
-        """
-        target_mute = main_mute_for_db(db)
-        if target_mute:
-            mute_ok = await self._set_camilla_main_mute(
-                True, context=context,
-            )
-            _volume_ok = await self._volume_owner.declare_household_level_db(db)
-            # Final content silence comes from main_mute. The dB floor is a
-            # defense-in-depth fallback if the mute flag is later lost.
-            return bool(mute_ok)
-
-        volume_ok = await self._volume_owner.declare_household_level_db(db)
-        if not volume_ok:
-            return False
-        return await self._set_camilla_main_mute(False, context=context)
+        return self._carrier.volume_owner
 
     async def _set_camilla_db(
         self, db: float, *, context: str, persist: bool,
     ) -> bool:
         """Set raw Camilla main_volume dB and its mute; False when a write
         fails. With `persist=True`, the dB is saved only once it lands."""
-        ok = await self._write_camilla_db_with_mute(db, context=context)
+        ok = await self._carrier.write_db_with_mute(db, context=context)
         if ok and persist:
             self._persistence.save_now(db)
         return bool(ok)
@@ -1652,7 +1588,7 @@ class VolumeCoordinator:
         # main_volume_db, even if the actual write didn't land. The
         # next set_volume call (or a source-transition) will re-apply
         # once camilla is back.
-        ok = await self._write_camilla_db_with_mute(
+        ok = await self._carrier.write_db_with_mute(
             db, context="set_camilla",
         )
         # main_volume IS what the user is controlling in idle. Persist
@@ -1681,6 +1617,7 @@ def build_volume_coordinator(
     camilla: "CamillaController",
     backend: "RendererClient",
     spotify_router: Any | None = None,
+    volume_owner: VolumeOwner | None = None,
 ) -> VolumeCoordinator:
     """The daemon-side assembly (mux, jasper-control): persisted level loaded,
     speaker name and context publisher wired, around the actuators whose
@@ -1692,6 +1629,7 @@ def build_volume_coordinator(
         spotify_router=spotify_router,
         spotify_device_name=speaker_runtime_name(),
         volume_context_publisher=volume_context_publisher_for_runtime(os.environ),
+        volume_owner=volume_owner,
     )
     coordinator.load_persisted_level()
     return coordinator

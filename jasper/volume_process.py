@@ -13,7 +13,8 @@ here.
 """
 from __future__ import annotations
 
-from .volume_owner import VolumeOwner, install_volume_owner
+from .volume_carrier import CamillaCarrier
+from .volume_owner import install_volume_owner, volume_owner
 from .volume_persistence import VolumePersistence, configured_path as volume_state_path
 
 
@@ -30,6 +31,7 @@ async def env_canonical_target_db() -> float:
         backend=RendererClient(
             librespot_state_path=librespot_state.configured_path(),
         ),
+        volume_owner=volume_owner(),
     )
     coord.load_persisted_level()
     return await coord.get_camilla_target_db()
@@ -67,14 +69,4 @@ def install_env_canonical_target_provider() -> None:
     from jasper.camilla import primary_controller, set_canonical_target_db_provider  # lazy: test patch boundary (tests/test_volume_coordinator.py)
 
     set_canonical_target_db_provider(env_canonical_target_db)
-
-    # Bound with best_effort=True: the owner's doors must report failure, not
-    # raise it (``volume_latch.FADER_IO_ERRORS`` states that contract, and
-    # ``CamillaUnavailable`` is deliberately not in it).
-    fader = primary_controller()
-    install_volume_owner(
-        VolumeOwner(
-            set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True),
-            get_fader_db=lambda: fader.get_volume_db(best_effort=True),
-        )
-    )
+    install_volume_owner(CamillaCarrier(camilla=primary_controller()).volume_owner)

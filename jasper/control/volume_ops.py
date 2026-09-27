@@ -16,6 +16,7 @@ from .. import librespot_state
 from ..accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
 from ..spotify_oauth import resolved_spotify_redirect_uri
+from ..volume_owner import volume_owner
 from ..volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -148,6 +149,7 @@ async def with_coordinator(
         # Web API because librespot 0.8.0 has no local HTTP control; None
         # (no client id / no authorized account) makes Spotify a no-op.
         spotify_router=build_spotify_router_or_none(),
+        volume_owner=volume_owner(),
     )
     # Nothing here is closable: RendererClient is a stateless probe wrapper
     # and CamillaController's websocket reconnects on next use.
