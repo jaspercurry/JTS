@@ -24,7 +24,7 @@ One ordered stream records, as they happen:
 * every probe answer (mux selection, renderer activity, duck probe, the
   DSP-writer flock probe, jasper-control's measurement hold);
 * each step's return value (or raised type) and the process ``VolumeOwner``
-  ``target_db()`` after it.
+  ``declared_level_db()`` after it.
 
 Clocks are frozen: ``time.monotonic`` / ``time.clock_gettime_ns`` are replaced
 BEFORE jasper is imported (so import-time captures such as
@@ -447,7 +447,7 @@ async def step(coord: VolumeCoordinator, name: str, make) -> object:
     except Exception as e:  # noqa: BLE001 - the trace records whatever escapes
         value = None
         outcome = ["raised", type(e).__name__, str(e)]
-    rec("step", name, outcome, r(coord.volume_owner.target_db()))
+    rec("step", name, outcome, r(coord.volume_owner.declared_level_db()))
     return value
 
 
