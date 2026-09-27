@@ -390,7 +390,8 @@ def _stub_ring_geometry_heals(monkeypatch):
     covered separately (the F6 tests below run the REAL slot heal).
     """
     monkeypatch.setattr(
-        cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: (snap, False)
+        cr, "_migrate_stale_fanin_ring_slots",
+        lambda path, reason: (cr.read_snapshot(path), False)
     )
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False

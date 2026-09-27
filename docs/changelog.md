@@ -46,9 +46,9 @@ format. Release tags are cut manually by a maintainer.
   `ring_capture.rs`, and the `correction_ring_lane`/`shairport_ring_lane`
   PCMs — plus the gate ladder, env snapshot/restore and staging arm that moved
   a live box between ingress shapes.
-- The `JASPER_FANIN_CAMILLA_COUPLING` selector vocabulary; the reconciler now
-  unsets a persisted value, and fan-in's refusal of any other token stands
-  until its accept-set is removed too.
+- The `JASPER_FANIN_CAMILLA_COUPLING` selector vocabulary and its per-pass
+  sweep (no box carries a persisted value); fan-in's refusal of any other
+  token stands until its accept-set is removed too.
 - The `jasper-control` MPRIS module and `renderer.pause_airplay`; AirPlay stop
   now goes through mux preemption like every other source.
 - Three escape-hatch environment variables — `JASPER_USBSINK_PREEMPT`,

@@ -12,7 +12,7 @@ captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
 Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or,
 on a roleful box whose active endpoint is armed, to the ACTIVE ring
 (active-content.ring) via ``jts_ring_active_playback``. The post-DSP end is
-declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path/slots
+declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path
 in outputd.env, whose single writer is ``_outputd_actions``. Ring A needs no
 declaration — fan-in fills it unconditionally.
 
@@ -688,7 +688,6 @@ def _converge_ring(
             return reconcile_camilla()
         return _reconcile_camilla(reason=reason, force=force)
 
-    fanin_snapshot = read_snapshot(env_path)
     outputd_snapshot = read_snapshot(outputd_env_path)
 
     outputd_new_text, changed = _apply_actions(
@@ -743,9 +742,7 @@ def _converge_ring(
     # A box already on the ring with a stale slot count or a stale on-disk ring
     # must still be healed. Both are write-on-change, so a coherent box pays a
     # few small reads and still takes the no-bounce path below.
-    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(
-        fanin_snapshot, reason
-    )
+    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(env_path, reason)
     files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
 
     if not (changed or slots_healed or files_cleared):
@@ -1117,7 +1114,7 @@ CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
 def _migrate_stale_fanin_ring_slots(
-    fanin_snapshot: EnvSnapshot, reason: str
+    fanin_env_path: str | Path, reason: str
 ) -> tuple[EnvSnapshot, bool]:
     """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
 
@@ -1142,7 +1139,7 @@ def _migrate_stale_fanin_ring_slots(
     geometry look repaired while the ring still cannot attach, so the wire is
     read first and a shear there DECLINES the write.
     """
-    current = read_snapshot(fanin_snapshot.path)
+    current = read_snapshot(fanin_env_path)
 
     # The axes this function does NOT own, read before it writes the one it does.
     conf_format = ring_conf.ring_conf_format(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)

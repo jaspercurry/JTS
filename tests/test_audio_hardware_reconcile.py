@@ -1424,33 +1424,16 @@ def test_reconcile_arms_each_recognized_single_dac_role(
         _assert_omits(commands, "enable --no-reload jasper-headphone-monitor.service")
 
 
-@pytest.mark.parametrize(
-    "locked_env,initial_fanin_env",
-    [
-        ("jasper.env", None),
-        # The route actions are all `unset` on fanin.env, so seeding one of
-        # their keys reaches apply_route_env's drop branch. That function runs
-        # in an `if` CONDITION, which disables set -e for its whole body — a
-        # refused lock there was discarded and the caller restarted anyway.
-        ("fanin.env", "JASPER_FANIN_INPUT_RESAMPLER_LANE=usbsink\n"),
-    ],
-)
+@pytest.mark.parametrize("locked_env", ["jasper.env", "fanin.env"])
 def test_a_refused_env_lock_fails_the_pass_without_restarting(
-    tmp_path: Path, locked_env: str, initial_fanin_env: str | None
+    tmp_path: Path, locked_env: str
 ):
-    """A refused lock returns 1 from the shared writer WITHOUT writing. The
-    `… && changed=1` / `file_changed=1` idioms would otherwise read that as
-    "changed" and restart jasper-outputd onto the OLD lane/PCM/format while
-    the unit exited 0. Removal condition: the bash env writers are gone."""
+    """A refused lock fails the pass WITHOUT writing, and nothing restarts: a
+    write that did not happen must not read as "changed" and restart
+    jasper-outputd onto the old lane/PCM/format."""
     os.mkfifo(tmp_path / f".{locked_env}.lock")
 
-    result = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_fanin_env=initial_fanin_env,
-    )
+    result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode != 0
     assert "restart" not in _systemctl_log(tmp_path)

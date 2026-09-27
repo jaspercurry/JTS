@@ -247,10 +247,9 @@ class _StereoHostCarrier:
         member_kwargs = self.prepare_eq(member_kwargs=member_kwargs)
 
         emit_kwargs = cast(EmitSoundConfigKwargs, dict(member_kwargs))
-        # fanin_coupling_capture_kwargs (JASPER_FANIN_CAMILLA_COUPLING=shm_ring)
-        # names the shared fan-in -> Camilla -> outputd SHM-ring capture/playback
-        # devices: source-agnostic, and byte-identical when absent (loopback ->
-        # {}). The carrier-preserved room PEQs, preference filters, trim, and
+        # fanin_coupling_capture_kwargs names the shared fan-in -> Camilla ->
+        # outputd SHM-ring capture/playback devices (source-agnostic). The
+        # carrier-preserved room PEQs, preference filters, trim, and
         # member policy all fold in unchanged. PRECEDENCE, and why a pipe sink
         # still takes the capture half: apply_capture_precedence.
         emit_kwargs = apply_capture_precedence(
