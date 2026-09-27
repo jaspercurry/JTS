@@ -84,6 +84,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..audio_input_view import profile_choice_specs, valid_profile_ids
 from ..log_event import log_event
 from .. import wake_models
@@ -904,6 +905,5 @@ def make_server(
     state_path: str = WAKE_MODEL_ENV_PATH,
     control_base: str = DEFAULT_CONTROL_BASE,
 ) -> ThreadingHTTPServer:
-    from ..platform import systemd
     cfg = {"state_path": state_path, "control_base": control_base}
     return systemd.make_http_server(target, _make_handler(cfg))

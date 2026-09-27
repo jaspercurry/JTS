@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from ..platform import systemd
 from ..identity.speaker_name import (
     DEFAULT_SPEAKER_NAME,
     MAX_SPEAKER_NAME_CHARS,
@@ -545,7 +546,5 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(target, *, state_path: str = SPEAKER_NAME_ENV_PATH) -> ThreadingHTTPServer:
-    from ..platform import systemd
-
     cfg = {"state_path": state_path}
     return systemd.make_http_server(target, _make_handler(cfg))
