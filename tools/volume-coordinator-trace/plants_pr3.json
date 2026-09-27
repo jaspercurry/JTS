@@ -1,5 +1,5 @@
 [
- ["jasper/volume_measurement_gate.py", "        if held_for < MEASUREMENT_AUTOCLEAR_SEC:", "        if held_for <= MEASUREMENT_AUTOCLEAR_SEC:"],
+ ["jasper/volume_measurement_gate.py", "        if held_for < voice_measurement.MEASUREMENT_AUTOCLEAR_SEC:", "        if held_for <= voice_measurement.MEASUREMENT_AUTOCLEAR_SEC:"],
  ["jasper/volume_measurement_gate.py", "                self._active_at = voice_measurement._measurement_monotonic()\n                self._lapse_logged = False", "                self._active_at = voice_measurement._measurement_monotonic()"],
  ["jasper/volume_measurement_gate.py", "        if self.holds_fader():\n            raise VolumeClaimRefused(", "        if False:\n            raise VolumeClaimRefused("],
  ["jasper/volume_measurement_gate.py", "        if self.active and not self.holds_fader():\n            self.active = False", "        if self.active and not self.holds_fader():\n            pass"],
