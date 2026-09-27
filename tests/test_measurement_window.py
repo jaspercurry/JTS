@@ -226,8 +226,9 @@ async def test_measurement_gate_refuses_unconfirmed_selection(monkeypatch):
 
     monkeypatch.setattr(coordinator, "_mux_socket_command", wrong_gate)
 
-    with pytest.raises(MeasurementWindowError, match="did not confirm"):
+    with pytest.raises(MeasurementWindowError) as exc:
         await REAL_ACQUIRE_MEASUREMENT_GATE()
+    assert exc.value.reason == "gate_not_confirmed"
 
 
 async def test_measurement_gate_release_retries_until_explicitly_clear(monkeypatch):
@@ -305,7 +306,7 @@ async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatc
     cleanup_modes: list[bool] = []
 
     async def acquire(**_kwargs) -> None:
-        raise MeasurementWindowError("response lost")
+        raise MeasurementWindowError("response lost", reason="gate_acquire_failed")
 
     async def release(*, allow_other_owner: bool, **_kwargs) -> None:
         cleanup_modes.append(allow_other_owner)
@@ -313,11 +314,12 @@ async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatc
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(MeasurementWindowError, match="response lost"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             skip_voice_pause=True,
         ):
             pytest.fail("an indeterminate acquire must not open the window")
+    assert exc.value.reason == "gate_acquire_failed"
 
     assert cleanup_modes == [True]
 
@@ -387,7 +389,7 @@ async def test_custom_owner_lost_acquire_runs_owner_scoped_cleanup(monkeypatch):
 
     async def acquire(*, gate_owner):
         assert gate_owner == "doctor-aec-probe"
-        raise MeasurementWindowError("response lost")
+        raise MeasurementWindowError("response lost", reason="gate_acquire_failed")
 
     async def release(*, gate_owner, allow_other_owner):
         releases.append((gate_owner, allow_other_owner))
@@ -395,12 +397,13 @@ async def test_custom_owner_lost_acquire_runs_owner_scoped_cleanup(monkeypatch):
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(MeasurementWindowError, match="response lost"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             gate_owner="doctor-aec-probe",
             skip_voice_pause=True,
         ):
             pytest.fail("an indeterminate acquire must not open the window")
+    assert exc.value.reason == "gate_acquire_failed"
 
     assert releases == [("doctor-aec-probe", True)]
 
@@ -513,7 +516,7 @@ def _simulate_gate_abort(monkeypatch, acquire_costs: tuple[float, ...]) -> float
         if calls["n"] == 1:
             return  # the enter-path acquire succeeds; the lease starts here
         clock["t"] += acquire_costs[(calls["n"] - 2) % len(acquire_costs)]
-        raise MeasurementWindowError("mux unavailable")
+        raise MeasurementWindowError("mux unavailable", reason="gate_acquire_failed")
 
     async def release(**_kwargs) -> None:
         return None
@@ -604,7 +607,7 @@ async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypa
         nonlocal acquire_calls
         acquire_calls += 1
         if acquire_calls > 1:
-            raise MeasurementWindowError("mux unavailable")
+            raise MeasurementWindowError("mux unavailable", reason="gate_acquire_failed")
 
     async def release(**_kwargs) -> None:
         released.append(True)
@@ -616,9 +619,10 @@ async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypa
     monkeypatch.setattr(coordinator, "MEASUREMENT_GATE_ABORT_SEC", 0.02)
 
     started = time.monotonic()
-    with pytest.raises(MeasurementWindowError, match="could not be renewed"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(skip_voice_pause=True):
             await asyncio.sleep(1.0)
+    assert exc.value.reason == "gate_lease_lost"
 
     assert time.monotonic() - started < 0.5
     assert acquire_calls >= 2
@@ -651,13 +655,14 @@ async def test_measurement_gate_wraps_body_without_source_process_churn(monkeypa
 
 async def test_gate_release_failure_surfaces(monkeypatch):
     async def release(**_kwargs) -> None:
-        raise MeasurementWindowError("gate stuck")
+        raise MeasurementWindowError("gate stuck", reason="gate_release_failed")
 
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(MeasurementWindowError, match="gate stuck"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(skip_voice_pause=True):
             pass
+    assert exc.value.reason == "gate_release_failed"
 
 
 async def test_measurement_releases_mux_gate_after_body_exception(monkeypatch):
@@ -709,9 +714,10 @@ async def test_active_voice_session_blocks_window(monkeypatch):
 
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
-    with pytest.raises(MeasurementWindowError, match="Voice session"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window():
             pass
+    assert exc.value.reason == "voice_session_active"
 
 async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     """If voice_daemon is not running, that means there's no session
@@ -727,17 +733,17 @@ async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "status",
+    "status,reason",
     [
-        FileNotFoundError("no voice daemon"),
-        RuntimeError("empty response"),
-        {},
-        {"state": "UNKNOWN"},
-        {"state": "SESSION"},
+        (FileNotFoundError("no voice daemon"), "voice_status_unavailable"),
+        (RuntimeError("empty response"), "voice_status_unavailable"),
+        ({}, "voice_status_invalid"),
+        ({"state": "UNKNOWN"}, "voice_status_invalid"),
+        ({"state": "SESSION"}, "voice_session_active"),
     ],
     ids=["unreachable", "malformed", "missing", "unknown", "session"],
 )
-async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status):
+async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status, reason):
     acquired: list[bool] = []
 
     async def fake_uds(_path, cmd, **_kwargs):
@@ -752,13 +758,14 @@ async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status)
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
 
-    with pytest.raises(MeasurementWindowError):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             gate_owner="doctor-aec-probe",
             require_voice_pause=True,
         ):
             pytest.fail("strict STATUS failure must not open the window")
 
+    assert exc.value.reason == reason
     assert acquired == []
 
 
@@ -801,13 +808,14 @@ async def test_strict_pause_failure_resumes_and_releases_exact_owner(
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", acquire)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(MeasurementWindowError):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             gate_owner="doctor-aec-probe",
             require_voice_pause=True,
         ):
             pytest.fail("strict PAUSE failure must not open the window")
 
+    assert exc.value.reason == "voice_pause_failed"
     assert events == [
         "STATUS",
         "acquire:doctor-aec-probe",
@@ -924,12 +932,13 @@ async def test_strict_voice_renewal_failure_aborts_and_restores(monkeypatch):
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
     monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.005)
 
-    with pytest.raises(MeasurementWindowError, match="Voice isolation"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             gate_owner="doctor-aec-probe",
             require_voice_pause=True,
         ):
             await asyncio.sleep(1.0)
+    assert exc.value.reason == "voice_lease_lost"
 
     assert pause_calls >= 2
     assert "MEASURE_RESUME" in events
@@ -986,11 +995,12 @@ async def test_concurrent_measurement_window_is_rejected(monkeypatch):
     monkeypatch.setattr(coordinator, "_window_active", False)  # clean slate
 
     async with measurement_window(skip_voice_pause=True, skip_music_isolation=True):
-        with pytest.raises(MeasurementWindowError, match="already in progress"):
+        with pytest.raises(MeasurementWindowError) as exc:
             async with measurement_window(
                 skip_voice_pause=True, skip_music_isolation=True,
             ):
                 pass
+        assert exc.value.reason == "measurement_in_progress"
 
     # Flag released after the outer window closed — a later window opens fine.
     assert coordinator._window_active is False
@@ -1009,9 +1019,10 @@ async def test_window_flag_released_when_precondition_fails(monkeypatch):
 
     monkeypatch.setattr(coordinator, "_voice_uds_command", fake_uds)
 
-    with pytest.raises(MeasurementWindowError, match="Voice session"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(skip_music_isolation=True):
             pass
+    assert exc.value.reason == "voice_session_active"
     assert coordinator._window_active is False
 
 
@@ -1020,13 +1031,14 @@ async def test_window_flag_released_even_if_gate_release_raises(monkeypatch):
     monkeypatch.setattr(coordinator, "_window_active", False)
 
     async def release(**_kwargs):
-        raise MeasurementWindowError("gate stuck")
+        raise MeasurementWindowError("gate stuck", reason="gate_release_failed")
 
     monkeypatch.setattr(coordinator, "_release_measurement_gate", release)
 
-    with pytest.raises(MeasurementWindowError, match="gate stuck"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(skip_voice_pause=True):
             pass
+    assert exc.value.reason == "gate_release_failed"
     assert coordinator._window_active is False
 
 
@@ -1050,11 +1062,12 @@ async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
     await wait_signalled(entered_restore, "window A mux-gate release entered", producer=task_a)
 
     # B must be refused while A's restore is still in flight.
-    with pytest.raises(MeasurementWindowError, match="already in progress"):
+    with pytest.raises(MeasurementWindowError) as exc:
         async with measurement_window(
             skip_voice_pause=True, skip_music_isolation=True,
         ):
             pass
+    assert exc.value.reason == "measurement_in_progress"
 
     release.set()
     await task_a
