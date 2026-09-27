@@ -53,7 +53,7 @@ def active_phase() -> str | None:
     reads as ``idle``), so this advisory gate never wedges the other measurement
     flows: anything but a live ``armed`` status reads as not-commissioning.
     """
-    from jasper.active_speaker.safe_playback import load_safe_playback_state
+    from jasper.active_speaker.safe_playback import load_safe_playback_state  # lazy: mic-meter numpy import cost
 
     return (
         "commissioning"
@@ -68,10 +68,9 @@ def blocking_measurement_phase() -> str | None:
     The reverse of the sync start path consulting :func:`active_phase`:
     ``commission-load`` calls this and refuses to arm a driver test while
     another measurement flow holds (or is about to hold) the measurement
-    window. The lazy import avoids an import cycle (that module consults us
-    back).
+    window.
     """
-    from .sync_flow import active_phase as _sync_phase
+    from .sync_flow import active_phase as _sync_phase  # lazy: sync_flow imports this module
 
     sync = _sync_phase()
     return f"sync:{sync}" if sync is not None else None

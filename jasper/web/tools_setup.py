@@ -60,6 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypeVar
 
 from ..platform import systemd
+from .. import atomic_io
 from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
 from ..tools.tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
@@ -155,9 +156,8 @@ def _read_apply_ts(path: str) -> float:
 
 
 def _write_apply_ts(path: str, ts: float) -> None:
-    from ..atomic_io import atomic_write_text
     try:
-        atomic_write_text(path, f"{ts:.3f}\n", mode=0o644)
+        atomic_io.atomic_write_text(path, f"{ts:.3f}\n", mode=0o644)
     except OSError as e:  # best-effort — the cap degrades open, never blocks
         logger.warning("could not write apply timestamp %s: %s", path, e)
 

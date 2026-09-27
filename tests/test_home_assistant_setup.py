@@ -136,9 +136,7 @@ def test_profile_link_empty_for_empty_url():
 # HA-specific policy (SRV host -> host, port default 8123, IPv4-preferred
 # url, location_name/version from TXT). The end-to-end handler tests stub
 # discover_sync wholesale, so these unit tests are the only coverage of
-# that mapping — they mock browse_once at the source (the in-function
-# `from ..net.mdns import browse_once` re-reads the attribute each call, so a
-# monkeypatch on jasper.net.mdns.browse_once is picked up).
+# that mapping through the shared jasper.net.mdns.browse_once boundary.
 
 def _ds(**kw):
     """Build a jasper.net.mdns.DiscoveredService with sensible defaults."""

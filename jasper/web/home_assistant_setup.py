@@ -66,6 +66,7 @@ from typing import Any
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
 from .. import home_assistant as _ha_mod
+from ..net import mdns
 from ..log_event import log_event
 from ..atomic_io import write_env_file
 from ..env_file import delete_env_file, read_env_file
@@ -249,10 +250,8 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
     instance name). Cross-subnet households return [] (mDNS is link-local).
     Synchronous: browse_once runs its own event loop internally."""
     try:
-        from ..net.mdns import browse_once
-
         out: list[dict[str, str]] = []
-        for svc in browse_once(HA_SERVICE_TYPE, timeout=timeout):
+        for svc in mdns.browse_once(HA_SERVICE_TYPE, timeout=timeout):
             # SRV record is the reliable source for host:port — TXT fields
             # like internal_url / external_url / base_url are often empty
             # strings in practice.

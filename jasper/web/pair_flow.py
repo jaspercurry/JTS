@@ -13,6 +13,7 @@ without importing each other's private functions.
 from __future__ import annotations
 
 from ..identity.reader import resolve_hostname
+from ..multiroom import state as grouping_state
 
 
 def resolve_pair() -> tuple[dict | None, dict | None, str]:
@@ -22,11 +23,10 @@ def resolve_pair() -> tuple[dict | None, dict | None, str]:
     roster-first through the same rooms helper used by bond/swap/trim so a
     foreign bond claimant cannot poison pair measurement.
     """
-    from .rooms_peers import discover_speakers_cached, self_addresses
-    from .rooms_setup import resolve_bond_peer
-    from ..multiroom.state import read_grouping_state
+    from .rooms_peers import discover_speakers_cached, self_addresses  # lazy: tests/test_web_rooms_setup.py boundary
+    from .rooms_setup import resolve_bond_peer  # lazy: tests/test_web_rooms_setup.py boundary
 
-    own = read_grouping_state()
+    own = grouping_state.read_grouping_state()
     bond_id = str(own.get("bond_id") or "").strip()
     if not own.get("enabled") or not bond_id:
         hostname = resolve_hostname()
