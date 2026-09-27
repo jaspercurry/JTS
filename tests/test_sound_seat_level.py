@@ -198,13 +198,11 @@ def test_stop_sends_sigint_and_reports_refused(
     session = seat_level._SeatLevelSession()
     session.start(target_db_spl=78.0, calibration_file="/dev/null")
     _wait_until(lambda: session.status()["state"] == "running")
-    # Wait for the stub to install its SIGINT handler before stopping it --
-    # it writes a ready marker right after (#5812, replacing a fixed sleep
-    # that raced the handler under load). The real CLI has the same startup
-    # window, but main()'s own outer `except KeyboardInterrupt` covers it
-    # there (nothing was claimed yet, so "restored" reports nothing to
-    # restore); this stub has no such second layer, so the test waits for
-    # the marker instead.
+    # The stub writes the marker right after it installs its SIGINT handler
+    # (#5812). The real CLI has the same startup window, but main()'s own
+    # outer `except KeyboardInterrupt` covers it there (nothing was claimed
+    # yet, so "restored" reports nothing to restore); this stub has no such
+    # second layer, so the test waits for the marker.
     _wait_until(lambda: ready_file.exists())
 
     stop_result = session.stop()
@@ -255,11 +253,9 @@ def test_force_stop_reports_written_sentence_not_raw_stderr(
     session = seat_level._SeatLevelSession()
     session.start(target_db_spl=78.0, calibration_file="/dev/null")
     _wait_until(lambda: session.status()["state"] == "running")
-    # Same startup-window race as test_stop_sends_sigint_and_reports_refused:
-    # wait for the stub to install its SIG_IGN handler (it writes a ready
-    # marker right after) instead of racing it with a fixed sleep -- without
-    # this, Python's default handler can exit it well within the 0.2s
-    # timeout and the escalation this test pins never happens.
+    # Same startup window as test_stop_sends_sigint_and_reports_refused: until
+    # the stub's SIG_IGN is in place, Python's default handler exits it well
+    # within the 0.2s timeout and the escalation this test pins never happens.
     _wait_until(lambda: ready_file.exists())
 
     stop_result = session.stop()
