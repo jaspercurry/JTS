@@ -22,6 +22,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, REASON_NO_IMPULSE,
 )
 from jasper.audio_measurement.seat_figures import band_indices, figure_level_db
+from jasper.audio_measurement.series_stats import repeat_spread
 from jasper.json_fields import finite_float
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
@@ -108,7 +109,7 @@ def arrival_gap_ms(
     where it overlaps the direct sound in the cancellation band.
 
     The median over repeats with the WORST repeat's ``confidence`` and
-    ``at_edge``, plus their peak-to-peak spread in µs. A repeat whose impulses
+    ``at_edge``, plus their repeat spread in µs. A repeat whose impulses
     are short, mismatched in length or not finite is NOT read — the whitening
     returns a lag for a non-finite bin rather than an error — so ``ms`` is
     ``None`` with a reason when none of them could be.
@@ -137,7 +138,7 @@ def arrival_gap_ms(
         "at_edge": any(row[2] for row in rows) if rows else None,
         "search_ms": search_ms if rows else None,
         "band_hz": list(band) if rows and band else None, "n_repeats": len(rows),
-        "repeat_spread_us": float(np.ptp(gaps)) * 1e3 if len(gaps) > 1 else None,
+        "repeat_spread_us": None if (spread := repeat_spread(gaps)) is None else spread * 1e3,
         "reason": "" if rows else REASON_COVERAGE_SHORT if search_ms is None else REASON_NO_IMPULSE,
     }
 

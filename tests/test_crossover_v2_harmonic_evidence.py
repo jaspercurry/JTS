@@ -258,12 +258,11 @@ def test_a_reading_past_an_orders_own_band_edge_is_null_not_a_number():
     assert top["h2_below_fundamental_db"] is not None
 
 
-def test_a_spread_over_fewer_than_two_repeats_is_absent_not_zero():
-    """The cross-seat block's rule, kept: 0.0 would say the repeats agreed."""
-    assert he._spread([]) is None
-    assert he._spread([-50.0]) is None
-    assert he._spread([float("nan"), -50.0]) is None
-    assert he._spread([-50.0, -51.0]) == pytest.approx(0.7, abs=0.05)
+def test_the_repeat_spread_is_the_range_and_absent_below_two_repeats():
+    """0.0 would say the repeats agreed; a NaN repeat is no repeat."""
+    pair = he._role_block("woofer", [_reading(), _reading(offset_db=0.4)], "abc", ORDERS)
+    assert pair["rows"][0]["h2_repeat_spread_db"] == pytest.approx(0.4)
+    assert pair["rows"][-1]["h3_repeat_spread_db"] is None
 
     single = he._role_block("woofer", [_reading()], "abc", ORDERS)
     assert single["rows"][0]["h2_repeat_spread_db"] is None

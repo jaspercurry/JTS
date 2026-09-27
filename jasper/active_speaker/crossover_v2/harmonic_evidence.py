@@ -57,6 +57,7 @@ from jasper.audio_measurement.program_analysis import (
     locate_global_offset,
     locate_segments,
 )
+from jasper.audio_measurement.series_stats import repeat_spread
 from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from .round_inputs import banked_round_of, round_inputs
 
@@ -750,23 +751,6 @@ def _median(values: Sequence[float]) -> float:
     return statistics.median(real) if real else float("nan")
 
 
-def _spread(values: Sequence[float]) -> float | None:
-    """Sample standard deviation across in-capture repeats, or ``None``.
-
-    ``None`` below two real values rather than 0.0: a sample standard
-    deviation is UNDEFINED at n=1 and a zero would say
-    the repeats agreed. ``statistics.stdev`` RAISES at n < 2 instead of
-    returning a silent NaN, and the ``len < 2`` guard stands in front of it.
-    """
-    real = [value for value in values if math.isfinite(value)]
-    if len(real) < 2:
-        return None
-    try:
-        return round(statistics.stdev(real), _DB_DECIMALS)
-    except OverflowError:
-        return None
-
-
 def _nullable(value: float, decimals: int = _DB_DECIMALS) -> float | None:
     """One rounded number, or ``None`` where the reading is not real.
 
@@ -783,8 +767,8 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     **Pooling is per capture on purpose, and it is what makes the spread below
     one kind.** A MEASURE capture is one pose, so the sweeps of one role
     inside it are that pose's repeats and their scatter is the RANDOM
-    repeatability term — the statistic
-    ``linearization_envelope.compute_sigma_curve`` owns. Pooling across
+    repeatability term, read as the repeat spread every view reports
+    (``series_stats.repeat_spread``). Pooling across
     CAPTURES would mix it with whatever differs between takes, which is the
     unseparated case, so a round with two MEASURE captures publishes two
     blocks. Pooling below is BY GRID INDEX, valid because every sweep of one
@@ -822,7 +806,8 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
                 None if not math.isfinite(_median(values))
                 else sum(limited) > len(limited) / 2
             )
-            row[f"h{order}_repeat_spread_db"] = _spread(values)
+            spread = repeat_spread([value for value in values if math.isfinite(value)])
+            row[f"h{order}_repeat_spread_db"] = None if spread is None else _nullable(spread)
         row["thd_percent"] = _nullable(
             _median([
                 float(r.thd_percent[int(np.argmin(np.abs(r.freqs_hz - probe)))])

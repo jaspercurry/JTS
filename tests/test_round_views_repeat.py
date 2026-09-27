@@ -130,7 +130,7 @@ def test_repeat_spreads_all_takes(repeated_round, capsys):
     result = json.loads(capsys.readouterr().out)
     summary = result["take"]["delay_us"]
     assert summary == {"values": [100.0, 101.0, 150.0], "median": 101.0,
-                       "spread": pytest.approx(49.9), "n": 3}
+                       "spread": pytest.approx(50.0), "n": 3}
     assert result["floor"]["n_repeats"] == 3
     assert result["mark_pairs"]["n_pairs"] == 3
 

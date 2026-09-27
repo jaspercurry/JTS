@@ -2,12 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Level, tilt, flatness and difference statistics for measured response curves."""
+"""Level, tilt, flatness, difference and repeat statistics for measured response curves."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from statistics import mean, stdev
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -120,3 +121,22 @@ def band_change_db(
     ``freqs_hz``: :func:`curve_difference`'s level rule. ``None`` with no bin there."""
     difference = curve_difference(freqs_hz, curve_db, freqs_hz, against_db, band_hz=band_hz)
     return None if difference is None else difference.level_offset_db
+
+
+def repeat_spread(repeats: Any) -> Any:
+    """The repeat spread: the range, max minus min, of one reading across
+    repeats of one condition, along the first axis. A float for readings, one
+    value per bin for a stack of curves; ``None`` below two repeats, where no
+    spread was measured. See ADR-0319 and ADR-0325."""
+    stack = np.asarray(repeats, dtype=float)
+    if stack.ndim == 0 or stack.shape[0] < 2:
+        return None
+    spread = np.ptp(stack, axis=0)
+    return float(spread) if spread.ndim == 0 else spread
+
+
+def sample_spread(values: Sequence[float]) -> dict[str, float] | None:
+    if len(values) < 2:
+        return None
+    return {"n": float(len(values)), "mean": mean(values), "sd": stdev(values),
+            "range": repeat_spread(values), "min": min(values), "max": max(values)}

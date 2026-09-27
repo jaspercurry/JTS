@@ -30,7 +30,7 @@ from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
+from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db, repeat_spread
 from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.speaker_layout import measurement_target_parts
 
@@ -158,7 +158,7 @@ def nearfield_view(
         placements = []
         for distance_mm, indexes in sorted(at.items()):
             levels = [[band["level_db"] for band in rows[index]["bands"]] for index in indexes]
-            spread = (np.ptp(np.asarray(levels), axis=0).round(2).tolist()
+            spread = (repeat_spread(levels).round(2).tolist()
                       if len(levels) > 1 and len({len(one) for one in levels}) == 1 else None)
             unplayed = [(rows[index]["take_id"], *one) for index in indexes if (one := raw_rows[index]) is not None]
             unplayed = [one for one in unplayed if np.array_equal(one[1], unplayed[0][1])]

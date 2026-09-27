@@ -56,10 +56,10 @@ def test_pairwise_abs_deltas_needs_two_values_to_have_a_difference(values):
 
 
 @pytest.mark.parametrize("values,median,spread", [
-    ([100.0, 101.0, 150.0], 101.0, pytest.approx(49.9)),
+    ([100.0, 101.0, 150.0], 101.0, pytest.approx(50.0)),
     ([1.0, 1.0], 1.0, 0.0),
 ])
-def test_metric_summaries_pairs_each_metrics_median_with_its_pairwise_p95_spread(values, median, spread):
+def test_metric_summaries_pairs_each_metrics_median_with_its_repeat_spread(values, median, spread):
     summary, = metric_summaries({"metric": values}).values()
     assert summary == {"values": values, "median": median, "spread": spread, "n": len(values)}
 

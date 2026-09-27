@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.audio_measurement import series_stats
 from jasper.audio_measurement.analysis import (
     CANONICAL_SHOULDER_RATIOS, band_levels_from_magnitude, smooth_fractional_octave,
 )
@@ -306,17 +307,17 @@ def spread_rms_db(spread_db: Any, freqs_hz: Any, *, band_hz: Sequence[float]) ->
 
 
 def repeat_spread(repeats: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Peak-to-peak spread of each figure across repeated takes of ONE
-    candidate, position and level — the only thing a difference may be called
-    inconclusive against. Never a difference between candidates or positions:
-    fewer than two repeats is ``too_few_repeats``, not a substitute for one."""
-    enough = len(repeats) > 1
+    """Each figure's :func:`~jasper.audio_measurement.series_stats.repeat_spread`
+    across repeated takes of ONE candidate, position and level — the only thing
+    a difference may be called inconclusive against. Never a difference between
+    candidates or positions: fewer than two repeats is ``too_few_repeats``, not
+    a substitute for one."""
     spread: dict[str, float | None] = {}
     for figure in FIGURE_REGRESSION_SIGN:
         values = [_figure(row, figure) for row in repeats]
         held = [value for value in values if value is not None]
-        spread[figure] = max(held) - min(held) if enough and len(held) == len(values) else None
-    return {"n_repeats": len(repeats), "reason": "" if enough else REASON_NO_REPEATS,
+        spread[figure] = series_stats.repeat_spread(held) if len(held) == len(values) else None
+    return {"n_repeats": len(repeats), "reason": "" if len(repeats) > 1 else REASON_NO_REPEATS,
             "spread_db": spread}
 
 

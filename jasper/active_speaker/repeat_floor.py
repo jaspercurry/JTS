@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from statistics import mean, stdev
 from typing import Any, Mapping, Sequence
 
+from jasper.audio_measurement.series_stats import repeat_spread, sample_spread
 from jasper.json_fields import finite_float
 
 from .attempts_loop import FloorStats, percentile
@@ -33,17 +33,10 @@ def pairwise_abs_deltas(values: Sequence[float]) -> list[float]:
 
 
 def metric_summaries(samples: Mapping[str, Sequence[float]]) -> dict[str, dict[str, Any]]:
-    """Each metric's raw values beside their median and the p95 spread of their pairwise deltas."""
+    """Each metric's raw values beside their median and their repeat spread."""
     return {metric: {"values": values, "median": percentile(values, 50),
-                     "spread": percentile(pairwise_abs_deltas(values), 95.0), "n": len(values)}
+                     "spread": repeat_spread(values), "n": len(values)}
             for metric, values in samples.items()}
-
-
-def sample_spread(values: Sequence[float]) -> dict[str, float] | None:
-    if len(values) < 2:
-        return None
-    return {"n": float(len(values)), "mean": mean(values), "sd": stdev(values),
-            "range": max(values) - min(values), "min": min(values), "max": max(values)}
 
 
 def derive_repeat_floor(
