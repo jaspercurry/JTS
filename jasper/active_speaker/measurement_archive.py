@@ -4,22 +4,25 @@
 
 """Read saved speaker measurements into the neutral frequency-view model.
 
-The archive is an adapter over files, not part of a tuning flow.  It accepts
-the current banked ``curves`` records, direct response documents, and retained
-round packets from before curves rode on every take.
+The archive is an adapter over files, not part of a tuning flow. It reads a
+bundle's banked take records and its entry baseline.
 """
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+
+from . import bundles
 from .frequency_view import FrequencyRun, FrequencySeries
 from .measurement_document import frequency_run_from_documents
+from .crossover_v2.evidence_packet import CrossoverEvidencePacketError, entry_evidence
+from .crossover_v2.record_index import has_banked_take, measurement_documents
+from .crossover_v2.round_frequency_view import frequency_run as packet_frequency_run
 from .crossover_v2.round_inputs import capture_identity
 
 
@@ -34,13 +37,6 @@ class ArchivedMeasurement:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "started_at": self.started_at, "state": self.state}
-
-
-def _position_key(series: FrequencySeries) -> tuple[Any, Any] | None:
-    position = series.details.get("position")
-    if not isinstance(position, Mapping):
-        return None
-    return position.get("deg"), position.get("vertical_deg") or 0
 
 
 def _combined_position_metadata(
@@ -64,49 +60,22 @@ def _combined_position_metadata(
             if isinstance(raw_vertical, int) and not isinstance(raw_vertical, bool)
             else None
         )
-        has_location = degrees is not None or (vertical is not None and vertical != 0)
-        if item.kind != "position" and not has_location:
+        if degrees is None and not vertical:
             continue
-        if has_location:
-            positions.add((degrees, vertical or 0))
-        elif item.details.get("take_id"):
-            positions.add(("take", item.details["take_id"]))
-        else:
-            positions.add(("series", item.id))
+        positions.add((degrees, vertical or 0))
         if degrees is not None:
             angles.add(degrees)
     return len(positions), sorted(angles)
 
 
-def _measurement_documents(bundle_dir: Path) -> list[Mapping[str, Any]]:
-    from .commissioning_evidence_store import EVIDENCE_ROOT
-    from .crossover_v2.record_index import bundle_measurements
-
-    artifacts = bundle_dir / EVIDENCE_ROOT / "artifacts"
-    documents = []
-    for row in bundle_measurements(bundle_dir):
-        try:
-            value = json.loads((artifacts / row.path).read_text())
-        except (OSError, ValueError):
-            continue
-        if isinstance(value, Mapping):
-            documents.append(value)
-    return documents
-
-
 def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
-    """List every bundle that carries measurement records or old round evidence."""
-
-    from . import bundles
-    from .crossover_v2.round_inputs import round_artifact_dir
-    from .crossover_v2.record_index import bundle_measurements
+    """List every bundle that banked a take."""
 
     runs = []
     for entry in bundles.list_bundles(sessions_dir):
         run_id = str(entry.get("session_id") or "")
         bundle_dir = Path(str(entry.get("bundle_dir") or ""))
-        round_dir, _ = round_artifact_dir(bundle_dir)
-        if not run_id or (round_dir is None and not bundle_measurements(bundle_dir)):
+        if not run_id or not has_banked_take(bundle_dir):
             continue
         runs.append(ArchivedMeasurement(
             id=run_id,
@@ -120,38 +89,23 @@ def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
 def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     """Load one archive entry, preferring its direct measurement records."""
 
-    documents = _measurement_documents(run.bundle_dir)
-    from .crossover_v2.evidence_packet import (
-        CrossoverEvidencePacketError,
-        build_crossover_evidence_packet,
-    )
-    from .crossover_v2.round_frequency_view import frequency_run as packet_frequency_run
-
+    takes = tuple(measurement_documents(run.bundle_dir))
     try:
-        retained = packet_frequency_run(build_crossover_evidence_packet(run.bundle_dir))
+        retained = packet_frequency_run(entry_evidence(run.bundle_dir, tuple(row for row, _ in takes)))
     except (CrossoverEvidencePacketError, OSError, TypeError, ValueError):
         retained = None
 
-    retained_reference = (
-        retained.metadata.get("reference_db") if retained is not None else None
-    )
-    fallback_reference = (
-        float(retained_reference)
-        if isinstance(retained_reference, (int, float))
-        and not isinstance(retained_reference, bool)
-        and math.isfinite(retained_reference)
-        else None
-    )
     direct = frequency_run_from_documents(
         run_id=run.id,
-        documents=documents,
+        documents=[document for _, document in takes],
         started_at=run.started_at,
         state=run.state,
-        run_reference_db=fallback_reference,
     )
 
-    if retained is None:
-        return direct
+    if retained is None or not (direct.series or retained.series):
+        # A run with no curve says why instead of drawing nothing (ADR-0373).
+        return direct if direct.series else replace(direct, metadata={
+            **direct.metadata, "curves": {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}})
     if not direct.series:
         return replace(retained, started_at=run.started_at, state=run.state)
     identities = {capture_identity(curve.details, set_id=curve.details.get("set_id") or curve.id)
@@ -159,39 +113,15 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     if len(identities) > 1:
         return direct
 
-    # The packet owns the stored aggregate. Direct records own individual
-    # curves. Packet positions remain only where no direct record replaces them.
-    summary = tuple(
-        series for series in retained.series
-        if series.kind in {"average", "entry_baseline"}
-    )
+    # The packet owns the entry baseline; direct records own every take's curve.
+    summary = tuple(series for series in retained.series if series.kind == "entry_baseline")
     direct_series = direct.series
-    if any(series.kind == "entry_baseline" for series in summary):
+    if summary:
         direct_series = tuple(
             series for series in direct_series
             if series.details.get("phase") != "entry_baseline"
         )
-    direct_take_ids = {
-        str(series.details.get("take_id"))
-        for series in direct_series
-        if series.details.get("take_id")
-    }
-    direct_positions = {
-        key
-        for series in direct_series
-        if series.details.get("role") == "summed"
-        and (key := _position_key(series)) is not None
-    }
-    retained_positions = tuple(
-        series for series in retained.series
-        if series.kind == "position"
-        and str(series.details.get("take_id") or "") not in direct_take_ids
-        and (
-            (key := _position_key(series)) is None
-            or key not in direct_positions
-        )
-    )
-    combined = summary + retained_positions + direct_series
+    combined = summary + direct_series
     position_count, angles_deg = _combined_position_metadata(combined)
     return replace(
         direct,
@@ -199,7 +129,6 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
             replace(series, visible_by_default=(index == 0))
             for index, series in enumerate(combined)
         ),
-        round_id=retained.round_id,
         metadata={
             **dict(direct.metadata),
             **dict(retained.metadata),

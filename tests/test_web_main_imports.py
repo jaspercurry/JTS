@@ -62,11 +62,11 @@ def test_registered_wizard_default_ports_are_socket_backed():
     """
     from jasper.web import __main__ as web_main
 
-    socket_text = (_REPO / "deploy" / "jasper-web.socket").read_text()
+    socket_text = (_REPO / "deploy" / "systemd" / "jasper-web.socket").read_text()
     for spec in web_main.WIZARD_SPECS:
         assert f"ListenStream=127.0.0.1:{spec.default_port}" in socket_text, (
             f"{spec.label} defaults to port {spec.default_port}, but "
-            f"deploy/jasper-web.socket has no matching ListenStream."
+            f"deploy/systemd/jasper-web.socket has no matching ListenStream."
         )
 
 
@@ -121,26 +121,7 @@ def test_wizard_availability_follows_the_capability_not_the_profile(
     } == expected
 
 
-def _streambox_validator_port_arrays() -> tuple[set[int], set[int]]:
-    """(expected, forbidden) from install.sh's streambox socket validator."""
-    text = (_REPO / "deploy" / "lib" / "install" / "systemd-units.sh").read_text()
-    body = text.split("validate_streambox_web_socket() {", 1)[1].split("\n}", 1)[0]
-    arrays = []
-    for name in ("expected_ports", "forbidden_ports"):
-        match = re.search(rf"local -a {name}=\(([^)]*)\)", body, re.S)
-        assert match, f"validate_streambox_web_socket lost its {name} array"
-        arrays.append({int(tok) for tok in match.group(1).split()})
-    return arrays[0], arrays[1]
-
-
-def test_streambox_socket_validator_and_nginx_name_one_port_set():
-    """The three static streambox artefacts must agree on the wizard ports.
-
-    install.sh hard-fails the install when the socket and the validator
-    disagree, and a port bound with no nginx location (or the reverse) is a
-    502 nobody sees until someone opens that wizard. The set is every
-    non-wake wizard.
-    """
+def test_streambox_socket_and_nginx_name_one_port_set():
     from jasper.install_profile import Capability
     from jasper.web import __main__ as web_main
 
@@ -151,17 +132,14 @@ def test_streambox_socket_validator_and_nginx_name_one_port_set():
     }
     wizard_ports = {spec.default_port for spec in web_main.WIZARD_SPECS}
 
-    socket_text = (_REPO / "deploy" / "jasper-web-streambox.socket").read_text()
+    socket_text = (_REPO / "deploy" / "systemd" / "jasper-web-streambox.socket").read_text()
     listen_ports = {
         int(m.group(1))
         for m in re.finditer(r"^ListenStream=127\.0\.0\.1:(\d+)$", socket_text, re.M)
     }
     assert listen_ports == wizard_ports - wake_ports
 
-    expected_ports, forbidden_ports = _streambox_validator_port_arrays()
-    assert expected_ports == listen_ports
-    assert forbidden_ports == wake_ports
-    assert not (listen_ports & forbidden_ports)
+    assert not (listen_ports & wake_ports)
 
     nginx_text = nginx_site.conf_text("streambox")
     nginx_ports = {

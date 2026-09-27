@@ -138,7 +138,6 @@ def render_frequency_view(
                     ax.axvline(lo, color="#888", alpha=.16, lw=1)
             ax.legend(handles=list(legend.values()), fontsize=8, ncols=2)
     for index, (run, curve) in enumerate(rows):
-        meta = run.get("metadata", {})
         candidate = curve.get("candidate_id") or "not recorded"
         if curve.get("identity_scope") == "prediction_from_basis":
             take = curve.get("basis_capture_id") or curve["id"]
@@ -146,7 +145,7 @@ def render_frequency_view(
             identity = f"basis take: {take} | candidate: {candidate} | basis graph: {graph}"
         else:
             take = curve.get("take_id") or curve.get("capture_id") or curve["id"]
-            graph = curve.get("graph_fingerprint") or meta.get("applied_graph_fingerprint") or "not recorded"
+            graph = curve.get("graph_fingerprint") or "not recorded"
             identity = f"{take} | candidate: {candidate} | graph: {graph}"
         labels.append(fill(f"{index + 1}. {run['id']} | {identity}", 150))
     for ir_ax, run in zip(axes[nplots:-1], impulses):

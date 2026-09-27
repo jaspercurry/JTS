@@ -16,11 +16,13 @@ from typing import Any, Awaitable, Callable, Mapping
 import yaml
 
 from jasper.active_speaker.commissioning_admission import parse_running_graph
+from jasper.json_fields import sha256_text
 from jasper.active_speaker.restore_wait import attempt_graph_restore
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
 logger = logging.getLogger(__name__)
 _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
@@ -34,13 +36,14 @@ __all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anch
 EmitYaml = Callable[
     [tuple[str, ...], Mapping[str, float], Mapping[str, float], Mapping[str, int] | None], str
 ]
-EmitScopedYaml = Callable[[str, str, Mapping[str, int]], str]
-#: ``(scope, candidate, branch pair, inverted_roles, delays, level trims)`` —
-#: what makes one graph variant distinct from another, and therefore what the
-#: emit cache is keyed by. The branch pair belongs here: two takes of one
-#: session can excite different target pairs through the same candidate.
+EmitScopedYaml = Callable[[str, str, Mapping[str, int], tuple[str, ...]], str]
+#: ``(scope, candidate, branch pair, cleared layers, inverted_roles, delays,
+#: level trims)`` — what makes one graph variant distinct from another, and
+#: therefore what the emit cache is keyed by. The branch pair and the cleared
+#: layers belong here: two takes of one session can play one candidate
+#: through different target pairs, or with different layers cleared.
 _VariantKey = tuple[
-    str, str, tuple[tuple[str, int], ...], tuple[str, ...],
+    str, str, tuple[tuple[str, int], ...], tuple[str, ...], tuple[str, ...],
     tuple[tuple[str, float], ...], tuple[tuple[str, float], ...],
 ]
 CamFactory = Callable[[], Any]
@@ -120,6 +123,7 @@ class MeasurementSessionGraph:
         self._scope = GRAPH_SCOPE_DRIVERS
         self._candidate_id = ""
         self._branch_channels: dict[str, int] = {}
+        self._cleared_layers: tuple[str, ...] = ()
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
@@ -158,7 +162,7 @@ class MeasurementSessionGraph:
 
     def select_scope(
         self, scope: str, candidate_id: str = "",
-        branch_channels: Mapping[str, int] | None = None,
+        branch_channels: Mapping[str, int] | None = None, cleared_layers: tuple[str, ...] = (),
     ) -> None:
         if scope not in GRAPH_SCOPES:
             raise SessionGraphError(f"unknown graph scope: {scope}")
@@ -176,6 +180,7 @@ class MeasurementSessionGraph:
         self._scope = scope
         self._candidate_id = candidate_id if scope in CANDIDATE_SCOPES else ""
         self._branch_channels = channels
+        self._cleared_layers = tuple(cleared_layers)
 
     def graph_yaml(
         self,
@@ -191,6 +196,7 @@ class MeasurementSessionGraph:
         key = (
             self._scope, self._candidate_id,
             tuple(sorted(self._branch_channels.items())),
+            self._cleared_layers,
             inverted_roles,
             tuple(sorted(delays.items())),
             tuple(sorted(trims.items())),
@@ -201,7 +207,8 @@ class MeasurementSessionGraph:
                 cached = self._emit(inverted_roles, delays, trims, self._branch_channels or None)
             else:
                 assert self._emit_scoped is not None
-                cached = self._emit_scoped(self._scope, self._candidate_id, self._branch_channels)
+                cached = self._emit_scoped(self._scope, self._candidate_id, self._branch_channels,
+                                           self._cleared_layers)
             self._yaml[key] = cached
         return cached
 
@@ -308,7 +315,6 @@ class MeasurementSessionGraph:
         Preference EQ is outside tuning scope. An unparseable entry loses this
         comparison, but its saved text remains available for restoration.
         """
-        from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
         try:
             current = tuning_scope_fingerprint(yaml_text)
@@ -427,7 +433,7 @@ class MeasurementSessionGraph:
                 description = _TEMPORARY_GRAPH_DESCRIPTION + json.dumps({
                     "scope": self._scope,
                     "anchor_path": self._entry_config_path,
-                    "anchor_sha256": hashlib.sha256(self._entry_yaml.encode("utf-8")).hexdigest(),
+                    "anchor_sha256": sha256_text(self._entry_yaml),
                     "graph_sha256": _graph_body_fingerprint(normalized),
                 }, sort_keys=True)
                 submitted = yaml_text + "\n" + yaml.safe_dump({"description": description})

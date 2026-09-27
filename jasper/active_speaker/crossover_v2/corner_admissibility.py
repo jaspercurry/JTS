@@ -22,7 +22,7 @@ __all__ = [
     "recornered_preset",
 ]
 
-# Owner ruling 2026-08-17: a corner exactly AT the declared minimum recommended
+# A corner exactly AT the declared minimum recommended
 # crossover is a sanctioned operating point, so only strictly below is refused.
 FC_REJECT_BELOW_DECLARED_FLOOR = "below_declared_floor"
 FC_REJECT_ABOVE_LOWER_DRIVER_BAND = "above_lower_driver_band"

@@ -12,7 +12,7 @@ captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
 Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or,
 on a roleful box whose active endpoint is armed, to the ACTIVE ring
 (active-content.ring) via ``jts_ring_active_playback``. The post-DSP end is
-declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path/slots
+declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path
 in outputd.env, whose single writer is ``_outputd_actions``. Ring A needs no
 declaration — fan-in fills it unconditionally.
 
@@ -55,10 +55,7 @@ from jasper.fanin.coupling_auto import (
     usb_combo_actions,
     usbsink_effectively_enabled,
 )
-from jasper.fanin.latency_mode import (
-    normalize_mode as normalize_usb_latency_mode,
-    read_requested_mode as read_usb_latency_mode,
-)
+from jasper.fanin.latency_mode import read_requested_mode as read_usb_latency_mode
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
@@ -98,23 +95,6 @@ logger = logging.getLogger(__name__)
 FANIN_UNIT = FANIN_SERVICE
 OUTPUTD_UNIT = OUTPUTD_SERVICE
 CAMILLA_UNIT = CAMILLA_SERVICE
-
-# Legacy env keys of deleted selectors. Nothing writes either; each is retained
-# ONLY so a reconcile pass can UNSET a stale value off a migrating box's env
-# file. One-way migration sweeps, not vocabulary.
-#
-# Remove once every deployed Pi has booted a build carrying this sweep; the
-# Camilla -> outputd File playback pipe (ADR-0100).
-_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
-_LEGACY_OUTPUTD_RING_SLOTS_ENV = "JASPER_OUTPUTD_SHM_RING_SLOTS"
-# Remove once every deployed Pi has booted a build carrying this sweep; the
-# fan-in transport selector, which selects nothing (ADR-0100). jasper-fanin
-# still REFUSES a value it cannot serve (exit 78), so a stale `loopback` left
-# behind here would park the unit. The sweep reaches the reconciler-owned
-# fanin.env ONLY: jasper-fanin.service also loads /etc/jasper/jasper.env, which
-# nothing here writes, so a hand-set copy there now reaches the daemon and parks
-# it — `grep -R JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/` and remove it by hand.
-_LEGACY_FANIN_COUPLING_ENV = "JASPER_FANIN_CAMILLA_COUPLING"
 
 # Cross-invocation serialization of the reconcile ENTRY verbs.
 # NOT under /run/jasper — that is jasper-voice's RuntimeDirectory, reaped on
@@ -705,14 +685,9 @@ def _converge_ring(
             return reconcile_camilla()
         return _reconcile_camilla(reason=reason, force=force)
 
-    fanin_snapshot = read_snapshot(env_path)
     outputd_snapshot = read_snapshot(outputd_env_path)
 
-    fanin_new_text, fanin_changed = _apply_action(
-        fanin_snapshot.text,
-        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
-    )
-    outputd_new_text, outputd_changed = _apply_actions(
+    outputd_new_text, changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(outputd_snapshot.text)
     )
     # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
@@ -726,43 +701,27 @@ def _converge_ring(
     ring_path_converged = (
         outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
     )
-    changed = fanin_changed or outputd_changed
 
     # A write failure aborts BEFORE any daemon op so we never bounce a daemon
-    # into a value the file doesn't carry. Each write folds onto the FRESH file
-    # content under its own per-file lock (ADR-0235) rather than replaying this
+    # into a value the file doesn't carry. The write folds onto the FRESH file
+    # content under its per-file lock (ADR-0235) rather than replaying this
     # stale pre-lock text, so a concurrent writer's key is preserved.
-    #
-    # NOTHING IS ROLLED BACK (ADR-0100), so the failure path reports what
-    # actually reached the disk: the fanin write can succeed and the outputd one
-    # fail.
-    wrote = False
     if changed:
         try:
-            if fanin_changed:
-                fanin_new_text, _ = _write_env_actions(
-                    fanin_snapshot.path,
-                    lambda _text: (
-                        RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV),
-                    ),
-                )
-                wrote = True
-            if outputd_changed:
-                outputd_new_text, _ = _write_env_actions(
-                    outputd_snapshot.path, _outputd_actions
-                )
-                wrote = True
+            outputd_new_text, _ = _write_env_actions(
+                outputd_snapshot.path, _outputd_actions
+            )
         except OSError as e:
             log_event(
                 logger,
                 "fanin.coupling_reconcile",
                 result="write_failed",
                 reason=reason,
-                changed=wrote,
+                changed=False,
                 error=e,
                 level=logging.ERROR,
             )
-            return CouplingResult(ok=False, changed=wrote, detail=str(e))
+            return CouplingResult(ok=False, changed=False, detail=str(e))
 
     if ring_path_converged:
         log_event(
@@ -780,9 +739,7 @@ def _converge_ring(
     # A box already on the ring with a stale slot count or a stale on-disk ring
     # must still be healed. Both are write-on-change, so a coherent box pays a
     # few small reads and still takes the no-bounce path below.
-    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(
-        fanin_snapshot, reason
-    )
+    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(env_path, reason)
     files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
 
     if not (changed or slots_healed or files_cleared):
@@ -910,7 +867,6 @@ def reconcile_auto(
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
-    usb_latency_mode: str | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
@@ -969,11 +925,7 @@ def reconcile_auto(
         usb_intent = usb_intent_enabled
     usb_latency_failure = ""
     try:
-        latency_mode = (
-            read_usb_latency_mode()
-            if usb_latency_mode is None
-            else normalize_usb_latency_mode(usb_latency_mode)
-        )
+        latency_mode = read_usb_latency_mode()
     except (OSError, UnicodeError, ValueError) as exc:
         latency_mode = "high"
         usb_latency_failure = (
@@ -1154,7 +1106,7 @@ CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
 def _migrate_stale_fanin_ring_slots(
-    fanin_snapshot: EnvSnapshot, reason: str
+    fanin_env_path: str | Path, reason: str
 ) -> tuple[EnvSnapshot, bool]:
     """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
 
@@ -1178,13 +1130,8 @@ def _migrate_stale_fanin_ring_slots(
     also disagrees about the WIRE, converging the slots alone would make the
     geometry look repaired while the ring still cannot attach, so the wire is
     read first and a shear there DECLINES the write.
-
-    Runs AFTER the legacy-key sweep, so the passed ``fanin_snapshot`` is the
-    PRE-sweep snapshot; the file is re-read fresh here and the override written
-    into the CURRENT content — writing the stale snapshot back would reinstate
-    the lines the sweep just removed.
     """
-    current = read_snapshot(fanin_snapshot.path)
+    current = read_snapshot(fanin_env_path)
 
     # The axes this function does NOT own, read before it writes the one it does.
     conf_format = ring_conf.ring_conf_format(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
@@ -1434,11 +1381,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
     one end reading or writing a ring nobody serves.
 
-    It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key — a
-    one-way migration sweep (see its constant) so a box that once armed it
-    converges clean on its next reconcile. The fanin.env half of the pass sweeps
-    ``JASPER_FANIN_CAMILLA_COUPLING`` the same way.
-
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     The marker is the FACT (written by ``jasper-audio-hardware-reconcile`` from
     the accepted active-lane decision) and the path is its PROJECTION, derived by
@@ -1462,8 +1404,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             OUTPUTD_RING_PATH_ENV_VAR,
             outputd_ring_path_for(outputd_text),
         ),
-        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
-        RuntimeEnvAction("unset", _LEGACY_OUTPUTD_RING_SLOTS_ENV),
     )
 
 
@@ -1488,11 +1428,8 @@ def _sync_process_env_for_emit(outputd_text: str) -> None:
     write uses, so the in-process env can never carry a different ring than the
     file just written.
     """
-    os.environ.pop(_LEGACY_FANIN_COUPLING_ENV, None)
     os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
     os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
-    os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
-    os.environ.pop(_LEGACY_OUTPUTD_RING_SLOTS_ENV, None)
 
 
 @dataclass(frozen=True)
@@ -1502,7 +1439,7 @@ class EntryLock:
     ``outcome`` is ``acquired`` (``fh`` holds the advisory flock — the caller
     keeps it open for the WHOLE pass and closes it after), ``contended``
     (another reconcile pass held the lock past the bounded wait — the caller
-    must abort loudly before touching env or daemons), or ``unavailable`` (the
+    must stop before touching env or daemons), or ``unavailable`` (the
     lock file could not be opened — fail-open: proceed unserialized rather than
     brick the reconcile; already logged at WARNING inside the helper).
     ``detail`` carries the holder pid / open error for the log line.
@@ -1537,7 +1474,7 @@ def _acquire_entry_lock(
     Fail-open on an unopenable lock file (missing /run on a dev host, a
     non-root probe): a broken lock path must not brick reconciles — proceed
     unserialized at WARNING. The holder stamps its pid into the file so the
-    contention log can name it.
+    contention log can name it, and clears it on release.
     """
     p = Path(path)
     try:
@@ -1653,9 +1590,6 @@ def main(argv: "list[str] | None" = None) -> int:
     if not any(_modes):
         parser.error("give an explicit coupling or --auto")
 
-    # Serialize the WHOLE pass against the sibling entry verbs — see
-    # _acquire_entry_lock. On contention past the bounded wait, do NOT touch env
-    # or daemons.
     lock = _acquire_entry_lock(
         ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
@@ -1667,11 +1601,19 @@ def main(argv: "list[str] | None" = None) -> int:
         return _run_entry_verb(args)
     finally:
         if lock.fh is not None:
+            try:
+                lock.fh.truncate(0)  # before close, or it could wipe the next holder's stamp
+            except OSError:
+                pass  # the stamp is diagnostic only
             lock.fh.close()
 
 
 def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
-    """Abort an apply verb that could not acquire the coupling entry lock."""
+    """Stop a verb that lost the entry lock, before any env write or daemon op.
+
+    ``--auto`` exits 0 at WARNING: the pass holding the lock converges the box
+    (#5868). The operator verb keeps ERROR and exit 1: a person is watching.
+    """
     log_event(
         logger,
         "fanin.coupling_reconcile",
@@ -1680,8 +1622,10 @@ def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
         lock_path=ENTRY_LOCK_PATH,
         timeout_seconds=ENTRY_LOCK_TIMEOUT_SECONDS,
         detail=detail or None,
-        level=logging.ERROR,
+        level=logging.WARNING if args.auto else logging.ERROR,
     )
+    if args.auto:
+        return 0
     print(
         "fan-in coupling reconcile: another reconcile pass holds "
         f"{ENTRY_LOCK_PATH} ({detail or 'unknown holder'}); "

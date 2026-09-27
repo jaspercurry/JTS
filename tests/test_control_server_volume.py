@@ -5,12 +5,11 @@
 """Route tests for ``jasper.control.handlers.volume``.
 
 /volume/*, /transport/*, /source/* and the ``volume_ops`` helpers they
-dispatch through (the Spotify router and the duck-active probe).
+dispatch through (the Spotify router).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 from http.server import ThreadingHTTPServer
@@ -460,30 +459,20 @@ def server_with_transport_stub(monkeypatch):
         thread.join(timeout=2)
 
 
-def test_transport_toggle_dispatches_toggle(server_with_transport_stub):
+@pytest.mark.parametrize(
+    'action',
+    [
+        'toggle',
+        'next',      # VK-01 remote double-tap
+        'previous',  # VK-01 remote triple-tap
+    ],
+)
+def test_transport_dispatches_action(server_with_transport_stub, action):
     base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/toggle", {})
+    status, body = _post(f"{base}/transport/{action}", {})
     assert status == 200
-    assert calls == ["toggle"]
-    assert body["action"] == "toggle"
-
-
-def test_transport_next_dispatches_next(server_with_transport_stub):
-    """Double-tap on the remote / VK-01 lands here."""
-    base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/next", {})
-    assert status == 200
-    assert calls == ["next"]
-    assert body["action"] == "next"
-
-
-def test_transport_previous_dispatches_previous(server_with_transport_stub):
-    """Triple-tap on the remote / VK-01 lands here."""
-    base, calls = server_with_transport_stub
-    status, body = _post(f"{base}/transport/previous", {})
-    assert status == 200
-    assert calls == ["previous"]
-    assert body["action"] == "previous"
+    assert calls == [action]
+    assert body["action"] == action
 
 
 def test_transport_dispatcher_error_propagates_as_502(monkeypatch):
@@ -729,77 +718,17 @@ def test_source_availability_probe_runs_outside_cache_lock(monkeypatch):
     assert not errors
 
 
-# --- _make_duck_active_probe (cross-daemon Camilla ownership) ------------
-#
-# Unit tests for the probe factory consumed by per-request
-# VolumeCoordinators. Validates the wire format and the fail-open
-# error envelope.
-
-
-@pytest.mark.parametrize(
-    ("response", "expected"),
-    [
-        pytest.param(
-            {"state": "LISTENING", "duck_active": True}, True,
-            id="returns_true_when_voice_reports_ducked",
-        ),
-        pytest.param(
-            {"state": "IDLE", "duck_active": False}, False,
-            id="returns_false_when_voice_reports_no_duck",
-        ),
-        # Fan-in can be actively ducking music while Camilla remains the
-        # live master-volume surface; the explicit ownership fact wins.
-        pytest.param(
-            {
-                "state": "LISTENING",
-                "duck_active": True,
-                "camilla_volume_locked": False,
-            },
-            False,
-            id="prefers_explicit_camilla_lock_over_fanin_duck",
-        ),
-        # Voice daemon socket doesn't exist (jasper-voice crashed or never
-        # started) — probe must fail open so the remote keeps working.
-        pytest.param(
-            FileNotFoundError("/tmp/unused.sock"), None, id="returns_none_on_uds_missing",
-        ),
-        # Voice daemon is wedged and doesn't respond within 1s — fail open
-        # so the remote doesn't lock up waiting for it.
-        pytest.param(asyncio.TimeoutError(), None, id="returns_none_on_timeout"),
-        # Older jasper-voice without the duck_active field — treated as
-        # unknown (fail-open), same as an unexpected value type below.
-        pytest.param({"state": "IDLE"}, None, id="returns_none_when_field_absent"),
-        pytest.param(
-            {"state": "IDLE", "duck_active": "true"}, None,
-            id="returns_none_when_field_wrong_type",
-        ),
-    ],
-)
-def test_duck_active_probe(monkeypatch, response, expected):
-    import jasper.control.server as srv_mod
-
-    async def fake_command(socket_path, cmd, *, timeout=5.0):
-        assert cmd == "STATUS"
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
-    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
-    assert asyncio.run(probe()) is expected
-
-
 # --- Regression tests for the BuildResult return-shape change ---
 
 
 def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypatch):
     """Pin the BuildResult shape consumption for control/volume_ops.py's
-    _build_spotify_router_or_none. Same regression as in mux:
+    build_spotify_router_or_none. Same regression as in mux:
     previously `clients = build_clients(...)` was treated as a dict;
     the change to BuildResult silently broke the volume-coordinator
     wiring."""
     from unittest.mock import patch, MagicMock
-    from jasper.control.volume_ops import _build_spotify_router_or_none
+    from jasper.control.volume_ops import build_spotify_router_or_none
     from jasper.spotify_router import (
         ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
     )
@@ -827,7 +756,7 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
         )
 
     with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
-        router = _build_spotify_router_or_none()
+        router = build_spotify_router_or_none()
 
     assert isinstance(router, Router)
     assert isinstance(router.clients, dict)
@@ -844,7 +773,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
     expires or the wizard rewrites an account cache."""
     from unittest.mock import patch
     from jasper.control import volume_ops
-    from jasper.control.volume_ops import _build_spotify_router_or_none
+    from jasper.control.volume_ops import build_spotify_router_or_none
     from jasper.spotify_router import (
         ACCOUNT_REVOKED, AccountStatus, BuildResult,
     )
@@ -873,10 +802,10 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
         )
 
     with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
-        assert _build_spotify_router_or_none() is None
-        assert _build_spotify_router_or_none() is None
+        assert build_spotify_router_or_none() is None
+        assert build_spotify_router_or_none() is None
         cache_path.write_text("revoked-v2-but-file-changed")
-        assert _build_spotify_router_or_none() is None
+        assert build_spotify_router_or_none() is None
 
     assert calls["n"] == 2
 
@@ -904,7 +833,7 @@ async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
         return dispatch
 
     monkeypatch.setattr(
-        volume_ops_mod, "_build_spotify_router_or_none", lambda: router,
+        volume_ops_mod, "build_spotify_router_or_none", lambda: router,
     )
     monkeypatch.setattr(renderer_mod, "RendererClient", FakeRendererClient)
     monkeypatch.setattr(

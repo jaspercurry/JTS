@@ -255,7 +255,6 @@ dependencies = [
  "anyhow",
  "jasper-daemon",
  "jasper-env",
- "jasper-resampler",
  "serde",
  "serde_json",
 ]

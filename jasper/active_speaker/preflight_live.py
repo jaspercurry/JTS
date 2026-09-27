@@ -5,6 +5,7 @@
 """Read current facts for preflight. Live admission remains with resource owners."""
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import Any, Mapping
 
@@ -13,6 +14,9 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
+from jasper.biquad import PeqFilter
+from jasper.log_event import log_event
+from jasper.platform.control_client import read_output_volume
 
 from .angle_capture import AngleCaptureRequest
 from .arm_walk import TurntableMover
@@ -26,11 +30,10 @@ from .crossover_v2.conductor_context import resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
-from .measured_crossover_candidate import MeasuredCrossoverCandidate
-from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
+from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
+from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
-from .program_failure import read_output_volume
 from .run_levels import prepare_level_captures
 from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
@@ -52,16 +55,20 @@ def read_preflight_facts(
             pass
     stop = None
     applied_bass_extension: Mapping[str, Any] = {}
+    applied_room_peqs: tuple[PeqFilter, ...] | None = ()
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
         except ValueError:
             pass
+        state: Mapping[str, Any] | None = None
         try:
-            applied = candidate_from_applied_profile(context.topology, load_applied_baseline_profile_state() or {})
-            applied_bass_extension = applied.bass_extension
+            state = load_applied_baseline_profile_state() or {}
+            applied = candidate_from_applied_profile(context.topology, state)
+            applied_bass_extension, applied_room_peqs = applied.bass_extension, candidate_room_peqs(applied)
         except (OSError, RuntimeError, ValueError, LookupError):
-            pass
+            # No applied profile has no room layer; one that cannot be read has an unknown one.
+            applied_room_peqs = () if state is not None and state.get("status") != "applied" else None
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         if name == BASE_CANDIDATE:
@@ -104,19 +111,24 @@ def read_preflight_facts(
             programs.append(program.program_id)
         return tuple(programs)
 
+    near_field = {stop.driver for stop in plan.stops if stop.regime == REGIME_NEAR_FIELD}
+    output_volume = read_output_volume()
+    if output_volume.get("muted"):
+        log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)
     return PreflightFacts(
         rig_clear_attested=rig_clear_attested, mover_available=mover_available,
-        output_volume=read_output_volume(),
+        output_volume=output_volume,
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
         anchor=anchor, summed_pilot_band_hz=pilot_band,
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
-        applied_bass_extension=applied_bass_extension,
+        applied_bass_extension=applied_bass_extension, applied_room_peqs=applied_room_peqs,
         program_ids_for=program_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
-        # A driver is offered only when its near-field sweep holds the view's top band whole.
+        # A near-field pose's driver is offered only when its sweep holds the view's top band whole.
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
-                                  if context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
+                                  if driver not in near_field
+                                  or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
     )

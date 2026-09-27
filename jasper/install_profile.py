@@ -14,10 +14,7 @@ former third tier (``endpoint`` / ``satellite``) is GONE as an install
 tier — "endpoint behavior" is now purely the multiroom *follower*
 grouping role at runtime (a full/streambox box bonded as a follower
 parks its brain, then hands source parking to the canonical source coordinator;
-see jasper.multiroom.reconcile and jasper.source_intent). The legacy
-tokens are still ACCEPTED here and mapped to ``streambox`` so a field box
-with a persisted ``endpoint``/``satellite`` marker auto-migrates on its
-next deploy instead of stranding.
+see jasper.multiroom.reconcile and jasper.source_intent).
 
 What a tier *grants* is named on its own axis: ``Capability``, with the
 per-profile grant table in ``PROFILE_CAPABILITIES`` and one predicate,
@@ -44,15 +41,10 @@ with no error. Pinned by tests/test_install_profile_capabilities.py.
 """
 from __future__ import annotations
 
-import logging
 import os
 from enum import Enum
 from pathlib import Path
 from typing import Mapping
-
-from .log_event import log_event
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_INSTALL_PROFILE = "full"
 FULL_INSTALL_PROFILE = "full"
@@ -66,11 +58,6 @@ VALID_INSTALL_PROFILES = frozenset({
     FULL_INSTALL_PROFILE,
     STREAMBOX_INSTALL_PROFILE,
 })
-
-# Legacy install-tier tokens kept ONLY for backwards compatibility: a
-# persisted marker or env value from before the third tier was removed
-# maps to streambox so the box auto-migrates rather than failing closed.
-_LEGACY_STREAMBOX_ALIASES = frozenset({"endpoint", "satellite"})
 
 
 class Capability(str, Enum):
@@ -121,16 +108,12 @@ PROFILE_CAPABILITIES: Mapping[str, frozenset[Capability]] = {
 def normalize_install_profile(value: str | None) -> str:
     """Normalize an install-profile token.
 
-    Empty/unset means the historical full-speaker profile. The legacy
-    ``endpoint``/``satellite`` tokens map to ``streambox`` (never raise on
-    them — that auto-migrates field boxes). Any other invalid value raises
-    ``ValueError`` so callers can fail closed.
+    Empty/unset means the historical full-speaker profile. Any other invalid
+    value raises ``ValueError`` so callers can fail closed.
     """
     raw = (value or "").strip()
     if raw == "":
         return DEFAULT_INSTALL_PROFILE
-    if raw in _LEGACY_STREAMBOX_ALIASES:
-        return STREAMBOX_INSTALL_PROFILE
     if raw in VALID_INSTALL_PROFILES:
         return raw
     raise ValueError(
@@ -149,11 +132,6 @@ def read_install_profile(
     is a fallback for tests and early install-time processes before the marker
     exists; absent marker + absent env returns ``"full"`` for backwards
     compatibility with every pre-streambox install.
-
-    A persisted/env value carrying a legacy ``endpoint``/``satellite``
-    token resolves to ``streambox`` and emits a single greppable
-    ``event=install_profile.migrate`` log line so the auto-migration is
-    observable.
     """
     marker = Path(path)
     try:
@@ -164,26 +142,10 @@ def read_install_profile(
         value = None
 
     if value:
-        return _normalize_with_migration_log(value, source="marker")
+        return normalize_install_profile(value)
 
     source = os.environ if env is None else env
-    return _normalize_with_migration_log(
-        source.get("JASPER_INSTALL_PROFILE"), source="env",
-    )
-
-
-def _normalize_with_migration_log(value: str | None, *, source: str) -> str:
-    raw = (value or "").strip()
-    normalized = normalize_install_profile(raw)
-    if raw in _LEGACY_STREAMBOX_ALIASES:
-        log_event(
-            logger,
-            "install_profile.migrate",
-            previous=raw,
-            profile=normalized,
-            source=source,
-        )
-    return normalized
+    return normalize_install_profile(source.get("JASPER_INSTALL_PROFILE"))
 
 
 def is_streambox_install_profile(profile: str | None) -> bool:
@@ -195,14 +157,12 @@ def install_profile_has_capability(
 ) -> bool:
     """Whether an install profile grants ``capability``.
 
-    Legacy ``endpoint``/``satellite`` tokens normalize to ``streambox``
-    first, so a field box reads its real grants. Invalid tokens raise
-    ``ValueError`` (from ``normalize_install_profile``) and a valid
-    profile missing from ``PROFILE_CAPABILITIES`` raises ``KeyError`` —
-    both loud on purpose. A ``.get(role, frozenset())`` would turn "we
-    forgot to grant the new tier anything" into a silent, permanent
-    feature blackout, which is exactly the failure this axis exists to
-    make impossible.
+    Invalid tokens raise ``ValueError`` (from ``normalize_install_profile``)
+    and a valid profile missing from ``PROFILE_CAPABILITIES`` raises
+    ``KeyError`` — both loud on purpose. A ``.get(role, frozenset())`` would
+    turn "we forgot to grant the new tier anything" into a silent, permanent
+    feature blackout, which is exactly the failure this axis exists to make
+    impossible.
 
     Pure: derived from the argument alone — no env, no files, no
     hardware. See the module docstring for why that is load-bearing.

@@ -2,26 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The assistant IPC wire at both widths (U2 PR-2, #2223).
-
-Two bars, and they are not the same kind of claim:
-
-* **NARROW IS PINNED.** A narrow box's bytes may not move without someone
-  saying why. The golden was captured from the pre-change tree rather than
-  re-derived, and stood until the assistant resampler began carrying state
-  across chunks; see ``_NARROW_GOLDEN_SHA256``.
-* **WIDE CARRIES MORE.** A signal below the S16 grid must reach the payload,
-  and the assertion is a CONTRAST — what the narrow wire does with the same
-  signal — because "the bits survived" means nothing on its own.
-
-The width itself comes from ONE input, ``JASPER_FANIN_RING_WIRE_FORMAT``,
-classified by ``jasper.fanin_coupling.resolve_ring_wire_format``.
-"""
+"""The assistant wire preserves resampled precision in bounded S32 frames."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import math
 import re
 import socket
@@ -32,41 +17,28 @@ import numpy as np
 import pytest
 
 from jasper import tts_playout
+from jasper.assistant_loudness import UPSAMPLE_2X_CONTEXT, upsample_2x
 from jasper.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
-    _OUTPUTD_AUDIO_FRAME_BYTES_WIDE,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
     _SPINE_SCALE,
     TtsPlayout,
     _outputd_audio_chunks,
     _OutputdStreamAdapter,
     _quantize_to_wire,
-    tts_wire_is_wide,
 )
 
-from .fanin_env_fixtures import declare_fanin_env
-from tests._log_events import event_fields, event_records
 from tests._playout import FakeOutputdStream
 
 _REPO = Path(__file__).resolve().parents[1]
 _RESAMPLER_RS = _REPO / "rust" / "jasper-resampler" / "src" / "lib.rs"
-
-# The emitted payload for `_probe_pcm()` on the NARROW wire, delayed by
-# `2 * UPSAMPLE_2X_CONTEXT` samples, its lead-in interpolating out of silence
-# (the leading zeros below).
-_NARROW_GOLDEN_SHA256 = (
-    "7ace97ad9926f8cf3cf98d3a46dc9e0fc132baaa3757da284a60c6fe260f9504"
-)
-_NARROW_GOLDEN_BYTES = 19_200
-_NARROW_GOLDEN_HEAD = "000000000000000000000000f4fff4ff000000000a000a0000000000e1ffe1ff"
 
 
 def _probe_pcm(n: int = 2_400) -> bytes:
     """24 kHz mono S16 with fine structure the 2x resampler can act on.
 
     The third term is deliberately tiny (~13 LSB peak): a component whose
-    resampled values land between S16 codes is what the wide wire keeps and
-    the narrow one rounds away.
+    resampled values land between S16 codes and must survive quantization.
     """
     out = bytearray()
     for i in range(n):
@@ -79,8 +51,8 @@ def _probe_pcm(n: int = 2_400) -> bytes:
     return bytes(out)
 
 
-def _emit(pcm: bytes, *, wide: bool, **write_kwargs) -> bytes:
-    tts = TtsPlayout(socket_path="/nonexistent.sock", wire_wide=wide)
+def _emit(pcm: bytes, **write_kwargs) -> bytes:
+    tts = TtsPlayout(socket_path="/nonexistent.sock")
     rec = FakeOutputdStream()
     tts._stream = rec
 
@@ -92,44 +64,10 @@ def _emit(pcm: bytes, *, wide: bool, **write_kwargs) -> bytes:
     return b"".join(rec.writes)
 
 
-# ---------------------------------------------------------------------------
-# Narrow: frozen.
-# ---------------------------------------------------------------------------
-
-
-def test_the_narrow_wire_is_byte_identical_to_its_committed_golden():
-    payload = _emit(_probe_pcm(), wide=False)
-    assert len(payload) == _NARROW_GOLDEN_BYTES
-    assert payload[:32].hex() == _NARROW_GOLDEN_HEAD
-    assert hashlib.sha256(payload).hexdigest() == _NARROW_GOLDEN_SHA256
-
-
-def test_the_narrow_quantizer_is_the_pre_change_expression():
-    """Truncate-toward-zero, saturating, exactly as shipped.
-
-    Spelled out here rather than only exercised end to end, because the
-    difference between this and round-to-nearest is one LSB on roughly half
-    the samples in the fleet.
-    """
-    arr = np.array([0.4, -0.4, 1.6, -1.6, 40_000.0, -40_000.0], dtype=np.float32)
-    out = _quantize_to_wire(arr, wide=False)
-    assert out.dtype == np.int16
-    assert out.tolist() == [0, 0, 1, -1, 32_767, -32_768]
-
-
-@pytest.mark.parametrize(
-    ("wire_wide", "expected"),
-    [(False, b"AUDIO 8\n"), (True, b"AUDIO32 8\n")],
-)
-def test_the_adapter_writes_the_header_its_wire_declares(wire_wide, expected):
-    """The header line on the real socket, not a field read back.
-
-    The reader dispatches on this verb, so it is the wire's declaration of its
-    own sample width — the reason no format negotiation is needed.
-    """
+def test_the_adapter_writes_the_audio32_header():
     ours, theirs = socket.socketpair()
     try:
-        adapter = _OutputdStreamAdapter(ours, wire_wide=wire_wide)
+        adapter = _OutputdStreamAdapter(ours)
         payload = b"\x01\x02\x03\x04\x05\x06\x07\x08"
         adapter.write(payload)
         theirs.settimeout(2.0)
@@ -137,7 +75,7 @@ def test_the_adapter_writes_the_header_its_wire_declares(wire_wide, expected):
     finally:
         ours.close()
         theirs.close()
-    assert got == expected + payload
+    assert got == b"AUDIO32 8\n" + payload
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +85,20 @@ def test_the_adapter_writes_the_header_its_wire_declares(wire_wide, expected):
 
 def test_the_wide_wire_keeps_bits_the_narrow_wire_has_no_code_for():
     pcm = _probe_pcm()
-    narrow = np.frombuffer(_emit(pcm, wide=False), dtype="<i2")
-    wide = np.frombuffer(_emit(pcm, wide=True), dtype="<i4")
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    context = 2 * UPSAMPLE_2X_CONTEXT
+    resampled = upsample_2x(np.pad(samples, (context, 0)))[context:context + 2 * samples.size]
+    narrow = np.repeat(np.clip(resampled, -32768, 32767).astype(np.int16), 2)
+    wide = np.frombuffer(_emit(pcm), dtype="<i4")
 
     assert len(wide) == len(narrow), "same frames, twice the bytes"
     # Every wide sample describes the same signal at 2^16 times the scale, so
     # dividing back out lands within one narrow step of the narrow sample.
     delta = wide.astype(np.int64) - narrow.astype(np.int64) * _SPINE_SCALE
     assert np.all(np.abs(delta) <= _SPINE_SCALE), (
-        "the two wires must describe the same signal at two scales"
+        "the two quantizations must describe the same signal at two scales"
     )
-    # THE CONTRAST: a sub-S16-LSB remainder that the narrow wire simply has no
-    # code for. Without this, "the wide wire is wider" would be a claim about
-    # the container, not the signal.
+    # A sub-S16-LSB remainder proves signal detail survives, beyond frame width.
     remainder = wide.astype(np.int64) % _SPINE_SCALE
     carried = int(np.count_nonzero(remainder))
     assert carried > len(wide) // 2, (
@@ -169,13 +108,6 @@ def test_the_wide_wire_keeps_bits_the_narrow_wire_has_no_code_for():
 
 
 def test_the_wide_quantizer_rounds_to_nearest_and_saturates():
-    """A NEW edge, so it gets the house rule: round-to-nearest, no dither.
-
-    The probe is asserted to DISTINGUISH rounding from truncation before it is
-    used. An earlier revision of this test used 0.4, whose product with 2^16 is
-    26214.4 — a value both rules map to 26214 — so it passed a truncating
-    mutant. That is the half-guarded-site class, caught by mutation.
-    """
     # 0.400008 -> 26214.92: the two rules disagree. 1e-05 -> 0.655: rounding
     # keeps the sample, truncation deletes it entirely.
     arr = np.array([0.400008, -0.400008, 1e-05, -1e-05, 40_000.0, -40_000.0],
@@ -185,7 +117,7 @@ def test_the_wide_quantizer_rounds_to_nearest_and_saturates():
         np.trunc(x) != np.rint(x) for x in exact[:4]
     ), "the probe must reach a value the two rules disagree on"
 
-    out = _quantize_to_wire(arr, wide=True)
+    out = _quantize_to_wire(arr)
     assert out.dtype == np.int32
     assert out.tolist() == [
         int(np.rint(exact[0])),
@@ -202,18 +134,13 @@ def test_the_wide_quantizer_rounds_to_nearest_and_saturates():
 
 
 def test_a_wide_input_buffer_is_normalized_before_it_is_re_quantized():
-    """An earcon baked wide and the same earcon baked narrow agree.
-
-    The wide input is divided by the exact 2^16 on the way in and multiplied by
-    it again on the way out, both exact, so a PROMOTED narrow buffer emits the
-    identical wide payload the unpromoted one does.
-    """
+    """Promoting an S16 input by 2^16 must preserve its output payload."""
     narrow_pcm = _probe_pcm(240)
     promoted = (
         np.frombuffer(narrow_pcm, dtype="<i2").astype(np.int32) * _SPINE_SCALE
     ).astype("<i4").tobytes()
-    from_narrow = _emit(narrow_pcm, wide=True)
-    from_wide = _emit(promoted, wide=True, pcm_wide=True)
+    from_narrow = _emit(narrow_pcm)
+    from_wide = _emit(promoted, pcm_wide=True)
     assert from_wide == from_narrow
 
 
@@ -222,159 +149,24 @@ def test_a_wide_input_buffer_is_normalized_before_it_is_re_quantized():
 # ---------------------------------------------------------------------------
 
 
-def test_the_chunker_aligns_to_frames_at_both_widths_under_one_byte_cap():
-    for frame_bytes in (_OUTPUTD_AUDIO_FRAME_BYTES, _OUTPUTD_AUDIO_FRAME_BYTES_WIDE):
-        data = b"\0" * (frame_bytes * 200_000)
-        chunks = list(_outputd_audio_chunks(data, frame_bytes))
-        assert b"".join(chunks) == data
-        for chunk in chunks:
-            assert len(chunk) % frame_bytes == 0, "a torn frame would desync"
-            # The cap is a BYTE cap on both wires — it bounds the allocation a
-            # single command asks the daemon for, and must not double.
-            assert len(chunk) <= _OUTPUTD_MAX_AUDIO_CHUNK_BYTES
-        with pytest.raises(ValueError):
-            list(_outputd_audio_chunks(b"\0" * (frame_bytes + 1), frame_bytes))
+def test_the_chunker_keeps_whole_frames_under_the_byte_cap():
+    data = b"\0" * (_OUTPUTD_AUDIO_FRAME_BYTES * 200_000)
+    chunks = list(_outputd_audio_chunks(data))
+    assert b"".join(chunks) == data
+    for chunk in chunks:
+        assert len(chunk) % _OUTPUTD_AUDIO_FRAME_BYTES == 0
+        assert len(chunk) <= _OUTPUTD_MAX_AUDIO_CHUNK_BYTES
+    with pytest.raises(ValueError):
+        list(_outputd_audio_chunks(b"\0" * (_OUTPUTD_AUDIO_FRAME_BYTES + 1)))
 
 
-def test_the_wide_wire_frame_is_twice_the_narrow_one():
-    assert _OUTPUTD_AUDIO_FRAME_BYTES == 4
-    assert _OUTPUTD_AUDIO_FRAME_BYTES_WIDE == 8
-    assert _OUTPUTD_AUDIO_FRAME_BYTES_WIDE == 2 * _OUTPUTD_AUDIO_FRAME_BYTES
-
-
-# ---------------------------------------------------------------------------
-# The width resolution: one input, one process-wide answer.
-# ---------------------------------------------------------------------------
-
-
-def _clear_cache():
-    """`tests/conftest.py` clears this around every test; these calls are the
-    WITHIN-test clears, because several of these tests deliberately resolve the
-    width more than once with different declarations."""
-    tts_wire_is_wide.cache_clear()
-
-
-def _declare(monkeypatch, tmp_path, *, wire_format: str) -> None:
-    """Declare the box's ring wire format at the read point the code uses."""
-    import jasper.fanin_coupling as fc
-
-    declare_fanin_env(monkeypatch, tmp_path, "")
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: wire_format)
-    _clear_cache()
-
-
-@pytest.mark.parametrize(
-    ("wire_format", "expected"), [("S32_LE", True), ("S16_LE", False)]
-)
-def test_the_width_follows_the_declared_ring_wire_format(
-    monkeypatch, tmp_path, wire_format, expected
-):
-    """The declared ring wire format is the whole verdict: ADR-0100 left one
-    transport, so no transport half remains to disagree with it."""
-    _declare(monkeypatch, tmp_path, wire_format=wire_format)
-    assert tts_wire_is_wide() is expected
-
-
-def test_a_declared_wide_box_speaks_the_wide_verb(monkeypatch, tmp_path):
-    """`jasper-fanin` runs every box on the ring — the ring is its only
-    transport (ADR-0100) — so voice must speak AUDIO32 to a wide-declared box
-    or every assistant payload takes a needless conversion at the mixer."""
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
-    tts = TtsPlayout(socket_path="/nonexistent.sock")
-    assert tts._wire_wide is True
-    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
-
-
-def test_a_declared_narrow_box_speaks_the_narrow_verb(monkeypatch, tmp_path):
-    """The conservative verb, so a narrow-pinned box's payloads are not
-    converted at the mixer."""
-    _declare(monkeypatch, tmp_path, wire_format="S16_LE")
-    tts = TtsPlayout(socket_path="/nonexistent.sock")
-    assert tts._wire_wide is False
-    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
-
-
-def test_an_unreadable_declaration_resolves_to_the_default_and_says_so(
-    monkeypatch, caplog,
-):
-    """`jasper-fanin` owns the refusal; `jasper-voice` must not die twice.
-
-    A bad token parks fan-in at exit 78. Re-raising here would also take down
-    the daemon that plays the failure cues, so the fault is logged loudly and
-    the width falls back to what the resolver itself answers for a box that
-    declares nothing — anything else puts this process on a width no box has.
-
-    The expectation is DERIVED from the resolver, not written out as a literal:
-    a moved default must move this answer with it, and a pin that spelled the
-    current default would pass while the two disagreed.
-    """
-    import jasper.fanin_coupling as fc
-
-    def _boom():
-        raise ValueError("JASPER_FANIN_RING_WIRE_FORMAT='S24_3LE' unsupported")
-
-    undeclared = fc.assistant_wire_is_wide(
-        wire_format=fc.resolve_ring_wire_format(None)
+def test_the_wire_frame_and_chunk_limit():
+    assert _OUTPUTD_AUDIO_FRAME_BYTES == 8
+    assert _OUTPUTD_MAX_AUDIO_CHUNK_BYTES == 48_000
+    duration = _OUTPUTD_MAX_AUDIO_CHUNK_BYTES / (
+        _OUTPUTD_AUDIO_FRAME_BYTES * TtsPlayout.OUTPUT_RATE
     )
-    _clear_cache()
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", _boom)
-    with caplog.at_level("WARNING"):
-        assert tts_wire_is_wide() is undeclared
-    assert event_records(caplog, "tts_wire.declaration_unreadable")
-    _clear_cache()
-
-
-def test_the_process_resolves_the_width_exactly_once(monkeypatch, tmp_path):
-    """Two callers ask — the playout and the earcon bake. One answer, always."""
-    import jasper.fanin_coupling as fc
-
-    calls = []
-
-    def _counted():
-        calls.append(1)
-        return "S32_LE"
-
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", _counted)
-    assert tts_wire_is_wide() is True
-    assert tts_wire_is_wide() is True
-    assert tts_wire_is_wide() is True
-    assert len(calls) == 1, "a second file read could return a second answer"
-    _clear_cache()
-
-
-def test_the_playout_resolves_its_width_when_none_is_given(monkeypatch, tmp_path):
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
-    tts = TtsPlayout(socket_path="/nonexistent.sock")
-    assert tts._wire_wide is True
-    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES_WIDE
-    _declare(monkeypatch, tmp_path, wire_format="S16_LE")
-    tts = TtsPlayout(socket_path="/nonexistent.sock")
-    assert tts._wire_wide is False
-    assert tts._frame_bytes == _OUTPUTD_AUDIO_FRAME_BYTES
-
-
-def test_a_startup_line_names_the_resolved_width_and_where_it_came_from(
-    monkeypatch, tmp_path, caplog
-):
-    """Item 4: a support read must not need journal archaeology.
-
-    The mismatch warn fires at most once for the daemon's lifetime and may have
-    scrolled away; this line is always there, on both sides of the socket.
-    """
-    _declare(monkeypatch, tmp_path, wire_format="S32_LE")
-    with caplog.at_level("INFO"):
-        TtsPlayout(socket_path="/nonexistent.sock")
-    fields = event_fields(caplog, "tts_wire.resolved")
-    assert fields["width"] == "S32_LE"
-    assert fields["verb"] == "AUDIO32"
-    assert fields["source"] == "box_declaration"
-    caplog.clear()
-    with caplog.at_level("INFO"):
-        TtsPlayout(socket_path="/nonexistent.sock", wire_wide=False)
-    fields = event_fields(caplog, "tts_wire.resolved")
-    assert fields["width"] == "S16_LE"
-    assert fields["source"] == "explicit"
+    assert duration == 0.125
 
 
 # ---------------------------------------------------------------------------

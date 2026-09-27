@@ -29,12 +29,14 @@ from jasper.active_speaker.capture_geometry import (
     reference_axis_driver_acknowledgement_label,
     summed_acknowledgement_label,
 )
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
 from jasper.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
     CapturePlan,
     CapturePlanEntry,
     CaptureSpecError,
 )
+from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
 
 # --- Contract constants -------------------------------------------------------
 
@@ -47,9 +49,6 @@ SCHEMA_VERSION = 1
 CAPTURE_PROTOCOL_VERSION = 3
 
 
-# The format the measurement analysis demands of every capture
-# (`jasper/web/correction_runtime.py`: MAX_WAV_BODY_BYTES caps the upload).
-REQUIRED_SAMPLE_RATE_HZ = 48000
 REQUIRED_CHANNELS = 1
 
 # Per-kind measurement-validity policy vocabulary.
@@ -526,10 +525,6 @@ def build_crossover_sweep_spec(
     is applied silently when nothing has already been chosen for the session.
     """
     if stimulus_duration_ms is None:
-        # Lazy import: the kernel module pulls numpy/scipy, and the socket-
-        # activated wizard builds specs on a light process.
-        from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
-
         stimulus_duration_ms = int(round(DEFAULT_DURATION_S * 1000))
     if ambient_duration_ms < 0:
         raise CaptureSpecError("ambient_duration_ms must be >= 0")

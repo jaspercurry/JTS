@@ -13,7 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.active_speaker.design_draft import design_draft_view
-from jasper.active_speaker.branch_chain import sections_by_role
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile

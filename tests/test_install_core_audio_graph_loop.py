@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import source_intent
+from jasper.fanin.coupling_reconcile import ENTRY_LOCK_PATH
 from jasper.local_sources.registry import local_source_audio_refresh_units
 from tests.install_surface import installer_shell_paths
 
@@ -333,32 +333,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
     assert not transaction.exists()
 
 
-def _function_body(source: str, name: str) -> str:
-    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
-    m = re.search(pattern, source, re.S | re.M)
-    assert m, f"function {name} not found in systemd-units.sh"
-    return m.group(1)
-
-
-def test_source_intent_reapply_runs_the_bounded_full_coordinator():
-    """The coordinator owns persistent and runtime state for every source,
-    including Bluetooth RF-kill recovery, and it alone starts desired-on
-    sources and repairs stale derived state. Both profiles reach it through
-    this one helper, so its invocation is pinned here and the per-profile
-    ordering by the argv recorder below.
-    """
-    source = FRAGMENT.read_text()
-    # The shared helper is the ONE deploy path that runs the full coordinator.
-    helper = _function_body(source, "reapply_source_intent")
-    assert "jasper-source-intent-reconcile" in helper
-    assert "--reason install --invalidate-status-before" in helper
-    assert (
-        "/usr/bin/timeout --foreground --kill-after=5s "
-        f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
-    ) in helper
-    assert "--stop-disabled" not in helper
-
-
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):
     r = _run(tmp_path, fail_basename="jasper-fanin.service")
     assert r.returncode != 0, "the loop must surface the row failure"
@@ -379,6 +353,15 @@ def test_last_unit_failure_still_runs_daemon_reload(tmp_path):
     assert (tmp_path / "reload.log").exists()
 
 
+def _coupling_fence_paths(tmp_path: Path) -> str:
+    """The park's coupling entry lock and fence drop-in live under /run on a
+    speaker; point both into the sandbox."""
+    return (
+        f'FANIN_COUPLING_ENTRY_LOCK="{tmp_path}/coupling.lock"\n'
+        f'FANIN_COUPLING_FENCE_DROPIN="{tmp_path}/run/coupling-fence.conf"\n'
+    )
+
+
 def test_graph_park_retires_a_stale_record_before_stopping_active_outputd(tmp_path):
     park = tmp_path / "outputd.park"
     park.write_text("old\n")
@@ -397,6 +380,7 @@ REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path}/systemd"
 LOCAL_SBIN_DIR="{local_sbin}"
 source "{FRAGMENT}"
+{_coupling_fence_paths(tmp_path)}
 OUTPUTD_FAILURE_PARK_RECORD="{park}"
 JASPER_CORE_GRAPH_PARK_UNITS=(jasper-outputd.service)
 _record_parked_unit() {{ :; }}
@@ -489,6 +473,7 @@ mkdir -p "$SYSTEMD_DIR" "$STATE_DIR"
 {_stateful_systemctl(tmp_path)}
 source "{FRAGMENT}"
 source "{BUILD_SANDBOX}"
+{_coupling_fence_paths(tmp_path)}
 # install.sh's first unguarded restart-tail command, made to fail.
 ensure_outputd_camilla_statefile() {{ return 1; }}
 trap install_exit_cleanup EXIT
@@ -556,9 +541,10 @@ def _profile_runtime_harness(
     extra_shims: str = "",
     epilogue: str = "",
 ) -> str:
+    # Both profile entry points end in the one shared tail, so it runs real.
     real = " ".join(
         shlex.quote(name)
-        for name in (function, *keep, *_RECORDER_SHIMS)
+        for name in (function, "_converge_runtime_units", *keep, *_RECORDER_SHIMS)
     )
     return f"""{_shim_preamble(tmp_path, errexit=False)}
 LOG='{tmp_path}/calls.log'
@@ -604,12 +590,12 @@ _LEFT_OFF_BY_THE_TAIL = frozenset(
 # validate the DAC lane. reconcile_grouping_state genuinely stops
 # snapclient/snapserver: both ship disabled and are reconciler-started, so they
 # are in OFF_AT_PARK and the unpark's "left off on purpose" skip can never
-# protect them. jasper-audio-hardware-reconcile is an absolute-path binary that
-# does not exist here; shim it converged so its own WARN arm is the one
-# variable the degraded run below changes.
+# protect them. The two absolute-path reconcilers do not exist here; shim them
+# converged so each one's own WARN arm is the one variable a degraded run changes.
 _TAIL_RECONCILER_SHIMS = """
 install_run_bounded() { shift 2; "$@"; }
 /usr/local/sbin/jasper-audio-hardware-reconcile() { return 0; }
+/opt/jasper/.venv/bin/jasper-accessory-reconcile() { return 0; }
 require_outputd_ready() {
     systemctl stop jasper-outputd.service jasper-voice.service
     return 0
@@ -622,29 +608,22 @@ reconcile_grouping_state() {
 _build_sandbox_log() { :; }
 """
 
-# The same tail with the hardware reconcile WARNing instead of converging: it
-# runs to the end anyway (every one of its steps is non-fatal) but nothing has
-# taken ownership of the parked units, so the record must survive to the trap.
-_DEGRADED_TAIL_SHIM = """
-/usr/local/sbin/jasper-audio-hardware-reconcile() { return 1; }
-"""
-
 
 def _run_tail(
     tmp_path: Path,
     function: str,
     *,
     low_memory: bool = False,
-    degraded: bool = False,
+    degraded: str = "",
 ) -> tuple[list[str], list[str]]:
     """Run one profile's whole restart tail with the park/record/unpark chain
     real, a stateful systemctl and reconcilers that leave
     `_LEFT_OFF_BY_THE_TAIL` stopped, then enter the installer's REAL EXIT trap
     entry. Returns the call log split at the sentinel: what the tail did, then
-    what the trap did."""
+    what the trap did. `degraded` names a reconciler that WARNs instead."""
     shims = _stateful_systemctl(tmp_path) + _TAIL_RECONCILER_SHIMS
     if degraded:
-        shims += _DEGRADED_TAIL_SHIM
+        shims += f"{degraded}() {{ return 1; }}\n"
     if low_memory:
         # build_swap_required lives in build-sandbox.sh, which the stub loop
         # must not have seen; force the constrained-build park on.
@@ -725,16 +704,20 @@ def test_a_green_tail_keeps_the_low_memory_build_park_restorable(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "failing",
+    ("/usr/local/sbin/jasper-audio-hardware-reconcile", "/opt/jasper/.venv/bin/jasper-accessory-reconcile"),
+)
+@pytest.mark.parametrize(
     "function",
     ("start_streambox_runtime_units", "install_systemd_units"),
 )
-def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function):
+def test_a_degraded_tail_keeps_the_core_graph_park_restorable(tmp_path, function, failing):
     """The forget is only earned by a tail that CONVERGED. Every step that
     justifies it is non-fatal (`|| WARN`), so one of them WARNing leaves the
     parked units down with no reconciler that owns them. Dropping the record
     there would end the install green on a silent speaker with nothing left to
     restore it, so a WARNed tail must reach the trap with the record intact."""
-    tail, trap = _run_tail(tmp_path, function, degraded=True)
+    tail, trap = _run_tail(tmp_path, function, degraded=failing)
 
     # Not vacuous: the park has to have taken the speaker down first.
     parked = {c.split()[2] for c in tail if c.startswith("systemctl stop ")}
@@ -865,13 +848,187 @@ require_outputd_ready() {{
     assert any("via=jasper-outputd.service" in call for call in after[cleared + 1:])
 
 
+_COUPLING_AUTO = "jasper-fanin-coupling-auto.service"
+
+
+@pytest.mark.parametrize("abort", (False, True))
 @pytest.mark.parametrize(
     "function",
     ("start_streambox_runtime_units", "install_systemd_units"),
 )
-def test_both_profiles_restart_control_and_refresh_the_source_roster(
-    tmp_path, function
+def test_the_graph_park_drains_the_coupling_pass_and_fences_new_ones(
+    tmp_path, function, abort
 ):
+    """#5470: a coupling pass's broker restart of fan-in, accepted before the
+    install parked the graph, canceled the install's fan-in stop. The park now
+    waits the pass out on its entry lock, and refuses coupling-auto starts —
+    whose Wants= would restart the graph daemons — until the graph is back. An
+    install that dies inside the window restores the graph first and leaves no
+    fence behind."""
+    log = tmp_path / "calls.log"
+    down = tmp_path / "down"
+    loaded = tmp_path / "fence.loaded"
+    lock = tmp_path / "coupling.lock"
+    dropin = tmp_path / "run" / "coupling-fence.conf"
+    shims = f"""echo "entry lock: $FANIN_COUPLING_ENTRY_LOCK" >> "{log}"
+{_coupling_fence_paths(tmp_path)}
+mkdir -p "{down}"
+# systemd loads the drop-in on daemon-reload; a loaded RefuseManualStart=
+# refuses the whole start, so none of the oneshot's Wants= jobs exist.
+systemctl() {{
+  local verb="${{1:-}}" arg
+  local -a units=()
+  echo "systemctl $*" >> "{log}"
+  shift || true
+  for arg in ${{1+"$@"}}; do
+    case "$arg" in -*) ;; *) units+=("$arg") ;; esac
+  done
+  case "$verb" in
+    daemon-reload) rm -f "{loaded}"; [[ ! -e "{dropin}" ]] || : > "{loaded}" ;;
+    is-active) [[ ! -e "{down}/${{units[0]}}" ]] ;;
+    is-enabled) echo enabled ;;
+    stop) for arg in "${{units[@]}}"; do : > "{down}/$arg"; done ;;
+    start|restart)
+      for arg in "${{units[@]}}"; do
+        if [[ "$arg" == "{_COUPLING_AUTO}" ]]; then
+          if [[ -e "{loaded}" ]]; then echo "coupling-auto refused" >> "{log}"; return 1; fi
+          echo "coupling-auto admitted" >> "{log}"
+          rm -f "{down}"/jasper-fanin.service "{down}"/jasper-outputd.service "{down}"/jasper-camilla.service
+        fi
+        rm -f "{down}/$arg"
+      done ;;
+  esac
+}}
+install_run_bounded() {{ shift 2; "$@"; }}
+# The real reconciler kicks coupling-auto on every converged install pass.
+/usr/local/sbin/jasper-audio-hardware-reconcile() {{
+  systemctl start --no-block {_COUPLING_AUTO}
+  systemctl restart jasper-outputd.service
+}}
+require_outputd_ready() {{ systemctl restart jasper-outputd.service; }}
+ensure_outputd_camilla_statefile() {{ {"exit 3" if abort else ":"}; }}
+reconcile_sound_dsp_state() {{ :; }}
+remove_stale_jts_ring_data_files() {{ echo "rings unlinked" >> "{log}"; }}
+source "{BUILD_SANDBOX}"
+_build_sandbox_log() {{ :; }}
+# The trap's last step: by then the lock and the fence must both be gone.
+clear_install_in_progress() {{
+  flock -n "{lock}" true && echo "lock free" >> "{log}"
+  [[ -e "{dropin}" ]] || echo "no fence" >> "{log}"
+}}
+# The in-flight pass: it holds the entry lock while the broker restart of
+# fan-in it already had accepted is still to land.
+(
+  exec 9<>"{lock}"
+  flock 9
+  : > "{tmp_path}/pass.holding"
+  sleep 0.5
+  systemctl restart jasper-fanin.service
+  echo "pass done" >> "{log}"
+) &
+until [[ -e "{tmp_path}/pass.holding" ]]; do sleep 0.01; done
+trap install_exit_cleanup EXIT
+"""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _profile_runtime_harness(
+                tmp_path,
+                function,
+                keep=(
+                    *_PARK_RECORD_CHAIN,
+                    "restart_core_camilla_after_dsp_reconcile",
+                    "fence_fanin_coupling",
+                    "release_fanin_coupling_fence",
+                ),
+                extra_shims=shims,
+                epilogue=f"systemctl start {_COUPLING_AUTO}\n",
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == (3 if abort else 0), result.stderr
+    calls = log.read_text().splitlines()
+    # The drain is only a drain on the lock the pass itself takes.
+    assert f"entry lock: {ENTRY_LOCK_PATH}" in calls
+    reloads = [i for i, call in enumerate(calls) if call == "systemctl daemon-reload"]
+    assert len(reloads) == 2, calls
+    raised, lifted = reloads
+    park = calls.index("systemctl stop jasper-fanin.service")
+    unlinked = calls.index("rings unlinked")
+    # Fence loaded, then the drain outlasts the pass's accepted restart, and
+    # only then does the park stop fan-in.
+    assert raised < calls.index("pass done") < park < unlinked
+    window = calls[park:lifted]
+    assert "coupling-auto refused" in window
+    assert "coupling-auto admitted" not in window
+    if abort:
+        # The trap restores the parked graph before it lifts the fence.
+        assert calls.index("systemctl start jasper-camilla.service") < lifted
+        parked = {c.split()[2] for c in calls[park:unlinked] if c.startswith("systemctl stop ")}
+        assert not parked & {p.name for p in down.iterdir()}
+    else:
+        restored = calls.index("systemctl restart jasper-camilla.service")
+        assert restored < lifted < calls.index("fn reapply_source_intent")
+        assert "coupling-auto admitted" in calls[lifted:]
+    assert calls[-2:] == ["lock free", "no fence"]
+    assert not dropin.exists() and not loaded.exists()
+
+
+_WIZARD_UNITS = ("jasper-web", "jasper-bluetooth-web", "jasper-correction-web", "jasper-system-web", "jasper-chat-web")
+_ACCESSORY_PASS = (
+    "fn install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install --restart-hosts"
+)
+_INPUT_INVOCATION = "systemctl show -p InvocationID --value jasper-input.service"
+# Each profile's steps once the core graph is back, in order; the local-source
+# refresh is one step (its roster is pinned against the registry below).
+_TAIL_TO_AEC = (
+    "systemctl enable --now jasper-mux.service", "systemctl try-restart", "fn reapply_source_intent",
+    *(f"systemctl stop {unit}.service" for unit in _WIZARD_UNITS),
+    # A spent StartLimitAction=reboot burst is cleared first; the HID bridge posts to control.
+    "systemctl reset-failed jasper-control.service", "systemctl restart jasper-control.service",
+    # Started, not restarted: the accessory pass restarts it (ADR-0372).
+    "systemctl enable --now jasper-input.service", _INPUT_INVOCATION, _ACCESSORY_PASS, _INPUT_INVOCATION,
+)
+_TAIL_AFTER_AEC = (
+    "fn reconcile_grouping_state", "fn resolve_fanin_coupling_default", "fn forget_core_graph_park_record",
+    "systemctl enable jasper-wifi-guardian.service", "systemctl enable --now jasper-wifi-recover.timer",
+    "systemctl enable jasper-bootloop-guard.service", "fn enable_usb_hcd_recover",
+    "systemctl enable --now jasper-identity-reconcile.timer", "systemctl start jasper-identity-reconcile.service",
+    "systemctl enable --now jasper-journal-review.timer",
+)
+_RUNTIME_TAILS = {
+    "start_streambox_runtime_units": ("fn enable_usbgadget", "systemctl enable jasper-fanin-coupling-auto.service",
+                                      *_TAIL_TO_AEC, *_TAIL_AFTER_AEC),
+    "install_systemd_units": (*_TAIL_TO_AEC, "fn reconcile_aec_state", *_TAIL_AFTER_AEC),
+}
+
+
+def _install_sh_recorders(tmp_path: Path, *, pass_restarts_input: bool) -> str:
+    """install.sh, not the fragment, owns install_run_bounded, so the stub loop
+    never sees it. Its recorder stands in for the accessory pass, which starts a
+    new jasper-input invocation exactly when it restarts the host."""
+    invocation = tmp_path / "jasper-input.invocation"
+    restart = f'echo restarted > "{invocation}"' if pass_restarts_input else ":"
+    return f"""
+systemctl() {{
+    echo "systemctl $*" >> "$LOG"
+    [[ "$1" != show ]] || cat "{invocation}" 2>/dev/null || true
+}}
+install_run_bounded() {{
+    echo "fn install_run_bounded${{*:+ $*}}" >> "$LOG"
+    [[ "$3" != */jasper-accessory-reconcile ]] || {restart}
+}}
+"""
+
+
+@pytest.mark.parametrize("pass_restarts_input", (True, False))
+@pytest.mark.parametrize("function", tuple(_RUNTIME_TAILS))
+def test_both_profiles_run_one_ordered_runtime_tail(tmp_path, function, pass_restarts_input):
     result = subprocess.run(
         [
             "bash",
@@ -880,6 +1037,7 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
                 tmp_path,
                 function,
                 keep=("_start_core_graph_units", "restart_jasper_control_and_input"),
+                extra_shims=_install_sh_recorders(tmp_path, pass_restarts_input=pass_restarts_input),
             ),
         ],
         capture_output=True,
@@ -889,37 +1047,21 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
     assert result.returncode == 0, result.stderr
     calls = (tmp_path / "calls.log").read_text().splitlines()
 
-    def first(prefix: str) -> int:
-        hits = [i for i, call in enumerate(calls) if call.startswith(prefix)]
-        assert hits, f"{prefix!r} never issued: {calls}"
-        return hits[0]
+    expected = list(_RUNTIME_TAILS[function])
+    if not pass_restarts_input:
+        # A pass that ended before its restart must not leave the old code running.
+        expected.insert(expected.index(_ACCESSORY_PASS) + 2, "systemctl restart jasper-input.service")
+    tail = calls[calls.index("fn release_fanin_coupling_fence") + 1:]  # the core graph's last step
+    assert [c if not c.startswith("systemctl try-restart ") else "systemctl try-restart"
+            for c in tail] == expected
 
-    # jasper-control carries StartLimitAction=reboot; a spent burst must be
-    # cleared or the restart reboots the Pi mid-install.
-    assert first("systemctl reset-failed jasper-control.service") < first(
-        "systemctl restart jasper-control.service"
-    )
-    # jasper-input's HID bridge posts key events to jasper-control, so it must
-    # restart after, never before.
-    assert first("systemctl restart jasper-control.service") < first(
-        "systemctl restart jasper-input.service"
-    )
-
-    refreshed = {
-        unit
-        for call in calls
-        if call.startswith("systemctl try-restart ")
-        for unit in call.split()[2:]
-    }
-    assert set(local_source_audio_refresh_units()) <= refreshed
+    refresh = next(c for c in tail if c.startswith("systemctl try-restart "))
+    assert set(local_source_audio_refresh_units()) <= set(refresh.split()[2:])
 
     # A deploy must never transiently start a household-Off renderer: only
     # the coordinator may make a canonical On transition, and it runs last.
-    assert (
-        first("fn enable_usbgadget")
-        < first("systemctl try-restart ")
-        < first("fn reapply_source_intent")
-    )
+    assert calls.count("fn enable_usbgadget") == 1
+    assert calls.index("fn enable_usbgadget") < calls.index("fn reapply_source_intent")
     assert not [
         call
         for call in calls
@@ -930,12 +1072,6 @@ def test_both_profiles_restart_control_and_refresh_the_source_roster(
         and "jasper-source-intent-reconcile.service" in call
         for call in calls
     )
-    if function == "start_streambox_runtime_units":
-        assert (
-            first("fn enable_usbgadget")
-            < first("systemctl enable jasper-fanin-coupling-auto.service")
-            < first("fn reapply_source_intent")
-        )
 
 
 @pytest.mark.parametrize(
@@ -1341,7 +1477,6 @@ install() {{
 }}
 systemctl() {{ return 0; }}
 install_usb_network_files() {{ return 0; }}
-validate_streambox_web_socket() {{ return 0; }}
 reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
 {function}
 """
@@ -1408,12 +1543,11 @@ install_audio_slice_and_dropins
 '''], capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    for unit in ("jasper-web", "jasper-bluetooth-web", "jasper-correction-web",
-                 "jasper-system-web", "jasper-chat-web"):
+    for unit in _WIZARD_UNITS:
         source = web_source if unit == "jasper-web" else unit
         for extension in ("service", "socket"):
             assert (tmp_path / f"{unit}.{extension}").read_bytes() == (
-                ROOT / "deploy" / f"{source}.{extension}"
+                ROOT / "deploy" / "systemd" / f"{source}.{extension}"
             ).read_bytes()
     for relative in ("jts-audio.slice", "ssh.service.d/oom-protection.conf",
                      "nginx.service.d/jts-recovery.conf"):

@@ -154,7 +154,7 @@ async def test_read_bluetooth_parses_uint16(monkeypatch):
         "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
     monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+        "jasper.busctl.get_property", fake_busctl,
     )
     assert await obs._read_bluetooth_volume() == 95
 
@@ -267,7 +267,7 @@ class _ProbeSpy:
             return real_volume_percent(path)
 
         monkeypatch.setattr(
-            "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+            "jasper.busctl.get_property", fake_busctl,
         )
         monkeypatch.setattr(
             "jasper.volume_observers._bluez_alsa_active_transport_path",
@@ -330,7 +330,7 @@ async def test_tick_forwards_same_value_on_source_activation(
         return None
 
     monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+        "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
         "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
@@ -362,7 +362,7 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
         return None
 
     monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+        "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
         "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
@@ -398,7 +398,7 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
         return None
 
     monkeypatch.setattr(
-        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+        "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
         "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,

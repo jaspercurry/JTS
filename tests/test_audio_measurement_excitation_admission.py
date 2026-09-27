@@ -9,7 +9,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from jasper.audio_measurement.excitation_admission import (
+from jasper.audio_measurement.admission.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
     FrequencyBand,
@@ -100,11 +100,11 @@ def test_broadened_limits_with_same_target_and_profile_are_not_same_authority() 
         (lambda: _request(effective_peak_dbfs="-12"), "finite"),
         (lambda: _request(duration_s=float("inf")), "finite"),
         (lambda: _request(repeat_count=True), "positive integer"),
-        (lambda: _request(target_fingerprint=7), "canonical lowercase"),
-        (lambda: _request(target_fingerprint=f" {TARGET}"), "canonical lowercase"),
+        (lambda: _request(target_fingerprint=7), "lowercase SHA-256"),
+        (lambda: _request(target_fingerprint=f" {TARGET}"), "lowercase SHA-256"),
         (
             lambda: _request(target_fingerprint=OTHER_TARGET.upper()),
-            "canonical lowercase",
+            "lowercase SHA-256",
         ),
         (
             lambda: _limits(maximum_effective_peak_dbfs=0.1),
@@ -113,7 +113,7 @@ def test_broadened_limits_with_same_target_and_profile_are_not_same_authority() 
         (lambda: _limits(maximum_repeat_count=2.0), "positive integer"),
         (
             lambda: _limits(protection_requirement_fingerprint=""),
-            "canonical lowercase",
+            "lowercase SHA-256",
         ),
     ),
 )

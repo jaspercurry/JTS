@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read complete-tune branch diagnostics without fitting another crossover."""
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -11,29 +9,30 @@ from dataclasses import replace
 import numpy as np
 
 from .check import _pilot_verdicts
-from .drift import _estimate_drift
-from .model import ProgramAnalysis
-from .response import _deconvolve_window, _driver_response, _n_fft_for, _radiated_band_hz, recorded_impulse
+from .drift import estimate_drift
+from .model import MeasurementGeometry, ProgramAnalysis
+from .response import deconvolve_window, driver_response, n_fft_for, _radiated_band_hz, recorded_impulse
 
 
 def analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
-                     gate_exempt_reason=None):
-    drift = _estimate_drift(program, capture, sample_rate, locations)
+                     geometry=MeasurementGeometry()):
+    drift = estimate_drift(program, capture, sample_rate, locations)
     epsilon = drift.epsilon_ppm / 1e6
     segments = [program.segment(name) for name in ("sweep_w", "sweep_t", "sweep_verify")]
-    impulses = [_deconvolve_window(capture, seg, global_offset + seg.start_sample,
+    impulses = [deconvolve_window(capture, seg, global_offset + seg.start_sample,
                                   sample_rate, epsilon=epsilon) for seg in segments]
-    n_fft = _n_fft_for(*(ir for ir, _ in impulses))
+    n_fft = n_fft_for(*(ir for ir, _ in impulses))
     responses = []
     records = []
     for seg, (ir, pre) in zip(segments, impulses):
         role = seg.role or "summed"
+        band = _radiated_band_hz(seg)
         shift = epsilon * seg.start_sample
-        response = _driver_response(
+        response = driver_response(
             role, ir, sample_rate, calibration=calibration, ambient_report=None,
             fc_hz=priors.crossover_fc_hz, n_fft=n_fft,
-            radiated_band_hz=_radiated_band_hz(seg), preserve_timing=True,
-            gate_exempt_reason=gate_exempt_reason,
+            radiated_band_hz=band, preserve_timing=True,
+            geometry=geometry,
         )
         # Remove accumulated clock drift, retaining physical branch delay.
         response = replace(response, complex_tf=response.complex_tf * np.exp(
@@ -45,7 +44,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
             "input_channel": seg.channel,
             "scheduled_start_sample": seg.start_sample, "pre_guard_samples": pre,
             "clock_shift_samples": shift, "gate": response.gating,
-            "band_hz": list(_radiated_band_hz(seg)),
+            "band_hz": list(band) if band is not None else None,
             "impulse": ir[:pre + round(.1 * sample_rate)].tolist(),
         })
     pilots, linearity, channel_map, pilot_snr = _pilot_verdicts(

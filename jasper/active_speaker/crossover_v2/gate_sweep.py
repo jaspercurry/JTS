@@ -54,9 +54,9 @@ from jasper.audio_measurement.gating import (
 )
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
-from jasper.audio_measurement.program_analysis.locate import _global_offset
+from jasper.audio_measurement.program_analysis.locate import locate_global_offset
 from jasper.audio_measurement.program_analysis.model import CAPTURE_BOUND_MARGIN_S, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-from jasper.audio_measurement.program_analysis.response import _deconvolve_window, _driver_response, _n_fft_for
+from jasper.audio_measurement.program_analysis.response import deconvolve_window, driver_response, n_fft_for
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
@@ -248,20 +248,20 @@ def reference_gated_measurement(
         raise ValueError("measurement_analysis_program_unsupported")
     samples = cap_capture_length(samples, sweep_len=program.total_samples, sample_rate=rate,
                                  max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S)
-    offset, _, _, _ = _global_offset(program, samples, rate)
+    offset, _, _, _ = locate_global_offset(program, samples, rate)
     aligned, _ = align_summed_capture(program, samples, offset,
         search_samples=round(SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * rate / 1000))
     averaged = average_summed_capture(program, aligned, offset)
     segment = program.segment("sweep_verify")
-    impulse, _ = _deconvolve_window(averaged, segment, offset + segment.start_sample, rate)
+    impulse, _ = deconvolve_window(averaged, segment, offset + segment.start_sample, rate)
     calibration = resolve_setup_calibration(record.get("capture_setup"), device=record.get("capture_device"),
                                             root=calibration_root)
     grid = analysis_grid()
     grid = grid[(grid >= segment.f1_hz) & (grid <= segment.f2_hz)]
-    response = _driver_response(
+    response = driver_response(
         "summed", impulse, rate,
         calibration=calibration.curve if calibration is not None else None,
-        ambient_report=None, fc_hz=None, n_fft=_n_fft_for(impulse),
+        ambient_report=None, fc_hz=None, n_fft=n_fft_for(impulse),
     )
     keep = (response.freqs_hz >= GRID_LO_HZ * 0.7) & (response.freqs_hz <= GRID_HI_HZ * 1.3)
     smoothed = smooth_fractional_octave(
@@ -270,6 +270,8 @@ def reference_gated_measurement(
     magnitude = np.interp(grid, response.freqs_hz[keep], smoothed)
     fragment = response.gating or {}
     return {"freqs_hz": tuple(grid), "magnitude_db": tuple(magnitude), "window": "gated",
+            "calibration": {"applied": calibration is not None,
+                            "calibration_id": calibration.calibration_id if calibration is not None else None},
             "gate_window_ms": fragment.get("window_ms"),
             "validity_floor_hz": response.validity_floor_hz,
             "trusted_floor_hz": fragment.get("f_trusted_hz"),
@@ -971,10 +973,9 @@ def frame_descriptor(rungs_ms: Sequence[float], grid: np.ndarray) -> dict[str, A
             "grey_below": RESOLUTION_GREY_CYCLES,
         },
         "uncertainty": {
-            # Empty for the reason the packet's cross-seat block is: nothing
-            # here is a random OR a systematic uncertainty, and filing a
-            # pooled spread as either would be exactly the pooling these
-            # labels exist to prevent.
+            # Empty: nothing here is a random OR a systematic uncertainty,
+            # and filing a pooled spread as either would be exactly the
+            # pooling these labels exist to prevent.
             "fields": {},
             "unseparated": {
                 field: dict(entry)

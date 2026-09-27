@@ -46,7 +46,8 @@ _ALLOWLIST = {
     # it, and the asound template is filled by the shared bash renderer and
     # published only once `jasper-render-asound-conf` accepts it. The rename is
     # the publish step of a stage-validate-publish, not a hand-rolled write.
-    "jasper/audio_hardware/reconcile.py",
+    "jasper/audio_hardware/reconcile_env_files.py",
+    "jasper/audio_hardware/reconcile_render.py",
 }
 
 

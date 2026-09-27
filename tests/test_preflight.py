@@ -3,32 +3,36 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_program
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_programs import program, run_program
-from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
+from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
+from jasper.active_speaker.measurement_programs import preset, run_preset
+from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import (
-    AnchorFacts, ResolvedLevel, predicted_rung_admission, resolve_anchor_level, rung_lift_bound_db,
+    AnchorFacts, ResolvedLevel, predicted_rung_admission, resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
+from jasper.biquad import PeqFilter
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.speaker_layout import measurement_target_id
 from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
+from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_pair
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
@@ -49,7 +53,7 @@ def ready_facts(plan, **changes):
 
 
 @pytest.mark.parametrize("muted", [True, False, None])
-def test_preflight_output_mute(monkeypatch, muted):
+def test_preflight_output_mute(monkeypatch, caplog, muted):
     response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
     read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
     monkeypatch.setattr(control_client, "get", read)
@@ -59,10 +63,13 @@ def test_preflight_output_mute(monkeypatch, muted):
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    caplog.set_level(logging.INFO)
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     report = preflight(plan, replace(ready, output_volume=facts.output_volume))
     read.assert_called_once_with("/volume", base_url=control_client.DEFAULT_BASE_URL, timeout=control_client.DEFAULT_TIMEOUT)
     assert report.blocking is (muted is True)
+    assert event_field_maps(caplog, "active_speaker.measurement_output_muted") == (
+        [{"muted": "true", "household_percent": "0"}] if muted else [])
     if muted:
         issue, = report.issues
         assert issue.code == "measurement_output_muted" and issue.blocking
@@ -73,12 +80,17 @@ def test_preflight_output_mute(monkeypatch, muted):
         assert report.issues == ()
 
 
-@pytest.mark.parametrize("layout,name,size", [
-    (layout, name, size)
+@pytest.mark.parametrize("layout,name,preset,poses", [
+    (layout, name, preset, poses)
     for layout in ("full_range_passive", "active_2_way", "active_3_way", "cardioid")
-    for name, size in (("rear", "express"), ("rear", "wide"), ("rear", "behind"), ("rear", "pair"), ("rear", "pair_behind"), ("front_rear", "express"), ("branches", "express"))
-] + [("active_2_way", name, size) for name, size in (("speaker", "mark"), ("room", "arm"), ("bass", "axis"))])
-def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, size):
+    for name, preset, poses in (
+        ("rear", "rear/express", "rear_express"), ("rear", "rear/express", "rear_wide"),
+        ("rear", "rear/express", "rear_behind"), ("rear", "rear/pair", "rear_express"),
+        ("rear", "rear/pair", "rear_behind"), ("front_rear", "front_rear/express", "tournament_express"),
+        ("branches", "branches/express", "tournament_express"))
+] + [("active_2_way", name, preset, poses) for name, preset, poses in (
+    ("speaker", "speaker/mark", "speaker_mark"), ("room", "room/seat", "room_quick"), ("bass", "bass/axis", "bass_axis"))])
+def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, preset, poses):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
     role_targets = {measurement_target_id(t["role"], t.get("output_variant", "primary")): t["target_fingerprint"]
@@ -86,8 +98,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     roles = tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
                   if t.get("output_variant", "primary") == "primary")
     candidate = _room_candidate(tuning_profile)
-    selected = program(name, size)
-    plan = request_for_program(selected, mover=selected.mover or "human",
+    selected = run_preset(preset, poses)
+    plan = request_for_preset(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=topology, roles_bands=roles, role_targets=role_targets,
@@ -98,7 +110,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
-    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *a: SimpleNamespace(bass_extension={}))
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
+                        lambda *a: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     facts = preflight_live.read_preflight_facts(plan)
     assert facts.declared_target_ids == tuple(role_targets)
@@ -137,30 +150,44 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
     assert report.blocking is bool(unoffered)
     assert [(issue.code, issue.evidence["unoffered_drivers"]) for issue in report.issues] == (
         [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
+    if not unoffered:
+        assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
 
 
-@pytest.mark.parametrize("program_id,poses,banks", [
-    ("nearfield", "nearfield/woofer", True),
-    ("nearfield", None, True),
-    ("close", "nearfield/woofer", False),
-    ("nearfield", "close_spot", False),
-])
-def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, poses, banks):
+def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
+    """A stop naming its driver plays that driver alone on the drivers graph
+    whatever its regime, so preflight checks no branch pair for it and prices
+    its one take (ADR-0366)."""
+    plan = AngleCaptureRequest((AngleStop(0, "branches", purpose="reference", driver="woofer",
+                                          branch_pair="front_rear"),))
+    report = preflight(plan, ready_facts(plan, declared_target_ids=("tweeter", "woofer"),
+                                         near_field_drivers=("tweeter", "woofer")))
+    assert [issue.code for issue in report.issues] == []
+    assert [row.graph_scope for row in report.schedule] == ["drivers"]
+    assert report.price["captures"] == 1
+
+
+@pytest.mark.parametrize("program_id,banks", [("nearfield/each", True), ("nearfield", True), ("nearfield/mark", False)])
+def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks):
     """A round banks under its program id, so a plan naming one the registry
     does not hold is refused before it plays, whichever door it came through
     (ADR-0277)."""
-    plan = request_for_program(run_program(program_id, poses))
+    plan = replace(request_for_preset(run_preset("nearfield")), program=program_id)
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer", "woofer:rear")))
     assert [issue.code for issue in report.issues if issue.code == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED] == (
         [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
 
 
-@pytest.mark.parametrize("tweeter_floor_hz,offered", [(800.0, True), (1000.0, False)])
-def test_a_near_field_driver_the_view_cannot_read_is_not_offered(monkeypatch, tweeter_floor_hz, offered):
+@pytest.mark.parametrize("regime,kind,distance_m,tweeter_floor_hz,offered", [
+    ("near_field", "close", 0.015, 800.0, True), ("near_field", "close", 0.015, 1000.0, False),
+    ("per_driver", "bearing", None, 1000.0, True)])
+def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
+        monkeypatch, regime, kind, distance_m, tweeter_floor_hz, offered):
     """The near-field sweep stops at 2 kHz and the view reads its top band,
     800 Hz - 2 kHz, only whole, so a driver whose band starts above 800 Hz is
-    refused before a session plays takes no band can read."""
-    plan = AngleCaptureRequest((AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference",
+    refused at a near-field pose before a session plays takes no band can read;
+    in the far field it plays MEASURE's band (#5696)."""
+    plan = AngleCaptureRequest((AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose="reference",
                                           driver="tweeter"),))
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), role_targets={},
@@ -180,7 +207,7 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(monkeypatch, tw
 def test_preflight_per_driver_layout(layout):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
-    plan = request_for_program(program("speaker", "mark"), mover="human")
+    plan = request_for_preset(preset("speaker/mark"), mover="human")
     program_ids = Mock(return_value=("fixture-sweep",))
     report = preflight(plan, ready_facts(
         plan, program_ids_for=program_ids,
@@ -267,7 +294,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
-    plan = request_for_program(program("branches", "express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = request_for_preset(preset("branches/express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
     facts = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
@@ -498,6 +525,74 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
             assert report.plan.level.predicted_db_spl <= 85 - margin
 
 
+_CUT = PeqFilter(50.0, 8.0, -6.0)
+_BOOST = PeqFilter(400.0, 8.0, 3.0)
+
+
+@pytest.mark.parametrize("peqs,band_hz,rise_db", [
+    ((), (20.0, 1100.0), 0.0), ((_CUT,), (20.0, 1100.0), 6.0), ((_BOOST,), (20.0, 1100.0), 3.0),
+    ((_CUT, _BOOST), (20.0, 1100.0), 9.0), ((_CUT, _BOOST), (100.0, 1100.0), 3.0),
+])
+def test_the_room_off_rise_is_the_room_charge_less_its_lowest_response_in_band(peqs, band_hz, rise_db):
+    """Clearing the room layer drops its boost charge and its cuts, so a graph
+    without it plays up to the charge less the room's lowest response in the
+    band louder (ADR-0370)."""
+    assert rise_without_room_db(peqs, band_hz) == pytest.approx(rise_db, abs=0.1)
+
+
+@pytest.mark.parametrize("purpose,candidate_id,stimulus,room,rise_db", [
+    ("bass", "", None, _CUT, 6.0), ("bass", "trial", None, _CUT, 6.0),
+    ("bass", "", {"ceiling_hz": 1100.0}, PeqFilter(3000.0, 8.0, -6.0), 0.0),
+    ("room", "", None, _CUT, None), ("speaker", "", None, _CUT, None)])
+def test_a_take_clearing_the_room_layer_folds_its_rise_into_the_opener_margin(
+        tuning_profile, purpose, candidate_id, stimulus, room, rise_db):
+    """A bass take plays with the applied room layer off, so it can play louder
+    than the anchor's graph across its stimulus band; the opener's margin holds
+    that rise and the run discloses it. Other purposes play the room layer as
+    composed (ADR-0370)."""
+    candidates = {"trial": _room_candidate(tuning_profile)} if candidate_id else {}
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose, candidate_id=candidate_id,
+                                          stimulus=stimulus),),
+                               candidates=tuple(candidates), level=LevelPolicy(level_db=0))
+    report = preflight(plan, ready_facts(plan, candidates=candidates, applied_room_peqs=(room,)))
+    row = report.rung_admission
+    assert not report.blocking
+    assert row.get("room_off_rise_db") == (None if rise_db is None else pytest.approx(rise_db, abs=0.1))
+    assert row["margin_bound_db_spl"] == pytest.approx(85 - 1 - row["lift_bound_db"] - (row.get("room_off_rise_db") or 0))
+    assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
+
+
+@pytest.mark.parametrize("purpose,blocked", [("bass", True), ("room", False)])
+def test_an_unreadable_applied_room_layer_refuses_a_take_that_clears_it(purpose, blocked):
+    """With the applied room layer unreadable, a room-off take's rise is
+    unknown, so preflight refuses its plan; a take playing the room layer runs
+    as before (ADR-0370)."""
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose),), level=LevelPolicy(level_db=0))
+    report = preflight(plan, ready_facts(plan, applied_room_peqs=None))
+    assert [issue.code for issue in report.issues if issue.blocking] == (["walk_level_policy_invalid"] if blocked else [])
+
+
+@pytest.mark.parametrize("state,room", [({}, ()), ({"status": "applied"}, None)])
+def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatch, state, room):
+    """No applied profile plays no room layer; an applied one whose candidate
+    cannot be read has an unknown one (ADR-0370)."""
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass"),))
+    ready = ready_facts(plan)
+
+    def unreadable(*_args):
+        raise candidate_parts.CandidateBankRefusal("composition_saved_tune_unavailable", "gone")
+
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", unreadable)
+    monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+                              preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    assert facts.applied_room_peqs == room
+
+
 def test_margin_clamp_lands_under_the_bound():
     requested = -17.621
     candidate = {**BASS_EXTENSION, "low_boost_db": 20}
@@ -521,7 +616,8 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
     record = {**anchor.record, "measured_db_spl": 74.23, "reference_volume_db": -22.23}
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: anchor.sensitivity)
-    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *a, **kw: SimpleNamespace(bass_extension={}))
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
+                        lambda *a, **kw: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
         roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), role_targets={"woofer": "fp-woofer"}, fc_hz=None,
         driver_caps_dbfs={"woofer": -8}, session_volume_db=-22.23, driver_sweep_duration_limits_s={})
@@ -558,6 +654,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_bass_extension == applied.bass_extension
+    assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
     report = preflight(plan, replace(facts, program_ids_for=lambda _: ("fixture-sweep",)))
     assert not report.blocking
     row = report.rung_admission
@@ -585,7 +682,8 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
               "mic_sensitivity": sensitivity.to_dict(), **({"ambient_report": report} if has_ambient else {})}
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: sensitivity)
-    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", lambda *args, **kwargs: SimpleNamespace(bass_extension={}))
+    monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
+                        lambda *args, **kwargs: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(
         topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
         roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),), role_targets={"woofer": "fp-woofer"},

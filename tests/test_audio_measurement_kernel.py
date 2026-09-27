@@ -267,10 +267,8 @@ def test_quality_model_profiles_carry_preextraction_values():
     assert ROOM.alignment_snr_ok_db == 35.0
     assert ROOM.null_cap_margin_db == 10.0
 
-    # DRIVER — the active-crossover verdict thresholds…
-    assert DRIVER.silent_peak_dbfs == -45.0
+    # DRIVER — the active-crossover verdict threshold…
     assert DRIVER.null_threshold_db == 6.0
-    assert DRIVER.overlap_min_bins == 4
     # …and its capture-quality/SNR fields MUST equal ROOM's, because the driver
     # capture path called room correction's assess_capture verbatim.
     assert DRIVER.peak_too_low_dbfs == ROOM.peak_too_low_dbfs

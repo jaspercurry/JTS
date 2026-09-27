@@ -1,8 +1,8 @@
 # ADR-0177: Duck ownership is asked of the owner, never inferred from a dB gap
 
 - **Date:** 2026-08-26
-- **Status:** Accepted (recorded when HANDOFF-volume.md was trimmed to its
-  operational spine)
+- **Status:** Superseded by
+  [ADR-0376](0376-nothing-locks-camilla-during-a-voice-session.md)
 
 ## Context
 

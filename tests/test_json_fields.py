@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import OrderedDict
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -21,9 +24,15 @@ from jasper.json_fields import (
     JsonFields,
     _HASH_CHUNK_BYTES,
     as_float,
+    canonical_json_bytes,
     finite_float,
+    freeze_json,
     json_fingerprint,
+    lenient_json_fingerprint,
+    require_finite,
+    require_sha256_hex,
     sha256_file,
+    sha256_text,
     utc_now_iso,
 )
 
@@ -46,6 +55,24 @@ def test_finite_float_reads_only_a_real_number(value, expected):
     result = finite_float(value)
     assert result == expected
     assert result is None or type(result) is float
+
+
+class _Refused(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize("value,positive,expected", [
+    (2.5, False, 2.5), (0, False, 0.0), (-1, False, -1.0), (3, True, 3.0),
+    (True, False, _Refused), ("1.5", False, _Refused), (None, False, _Refused),
+    (float("nan"), False, _Refused), (10**400, False, _Refused),
+    (0.0, True, _Refused), (-2.0, True, _Refused),
+])
+def test_require_finite_answers_a_real_number_or_the_callers_refusal(value, positive, expected):
+    if expected is _Refused:
+        with pytest.raises(_Refused):
+            require_finite(value, field="x", error=_Refused, positive=positive)
+    else:
+        assert require_finite(value, field="x", error=_Refused, positive=positive) == expected
 
 
 @pytest.mark.parametrize(
@@ -72,11 +99,55 @@ def test_sha256_file_digests_the_whole_file_across_chunk_boundaries(tmp_path):
     assert sha256_file(target) == hashlib.sha256(payload).hexdigest()
 
 
+def test_sha256_text_hashes_the_utf8_bytes():
+    assert sha256_text("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert sha256_text("é") == hashlib.sha256(b"\xc3\xa9").hexdigest()
+
+
+@pytest.mark.parametrize("value", [{"a": [1, 2.5, None, True, "é"], "b": {}}, OrderedDict(b=1, a=[{}])])
+def test_freeze_json_copies_the_exact_json_data_model(value):
+    frozen = freeze_json(value, field="x", error=_Refused)
+    assert frozen == value and type(frozen) is dict and frozen is not value
+
+
+@pytest.mark.parametrize("value", [
+    {"a": (1, 2)}, {1: "a"}, {"a": float("nan")}, {"a": float("-inf")}, {"a": {1}},
+    {"a": Decimal("1")}, {"a": type("_Str", (str,), {})("x")}, {"a": [b"x"]},
+])
+def test_freeze_json_refuses_anything_outside_the_exact_json_model(value):
+    with pytest.raises(_Refused):
+        freeze_json(value, field="x", error=_Refused)
+
+
+def test_lenient_json_fingerprint_keeps_its_persisted_bytes():
+    payload = {"b": (1, -0.0, 1e16), "a": Path("/x/é"), "n": float("nan")}
+    assert lenient_json_fingerprint(payload) == "ac1affe20330669dd9ae2688a2d6f9f2c4af238a0c7abcc811c216d71329fa1c"
+
+
 def test_json_fingerprint_ignores_key_order_but_not_values():
     assert json_fingerprint({"a": 1, "b": [2, {"c": 3}]}) == json_fingerprint(
         {"b": [2, {"c": 3}], "a": 1}
     )
     assert json_fingerprint({"a": 1}) != json_fingerprint({"a": 2})
+
+
+def test_canonical_json_bytes_is_sorted_compact_ascii_and_finite_only():
+    assert canonical_json_bytes({"b": [1.5, None], "a": "é"}) == b'{"a":"\\u00e9","b":[1.5,null]}'
+    with pytest.raises(ValueError):
+        canonical_json_bytes({"a": float("nan")})
+
+
+@pytest.mark.parametrize("value,accepted", [
+    ("0123456789abcdef" * 4, True), ("A" * 64, False), (" " + "a" * 63, False),
+    ("a" * 64 + "\n", False), ("a" * 63, False), ("g" * 64, False),
+    ("\u0660" * 64, False), (b"a" * 64, False), (None, False),
+])
+def test_require_sha256_hex_answers_only_a_lowercase_digest(value, accepted):
+    if accepted:
+        assert require_sha256_hex(value, field="x", error=_Refused) == value
+    else:
+        with pytest.raises(_Refused):
+            require_sha256_hex(value, field="x", error=_Refused)
 
 
 @pytest.mark.parametrize("error_type", [

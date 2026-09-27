@@ -255,7 +255,7 @@ async def test_prepared_run_closes_its_bundle_after_confirmed_cleanup(
         artifacts.append(store.publish_json_artifact("completed_take.json", {"accepted": True}))
         cleanup_started.set()
         await cleanup_finished.wait()
-        v2state._persist_execution_result(session.session_id, volume_restore=restore)
+        v2state.persist_execution_result(session.session_id, volume_restore=restore)
         if error is not None:
             raise error
 

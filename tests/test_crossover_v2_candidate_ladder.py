@@ -28,7 +28,7 @@ from jasper.active_speaker.frequency_view import (
     FREQUENCY_VIEW_FILENAME, FrequencyRun, FrequencySeries, build_frequency_view,
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
-from jasper.active_speaker.measurement_programs import program
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
 
 from tests.crossover_v2_banked_round import bank_measure_round
@@ -60,7 +60,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
     builds from the records, so no take is compared against another seat."""
     round_dir = tmp_path / "r1"
     session_dir = round_dir / "bundle" / "sess1"
-    poses = program("seat", "express").poses if layout == "seat" else program("room", "arm").poses
+    poses = run_preset("room", "seat_express" if layout == "seat" else "room_quick").poses
     grid = np.array([500.0, 1000.0, 4000.0])
     records, expected = [], {}
     for index, pose in enumerate(poses):
@@ -225,8 +225,8 @@ def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline
 
 @pytest.mark.parametrize("fields", [
     {}, {"phase": "lateral", "position": None}, {"phase": "lateral"},
-    {"phase": "lateral", "position": {"deg": 7}},
-], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id"])
+    {"phase": "lateral", "position": {"deg": 7}}, None,
+], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id", "not-a-view"])
 def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
     round_dir = tmp_path / "r1"
     grid = np.array([500.0, 1000.0, 4000.0])
@@ -238,9 +238,9 @@ def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
         )
     expected = _ladder(round_dir)
     average = FrequencySeries("average", "Average", "measurement", tuple(grid), (0.0,) * 3,
-                              details={"phase_deg": [0.0] * 3, **fields})
+                              details={"phase_deg": [0.0] * 3, **(fields or {})})
     view = build_frequency_view(FrequencyRun("speaker", "speaker", (average,)))
-    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view))
+    (round_dir / FREQUENCY_VIEW_FILENAME).write_text(json.dumps(view if fields is not None else {"schema": "other"}))
     assert _ladder(round_dir) == expected
     assert expected["tables"][0]["played"] == ["cfg-a", "cfg-b"]
 

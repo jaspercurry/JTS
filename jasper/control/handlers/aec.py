@@ -6,12 +6,21 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
+import threading
 import time
 from typing import Any, cast
 
 from ... import enhanced_aec, wake_models
-from ...audio_profile_state import normalize_audio_input_profile
+from ...audio_profile_state import (
+    PROFILE_XVF_CHIP_AEC,
+    PROFILE_XVF_CHIP_AEC_TESTING,
+    WAKE_LEG_DEFAULTS,
+    normalize_audio_input_profile,
+    profile_env_updates,
+)
+from ...atomic_io import locked_update_env_file
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
 from ...usb_mic import (
@@ -23,6 +32,225 @@ from ...usb_mic import (
 from .. import aec_endpoints
 from .. import restart_broker
 from ._base import ControlHandlerMixin, logger
+
+
+_USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
+_ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
+_maintenance_logger = logging.getLogger(aec_endpoints.__name__)
+# These kicks and the AEC-bridge restart answer a
+# POST jasper-web proxies with a `proxy_post` timeout
+# (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC, 15 s) sized to clear two
+# broker legs at this bound plus the broker's client socket margin
+# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
+# A `--no-block` systemctl call itself returns in ms regardless of this
+# bound; keep it small so raising the proxy timeout does not have to chase a
+# larger one here.
+_ONESHOT_KICK_TIMEOUT_SEC = 2.0
+
+
+def _reset_then_schedule(
+    unit: str,
+    verb: str,
+    *,
+    reason: str,
+    event_prefix: str,
+    reset: bool = True,
+    extra_fields: dict[str, Any] | None = None,
+) -> bool:
+    """Unloaded oneshots can reject reset-failed (#3237); only the start verdict
+    decides whether the action was queued. START_ONLY units forbid reset-failed
+    and have no crash budget to clear.
+    """
+    if reset:
+        resp = restart_broker.reset_then_manage(
+            unit,
+            verb=verb,
+            reason=reason,
+            no_block=True,
+            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+            reset_timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+        )
+    else:
+        resp = restart_broker.manage_units(
+            unit,
+            verb=verb,
+            reason=reason,
+            no_block=True,
+            timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+        )
+    if not resp.get("ok"):
+        log_event(
+            _maintenance_logger,
+            f"{event_prefix}_failed",
+            unit=unit,
+            phase="enqueue",
+            error=str(resp.get("error") or f"rc={resp.get('rc')}"),
+            level=logging.ERROR,
+        )
+        return False
+    log_event(
+        _maintenance_logger,
+        f"{event_prefix}_scheduled",
+        unit=unit,
+        **(extra_fields or {}),
+    )
+    return True
+
+
+def _schedule_usb_gadget_recompose() -> bool:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.
+    """
+
+    return _reset_then_schedule(
+        _USB_MIC_APPLY_UNIT,
+        "restart",
+        reason="usb_mic_recompose",
+        event_prefix="usb_mic.recompose",
+        extra_fields={"grace_ms": 350, "max_attempts": 4},
+    )
+
+
+def _aec_commission_running() -> bool:
+    return aec_endpoints.unit_active(aec_endpoints.AEC_COMMISSION_SERVICE)
+
+
+def _start_aec_commission() -> bool:
+    """Hand the audible re-commissioning run to systemd before returning.
+
+    ``--no-block``: the run takes minutes and the browser only needs the job
+    accepted — the /aec poll's ``commission.running`` probe tracks the rest.
+    No reset-failed leg: ``jasper-aec-commission.service`` is a START_ONLY
+    broker unit (no crash budget of its own to protect), and the broker
+    denies ``reset-failed`` against it anyway.
+    """
+    return _reset_then_schedule(
+        aec_endpoints.AEC_COMMISSION_SERVICE,
+        "start",
+        reason="aec_commission_start",
+        event_prefix="aec_commission.start",
+        reset=False,
+    )
+
+
+def _start_xvf_firmware_update() -> None:
+    subprocess.run(
+        ["systemctl", "start", "--no-block", aec_endpoints.XVF_FIRMWARE_UPDATE_SERVICE],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
+def _enhanced_aec_status(
+    *,
+    aec_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Optional-engine status using this domain's applied AEC truth."""
+
+    if aec_payload is None:
+        aec_payload = aec_endpoints.aec_full_status()
+    audio_profile = aec_payload.get("audio_profile")
+    active_profile = (
+        str(audio_profile.get("active") or "")
+        if isinstance(audio_profile, dict)
+        else ""
+    )
+    chip_active = active_profile in {
+        PROFILE_XVF_CHIP_AEC,
+        PROFILE_XVF_CHIP_AEC_TESTING,
+    }
+    return enhanced_aec.status(
+        chip_aec_active=chip_active,
+        service_active=aec_endpoints.unit_active(_ENHANCED_AEC_INSTALL_SERVICE),
+    )
+
+
+
+_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
+_usb_mic_leg_apply_lock = threading.Lock()
+_usb_mic_leg_apply_pending: tuple[str, float] | None = None
+# Serializes POST /aec/commission's check-then-start across
+# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
+# probe before either start lands.
+_aec_commission_start_lock = threading.Lock()
+
+
+_AEC_MODE_ENV_OWNER = "JTS /aec mode control"
+# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
+# chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
+# "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
+# production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);
+# the two per-beam toggles below only add extra wake detectors.
+_TOGGLE_TO_TOKEN = {
+    "raw": ("off",),
+    "dtln": ("dtln",),
+    "chip_aec_150": ("chip_aec_150",),
+    "chip_aec_210": ("chip_aec_210",),
+}
+_TOGGLE_TO_ENV_KEY = {
+    name.removeprefix("leg_"): key
+    for name, key, _ in WAKE_LEG_DEFAULTS
+    if name != "leg_chip_aec"
+}
+
+
+
+def _write_aec_leg(leg: str, enabled: bool) -> None:
+    """Atomic write of one wake-leg boolean, preserving every other key
+    in aec_mode.env (mode, the other leg).
+
+    Caller is responsible for kicking the reconciler — this just
+    persists the user's intent. Restart blast-radius lives in the
+    reconciler since it has the actual mode + presence context."""
+    if leg not in _TOGGLE_TO_TOKEN:
+        raise ValueError(f"invalid leg: {leg!r}")
+    locked_update_env_file(
+        aec_endpoints.AEC_MODE_FILE,
+        {
+            _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
+            "JASPER_AUDIO_INPUT_PROFILE": "custom",
+        },
+        owner=_AEC_MODE_ENV_OWNER,
+    )
+
+
+
+def _write_audio_input_profile(profile: str) -> None:
+    """Write a canonical audio input profile plus rollback-safe leg keys."""
+
+    normalized = normalize_audio_input_profile(profile, default="")
+    if not normalized or normalized == "custom":
+        raise ValueError(f"invalid profile: {profile!r}")
+    locked_update_env_file(
+        aec_endpoints.AEC_MODE_FILE,
+        profile_env_updates(normalized),
+        mode=0o644,
+        owner=_AEC_MODE_ENV_OWNER,
+    )
+
+
+
+def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
+    """Apply a persisted AEC-mode/leg change through the reconciler.
+
+    Use `restart`, not `start`: the reconciler is a Type=oneshot unit, so a
+    `start` issued while the previous reconcile is still active is a no-op
+    and would leave runtime env one click behind the UI.
+    """
+    return restart_broker.manage_units(
+        "jasper-aec-reconcile.service",
+        verb="restart",
+        reason=reason,
+        no_block=True,
+        timeout=5.0,
+    )
+
 
 
 def _commission_start_body(*, running: bool) -> dict[str, Any]:
@@ -49,10 +277,10 @@ class AecRoutes(ControlHandlerMixin):
         # /system's Diagnostics disclosure runs jasper-doctor
         # which has check_aec_bridge_dtln_engine for the
         # silent-failure case.
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_json(aec_endpoints.aec_full_status())
 
     def _get_enhanced_aec(self) -> None:
-        self._send_json(aec_endpoints._enhanced_aec_status())
+        self._send_json(_enhanced_aec_status())
 
     def _post_aec_leg(self) -> None:
         # Toggle one of the additive wake-detection legs
@@ -71,11 +299,11 @@ class AecRoutes(ControlHandlerMixin):
         body = self._read_json()
         leg = body.get("leg")
         enabled_val = body.get("enabled")
-        if leg not in aec_endpoints._TOGGLE_TO_TOKEN:
+        if leg not in _TOGGLE_TO_TOKEN:
             self._send_json(
                 {
                     "error": "leg must be one of: "
-                    + ", ".join(sorted(aec_endpoints._TOGGLE_TO_TOKEN))
+                    + ", ".join(sorted(_TOGGLE_TO_TOKEN))
                 },
                 status=400,
             )
@@ -87,14 +315,14 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            aec_endpoints._write_aec_leg(leg, enabled_val)
+            _write_aec_leg(leg, enabled_val)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
                 status=502,
             )
             return
-        kick = aec_endpoints._kick_aec_reconciler(reason="aec_leg")
+        kick = _kick_aec_reconciler(reason="aec_leg")
         if not kick.get("ok"):
             self._send_refused(
                 error=(
@@ -114,7 +342,7 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled_val,
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_profile(self) -> None:
@@ -132,14 +360,14 @@ class AecRoutes(ControlHandlerMixin):
             )
             return
         try:
-            aec_endpoints._write_audio_input_profile(profile)
+            _write_audio_input_profile(profile)
         except (OSError, ValueError) as e:
             self._send_json(
                 {"error": f"write aec_mode.env failed: {e}"},
                 status=400 if isinstance(e, ValueError) else 502,
             )
             return
-        kick = aec_endpoints._kick_aec_reconciler(reason="aec_profile")
+        kick = _kick_aec_reconciler(reason="aec_profile")
         if not kick.get("ok"):
             self._send_refused(
                 error=(
@@ -157,7 +385,7 @@ class AecRoutes(ControlHandlerMixin):
             profile=normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_usb_mic(self) -> None:
@@ -173,7 +401,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        current = aec_endpoints._aec_full_status()
+        current = aec_endpoints.aec_full_status()
         usb_mic = current.get("usb_mic") or {}
         if enabled and not bool(usb_mic.get("toggle_enabled")):
             self._send_json(
@@ -199,10 +427,10 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled,
             client=self.address_string(),
         )
-        if not aec_endpoints._schedule_usb_gadget_recompose():
+        if not _schedule_usb_gadget_recompose():
             # A descriptor recompose is not a broker verb: there is no result
             # to answer, only the scheduler's own refusal.
-            failed_status = aec_endpoints._aec_full_status()
+            failed_status = aec_endpoints.aec_full_status()
             self._send_refused(
                 error=(
                     "USB microphone preference was saved, but its "
@@ -214,11 +442,13 @@ class AecRoutes(ControlHandlerMixin):
                 usb_mic=failed_status.get("usb_mic") or {},
             )
             return
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_usb_mic_leg(self) -> None:
         """Persist the computer-mic source, then restart its producer only."""
+
+        global _usb_mic_leg_apply_pending
 
         body = self._read_json()
         leg = body.get("leg")
@@ -231,7 +461,7 @@ class AecRoutes(ControlHandlerMixin):
         leg = leg.strip()
         # Match GET /aec's fresh reconciler-owned view. jasper-control is
         # long-lived, so its process environment can lag a mic hotplug.
-        choices = usb_mic_leg_choices(aec_endpoints._fresh_jasper_env())
+        choices = usb_mic_leg_choices(aec_endpoints.fresh_jasper_env())
         allowed = {
             str(choice.get("value") or "")
             for choice in choices
@@ -254,16 +484,16 @@ class AecRoutes(ControlHandlerMixin):
         # value clears systemd's crash-loop counter before restart so rapid
         # authenticated changes cannot spend StartLimitAction=reboot's
         # recovery budget (the reconciler uses the same safety contract).
-        with aec_endpoints._usb_mic_leg_apply_lock:
+        with _usb_mic_leg_apply_lock:
             persisted_matches = read_usb_mic_leg() == leg
             if persisted_matches:
-                current_status = aec_endpoints._aec_full_status()
+                current_status = aec_endpoints.aec_full_status()
                 selection = (current_status.get("usb_mic") or {}).get(
                     "source_selection"
                 ) or {}
                 applied = selection.get("applied") or {}
                 if applied.get("value") == leg:
-                    aec_endpoints._usb_mic_leg_apply_pending = None
+                    _usb_mic_leg_apply_pending = None
                     log_event(
                         logger,
                         "usb_mic.leg_unchanged",
@@ -272,12 +502,12 @@ class AecRoutes(ControlHandlerMixin):
                     )
                     self._send_json(current_status)
                     return
-                pending = aec_endpoints._usb_mic_leg_apply_pending
+                pending = _usb_mic_leg_apply_pending
                 if (
                     pending is not None
                     and pending[0] == leg
                     and time.monotonic() - pending[1]
-                    < aec_endpoints._USB_MIC_LEG_APPLY_COALESCE_SECONDS
+                    < _USB_MIC_LEG_APPLY_COALESCE_SECONDS
                 ):
                     log_event(
                         logger,
@@ -306,17 +536,17 @@ class AecRoutes(ControlHandlerMixin):
                 client=self.address_string(),
             )
             restart = restart_broker.reset_then_manage(
-                aec_endpoints._AEC_BRIDGE_SERVICE,
+                aec_endpoints.AEC_BRIDGE_SERVICE,
                 verb="restart",
                 reason="usb_mic_leg",
                 no_block=True,
                 # jasper-web's /aec/usb-mic-leg proxy_post budgets for two
                 # legs at this bound (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC).
-                timeout=aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
-                reset_timeout=aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
+                timeout=_ONESHOT_KICK_TIMEOUT_SEC,
+                reset_timeout=_ONESHOT_KICK_TIMEOUT_SEC,
             )
             if not restart.get("ok"):
-                failed_status = aec_endpoints._aec_full_status()
+                failed_status = aec_endpoints.aec_full_status()
                 self._send_refused(
                     error=(
                         "Computer microphone source was saved, but the "
@@ -328,8 +558,8 @@ class AecRoutes(ControlHandlerMixin):
                     usb_mic=failed_status.get("usb_mic") or {},
                 )
                 return
-            aec_endpoints._usb_mic_leg_apply_pending = (leg, time.monotonic())
-        self._send_accepted(**aec_endpoints._aec_full_status())
+            _usb_mic_leg_apply_pending = (leg, time.monotonic())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_threshold(self) -> None:
@@ -396,8 +626,8 @@ class AecRoutes(ControlHandlerMixin):
         # Button-initiated only — nothing else starts this unit. Token-gated
         # like the other high-impact /aec mutations. The lock makes
         # check-then-start atomic across worker threads.
-        with aec_endpoints._aec_commission_start_lock:
-            if aec_endpoints._aec_commission_running():
+        with _aec_commission_start_lock:
+            if _aec_commission_running():
                 self._send_json(
                     {
                         "error": "chip-AEC re-commissioning is already running",
@@ -406,7 +636,7 @@ class AecRoutes(ControlHandlerMixin):
                     status=409,
                 )
                 return
-            started = aec_endpoints._start_aec_commission()
+            started = _start_aec_commission()
         if not started:
             self._send_refused(
                 error="the re-commissioning run could not be started",
@@ -419,11 +649,11 @@ class AecRoutes(ControlHandlerMixin):
             "aec.commission.start",
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_firmware_update(self) -> None:
-        status = aec_endpoints._aec_full_status()
+        status = aec_endpoints.aec_full_status()
         firmware = status.get("firmware_update")
         action = firmware.get("action") if isinstance(firmware, dict) else {}
         if not isinstance(action, dict) or not action.get("enabled"):
@@ -435,7 +665,7 @@ class AecRoutes(ControlHandlerMixin):
             self._send_json({"error": detail}, status=409)
             return
         try:
-            aec_endpoints._start_xvf_firmware_update()
+            _start_xvf_firmware_update()
         except (OSError, subprocess.SubprocessError) as e:
             self._send_json(
                 {"error": f"firmware update start failed: {e}"},
@@ -450,11 +680,11 @@ class AecRoutes(ControlHandlerMixin):
             if isinstance(firmware, dict)
             else "",
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_enhanced_aec_install(self) -> None:
-        current = aec_endpoints._enhanced_aec_status()
+        current = _enhanced_aec_status()
         if current.get("state") in {"installed", "installing"}:
             self._send_json(current)
             return
@@ -495,7 +725,7 @@ class AecRoutes(ControlHandlerMixin):
                 ),
                 code="enhanced_aec_start_failed",
                 intent_saved=True,
-                enhanced_aec=aec_endpoints._enhanced_aec_status(),
+                enhanced_aec=_enhanced_aec_status(),
             )
             return
         log_event(
@@ -503,5 +733,5 @@ class AecRoutes(ControlHandlerMixin):
             "aec.enhanced.install_start",
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._enhanced_aec_status())
+        self._send_accepted(**_enhanced_aec_status())
         return

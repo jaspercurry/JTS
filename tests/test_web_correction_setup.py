@@ -21,6 +21,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 import io
 import json
 import logging
+import re
 import threading
 from contextlib import nullcontext
 from http import HTTPStatus
@@ -32,6 +33,7 @@ import pytest
 from jasper.web import (
     _common,
     correction_capture,
+    correction_crossover_flow,
     correction_handlers,
     correction_runtime,
     correction_setup,
@@ -123,6 +125,18 @@ def test_get_crossover_subpath_renders_secure_capture_ui():
     assert b'id="crossover-steps"' in resp
     assert b'id="crossover-action"' in resp
     assert b'id="mic-support"' not in resp
+
+
+def test_the_crossover_page_shell_copy_is_hardware_blind():
+    """Household copy generalizes by measured evidence, never by device
+    taxonomy: no speaker-part or room-furniture noun on the page."""
+    page = correction_crossover_flow.render_page("jts.local").decode().lower()
+    for noun in (
+        "horn", "rim", "baffle", "cabinet", "waveguide", "dome", "tweeter",
+        "woofer", "driver", "enclosure", "port", "desk", "wall", "floor",
+        "ceiling", "table", "furniture",
+    ):
+        assert not re.search(rf"\b{noun}s?\b", page), noun
 
 
 def test_get_measurements_renders_independent_history_page():
@@ -918,8 +932,7 @@ def test_crossover_reset_ignores_a_legacy_volume_safety_file(
 ) -> None:
     """The pre-v2 per-step leveler's read side used to hydrate
     active_speaker_crossover_volume_safety.json as an unresolved latch even
-    after its writer was deleted, so a box that had not re-run install (the
-    file's retirement is a deploy/lib/install/retirements.sh row) got
+    after its writer was deleted, so a box that had not re-run install got
     /crossover/reset refused forever. Nothing reads that file any more --
     writing one here only reproduces the on-disk scenario."""
     import json

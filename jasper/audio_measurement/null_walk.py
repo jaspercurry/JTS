@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
-from jasper.json_fields import finite_float
+from jasper.json_fields import canonical_json_bytes, freeze_json, require_finite
 
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
@@ -41,49 +41,13 @@ def _canonical_state(
     *,
     field_name: str,
 ) -> tuple[str, str]:
-    """Freeze one JSON-domain DSP state and return JSON plus SHA-256.
-
-    JSON's encoder accepts lossy Python shapes such as tuples and mappings with
-    non-string keys. Those shapes are unsuitable for an *exact* rollback
-    identity: ``{1: ...}`` and ``{"1": ...}``, for example, serialize to the
-    same object key. Normalize only the real JSON data model and reject the
-    ambiguous shapes before any DSP mutation.
-    """
+    """Freeze one JSON-domain DSP state and return JSON plus SHA-256; an
+    ambiguous shape (:func:`freeze_json`) is refused before any DSP mutation."""
 
     if not isinstance(state, Mapping) or not state:
         raise NullWalkError(f"{field_name} must be a non-empty mapping")
-
-    def freeze(value: Any, *, path: str) -> Any:
-        if value is None or type(value) in {bool, int, str}:
-            return value
-        if type(value) is float:
-            if not math.isfinite(value):
-                raise NullWalkError(f"{field_name} contains a non-finite number")
-            return value
-        if isinstance(value, Mapping):
-            frozen: dict[str, Any] = {}
-            for key, nested in value.items():
-                if type(key) is not str:
-                    raise NullWalkError(
-                        f"{field_name} contains a non-string key at {path}"
-                    )
-                frozen[key] = freeze(nested, path=f"{path}.{key}")
-            return frozen
-        if type(value) is list:
-            return [
-                freeze(nested, path=f"{path}[{index}]")
-                for index, nested in enumerate(value)
-            ]
-        raise NullWalkError(f"{field_name} contains a non-JSON value at {path}")
-
-    frozen = freeze(state, path="$")
-    canonical = json.dumps(
-        frozen,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    canonical = canonical_json_bytes(freeze_json(state, field=field_name, error=NullWalkError))
+    return canonical.decode("ascii"), hashlib.sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True, init=False)
@@ -144,29 +108,20 @@ def geometry_seed_us(
 
 
 def _finite(value: Any, *, field: str) -> float:
-    out = finite_float(value)
-    if out is None:
-        raise NullWalkError(f"{field} must be a finite number")
-    return out
+    return require_finite(value, field=field, error=NullWalkError)
 
 
-def _canonical_payload(payload: Mapping[str, Any]) -> str:
+def _canonical_payload(payload: Mapping[str, Any]) -> bytes:
     """Serialize one already-validated JSON payload for strict identity."""
 
     try:
-        return json.dumps(
-            dict(payload),
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+        return canonical_json_bytes(dict(payload))
     except (TypeError, ValueError) as exc:
         raise NullWalkError("null-walk payload is not canonical JSON data") from exc
 
 
 def _payload_fingerprint(payload: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_canonical_payload(payload).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_canonical_payload(payload)).hexdigest()
 
 
 @dataclass(frozen=True)

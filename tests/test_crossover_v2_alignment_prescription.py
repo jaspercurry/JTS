@@ -55,10 +55,10 @@ from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     AlignmentEstimate,
     MeasurementPriors,
-    _build_candidate,
     half_period_us,
     polarity_label,
 )
+from jasper.audio_measurement.program_analysis.dispatch import _build_candidate
 
 from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _two_way_preset

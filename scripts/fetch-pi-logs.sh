@@ -31,17 +31,11 @@ TS="$(date -u +%Y%m%dT%H%M%SZ)"
 
 echo "Fetching logs from ${PI_USER}@${PI_HOST} (since '$SINCE') → $OUT/" >&2
 
-remote() {
-    ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"
-}
-
 fetch_remote_bash() {
     local stem="$1"
     local ext="$2"
     local out="$OUT/${stem}-${TS}.${ext}"
-    if ssh "${SSH_BATCH_OPTS[@]}" \
-            "${PI_USER}@${PI_HOST}" "bash -s" \
-            | redact_jasper_diagnostics > "$out"; then
+    if ssh_remote "bash -s" | redact_jasper_diagnostics > "$out"; then
         local size
         size=$(wc -l < "$out")
         echo "  ${stem}: ${size} lines" >&2
@@ -132,7 +126,7 @@ units=(
 
 for u in "${units[@]}"; do
     out="$OUT/${u}-${TS}.log"
-    if remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
+    if ssh_remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
         | redact_jasper_diagnostics > "$out"; then
         size=$(wc -l < "$out")
         echo "  ${u}: ${size} lines" >&2
@@ -149,7 +143,7 @@ combined_flags=()
 for u in "${units[@]}"; do
     combined_flags+=(-u "$u")
 done
-remote "journalctl --since '$SINCE' --no-pager --output=short-iso \
+ssh_remote "journalctl --since '$SINCE' --no-pager --output=short-iso \
     ${combined_flags[*]} 2>/dev/null" \
     | redact_jasper_diagnostics \
     > "$OUT/combined-${TS}.log"
@@ -330,7 +324,7 @@ REMOTE
 
 # Configs and runtime state — secrets redacted before write. The file
 # list is the shared JASPER_SECRET_ENV_FILES array (_diagnostic_redaction.sh).
-remote "sudo sh -c 'for f in ${JASPER_SECRET_ENV_FILES[*]}; do \
+ssh_remote "sudo sh -c 'for f in ${JASPER_SECRET_ENV_FILES[*]}; do \
             [ -r \"\$f\" ] || continue; \
             echo \"== \$f ==\"; \
             cat \"\$f\"; \
@@ -341,10 +335,10 @@ ln -sf "jasper.env-${TS}.txt" "$OUT/jasper.env-latest.txt" 2>/dev/null || true
 
 # Shipped baseline, not necessarily the truly active config — see
 # /var/lib/camilladsp/outputd-statefile.yml's config_path for that.
-remote "cat /etc/camilladsp/outputd-cutover.yml 2>/dev/null" \
+ssh_remote "cat /etc/camilladsp/outputd-cutover.yml 2>/dev/null" \
     > "$OUT/camilladsp-${TS}.yml" 2>/dev/null || true
 ln -sf "camilladsp-${TS}.yml" "$OUT/camilladsp-latest.yml" 2>/dev/null || true
-remote "sudo cat /var/lib/camilladsp/outputd-statefile.yml 2>/dev/null" \
+ssh_remote "sudo cat /var/lib/camilladsp/outputd-statefile.yml 2>/dev/null" \
     > "$OUT/camilladsp-statefile-${TS}.yml" 2>/dev/null || true
 ln -sf "camilladsp-statefile-${TS}.yml" "$OUT/camilladsp-statefile-latest.yml" 2>/dev/null || true
 
@@ -352,24 +346,24 @@ ln -sf "camilladsp-statefile-${TS}.yml" "$OUT/camilladsp-statefile-latest.yml" 2
 # /root/.asoundrc so non-root renderer users (shairport-sync, pi)
 # can resolve user-space PCM names. Fall back to /root/.asoundrc
 # if we're talking to a pre-PR-#223 Pi.
-remote "cat /etc/asound.conf 2>/dev/null || sudo cat /root/.asoundrc 2>/dev/null" \
+ssh_remote "cat /etc/asound.conf 2>/dev/null || sudo cat /root/.asoundrc 2>/dev/null" \
     > "$OUT/asoundrc-${TS}.txt" 2>/dev/null || true
 ln -sf "asoundrc-${TS}.txt" "$OUT/asoundrc-latest.txt" 2>/dev/null || true
 
-remote "echo '== aplay -L =='; aplay -L 2>/dev/null; \
+ssh_remote "echo '== aplay -L =='; aplay -L 2>/dev/null; \
         echo '== arecord -L =='; arecord -L 2>/dev/null; \
         echo '== aplay -l =='; aplay -l 2>/dev/null; \
         echo '== arecord -l =='; arecord -l 2>/dev/null" \
     > "$OUT/alsa-devices-${TS}.txt"
 ln -sf "alsa-devices-${TS}.txt" "$OUT/alsa-devices-latest.txt"
 
-remote "systemctl status --no-pager ${units[*]} 2>/dev/null" \
+ssh_remote "systemctl status --no-pager ${units[*]} 2>/dev/null" \
     | redact_jasper_diagnostics \
     > "$OUT/systemctl-${TS}.txt" 2>/dev/null || true
 ln -sf "systemctl-${TS}.txt" "$OUT/systemctl-latest.txt" 2>/dev/null || true
 
 # Recent voice sessions + spend.
-remote "sqlite3 /var/lib/jasper/usage.db 'SELECT id, started_at, ended_at, input_tokens, output_tokens, cost_usd FROM sessions ORDER BY id DESC LIMIT 20' 2>/dev/null" \
+ssh_remote "sqlite3 /var/lib/jasper/usage.db 'SELECT id, started_at, ended_at, input_tokens, output_tokens, cost_usd FROM sessions ORDER BY id DESC LIMIT 20' 2>/dev/null" \
     > "$OUT/sessions-${TS}.txt" 2>/dev/null || true
 ln -sf "sessions-${TS}.txt" "$OUT/sessions-latest.txt" 2>/dev/null || true
 

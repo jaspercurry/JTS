@@ -164,7 +164,7 @@ From a unit or a route to its Python module: `systemctl cat <unit>` shows
 the `ExecStart=`; a `python -m jasper.web` one runs `jasper/web/__main__.py`,
 whose `WIZARD_SPECS` maps each wizard's port (the nginx `proxy_pass`
 target) to its handler module. A named binary (e.g. `jasper-chat-web`, one of the
-standalone `deploy/jasper-*-web.service` units) resolves via its
+standalone `deploy/systemd/jasper-*-web.service` units) resolves via its
 `[project.scripts]` entry in `pyproject.toml` to a `module:function`.
 
 ---
@@ -298,10 +298,8 @@ flags that case as a same-SHA redeploy so it never reads as one).
 
 There are exactly two install profiles, `full` and `streambox`. A fresh Pi
 Zero 2 W with no persisted marker resolves to `streambox`; everything else
-resolves to `full`. Both use the same repo and the same deploy path. The
-older `endpoint`/`satellite` tokens still parse and migrate to `streambox`
-on the next deploy. "Endpoint behaviour" is now purely the runtime multiroom
-**follower** role.
+resolves to `full`. Both use the same repo and the same deploy path.
+"Endpoint behaviour" is now purely the runtime multiroom **follower** role.
 
 ---
 

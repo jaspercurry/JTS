@@ -12,17 +12,17 @@ from typing import Any, Callable, Mapping, Sequence
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.biquad import FilterSpec
+from jasper.json_fields import issue as _issue, sha256_text
 from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
 from . import baseline_profile, baseline_record, candidate_bank, measurement_emit, runtime_contract
 from . import design_draft as design_drafts
-from ._common import issue as _issue
 from .crossover_declaration import assert_crossover_honours_declared_floor
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_on_declaration
 from .rear_calibration import rear_operating_facts
-from .state_paths import baseline_candidate_config_path, config_text_sha256
+from .state_paths import baseline_candidate_config_path
 
 REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
 REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
@@ -152,10 +152,10 @@ def compile_commissioning_profile(
             banked = (find_candidate(fingerprint) if find_candidate is not None
                       else candidate_bank.load_applied_candidate(fingerprint, applied_profile=applied))
         else:
-            from .commissioning_experiment import commissioning_candidate  # lazy: import cost (the program analysis)
+            from .candidate_parts import candidate_from_design_draft  # lazy: import cost (the program analysis)
 
             banked = candidate_bank.bank_candidate(
-                commissioning_candidate(topology, draft), find_candidate=find_candidate)
+                candidate_from_design_draft(topology, draft), find_candidate=find_candidate)
         candidate = banked.candidate
         preference_filters, trim_db = sound_settings.saved_sound_layers()
         text = measurement_emit.compile_tuning_graph(declaration, candidate=candidate,
@@ -163,7 +163,7 @@ def compile_commissioning_profile(
         target = baseline_candidate_config_path(text)
         profile.update(baseline_record.prepare_applied_baseline_profile(
             banked, declaration=declaration, design_draft=draft,
-            config_path=target, config_sha256=config_text_sha256(text), crossover_preview=crossover_preview,
+            config_path=target, config_sha256=sha256_text(text), crossover_preview=crossover_preview,
             saved_timing=(applied or {}).get("timing"),
         ))
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]

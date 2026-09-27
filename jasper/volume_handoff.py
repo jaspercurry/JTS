@@ -5,25 +5,23 @@
 """Source-handoff transactions and downstream push-volume guards.
 
 The caller holds its volume mutation lease across prepare, lane selection,
-and finalize or abort. All carrier I/O uses the coordinator's existing doors.
+and finalize or abort; the observer's ``apply_transition`` takes the lease
+itself. All carrier I/O uses the coordinator's existing doors.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode
-from .volume_curve import percent_to_db
+from .volume_curve import guard_in_effect, main_mute_for_level, percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 
 logger = logging.getLogger(__name__)
-
-
-def main_mute_for_level(level: int) -> bool:
-    return int(level) <= 0
 
 
 @dataclass(frozen=True)
@@ -69,8 +67,12 @@ class VolumeHandoff:
         persisted_carrier: Callable[[], float | None],
         write_guard: GuardWriter,
         push_source: Callable[[Source, int], Awaitable[bool]],
-        camilla_locked: Callable[[], Awaitable[bool | None]],
         write_level: Callable[[int], Awaitable[bool]],
+        voice_session_active: Callable[[], bool],
+        active_source: Callable[[], Awaitable[Source]],
+        refresh: Callable[[], None],
+        mutation: Callable[[], AbstractAsyncContextManager[Any]],
+        publish: Callable[[], Awaitable[None]],
         handoff_settle_sec: float,
         push_settle_sec: float,
     ) -> None:
@@ -78,9 +80,13 @@ class VolumeHandoff:
         self._read_camilla_volume_and_mute = read_carrier
         self._persisted_main_volume_db = persisted_carrier
         self._set_camilla_db = write_guard
-        self._set_push_source_for_handoff = push_source
-        self._camilla_locked = camilla_locked
+        self._push_source = push_source
         self._set_camilla = write_level
+        self._voice_session_active = voice_session_active
+        self._active_source = active_source
+        self._refresh_from_disk = refresh
+        self._mutation = mutation
+        self._publish_volume_context = publish
         # Camilla's main-volume ramp is 400 ms; settle before opening the lane.
         self._handoff_settle_sec = max(0.0, float(handoff_settle_sec))
         # Spotify/AVRCP can acknowledge before their attenuator is audible.
@@ -123,6 +129,33 @@ class VolumeHandoff:
                 guard_db,
             )
         return bool(guarded)
+
+    async def push_or_guard(
+        self,
+        source: Source,
+        level: int,
+        *,
+        confirm_context: str,
+        guard_context: str,
+        warning_prefix: str,
+        guarded_warning_suffix: str,
+    ) -> bool | None:
+        """Push ``level`` to a push-mode source, then confirm Camilla's carrier.
+
+        A failed push leaves Camilla guarding ``level`` instead and returns
+        None; otherwise the result is the carrier confirmation's.
+        """
+        if await self._push_source(source, level):
+            return await self.confirm_push_mode_carrier(
+                source, level, context=confirm_context,
+            )
+        await self.guard_camilla_after_push_failure(
+            level,
+            context=guard_context,
+            warning_prefix=warning_prefix,
+            guarded_warning_suffix=guarded_warning_suffix,
+        )
+        return None
 
     async def prepare_source_handoff(
         self, prev_source: Source, current_source: Source, *, reason: str,
@@ -240,13 +273,13 @@ class VolumeHandoff:
                 settled_ms=settled_ms,
             )
 
-        push_ok = await self._set_push_source_for_handoff(current_source, level)
+        push_ok = await self._push_source(current_source, level)
         if push_ok:
             latest_level = self._effective_level()
             if latest_level != level:
                 level = latest_level
                 guard_db = percent_to_db(level)
-                push_ok = await self._set_push_source_for_handoff(
+                push_ok = await self._push_source(
                     current_source, level,
                 )
         if push_ok:
@@ -305,7 +338,7 @@ class VolumeHandoff:
                         )
                         if not guard_ok:
                             return False
-                    push_ok = await self._set_push_source_for_handoff(
+                    push_ok = await self._push_source(
                         handoff.current_source, latest_level,
                     )
                     if not push_ok:
@@ -376,7 +409,6 @@ class VolumeHandoff:
         previous_db: float | None,
         previous_mute: bool | None,
         context: str,
-        reason: str | None = None,
     ) -> None:
         fields: dict[str, Any] = {
             "source": source.value,
@@ -389,8 +421,6 @@ class VolumeHandoff:
             ),
             "context": context,
         }
-        if reason is not None:
-            fields["reason"] = reason
         log_event(
             logger,
             "volume.push_guard_clear_failed",
@@ -414,31 +444,14 @@ class VolumeHandoff:
             return False
         previous_db = self._persisted_main_volume_db()
         current_db, current_mute = await self._read_camilla_volume_and_mute()
-        persisted_guard_active = (
-            previous_db is not None
-            and previous_db < -RECONCILE_DRIFT_DB
-        )
-        live_guard_active = (
-            current_db is not None
-            and current_db < -RECONCILE_DRIFT_DB
-        )
-        volume_guard_active = persisted_guard_active or live_guard_active
+        persisted_guard_active = guard_in_effect(previous_db)
+        volume_guard_active = persisted_guard_active or guard_in_effect(current_db)
         mute_guard_active = current_mute is True
         if not volume_guard_active and not mute_guard_active:
             return False
         effective_previous_db = (
             previous_db if persisted_guard_active else current_db
         )
-        if await self._camilla_locked() is True:
-            self._log_push_guard_clear_failed(
-                source,
-                level,
-                previous_db=effective_previous_db,
-                previous_mute=current_mute,
-                context=context,
-                reason="duck_active",
-            )
-            return False
         cleared = await self._set_camilla_db(
             0.0,
             context=context,
@@ -520,15 +533,8 @@ class VolumeHandoff:
         previous_db = self._persisted_main_volume_db()
         needs_clear = (
             current_mute is True
-            or (
-                include_live_guard
-                and current_db is not None
-                and current_db < -RECONCILE_DRIFT_DB
-            )
-            or (
-                previous_db is not None
-                and previous_db < -RECONCILE_DRIFT_DB
-            )
+            or (include_live_guard and guard_in_effect(current_db))
+            or guard_in_effect(previous_db)
         )
         if not needs_clear:
             return True, False
@@ -556,3 +562,131 @@ class VolumeHandoff:
         if handoff.prev_mode == VolumeMode.CAMILLA_MASTER:
             return await self._set_camilla(effective_level)
         return True
+
+    async def apply_transition(
+        self, prev_source: Source, current_source: Source,
+    ) -> None:
+        """The observer's source-state change, driven by each source's
+        `volume_mode`:
+
+        - camilla-master → push-mode (AirPlay/idle → Spotify/BT):
+          push the effective level to the new renderer,
+          then pin camilla to 0 dB only if that push succeeds.
+        - push-mode → camilla-master (Spotify/BT → AirPlay/idle):
+          hand camilla back the current effective level.
+        - push → push (e.g. Spotify → BT): camilla already at 0 dB;
+          just enforce the effective level on the new source.
+        - camilla-master → camilla-master (idle ↔ AirPlay): no
+          volume handoff is needed; camilla already carries the level.
+
+        It stands down while a voice session is active
+        (`VolumeCoordinator.note_voice_session`).
+        """
+        if self._voice_session_active():
+            logger.debug(
+                "active_source transition %s→%s: deferred (voice "
+                "session in progress)",
+                prev_source.value, current_source.value,
+            )
+            return
+        if prev_source == current_source:
+            return
+        prev_carries = volume_mode(prev_source) == VolumeMode.CAMILLA_MASTER
+        curr_carries = volume_mode(current_source) == VolumeMode.CAMILLA_MASTER
+        async with self._mutation():
+            # The verdict was resolved before the cross-daemon lease. Re-check
+            # source ownership at the ordering point, as
+            # `observe_source_volume` does, so a handoff that landed meanwhile
+            # cannot pin camilla against a lane the mux has already left.
+            active = await self._active_source()
+            if active != current_source:
+                self._refresh_from_disk()
+                logger.debug(
+                    "active_source transition %s→%s: dropped, active "
+                    "source became %s",
+                    prev_source.value, current_source.value, active.value,
+                )
+                return
+            # `effective_level` reads the latest listening_level from disk.
+            # The control daemon (remote / HTTP) writes the same file on
+            # every twist, but voice_daemon's in-memory cache only re-syncs
+            # on its own set/adjust/mute calls. Without this refresh, a
+            # remote twist that lands between voice operations would be
+            # silently ignored when the next source-state transition fires.
+            level = self._effective_level()
+            if prev_carries and not curr_carries:
+                # Camilla-master → push-mode renderer. Push the new
+                # source first, then clear Camilla only after the
+                # source-side write succeeds. If the push fails,
+                # Camilla remains the safety carrier instead of
+                # exposing a stale/full-scale source.
+                carrier_ok = await self.push_or_guard(
+                    current_source,
+                    level,
+                    confirm_context="active_source_transition_push_clear",
+                    guard_context="active_source_transition_push_degraded",
+                    warning_prefix=(
+                        f"active source: {prev_source.value} → "
+                        f"{current_source.value}; source volume push failed"
+                    ),
+                    guarded_warning_suffix=(
+                        ", keeping camilla guarded at {guard_db:.1f} dB"
+                    ),
+                )
+                if carrier_ok is not None:
+                    logger.info(
+                        "active source: %s → %s; pushed %d%% to source "
+                        "slider and confirmed camilla push-mode carrier "
+                        "result=%s",
+                        prev_source.value, current_source.value, level,
+                        "accepted" if carrier_ok else "failed",
+                    )
+            elif curr_carries and not prev_carries:
+                # Push-mode renderer → camilla-master. Hand
+                # effective volume back to camilla so a temporary mute
+                # remains silent while its remembered level is preserved.
+                ok = await self._set_camilla(level)
+                logger.info(
+                    "active source: %s → %s; camilla → %.1f dB (%d%%) "
+                    "result=%s",
+                    prev_source.value, current_source.value,
+                    percent_to_db(level), level,
+                    "accepted" if ok else "failed",
+                )
+            elif not curr_carries:
+                # Push → push (e.g. spotify → bt). Camilla already at
+                # 0 dB; enforce listening_level on the new source. If
+                # the push fails, fall back to Camilla as a safety
+                # carrier because all renderer lanes still flow
+                # through Camilla.
+                carrier_ok = await self.push_or_guard(
+                    current_source,
+                    level,
+                    confirm_context="active_source_transition_push_push_confirmed",
+                    guard_context="active_source_transition_push_push_degraded",
+                    warning_prefix=(
+                        f"active source: {prev_source.value} → "
+                        f"{current_source.value} (push→push); source "
+                        "volume push failed"
+                    ),
+                    guarded_warning_suffix=(
+                        ", camilla guarded at {guard_db:.1f} dB"
+                    ),
+                )
+                if carrier_ok is not None:
+                    logger.info(
+                        "active source: %s → %s (push→push); pushed "
+                        "%d%% to new source slider",
+                        prev_source.value, current_source.value, level,
+                    )
+            else:
+                # Idle ↔ AirPlay: both are camilla-master modes, so
+                # camilla already carries listening_level.
+                logger.debug(
+                    "active source: %s → %s (no camilla change)",
+                    prev_source.value, current_source.value,
+                )
+        # Carrier handoffs change the downstream attenuation algebra even when
+        # the canonical level is unchanged. Publish after releasing the
+        # mutation lock; snapshotting re-acquires it, while socket IPC does not.
+        await self._publish_volume_context()

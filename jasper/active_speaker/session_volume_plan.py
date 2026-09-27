@@ -57,6 +57,7 @@ from typing import Any, Iterable, Mapping, Protocol
 
 from jasper.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
+from jasper.json_fields import finite_float
 from jasper.log_event import log_event
 from jasper.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
 
@@ -124,8 +125,7 @@ class RestoreOutcome(str, Enum):
     what walks the ladder to its emergency rung over a perfectly good level.
     """
 
-    #: The fader carries this level now (ducks included — a duck is an
-    #: attenuation over a level in effect, not a different level).
+    #: The fader carries this level now.
     LANDED = "landed"
     #: Recorded, not written, because a higher-ranked LEVEL claim holds the
     #: fader. The owner lands it when that claim releases.
@@ -324,14 +324,8 @@ class _State:
 
 
 def _finite_nonpositive(value: Any) -> float | None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or float(value) > 0.0
-    ):
-        return None
-    return float(value)
+    number = finite_float(value)
+    return number if number is not None and number <= 0.0 else None
 
 
 def _malformed(reason: str) -> _State:

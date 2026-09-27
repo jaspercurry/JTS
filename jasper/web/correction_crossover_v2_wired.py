@@ -13,8 +13,9 @@ import logging
 import os
 import secrets
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Iterator, Mapping
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginRefused,
@@ -105,6 +106,20 @@ def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
     return WiredOpened(pi_session=session)
 
 
+@contextmanager
+def _terminal_persist(terminal: BaseException, **fields: Any) -> Iterator[None]:
+    """A persist on a terminal arm: its own failure is logged, never raised in
+    place of ``terminal``, which is the run's answer (a cancellation above all)."""
+    try:
+        yield
+    except Exception as failed:  # noqa: BLE001 - the terminal exception outranks it
+        log_event(
+            logger, "correction.crossover_v2_terminal_persist_failed", level=logging.WARNING,
+            terminal=type(terminal).__name__,
+            reason=getattr(failed, "code", None) or type(failed).__name__, **fields,
+        )
+
+
 def build_v2_wired_run_and_consume(
     conductor: Any, *, signals: plan_run.RunSignals, ceiling_s: float,
     door: plan_run.RunDoor, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
@@ -137,6 +152,10 @@ def build_v2_wired_run_and_consume(
                                        "next_action": envelope["next_action"]})
             return str(code)
 
+        def record_restore() -> None:
+            restore = door.isolation.restore_result if door.isolation else None
+            v2state.persist_execution_result(session_id, volume_restore=restore or "not_opened")
+
         result = None
         try:
             try:
@@ -146,9 +165,11 @@ def build_v2_wired_run_and_consume(
                     signals=signals, admit=admit, aborts={},
                     gain_ceiling_db=conductor.measure_gain_ceiling_db,
                 )
-            finally:
-                restore = door.isolation.restore_result if door.isolation else None
-                v2state._persist_execution_result(session_id, volume_restore=restore or "not_opened")
+            except BaseException as exc:  # noqa: BLE001 - record the restore on every terminal arm
+                with _terminal_persist(exc, persist="execution_result", session_id=session_id):
+                    record_restore()
+                raise
+            record_restore()
             if result.reason and result.reason != "complete_requested":
                 if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")
@@ -158,7 +179,9 @@ def build_v2_wired_run_and_consume(
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
             detail = result.detail if result is not None else ""
-            v2state._persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
+            with _terminal_persist(exc, persist="terminal_failure", session_id=session_id):
+                v2state.persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc),
+                                                 failed_roles=result.failed_roles if result is not None else ())
             raise
         else:
             try:

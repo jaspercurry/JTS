@@ -11,7 +11,7 @@ import math
 from functools import partial
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import CodedFieldError
+from jasper.json_fields import CodedFieldError, issue
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import (
@@ -19,7 +19,6 @@ from ._common import (
     MANUAL_CANDIDATE_FIELDS,
     MANUAL_DRIVER_FIELDS,
     blocker_issue,
-    issue,
 )
 from .design_inputs import resolve_design_inputs
 from .driver_protection import (

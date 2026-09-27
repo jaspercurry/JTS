@@ -254,5 +254,6 @@ def test_ssh_keepalive_options_pinned():
     )
     assert proc.stdout.splitlines() == [
         "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=5",
         "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
     ]

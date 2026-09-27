@@ -42,8 +42,8 @@ from pathlib import Path
 from ..active_speaker.state_paths import baseline_config_path
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ..log_event import log_event
-from . import _stash
 from .config import GroupingConfig
+from .role_stash import RoleStash
 from jasper.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
@@ -101,27 +101,15 @@ def program_channel_for(channel: str) -> str:
     return program
 
 
-def _camilla():
-    """Default `camilla_factory`: camilla#1 (jasper.camilla.primary_controller)."""
-    return _stash.camilla()
-
-
 # ---------- prior-config stash ----------
-# Mechanics shared with leader_config (see jasper.multiroom._stash);
-# these stay as module-level names so this arm's tests can monkeypatch
-# them, and so the default `path=` keeps pointing at THIS arm's stash.
-
-def read_stash(path: str = FOLLOWER_PRIOR_STASH) -> str | None:
-    """The stashed prior solo-active config path, or None."""
-    return _stash.read_stash(path)
-
-
-def _write_stash(value: str, path: str = FOLLOWER_PRIOR_STASH) -> None:
-    _stash.write_stash(value, path)
-
-
-def _clear_stash(path: str = FOLLOWER_PRIOR_STASH) -> None:
-    _stash.clear_stash(path)
+# Ladder owned by role_stash.RoleStash (shared with leader_config); these
+# stay as module-level names so this arm's tests can monkeypatch them, and
+# so the default `path=` keeps pointing at THIS arm's stash.
+_ROLE_STASH = RoleStash(FOLLOWER_PRIOR_STASH)
+_camilla = _ROLE_STASH.camilla
+read_stash = _ROLE_STASH.read_stash
+_write_stash = _ROLE_STASH.write_stash
+_clear_stash = _ROLE_STASH.clear_stash
 
 
 # ---------- the two apply flows ----------
@@ -244,7 +232,7 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
             ),
         )
         try:
-            await _prove_live_bass_extension_graph(
+            await prove_live_bass_extension_graph(
                 cam,
                 expected_config_path=FOLLOWER_CONFIG_PATH,
                 expected_classification=GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -427,7 +415,7 @@ async def restore_active_camilla_solo(
             ),
         )
         try:
-            await _prove_live_bass_extension_graph(
+            await prove_live_bass_extension_graph(
                 cam,
                 expected_config_path=candidate,
                 expected_classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -461,7 +449,7 @@ async def restore_active_camilla_solo(
     return candidate
 
 
-async def _prove_live_bass_extension_graph(
+async def prove_live_bass_extension_graph(
     cam,
     *,
     expected_config_path: str | Path,

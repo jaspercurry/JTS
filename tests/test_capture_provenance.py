@@ -442,6 +442,7 @@ class _FakeEvidenceStore:
 def _drive_one_capture(
     monkeypatch, tmp_path, *, phase: str, cam: _FakeCam,
     graph_scope: str | None = None, plan: _FakePlan | None = None, bass_extension=None,
+    cleared_layers: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Run the shared session, composer and analyzer with hardware stand-ins."""
     from jasper import dsp_apply
@@ -502,7 +503,8 @@ def _drive_one_capture(
     def readmit(*args, **kwargs):
         if scope != "drivers":
             assert kwargs["graph_evidence"] == {
-                "bass_extension": candidate.bass_extension, "rear_calibration": candidate.rear_calibration,
+                "bass_extension": {} if "bass_extension" in cleared_layers else candidate.bass_extension,
+                "rear_calibration": candidate.rear_calibration,
             }
         return SimpleNamespace(allowed=True)
     for name in ("readmit_program_from_wav", "readmit_summed_program_from_wav"):
@@ -527,6 +529,7 @@ def _drive_one_capture(
             else ""
         ),
         program_phase=phase,
+        cleared_layers=cleared_layers,
     )
     session = TuningSession(
         allocate_take_id=lambda: "provenance_take",
@@ -663,17 +666,19 @@ def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
     )
 
 
-@pytest.mark.parametrize(
-    "scope", ["drivers", "candidate"]
-)
-@pytest.mark.parametrize("bass", [False, True])
-def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope, bass):
+@pytest.mark.parametrize("scope,bass,cleared", [
+    ("drivers", False, ()), ("drivers", True, ()), ("candidate", False, ()), ("candidate", True, ()),
+    ("candidate", True, ("room_correction", "bass_extension")),
+])
+def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_path, scope, bass, cleared):
+    """The admission's graph evidence is the graph the take plays, its cleared
+    layers emptied (ADR-0370)."""
     from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
     phase = PHASE_CHECK if scope == "drivers" else PHASE_CLOUD_VERIFY
     cam, plan = _FakeCam(volume_db=-20.0), _FakePlan()
     carried = _drive_one_capture(
         monkeypatch, tmp_path, phase=phase, cam=cam, graph_scope=scope, plan=plan,
-        bass_extension=BASS_EXTENSION if bass else {},
+        bass_extension=BASS_EXTENSION if bass else {}, cleared_layers=cleared,
     )
     assert carried is not None
     assert carried["main_volume_db"] == -20.0

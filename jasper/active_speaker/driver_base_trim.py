@@ -22,12 +22,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.atomic_io import atomic_write_json, fsync_directory
-from jasper.json_fields import finite_float as _finite, utc_now_iso as _utc_now
+from jasper.json_fields import finite_float as _finite, require_sha256_hex, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
 from . import passive_profile as _passive
-from ._common import coerce_finite_float, require_sha256_hex
+from ._common import coerce_finite_float
 from .crossover_contract import measured_level_match_applied
 from .crossover_preview import crossover_preview_fingerprint
 from .level_trim import MAX_ATTENUATION_DB
@@ -107,7 +107,7 @@ def _chain_fingerprint(value: Any) -> str | None:
     only a named frame licenses a comparison.
     """
     try:
-        return require_sha256_hex(value, "chain_fingerprint", ValueError)
+        return require_sha256_hex(value, field="chain_fingerprint")
     except ValueError:
         return None
 
@@ -267,12 +267,10 @@ def write_base_trim(
         )
     # The reader keys on this string by EQUALITY, so a non-fingerprint value
     # banks a record nothing can read back. Re-raised rather than passed as
-    # ``exc_type`` so the error carries the (reason, detail) pair the apply
+    # ``error`` so the error carries the (reason, detail) pair the apply
     # seam logs.
     try:
-        require_sha256_hex(
-            declaration_fingerprint, "declaration_fingerprint", ValueError
-        )
+        require_sha256_hex(declaration_fingerprint, field="declaration_fingerprint")
     except ValueError as exc:
         raise DriverBaseTrimError(REFUSE_NO_DECLARATION, str(exc)) from exc
     if not isinstance(trim_source, str) or not trim_source:

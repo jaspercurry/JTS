@@ -13,6 +13,9 @@ from typing import Any, AsyncIterator, Callable, Mapping, cast
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
+from jasper.camilla import CamillaUnavailable
+from jasper.dsp_apply import dsp_writer_lock
+from jasper.volume_owner import volume_owner
 
 from ..candidate_bank import CandidateBankRefusal, find_banked_candidate
 from ..design_draft import load_design_draft
@@ -25,6 +28,9 @@ from ..restore_wait import resilient_restore
 from ..session_volume_plan import SessionVolumeRestoreResult
 from .measure_spec import CANDIDATE_SCOPES
 from .refusal_copy import REASON_MEASURE_SPL_CALIBRATION_REQUIRED, REASON_VOLUME_RESTORE_DEFERRED
+from .composition import confirm_graph_is_live
+from .session_graph import MeasurementSessionGraph
+from .volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor
 
 logger = logging.getLogger(__name__)
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
@@ -208,9 +214,6 @@ def _measurement_claim() -> tuple[Any, Any]:
     Minted once and injected into both things that hold it — the plan's door and
     the engine's volume seam — because they are one claim, not two.
     """
-    from jasper.volume_owner import volume_owner
-
-    from .volume_claim import MeasurementVolumeClaim
 
     owner = volume_owner()
     if owner is None:
@@ -230,9 +233,6 @@ def _volume_door(
     The read is the PHYSICAL fader, which is what makes the snapshot every drain
     restores toward a state rather than an intent.
     """
-    from jasper.camilla import CamillaUnavailable
-
-    from .volume_claim import OwnerVolumeDoor
 
     async def _read_fader() -> float | None:
         try:
@@ -251,15 +251,12 @@ def bind_measurement_graph(
     candidate: MeasuredCrossoverCandidate | None = None,
 ) -> Any:
     """Bind neutral driver and complete tuning graphs to one session owner."""
-    from jasper.dsp_apply import dsp_writer_lock
 
     from ..baseline_profile import load_applied_baseline_profile_state  # lazy: baseline compilation imports the door
     from ..candidate_parts import candidate_from_design_draft  # lazy: candidate parts imports baseline compilation
 
-    from .composition import confirm_graph_is_live
-    from .session_graph import MeasurementSessionGraph
-
-    def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int]) -> str:
+    def emit_scoped(scope: str, candidate_id: str, branch_channels: Mapping[str, int],
+                    cleared_layers: tuple[str, ...] = ()) -> str:
         selected = None
         if scope in CANDIDATE_SCOPES:
             selected = (reference if reference is not None and candidate_id == reference.fingerprint else
@@ -269,6 +266,7 @@ def bind_measurement_graph(
             scope=cast(TuningGraphScope, scope),
             candidate=selected,
             branch_channels=branch_channels,
+            cleared_layers=cleared_layers,
         )
 
     try:

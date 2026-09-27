@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
 from .. import librespot_state
+from ..accessories import status as accessory_status
 from ..active_speaker.audition import audition_summary
 from ..dsp_apply import last_dsp_apply_state
 from ..music_sources import MUSIC_SOURCE_VALUES
@@ -101,7 +102,6 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "mic_muted",
     "measurement_active",
     "duck_active",
-    "camilla_volume_locked",
     "music_dbfs",
     "last_wake_at",
     "idle_rms_dbfs",
@@ -121,6 +121,7 @@ _VOICE_STATUS_NESTED_FIELDS = {
 _VOICE_STATUS_PUBLISHED_KEYS = (
     frozenset(_VOICE_STATUS_DIRECT_KEYS)
     | frozenset(_VOICE_STATUS_NESTED_FIELDS.values())
+    | {"push_to_talk"}
 )
 #: Not pulled through into `/state.voice`: either internal to the daemon, or
 #: published at the TOP level of `/state` instead (`cues`).
@@ -128,7 +129,6 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
     "state",
     "input_ended",
     "assistant_output",
-    "manual_mic_sources",
     "active_manual_mic_source",
     "cues",
 })
@@ -620,6 +620,7 @@ async def get_state(
 
     from ..mic_presence import read_mic_presence  # lazy: import cost, jasper.voice.* stays off control startup
 
+    mic_presence = read_mic_presence()
     return {
         "schema_version": STATE_SCHEMA_VERSION,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
@@ -629,6 +630,13 @@ async def get_state(
             "provider_error": active_provider.detail or None,
             "session_active": voice_session,
             **{key: voice_status.get(key) for key in _VOICE_STATUS_DIRECT_KEYS},
+            # The running daemon's view, since only what it opened can carry
+            # a hold. Parked, the published files still show a registered
+            # remote and why it is not armed (ADR-0372).
+            "push_to_talk": (
+                voice_status.get("push_to_talk") if voice is not None
+                else accessory_status.mic_readiness(mic_presence.accessory_sources)
+            ),
             "barge_in": {
                 "enabled": (
                     read_barge_in_enabled(active_provider.provider)
@@ -644,7 +652,7 @@ async def get_state(
             # parked voice for a missing microphone ("intentionally idle, no
             # mic", NOT "crashed"). jasper.mic_presence owns the rich record;
             # a consumer that wants it reads that module (ADR-0270).
-            "parked_no_mic": read_mic_presence().parked,
+            "parked_no_mic": mic_presence.parked,
         },
         "audio": {
             "main_volume_db": camilla["main_volume_db"],

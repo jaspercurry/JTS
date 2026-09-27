@@ -129,7 +129,7 @@ def _no_io():
         yield
 
 
-@pytest.mark.parametrize("profile", ["full", "streambox", "endpoint", None])
+@pytest.mark.parametrize("profile", ["full", "streambox", None])
 def test_capability_map_touches_nothing_outside_its_argument(profile):
     """No env, no files, no subprocesses, no sockets. At all."""
     with _no_io():
@@ -171,7 +171,7 @@ def test_capability_map_ignores_the_persisted_marker(monkeypatch, tmp_path):
 
 
 def test_capability_map_is_deterministic_across_calls():
-    for profile in ("full", "streambox", "endpoint", None):
+    for profile in ("full", "streambox", None):
         assert system_capabilities_for_profile(profile) == (
             system_capabilities_for_profile(profile)
         )
@@ -186,8 +186,7 @@ _STREAMBOX = {"wake_detection": False}
 @pytest.mark.parametrize(
     ("profile", "expected"),
     [
-        ("full", _FULL), ("streambox", _STREAMBOX), ("endpoint", _STREAMBOX),
-        ("satellite", _STREAMBOX), (None, _FULL), ("", _FULL),
+        ("full", _FULL), ("streambox", _STREAMBOX), (None, _FULL), ("", _FULL),
     ],
 )
 def test_capability_map_is_pinned(profile, expected):

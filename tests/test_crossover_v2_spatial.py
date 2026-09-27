@@ -26,6 +26,16 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.audio_measurement import gating, program
+from tests.crossover_v2_banked_round import (
+    LateralPose,
+    TakeClaim,
+    cloud_position_record,
+    entry_baseline_record,
+    lateral_pose_record,
+    phase_capture_record,
+    pose_kind_fields,
+    take_id_for,
+)
 
 
 # the records — the two fields a replay is joined on
@@ -49,7 +59,7 @@ def _cloud_record(**overrides):
         "validity_floor_hz": 100.0, "gating_applied": True,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }
-    return spatial.cloud_position_record(**{**fields, **overrides})
+    return cloud_position_record(**{**fields, **overrides})
 
 
 def test_a_position_take_id_is_qualified_by_the_attempt():
@@ -114,8 +124,8 @@ def _pose_record(**overrides):
         spatial.POSITION_AXIS_HORIZONTAL, -22, spatial.MARK_DISTANCE_M,
         overrides.pop("vertical_deg", 0),
     )
-    return spatial.lateral_pose_record(
-        spatial.LateralPose(
+    return lateral_pose_record(
+        LateralPose(
             pose_id="lateral_03", index=3, attempt=7, prompt="step left",
             role="offax", offset_cm=25.0, at_mark=False, curves=(),
         ),
@@ -135,7 +145,7 @@ def _entry_record(**overrides):
         "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }
-    return spatial.entry_baseline_record(**{**fields, **overrides})
+    return entry_baseline_record(**{**fields, **overrides})
 
 
 def _phase_record(**overrides):
@@ -151,7 +161,7 @@ def _phase_record(**overrides):
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "wav_sha256": "abc",
     }
-    return spatial.phase_capture_record(**{**fields, **overrides})
+    return phase_capture_record(**{**fields, **overrides})
 
 
 def test_every_retained_take_kind_states_when_it_was_captured():
@@ -194,7 +204,7 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 #: One name differs, and only while the flow still publishes through an
 #: envelope: the engine's ``kind`` is ``measure_kind`` here, because ``kind`` in
 #: a published take is this package's document-type discriminator. See
-#: ``spatial._take_identity``.
+#: ``crossover_v2_banked_round._take_identity``.
 _ENGINE_RECORD_FIELDS = (
     "session_id", "measure_kind", "baseline_record_id", "position_deg",
     "position_axis", "vertical_deg", "prompt", "candidate_id", "regime",
@@ -228,7 +238,7 @@ def test_every_take_builder_carries_the_whole_engine_record(builder):
 #: could be mistaken for. Presence alone would go green against carriers that
 #: emitted a constant empty, which is what these are until the retention lift
 #: states them.
-_STATED_CLAIM = spatial.TakeClaim(
+_STATED_CLAIM = TakeClaim(
     baseline_record_id="rec-before-7",
     candidate_id="cand-fp-42",
     polarity=POLARITY_INVERTED,
@@ -302,7 +312,7 @@ def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
 @pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record, _phase_record])
 @pytest.mark.parametrize("kind", ["", *MEASURE_KINDS])
 def test_take_kind_is_the_declared_capture_kind(builder, kind):
-    record = builder(graph_fingerprint="fp-entry", claim=spatial.TakeClaim(measure_kind=kind))
+    record = builder(graph_fingerprint="fp-entry", claim=TakeClaim(measure_kind=kind))
     assert record["measure_kind"] == kind
 
 
@@ -319,7 +329,7 @@ def test_a_take_carries_the_path_of_the_capture_it_was_reduced_from(builder):
     """
     minted = "captures/summed/cloud_measure_03_a07-9f2c.wav"
 
-    record = builder(claim=spatial.TakeClaim(wav_path=minted))
+    record = builder(claim=TakeClaim(wav_path=minted))
 
     assert record["wav_path"] == minted
     # The verifier and the pointer are two facts, not one: the digest says
@@ -393,8 +403,8 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
             complex_tf=np.array([1.0 + 0.0j]), band_hz=(80.0, 20000.0),
         )
 
-    record = spatial.lateral_pose_record(
-        spatial.LateralPose(
+    record = lateral_pose_record(
+        LateralPose(
             pose_id="lateral_03", index=3, attempt=7, prompt="step left",
             role="offax", offset_cm=25.0, at_mark=False,
             curves=(_curve("woofer"), _curve("tweeter")),
@@ -462,7 +472,7 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     ids=["bearing", "seat", "close"],
 )
 def test_pose_records_keep_distance_and_gating_for_each_coordinate_kind(geometry, fields):
-    assert spatial.pose_kind_fields(geometry, gating_applied=False) == fields
+    assert pose_kind_fields(geometry, gating_applied=False) == fields
 
 
 def _sweep_program(*segments):
@@ -621,7 +631,7 @@ def test_an_unmatched_take_states_no_level_match_trims_at_all(builder):
     empty mapping would be a third state a reader has to interpret.
     """
     without = builder()
-    carrying = builder(claim=spatial.TakeClaim(
+    carrying = builder(claim=TakeClaim(
         level_matched=True, level_match_trims_db={"tweeter": -9.5},
     ))
 
@@ -665,7 +675,7 @@ def test_a_take_states_which_phase_composition_its_curves_carry(
     """
     record = _phase_record(
         phase=analysis_phase,
-        claim=spatial.TakeClaim(
+        claim=TakeClaim(
             phase_composition=spatial.phase_composition(
                 SimpleNamespace(
                     phase=analysis_phase, configured_path_composed=composed,
@@ -743,7 +753,7 @@ def test_the_storage_seam_names_the_take_the_record_names():
             return SimpleNamespace(fingerprint="fp")
 
     seam = retained_take_writer(_Store(), "capture", asyncio.run)
-    take_id = spatial.take_id_for("cloud_measure_03", 7)
+    take_id = take_id_for("cloud_measure_03", 7)
     seam(
         SimpleNamespace(wav=None),
         {"attempt": 7, "take_id": take_id, "measure_kind": ""},

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ast
+import logging
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,13 +16,12 @@ from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.run_manifest import RunManifest
-from jasper.active_speaker.program_failure import read_output_volume
 from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.level import LevelReading
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
@@ -40,6 +40,7 @@ from tests.crossover_v2_fixtures import (
     plan_context,
 )
 from tests.test_plan_run import AnsweredGate, _run_gated, _walk
+from tests._log_events import event_field_maps
 
 PHASES = ("check", "measure", "verify")
 GAINS = {"woofer": -30.0, "tweeter": -30.0}
@@ -64,15 +65,18 @@ def _analysis(**changes):
 
 
 @pytest.mark.parametrize("muted", [True, False, None])
-async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, muted):
+async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, caplog, muted):
     response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
     read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
     monkeypatch.setattr(control_client, "get_volume", read)
-    monkeypatch.setattr(cd, "read_output_volume", read_output_volume)
+    monkeypatch.setattr(cd, "read_output_volume", control_client.read_output_volume)
     analyses = iter((_analysis(locations=(), pilot_snr_ok=False), _analysis()))
     gate = AnsweredGate()
+    caplog.set_level(logging.INFO)
     result, fakes = await _run_gated(_walk([0]), gate=gate, analyze=lambda *_: next(analyses))
     read.assert_called_once_with()
+    assert event_field_maps(caplog, "active_speaker.measurement_output_muted") == (
+        [{"muted": "true", "household_percent": "0"}] if muted else [])
     assert len(fakes.play.rungs) == (1 if muted else 2)
     assert result.reason == ("measurement_output_muted" if muted else "")
     fault = next(row for row in gate.progress if row.get("fault"))

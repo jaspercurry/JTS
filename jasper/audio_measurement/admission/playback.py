@@ -1,0 +1,1069 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Policy-free WAV process mechanics.
+
+Feature owners choose the ALSA lane, target, admission evidence, and repeat
+policy.  This leaf validates structural resource bounds, emits an
+already-admitted WAV, and bounds process diagnostics and cleanup without
+retaining a powerful audio or DSP host object.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import fcntl
+import hashlib
+import logging
+import math
+import os
+import stat
+import sys
+import tempfile
+import wave
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, AsyncIterator, Literal
+
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+from jasper.log_event import log_event
+
+# Fixed, not __name__: operators grep the journal by this name.
+logger = logging.getLogger("jasper.audio_measurement.playback")
+
+
+class PlaybackFailureCode(str, Enum):
+    """Closed failure vocabulary for a WAV emission attempt."""
+
+    INVALID_REQUEST = "invalid_request"
+    MISSING_FILE = "missing_file"
+    START_FAILED = "start_failed"
+    TIMEOUT = "timeout"
+    WAIT_FAILED = "wait_failed"
+    PROCESS_FAILED = "process_failed"
+
+
+class PlaybackCleanupState(str, Enum):
+    """Observed cleanup state for an emitted child process."""
+
+    NOT_NEEDED = "not_needed"
+    KILLED_AND_REAPED = "killed_and_reaped"
+    KILL_SENT_REAP_UNCONFIRMED = "kill_sent_reap_unconfirmed"
+
+
+@dataclass(frozen=True)
+class PlaybackObservation:
+    """Process facts only; completed playback does not prove acoustic capture."""
+
+    emission: Literal["unknown", "not_started", "possible", "completed"] = "unknown"
+    failure_code: PlaybackFailureCode | None = None
+    cleanup_state: PlaybackCleanupState | None = None
+    returncode: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class WavPlaybackCancelled(asyncio.CancelledError):
+    def __init__(self, observation: PlaybackObservation) -> None:
+        super().__init__()
+        self.observation = observation
+
+
+@dataclass(frozen=True)
+class PlaybackResult:
+    """Successful, fully reaped WAV emission result."""
+
+    wav_path: Path
+    alsa_device: str
+    returncode: int
+    cleanup_state: PlaybackCleanupState = PlaybackCleanupState.NOT_NEEDED
+    diagnostic_tail: str = ""
+
+
+class PlaybackError(RuntimeError):
+    """Typed WAV-process failure."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: PlaybackFailureCode,
+        wav_path: Path,
+        alsa_device: str,
+        returncode: int | None = None,
+        cleanup_state: PlaybackCleanupState = PlaybackCleanupState.NOT_NEEDED,
+        diagnostic_tail: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.wav_path = wav_path
+        self.alsa_device = alsa_device
+        self.returncode = returncode
+        self.cleanup_state = cleanup_state
+        self.diagnostic_tail = diagnostic_tail
+
+    @property
+    def observation(self) -> PlaybackObservation:
+        before_spawn = self.code in {
+            PlaybackFailureCode.INVALID_REQUEST, PlaybackFailureCode.MISSING_FILE,
+            PlaybackFailureCode.START_FAILED,
+        }
+        return PlaybackObservation(
+            emission="not_started" if before_spawn else "possible",
+            failure_code=self.code, cleanup_state=self.cleanup_state,
+            returncode=self.returncode,
+        )
+
+
+class WavSourceFailureCode(str, Enum):
+    """Closed failure vocabulary for content-bound WAV sources."""
+
+    UNSAFE_PATH = "unsafe_path"
+    READ_FAILED = "read_failed"
+    RESOURCE_LIMIT = "resource_limit"
+    CONTENT_MISMATCH = "content_mismatch"
+    INVALID_WAV = "invalid_wav"
+    CLEANUP_FAILED = "cleanup_failed"
+
+
+class WavSourceError(RuntimeError):
+    """An exact feature-owned WAV artifact could not be safely consumed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: WavSourceFailureCode,
+        wav_path: Path,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.wav_path = wav_path
+
+
+class WavPlaybackCancelledBeforeSpawn(asyncio.CancelledError):
+    """The final content recheck was cancelled before aplay could start."""
+
+
+_DIAGNOSTIC_TAIL_BYTES = 8 * 1024
+_PROCESS_CLEANUP_TIMEOUT_S = 2.0
+_WAV_HASH_CHUNK_BYTES = 64 * 1024
+_WAV_FRAME_CHUNK = 64 * 1024
+MAX_VERIFIED_WAV_BYTES = 64 * 1024 * 1024
+MAX_VERIFIED_WAV_CHANNELS = 8
+MAX_TONE_SAMPLE_RATE = 192_000
+MAX_TONE_DURATION_S = 90.0
+
+
+@dataclass(frozen=True)
+class _CleanupOutcome:
+    diagnostic_tail: str
+    state: PlaybackCleanupState
+    cancellation: asyncio.CancelledError | None = None
+
+
+class _ProcessWaitFailure(RuntimeError):
+    """Internal wrapper that keeps process/pipe failures catchable narrowly."""
+
+
+@dataclass(slots=True)
+class _VerifiedWavSource:
+    path: Path
+    artifact: ArtifactIdentity
+    fd: int
+    device: int
+    inode: int
+    channels: int
+    sample_width_bytes: int
+    sample_rate_hz: int
+    frame_count: int
+    closed: bool = False
+
+    @property
+    def duration_s(self) -> float:
+        return self.frame_count / self.sample_rate_hz
+
+    def close(self) -> None:
+        if not self.closed:
+            os.close(self.fd)
+            self.closed = True
+
+
+async def _read_diagnostic_tail(stream: asyncio.StreamReader | None) -> str:
+    if stream is None:
+        return ""
+    tail = bytearray()
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            break
+        tail.extend(chunk)
+        if len(tail) > _DIAGNOSTIC_TAIL_BYTES:
+            del tail[: len(tail) - _DIAGNOSTIC_TAIL_BYTES]
+    return bytes(tail).decode(errors="replace").strip()
+
+
+async def _wait_and_read_diagnostic_tail(
+    proc: asyncio.subprocess.Process,
+) -> str:
+    stderr_task = asyncio.create_task(_read_diagnostic_tail(proc.stderr))
+    try:
+        await proc.wait()
+        return await stderr_task
+    except asyncio.CancelledError:
+        stderr_task.cancel()
+        stderr_task.add_done_callback(_consume_task_result)
+        raise
+    except Exception as exc:  # noqa: BLE001 -- process waits can fail arbitrarily
+        stderr_task.cancel()
+        stderr_task.add_done_callback(_consume_task_result)
+        raise _ProcessWaitFailure from exc
+
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+    except Exception:  # noqa: BLE001 -- cleanup cannot recover task failures
+        pass
+
+
+async def _settle_after_kill(
+    task: asyncio.Task[str],
+    *,
+    cleanup_timeout_s: float,
+) -> _CleanupOutcome:
+    """Observe killed-process cleanup despite repeated caller cancellation."""
+
+    waiter = asyncio.create_task(asyncio.wait({task}, timeout=cleanup_timeout_s))
+    cancellation: asyncio.CancelledError | None = None
+    while not waiter.done():
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    waiter.result()
+    if not task.done():
+        task.cancel()
+        task.add_done_callback(_consume_task_result)
+        return _CleanupOutcome(
+            diagnostic_tail="",
+            state=PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED,
+            cancellation=cancellation,
+        )
+    try:
+        diagnostic = task.result()
+    except asyncio.CancelledError:
+        return _CleanupOutcome(
+            diagnostic_tail="",
+            state=PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED,
+            cancellation=cancellation,
+        )
+    except _ProcessWaitFailure:
+        return _CleanupOutcome(
+            diagnostic_tail="",
+            state=PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED,
+            cancellation=cancellation,
+        )
+    return _CleanupOutcome(
+        diagnostic_tail=diagnostic,
+        state=PlaybackCleanupState.KILLED_AND_REAPED,
+        cancellation=cancellation,
+    )
+
+
+async def _kill_and_settle(
+    proc: asyncio.subprocess.Process,
+    task: asyncio.Task[str],
+) -> _CleanupOutcome:
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        task.cancel()
+        task.add_done_callback(_consume_task_result)
+        return _CleanupOutcome(
+            diagnostic_tail="",
+            state=PlaybackCleanupState.KILL_SENT_REAP_UNCONFIRMED,
+        )
+    return await _settle_after_kill(
+        task,
+        cleanup_timeout_s=_PROCESS_CLEANUP_TIMEOUT_S,
+    )
+
+
+def _wav_source_error_code(exc: OSError) -> WavSourceFailureCode:
+    if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+        return WavSourceFailureCode.UNSAFE_PATH
+    return WavSourceFailureCode.READ_FAILED
+
+
+def _sha256_fd(fd: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, _WAV_HASH_CHUNK_BYTES):
+        digest.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _write_all(fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("verified WAV snapshot write made no progress")
+        view = view[written:]
+
+
+def _close_fd(fd: int, *, path: Path) -> WavSourceError | None:
+    try:
+        os.close(fd)
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV descriptor could not be closed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
+def _unlink_snapshot(pathname: str, *, path: Path) -> WavSourceError | None:
+    try:
+        os.unlink(pathname)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV temporary snapshot could not be removed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
+def _preserve_primary_cleanup_failure(
+    primary: BaseException,
+    cleanup: WavSourceError,
+) -> None:
+    primary.add_note(f"suppressed verified WAV cleanup failure: {cleanup}")
+    log_event(
+        logger,
+        "audio_measurement.verified_wav_source",
+        result="cleanup_failed",
+        failure_code=cleanup.code.value,
+        error_type=type(cleanup.__cause__ or cleanup).__name__,
+        level=logging.WARNING,
+    )
+
+
+def _finish_cleanup(
+    primary: BaseException | None,
+    failures: list[WavSourceError],
+) -> None:
+    if not failures:
+        return
+    first, *remaining = failures
+    for extra in remaining:
+        first.add_note(f"additional verified WAV cleanup failure: {extra}")
+    if primary is None:
+        raise first from first.__cause__
+    _preserve_primary_cleanup_failure(primary, first)
+
+
+def _snapshot_verified_wav(
+    source_fd: int,
+    *,
+    artifact: ArtifactIdentity,
+    path: Path,
+) -> int:
+    """Copy exact bytes into a sealed memfd (or unlinked read-only fallback)."""
+
+    snapshot_fd: int | None = None
+    temporary_path: str | None = None
+    memfd_create = getattr(os, "memfd_create", None)
+    sealed = memfd_create is not None
+    completed = False
+    try:
+        if sealed:
+            assert memfd_create is not None
+            flags = getattr(os, "MFD_CLOEXEC", 0x0001) | getattr(
+                os,
+                "MFD_ALLOW_SEALING",
+                0x0002,
+            )
+            snapshot_fd = memfd_create("jasper-measurement-wav", flags)
+        else:
+            snapshot_fd, temporary_path = tempfile.mkstemp(
+                prefix="jasper-measurement-wav."
+            )
+            os.fchmod(snapshot_fd, 0o600)
+
+        digest = hashlib.sha256()
+        copied = 0
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        while chunk := os.read(source_fd, _WAV_HASH_CHUNK_BYTES):
+            copied += len(chunk)
+            if copied > MAX_VERIFIED_WAV_BYTES:
+                raise WavSourceError(
+                    "measurement WAV exceeds the verified-source byte bound",
+                    code=WavSourceFailureCode.RESOURCE_LIMIT,
+                    wav_path=path,
+                )
+            digest.update(chunk)
+            _write_all(snapshot_fd, chunk)
+        if copied != artifact.byte_size or digest.hexdigest() != artifact.sha256:
+            raise WavSourceError(
+                "measurement WAV bytes do not match their artifact identity",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=path,
+            )
+        os.fsync(snapshot_fd)
+        os.lseek(snapshot_fd, 0, os.SEEK_SET)
+
+        if sealed:
+            seals = (
+                getattr(fcntl, "F_SEAL_SEAL", 0x0001)
+                | getattr(fcntl, "F_SEAL_SHRINK", 0x0002)
+                | getattr(fcntl, "F_SEAL_GROW", 0x0004)
+                | getattr(fcntl, "F_SEAL_WRITE", 0x0008)
+            )
+            fcntl.fcntl(
+                snapshot_fd,
+                getattr(fcntl, "F_ADD_SEALS", 1033),
+                seals,
+            )
+        else:
+            assert temporary_path is not None
+            read_flags = os.O_RDONLY | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                read_flags |= os.O_NOFOLLOW
+            read_fd = os.open(temporary_path, read_flags)
+            writable_fd = snapshot_fd
+            snapshot_fd = read_fd
+            cleanup = _close_fd(writable_fd, path=path)
+            if cleanup is not None:
+                raise cleanup
+            cleanup = _unlink_snapshot(temporary_path, path=path)
+            if cleanup is not None:
+                raise cleanup
+            temporary_path = None
+        return_fd = snapshot_fd
+        snapshot_fd = None
+        completed = True
+        return return_fd
+    finally:
+        failures: list[WavSourceError] = []
+        if snapshot_fd is not None:
+            cleanup = _close_fd(snapshot_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        if temporary_path is not None:
+            cleanup = _unlink_snapshot(temporary_path, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        _finish_cleanup(None if completed else sys.exc_info()[1], failures)
+
+
+def _inspect_pcm_wav(fd: int, *, path: Path) -> tuple[int, int, int, int]:
+    duplicate = os.dup(fd)
+    completed = False
+    try:
+        with os.fdopen(duplicate, "rb", closefd=False) as raw:
+            with wave.open(raw, "rb") as wav:
+                channels = wav.getnchannels()
+                sample_width = wav.getsampwidth()
+                sample_rate = wav.getframerate()
+                frame_count = wav.getnframes()
+                if wav.getcomptype() != "NONE":
+                    raise WavSourceError(
+                        "measurement WAV must contain uncompressed PCM",
+                        code=WavSourceFailureCode.INVALID_WAV,
+                        wav_path=path,
+                    )
+                if not 1 <= channels <= MAX_VERIFIED_WAV_CHANNELS:
+                    raise WavSourceError(
+                        "measurement WAV channel count is outside the supported bound",
+                        code=WavSourceFailureCode.RESOURCE_LIMIT,
+                        wav_path=path,
+                    )
+                if sample_width not in {1, 2, 3, 4}:
+                    raise WavSourceError(
+                        "measurement WAV sample width is unsupported",
+                        code=WavSourceFailureCode.INVALID_WAV,
+                        wav_path=path,
+                    )
+                if not 1 <= sample_rate <= MAX_TONE_SAMPLE_RATE:
+                    raise WavSourceError(
+                        "measurement WAV sample rate is outside the supported bound",
+                        code=WavSourceFailureCode.RESOURCE_LIMIT,
+                        wav_path=path,
+                    )
+                if frame_count <= 0 or frame_count / sample_rate > MAX_TONE_DURATION_S:
+                    raise WavSourceError(
+                        "measurement WAV duration is outside the supported bound",
+                        code=WavSourceFailureCode.RESOURCE_LIMIT,
+                        wav_path=path,
+                    )
+                frame_width = channels * sample_width
+                frames_read = 0
+                while frames_read < frame_count:
+                    chunk = wav.readframes(
+                        min(_WAV_FRAME_CHUNK, frame_count - frames_read)
+                    )
+                    if not chunk or len(chunk) % frame_width:
+                        raise WavSourceError(
+                            "measurement WAV PCM data is truncated or malformed",
+                            code=WavSourceFailureCode.INVALID_WAV,
+                            wav_path=path,
+                        )
+                    frames_read += len(chunk) // frame_width
+                if frames_read != frame_count:
+                    raise WavSourceError(
+                        "measurement WAV frame count does not match its PCM data",
+                        code=WavSourceFailureCode.INVALID_WAV,
+                        wav_path=path,
+                    )
+        os.lseek(fd, 0, os.SEEK_SET)
+        completed = True
+        return channels, sample_width, sample_rate, frame_count
+    except WavSourceError:
+        raise
+    except (EOFError, OSError, wave.Error) as exc:
+        failure = WavSourceError(
+            "measurement artifact is not a readable PCM WAV",
+            code=WavSourceFailureCode.INVALID_WAV,
+            wav_path=path,
+        )
+        failure.__cause__ = exc
+        raise failure from exc
+    finally:
+        cleanup = _close_fd(duplicate, path=path)
+        _finish_cleanup(
+            None if completed else sys.exc_info()[1],
+            [] if cleanup is None else [cleanup],
+        )
+
+
+def _open_verified_wav_source(
+    bundle_dir: str | Path,
+    artifact: ArtifactIdentity,
+) -> _VerifiedWavSource:
+    if not isinstance(artifact, ArtifactIdentity):
+        raise ValueError("artifact must be an ArtifactIdentity")
+    path = Path(bundle_dir).joinpath(*artifact.relative_path.split("/"))
+    if artifact.byte_size > MAX_VERIFIED_WAV_BYTES:
+        raise WavSourceError(
+            "measurement WAV exceeds the verified-source byte bound",
+            code=WavSourceFailureCode.RESOURCE_LIMIT,
+            wav_path=path,
+        )
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+    file_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+        file_flags |= os.O_NOFOLLOW
+    directory_fd: int | None = None
+    fd: int | None = None
+    snapshot_fd: int | None = None
+    completed = False
+    try:
+        directory_fd = os.open(Path(bundle_dir), directory_flags)
+        parts = artifact.relative_path.split("/")
+        for part in parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            previous_fd = directory_fd
+            directory_fd = next_fd
+            cleanup = _close_fd(previous_fd, path=path)
+            if cleanup is not None:
+                raise cleanup
+        fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
+        final_directory_fd = directory_fd
+        directory_fd = None
+        cleanup = _close_fd(final_directory_fd, path=path)
+        if cleanup is not None:
+            raise cleanup
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise WavSourceError(
+                "measurement WAV artifact must be a regular file",
+                code=WavSourceFailureCode.UNSAFE_PATH,
+                wav_path=path,
+            )
+        if opened.st_size != artifact.byte_size:
+            raise WavSourceError(
+                "measurement WAV size does not match its artifact identity",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=path,
+            )
+        snapshot_fd = _snapshot_verified_wav(
+            fd,
+            artifact=artifact,
+            path=path,
+        )
+        source_after_copy = os.fstat(fd)
+        if (
+            source_after_copy.st_dev != opened.st_dev
+            or source_after_copy.st_ino != opened.st_ino
+            or source_after_copy.st_size != opened.st_size
+            or source_after_copy.st_mtime_ns != opened.st_mtime_ns
+        ):
+            raise WavSourceError(
+                "measurement WAV changed while its immutable snapshot was created",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=path,
+            )
+        source_fd = fd
+        fd = None
+        cleanup = _close_fd(source_fd, path=path)
+        if cleanup is not None:
+            raise cleanup
+        channels, sample_width, sample_rate, frame_count = _inspect_pcm_wav(
+            snapshot_fd,
+            path=path,
+        )
+        verified = os.fstat(snapshot_fd)
+        source = _VerifiedWavSource(
+            path=path,
+            artifact=artifact,
+            fd=snapshot_fd,
+            device=verified.st_dev,
+            inode=verified.st_ino,
+            channels=channels,
+            sample_width_bytes=sample_width,
+            sample_rate_hz=sample_rate,
+            frame_count=frame_count,
+        )
+        snapshot_fd = None
+        completed = True
+        return source
+    except WavSourceError:
+        raise
+    except OSError as exc:
+        failure = WavSourceError(
+            "measurement WAV could not be opened without following links",
+            code=_wav_source_error_code(exc),
+            wav_path=path,
+        )
+        failure.__cause__ = exc
+        raise failure from exc
+    finally:
+        failures: list[WavSourceError] = []
+        if fd is not None:
+            cleanup = _close_fd(fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        if snapshot_fd is not None:
+            cleanup = _close_fd(snapshot_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        if directory_fd is not None:
+            cleanup = _close_fd(directory_fd, path=path)
+            if cleanup is not None:
+                failures.append(cleanup)
+        _finish_cleanup(None if completed else sys.exc_info()[1], failures)
+
+
+def _verify_open_wav_source(source: _VerifiedWavSource) -> None:
+    if not isinstance(source, _VerifiedWavSource) or source.closed:
+        raise ValueError("verified WAV source is closed or invalid")
+    try:
+        current = os.fstat(source.fd)
+        # Content identity is the exact byte size and digest.  Do not use the
+        # snapshot mtime here: on Linux, a rejected write against a sealed
+        # memfd can still advance its metadata without changing any bytes.
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_dev != source.device
+            or current.st_ino != source.inode
+            or current.st_size != source.artifact.byte_size
+            or _sha256_fd(source.fd) != source.artifact.sha256
+        ):
+            raise WavSourceError(
+                "measurement WAV changed after admission verification",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=source.path,
+            )
+        observed = _inspect_pcm_wav(source.fd, path=source.path)
+        expected = (
+            source.channels,
+            source.sample_width_bytes,
+            source.sample_rate_hz,
+            source.frame_count,
+        )
+        if observed != expected:
+            raise WavSourceError(
+                "measurement WAV format changed after admission verification",
+                code=WavSourceFailureCode.CONTENT_MISMATCH,
+                wav_path=source.path,
+            )
+    except WavSourceError:
+        raise
+    except OSError as exc:
+        raise WavSourceError(
+            "measurement WAV could not be reverified",
+            code=WavSourceFailureCode.READ_FAILED,
+            wav_path=source.path,
+        ) from exc
+
+
+async def _drain_blocking_task(
+    task: asyncio.Task[Any],
+) -> tuple[Any, BaseException | None]:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    return task.result(), cancellation
+
+
+def _close_verified_wav_source(source: _VerifiedWavSource) -> WavSourceError | None:
+    try:
+        source.close()
+    except WavSourceError as exc:
+        return exc
+    except OSError as exc:
+        cleanup = WavSourceError(
+            "verified WAV snapshot descriptor could not be closed",
+            code=WavSourceFailureCode.CLEANUP_FAILED,
+            wav_path=source.path,
+        )
+        cleanup.__cause__ = exc
+        return cleanup
+    return None
+
+
+@asynccontextmanager
+async def verified_wav_source(
+    bundle_dir: str | Path,
+    artifact: ArtifactIdentity,
+) -> AsyncIterator[_VerifiedWavSource]:
+    """Verify one no-link feature WAV and yield its immutable byte snapshot."""
+
+    opening = asyncio.create_task(
+        asyncio.to_thread(_open_verified_wav_source, bundle_dir, artifact)
+    )
+    source, cancellation = await _drain_blocking_task(opening)
+    if cancellation is not None:
+        cleanup = _close_verified_wav_source(source)
+        if cleanup is not None:
+            _preserve_primary_cleanup_failure(cancellation, cleanup)
+        raise cancellation
+    body_completed = False
+    try:
+        yield source
+        body_completed = True
+    finally:
+        primary = None if body_completed else sys.exc_info()[1]
+        cleanup = _close_verified_wav_source(source)
+        if cleanup is not None:
+            if primary is None:
+                raise cleanup from cleanup.__cause__
+            _preserve_primary_cleanup_failure(primary, cleanup)
+
+
+def validate_wav_playback_request(
+    wav_path: str | Path,
+    *,
+    alsa_device: str,
+    timeout_s: float,
+) -> tuple[Path, float]:
+    """Validate legacy path-based WAV inputs without emitting audio."""
+
+    path = Path(wav_path)
+    timeout = validate_wav_playback_control(
+        path,
+        alsa_device=alsa_device,
+        timeout_s=timeout_s,
+    )
+    if not path.is_file():
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="failed",
+            failure_code=PlaybackFailureCode.MISSING_FILE.value,
+            device=alsa_device,
+            level=logging.WARNING,
+        )
+        raise PlaybackError(
+            f"WAV not found: {path}",
+            code=PlaybackFailureCode.MISSING_FILE,
+            wav_path=path,
+            alsa_device=alsa_device,
+        )
+    return path, timeout
+
+
+def validate_wav_playback_control(
+    path: Path,
+    *,
+    alsa_device: str,
+    timeout_s: float,
+) -> float:
+    _validate_alsa_device(alsa_device, wav_path=path)
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+        raise PlaybackError(
+            "playback timeout must be a finite positive number",
+            code=PlaybackFailureCode.INVALID_REQUEST,
+            wav_path=path,
+            alsa_device=alsa_device,
+        )
+    timeout = float(timeout_s)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise PlaybackError(
+            "playback timeout must be a finite positive number",
+            code=PlaybackFailureCode.INVALID_REQUEST,
+            wav_path=path,
+            alsa_device=alsa_device,
+        )
+    return timeout
+
+
+def _validate_alsa_device(alsa_device: object, *, wav_path: Path) -> str:
+    if not isinstance(alsa_device, str) or not alsa_device.strip():
+        raise PlaybackError(
+            "ALSA device must be a non-empty string",
+            code=PlaybackFailureCode.INVALID_REQUEST,
+            wav_path=wav_path,
+            alsa_device=str(alsa_device),
+        )
+    return alsa_device
+
+
+async def _play_wav_source(
+    path: Path,
+    *,
+    spawn_path: str,
+    pass_fds: tuple[int, ...],
+    alsa_device: str,
+    timeout_s: float,
+) -> PlaybackResult:
+    timeout = validate_wav_playback_control(
+        path,
+        alsa_device=alsa_device,
+        timeout_s=timeout_s,
+    )
+
+    try:
+        process_kwargs: dict[str, Any] = {
+            "stdout": asyncio.subprocess.DEVNULL,
+            "stderr": asyncio.subprocess.PIPE,
+        }
+        if pass_fds:
+            process_kwargs["pass_fds"] = pass_fds
+        proc = await asyncio.create_subprocess_exec(
+            "aplay",
+            "-D",
+            alsa_device,
+            "-q",
+            spawn_path,
+            **process_kwargs,
+        )
+    except OSError as exc:
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="failed",
+            failure_code=PlaybackFailureCode.START_FAILED.value,
+            device=alsa_device,
+            level=logging.WARNING,
+        )
+        raise PlaybackError(
+            f"could not start aplay: {exc}",
+            code=PlaybackFailureCode.START_FAILED,
+            wav_path=path,
+            alsa_device=alsa_device,
+        ) from exc
+
+    operation_task = asyncio.create_task(_wait_and_read_diagnostic_tail(proc))
+    try:
+        diagnostic = await asyncio.wait_for(
+            asyncio.shield(operation_task),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        cleanup = await _kill_and_settle(proc, operation_task)
+        if cleanup.cancellation is not None:
+            log_event(
+                logger,
+                "audio_measurement.playback",
+                operation="wav",
+                result="cancelled",
+                device=alsa_device,
+                cleanup_state=cleanup.state.value,
+            )
+            raise WavPlaybackCancelled(PlaybackObservation(
+                emission="possible", cleanup_state=cleanup.state,
+                returncode=proc.returncode,
+            )) from cleanup.cancellation
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="failed",
+            failure_code=PlaybackFailureCode.TIMEOUT.value,
+            device=alsa_device,
+            cleanup_state=cleanup.state.value,
+            level=logging.WARNING,
+        )
+        raise PlaybackError(
+            f"aplay timed out after {timeout_s} s playing {path}",
+            code=PlaybackFailureCode.TIMEOUT,
+            wav_path=path,
+            alsa_device=alsa_device,
+            returncode=proc.returncode,
+            cleanup_state=cleanup.state,
+            diagnostic_tail=cleanup.diagnostic_tail,
+        ) from exc
+    except asyncio.CancelledError as exc:
+        cleanup = await _kill_and_settle(proc, operation_task)
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="cancelled",
+            device=alsa_device,
+            cleanup_state=cleanup.state.value,
+        )
+        raise WavPlaybackCancelled(PlaybackObservation(
+            emission="possible", cleanup_state=cleanup.state,
+            returncode=proc.returncode,
+        )) from (cleanup.cancellation or exc)
+    except _ProcessWaitFailure as exc:
+        cleanup = await _kill_and_settle(proc, operation_task)
+        if cleanup.cancellation is not None:
+            log_event(
+                logger,
+                "audio_measurement.playback",
+                operation="wav",
+                result="cancelled",
+                device=alsa_device,
+                cleanup_state=cleanup.state.value,
+            )
+            raise WavPlaybackCancelled(PlaybackObservation(
+                emission="possible", cleanup_state=cleanup.state,
+                returncode=proc.returncode,
+            )) from cleanup.cancellation
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="failed",
+            failure_code=PlaybackFailureCode.WAIT_FAILED.value,
+            device=alsa_device,
+            cleanup_state=cleanup.state.value,
+            level=logging.WARNING,
+        )
+        raise PlaybackError(
+            "aplay process wait failed",
+            code=PlaybackFailureCode.WAIT_FAILED,
+            wav_path=path,
+            alsa_device=alsa_device,
+            returncode=proc.returncode,
+            cleanup_state=cleanup.state,
+            diagnostic_tail=cleanup.diagnostic_tail,
+        ) from (exc.__cause__ or exc)
+
+    returncode = proc.returncode
+    if returncode != 0:
+        log_event(
+            logger,
+            "audio_measurement.playback",
+            operation="wav",
+            result="failed",
+            failure_code=PlaybackFailureCode.PROCESS_FAILED.value,
+            device=alsa_device,
+            returncode=returncode,
+            level=logging.WARNING,
+        )
+        raise PlaybackError(
+            f"aplay failed (rc={returncode}, device={alsa_device}): {diagnostic}",
+            code=PlaybackFailureCode.PROCESS_FAILED,
+            wav_path=path,
+            alsa_device=alsa_device,
+            returncode=returncode,
+            diagnostic_tail=diagnostic,
+        )
+    log_event(
+        logger,
+        "audio_measurement.playback",
+        operation="wav",
+        result="completed",
+        device=alsa_device,
+    )
+    return PlaybackResult(
+        wav_path=path,
+        alsa_device=alsa_device,
+        returncode=0,
+        diagnostic_tail=diagnostic,
+    )
+
+
+async def play_wav(
+    wav_path: str | Path,
+    *,
+    alsa_device: str,
+    timeout_s: float,
+) -> PlaybackResult:
+    """Emit one already-admitted legacy path WAV and wait until it is reaped."""
+
+    path, timeout = validate_wav_playback_request(
+        wav_path,
+        alsa_device=alsa_device,
+        timeout_s=timeout_s,
+    )
+    return await _play_wav_source(
+        path,
+        spawn_path=str(path),
+        pass_fds=(),
+        alsa_device=alsa_device,
+        timeout_s=timeout,
+    )
+
+
+async def play_verified_wav(
+    source: _VerifiedWavSource,
+    *,
+    alsa_device: str,
+    timeout_s: float,
+) -> PlaybackResult:
+    """Reverify and emit one immutable artifact snapshot through its stable fd."""
+
+    if not isinstance(source, _VerifiedWavSource) or source.closed:
+        raise ValueError("source must be an open verified WAV source")
+    timeout = validate_wav_playback_control(
+        source.path,
+        alsa_device=alsa_device,
+        timeout_s=timeout_s,
+    )
+    verification = asyncio.create_task(
+        asyncio.to_thread(_verify_open_wav_source, source)
+    )
+    _result, cancellation = await _drain_blocking_task(verification)
+    if cancellation is not None:
+        raise WavPlaybackCancelledBeforeSpawn from cancellation
+    # The Pi production surface is Linux. pass_fds keeps this immutable snapshot
+    # alive in aplay; later writes or pathname replacement cannot change it.
+    return await _play_wav_source(
+        source.path,
+        spawn_path=f"/proc/self/fd/{source.fd}",
+        pass_fds=(source.fd,),
+        alsa_device=alsa_device,
+        timeout_s=timeout,
+    )

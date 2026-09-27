@@ -14,7 +14,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from ._common import issue as _issue
+from jasper.json_fields import as_float, issue as _issue
+
 from .driver_protection import (
     driver_protection_payload,
     driver_protection_profile,
@@ -29,7 +30,7 @@ EDGE_MARGIN_RATIO = 1.25
 SUBWOOFER_SUBSONIC_FLOOR_HZ = 25.0
 MIN_DRIVER_TEST_FREQUENCY_HZ = 20.0
 # Kept in lockstep with jasper.audio_measurement.program.MEASURE_SWEEP_F_HI_HZ
-# (sweep-composition PR-A, #1668): both name the same "no driver test tone
+# (#1668): both name the same "no driver test tone
 # goes above this" global ceiling, one for the v2 program's swept sweeps, one
 # for this module's single-tone commissioning plans. A test pins the two
 # constants equal so they can't silently drift apart.
@@ -129,8 +130,8 @@ def protective_tweeter_highpass_frequency_hz(
     driver's own declared protection floor. Without that clamp the protection
     tracks the crossover downwards: a candidate crossing 1.3 octaves below a
     5000 Hz declared floor produced a 4000 Hz "protective" high-pass, i.e. the
-    guard followed the very error it exists to catch (issue #2491, observed on
-    jts.local 2026-08-14). The clamp only ever raises the corner, and only when
+    guard followed the very error it exists to catch (issue #2491). The clamp
+    only ever raises the corner, and only when
     a floor is declared; an undeclared driver keeps the unclamped multiple.
     """
 
@@ -148,13 +149,8 @@ def protective_tweeter_highpass_frequency_hz(
 
 
 def _finite_positive(value: Any) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(out) or out <= 0:
-        return None
-    return out
+    out = as_float(value)
+    return out if out is not None and math.isfinite(out) and out > 0 else None
 
 
 def _edge(

@@ -16,7 +16,7 @@ from typing import (
 )
 
 from jasper.active_speaker import baseline_profile
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
@@ -24,15 +24,10 @@ from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2.admission import (
-    ATTEMPT_INITIATOR_SPEAKER,
-    MAX_EXTRA_ATTEMPTS_PER_POSITION,
     SlotAttempts,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    CLOUD_GEOMETRY_RETRY_PROMPTS,
-    CLOUD_GEOMETRY_RETRY_RISE_CM,
     CLOUD_POSITION_PROMPTS,
-    GEOMETRY_RETRY_OFFSET_CM,
     LATERAL_POSE_PROMPTS,
     CloudPositionPrompt,
     _pose,
@@ -69,19 +64,14 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     branch_channels_for,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    NON_RETRIABLE_CODES,
-    REASON_CLOUD_GEOMETRY_LOCKED,
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
+    REASON_RETRIES_SPENT,
     PhaseVerdict,
     TakeVerdict,
-    reason_diagnosis,
     reason_message,
 )
-from jasper.active_speaker.crossover_v2.spatial import (
-    POSITION_ROLE_OFFAX,
-    LateralPose,
-)
+from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_OFFAX
 from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import (
@@ -246,7 +236,6 @@ class CrossoverV2Session:
         # CHECK's measured room floor, held for the MEASURE and lateral priors.
         # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
-        self._lateral_poses: list[LateralPose] = []
         try:
             validated_lateral_consumer(
                 lateral_consumer,
@@ -267,10 +256,6 @@ class CrossoverV2Session:
         self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
             verify_prompts
         )
-        # Geometry-locked retakes already spent, per group.
-        self._geometry_retries_used: dict[str, int] = {
-            phase: 0 for phase in self._journey.plan.group_indexes
-        }
         # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
             roles=self._roles,
@@ -310,22 +295,9 @@ class CrossoverV2Session:
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
-        self._last_reason: dict[str, str] = {}
-        # The capture evidence paired with each slot's last rejection; exhaustion reads
-        # this rather than the global pair, which can belong to a different position.
-        self._last_pilot_evidence: dict[str, tuple[str, bool | None, bool | None]] = {}
-        # Positions the flow GAVE UP on, so the group closes with what it has instead
-        # of the session dying at the mic.
-        self._group_unresolved: dict[str, dict[int, str]] = {
-            phase: {} for phase in self._journey.plan.group_indexes
-        }
         self._armed_capture: tuple[int, int] | None = None
         self._measure_predicted_sum: Any = measure_predicted_sum
         self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
-        self._last_failure_code: str | None = None
-        # The pilot evidence belonging to ``_last_failure_code``, ALWAYS written with
-        # it. ``None`` is "no pilot evidence for this failure".
-        self._last_failure_pilot_heard: bool | None = None
 
     @property
     def source_preset(self) -> Any:
@@ -445,11 +417,6 @@ class CrossoverV2Session:
         return tuple(self._attempt_history)
 
     @property
-    def session_phases(self) -> tuple[str, ...]:
-        """The ordered phases this session runs (its ``index_phase_map``'s)."""
-        return self._journey.plan.phases
-
-    @property
     def applied(self) -> bool:
         return self._journey.applied
 
@@ -461,50 +428,6 @@ class CrossoverV2Session:
     def measure_entry_baseline(self) -> "EntryBaseline | None":
         """#2291's pre-apply side of this round, or ``None``."""
         return self._measure_entry_baseline
-
-    @property
-    def last_failure_code(self) -> str | None:
-        """The most recent rejection's reason code (host persistence reads it)."""
-        return self._last_failure_code
-
-    @property
-    def last_failure_pilot_heard(self) -> bool | None:
-        """Pilot evidence for :attr:`last_failure_code` — the host persists it.
-
-        This getter checks nothing: the pairing that CAN diverge is with the code a
-        caller chooses to persist, and ``persist_conductor_state`` makes that check.
-        """
-        return self._last_failure_pilot_heard if self._last_failure_code else None
-
-    def _pilot_heard_for(
-        self,
-        code: str | None,
-        *,
-        slot: str | None = None,
-    ) -> bool | None:
-        """The pilot evidence recorded WITH ``code``, else ``None`` (#2085)."""
-        if slot is not None:
-            paired = self._last_pilot_evidence.get(slot)
-        elif self._last_failure_code is None:
-            paired = None
-        else:
-            paired = (
-                self._last_failure_code,
-                self._last_failure_pilot_heard,
-                None,
-            )
-        return _admission.pilot_heard_for(code, paired)
-
-    def _reflection_measured_for(
-        self,
-        code: str | None,
-        *,
-        slot: str,
-    ) -> bool | None:
-        """The gate discriminator recorded with ``code`` at ``slot``."""
-        return _admission.reflection_measured_for(
-            code, self._last_pilot_evidence.get(slot)
-        )
 
     @property
     def armed_capture(self) -> tuple[int, int] | None:
@@ -541,27 +464,6 @@ class CrossoverV2Session:
         if position < len(table):
             return table[position]
         return _pose(_plan._LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
-
-    def _prompt_shown_for(self, phase: str, index: int) -> CloudPositionPrompt:
-        """The prompt the operator ACTUALLY followed for the take in hand.
-
-        Not always the table entry: after a geometry-locked rejection the phone showed a
-        wider retry rung, and the sidecar's prompt is the durable statement of where.
-        """
-        slot = self._slot_of_index(index)
-        if self._last_reason.get(slot) == REASON_CLOUD_GEOMETRY_LOCKED:
-            used = max(self._geometry_retries_used.get(phase, 1), 1)
-            index_ = min(used - 1, len(CLOUD_GEOMETRY_RETRY_PROMPTS) - 1)
-            rung = CLOUD_GEOMETRY_RETRY_PROMPTS[index_]
-            rise_cm = CLOUD_GEOMETRY_RETRY_RISE_CM[index_]
-            return CloudPositionPrompt(
-                rung,
-                offset_cm=GEOMETRY_RETRY_OFFSET_CM,
-                role=POSITION_ROLE_OFFAX,
-                vertical_sign=1 if rise_cm else 0,
-                vertical_offset_cm=rise_cm,
-            )
-        return self._cloud_prompt(phase, index)
 
     def note_restore_observed(self) -> None:
         """The restore-observed host event — disarms the VERIFY hold (#2616)."""
@@ -647,46 +549,17 @@ class CrossoverV2Session:
         )
 
         decision = _admission.assess_begin(
-            ledger=None if executor_ledger is not None and attempt == 1 else ledger,
-            last_reason=self._last_reason.get(slot),
-            non_retriable=NON_RETRIABLE_CODES,
-            default_code=REASON_LOCATE_FAILED,
+            ledger=ledger,
+            default_code=REASON_RETRIES_SPENT,
             retry_charge=executor_ledger.charge
             if executor_ledger is not None
             else "operator",
         )
-        if decision.kind == _admission.REFUSE_NON_RETRIABLE:
-            spec = REASON_REGISTRY[decision.code]
-            self.capture_published_refusal = True
-            raise CaptureBeginRefused(
-                spec.code,
-                reason_message(
-                    spec.code,
-                    spec,
-                    pilot_heard=self._pilot_heard_for(decision.code, slot=slot),
-                ),
-            )
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
-            assert ledger is not None
-            code = decision.code
-            spec = REASON_REGISTRY[code]
-            diagnosis = reason_diagnosis(
-                code,
-                spec,
-                pilot_heard=self._pilot_heard_for(code, slot=slot),
-                reflection_measured=self._reflection_measured_for(
-                    code,
-                    slot=slot,
-                ),
-            )
             self.capture_published_refusal = True
             raise CaptureBeginRefused(
-                code,
-                self._extras_spent_message(
-                    ledger,
-                    diagnosis=diagnosis,
-                    outcome=self._spent_slot_outcome(phase, index),
-                ),
+                decision.code,
+                reason_message(decision.code, REASON_REGISTRY[decision.code]),
             )
         if decision.kind != _admission.ADMIT:
             log_event(
@@ -711,18 +584,10 @@ class CrossoverV2Session:
             if executor_ledger is not None
             else self._slot_attempts.setdefault(slot, SlotAttempts())
         )
-        if decision.spends_extra and executor_ledger is None:
-            try:
-                ledger.spend(
-                    "speaker"
-                    if decision.initiator == ATTEMPT_INITIATOR_SPEAKER
-                    else "operator"
-                )
-            except _admission.AttemptOverspendError as exc:
-                raise CrossoverV2FlowError(str(exc)) from exc
-        if executor_ledger is not None and attempt > 1:
-            ledger.spend(executor_ledger.charge)
-        ledger.admitted += 1
+        try:
+            ledger.admit()
+        except _admission.AttemptOverspendError as exc:
+            raise CrossoverV2FlowError(str(exc)) from exc
         self._armed_capture = (index, attempt)
         log_event(
             logger,
@@ -731,33 +596,10 @@ class CrossoverV2Session:
             phase=phase,
             index=index,
             attempt=attempt,
+            charge=ledger.charge,
             extra_used=ledger.extras_used,
-            extra_allowed=MAX_EXTRA_ATTEMPTS_PER_POSITION,
+            extra_allowed=ledger.retries_per_pose,
             extra_by_speaker=ledger.by_speaker,
-        )
-
-    @staticmethod
-    def _extras_spent_message(
-        ledger: SlotAttempts,
-        *,
-        diagnosis: str,
-        outcome: str,
-    ) -> str:
-        """The household sentence for a position whose extras are gone."""
-        return _admission.extras_spent_message(
-            ledger,
-            diagnosis=diagnosis,
-            outcome=outcome,
-        )
-
-    def _spent_slot_outcome(self, phase: str, index: int) -> str:
-        """The state after an exhausted slot, derived from session state."""
-        is_group = self._journey.plan.is_group(phase)
-        return _admission.spent_slot_outcome(
-            is_group=is_group,
-            index=index,
-            unresolved=self._group_unresolved[phase] if is_group else (),
-            retained=self._retained_group_indexes(phase) if is_group else (),
         )
 
     def program_for_phase(self, phase: str) -> ExcitationProgram:
@@ -783,7 +625,7 @@ class CrossoverV2Session:
 
     def _capture_purpose(self, phase: str, index: int) -> str | None:
         prompt = (
-            self._prompt_shown_for(phase, index)
+            self._cloud_prompt(phase, index)
             if phase in GROUP_PHASES
             else self._lateral_prompts[0]
             if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts
@@ -804,12 +646,12 @@ class CrossoverV2Session:
             None,
         )
         if phase in GROUP_PHASES:
-            prompt = self._prompt_shown_for(phase, index)
+            prompt = self._cloud_prompt(phase, index)
             position, vertical = (
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver)
+            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver, distance_m=prompt.distance_m)
         return replace(
             self._geometry,
             gate_exempt_reason=exemption,
@@ -844,12 +686,6 @@ class CrossoverV2Session:
         self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
         return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
-
-    def _retained_group_indexes(self, phase: str) -> set[int]:
-        """Which indexes of one group already hold evidence."""
-        if phase == PHASE_LATERAL:
-            return {pose.index for pose in self._lateral_poses}
-        return set()
 
     def rearm_measure_after_transient(
         self, verdict: PhaseVerdict | TakeVerdict

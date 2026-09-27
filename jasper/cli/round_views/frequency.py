@@ -15,8 +15,7 @@ import argparse
 import json
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2.round_frequency_view import frequency_run
-from jasper.active_speaker.frequency_view import SCHEMA, frequency_run_from_view
+from jasper.active_speaker.frequency_view import frequency_run_from_view
 from jasper.active_speaker.frequency_plot import DEFAULT_REF_BAND_HZ
 from jasper.active_speaker.measurement_archive import (
     ArchivedMeasurement,
@@ -25,14 +24,15 @@ from jasper.active_speaker.measurement_archive import (
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.round_view_builders import analyzed_frequency_run, frequency_payload, frequency_image
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
+from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
     _ROUND_TOOL_ERRORS,
-    _load_round,
     _write,
     answer,
+    refused_by_name,
     subject,
 )
 
@@ -68,8 +68,9 @@ def _frequency_source(
         document = json.loads(path.read_text())
         if not isinstance(document, dict):
             raise ValueError(f"{path}: expected one JSON object")
-        if document.get("schema") == SCHEMA:
-            return frequency_run_from_view(document)
+        view = frequency_run_from_view(document)
+        if view is not None:
+            return view
         run = frequency_run_from_documents(
             run_id=path.stem, documents=(document,),
         )
@@ -84,13 +85,10 @@ def _frequency_source(
             state=str(info.get("state") or "") or None,
         ))
     else:
-        banked = _load_round(path)
-        direct = load_measurement(ArchivedMeasurement(
-            id=path.name, bundle_dir=banked.session_dir, started_at=None, state=None,
+        run = load_measurement(ArchivedMeasurement(
+            id=path.name, bundle_dir=round_inputs(path).session_dir, started_at=None, state=None,
         ))
-        run = direct if any(curve.details.get("phase") == "lateral" and curve.details.get("candidate_id")
-                            for curve in direct.series) else frequency_run(banked.packet)
-    if not run.series:
+    if not run.series and "curves" not in run.metadata:
         raise ValueError(f"{path}: no usable frequency-response curves")
     return run
 
@@ -111,6 +109,9 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
         if args.source_b
         else None
     )
+    for run in (run_a, run_b):
+        if run is not None and (unbanked := run.metadata.get("curves")):
+            return refused_by_name(unbanked["reason"], EVIDENCE_REASONS[unbanked["reason"]], code=EXIT_UNREADABLE)
     payload, series = frequency_payload(run_a, run_b, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
     schema = ARTIFACT_BY_VIEW[args.command].schema
     written = _write(payload, args.out, _frequency_default_out(source_a), schema=schema)
@@ -155,8 +156,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "source_b", nargs="?", metavar="<source-b>",
         help="optional banked round, session bundle, or JSON document for B",
     )
-    frequency.add_argument("--analyze-wavs", action="store_true", help="analyze captured Room/bass WAVs on this computer (laptop recommended)")
-    frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs")
+    frequency.add_argument("--analyze-wavs", action="store_true", help="analyze Room/bass takes on this computer: the curves a take banked, else a decode of its WAV (laptop recommended)")
+    frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs; curves a take banked keep the calibration its capture applied")
     frequency.add_argument("--reference-db", type=float, help="display reference from a same-level full-band baseline; requires --analyze-wavs")
     frequency.add_argument("--out", default=None, help="write the result here")
     add_image_args(frequency)

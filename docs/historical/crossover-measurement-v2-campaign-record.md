@@ -2044,7 +2044,7 @@ survives the carve-out. `carve_outs` is the largest key on a `/state` cloud
 entry (3162 of 4056 JSON bytes on the S0 ten-position cloud, measured
 2026-07-27) because the copy strings ARE the disclosure; that cost is stated in
 `_compact_cloud_status`'s docstring and pinned by
-[`tests/test_crossover_v2_cloud_pipeline.py`](../../tests/test_crossover_v2_cloud_pipeline.py),
+`tests/test_crossover_v2_cloud_pipeline.py`,
 which also pins the copy discipline (no hardware nouns; the `position_invariant`
 wording names travels-with-the-speaker OR a fixed path, never one of the two).
 
@@ -2130,9 +2130,9 @@ stale, mirroring `_geometry_guidance_copy`'s own "silent unless actionable"
 rule). Geometry's own "spread the mic further" guidance
 (`geometry_guidance`) renders as a plain caption; `thin_evidence` softens
 the copy server-side, so the frontend never branches on it. Contract tests:
-[`tests/test_crossover_v2_cloud_visualization.py`](../../tests/test_crossover_v2_cloud_visualization.py)
+`tests/test_crossover_v2_cloud_visualization.py`
 (page-shell ids, hardware-noun discipline over this PR's own authored copy)
-and [`tests/js/crossover_cloud_callouts_test.mjs`](../../tests/js/crossover_cloud_callouts_test.mjs)
+and `tests/js/crossover_cloud_callouts_test.mjs`
 (rendered-HTML pins for the callout/provenance/geometry text, including the
 `position_invariant` cannot-classify phrasing, verbatim). The chart's own
 pixel rendering is verified on-device only — CI cannot see pixels — and is

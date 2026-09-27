@@ -45,7 +45,7 @@ REMOTE_SRC=/var/lib/jasper/wake-events
 # Step 1: consistent DB snapshot via Python's sqlite3.backup (no
 # external sqlite3 CLI required on the Pi). Writes to a tmpfile owned
 # by the user we sshed in as so rsync can pull it without sudo.
-ssh "${PI_USER}@${PI_HOST}" "sudo /opt/jasper/.venv/bin/python -c \"
+ssh_remote "sudo /opt/jasper/.venv/bin/python -c \"
 import sqlite3
 src = sqlite3.connect('${REMOTE_SRC}/wake-events.sqlite3')
 dst = sqlite3.connect('/tmp/wake-events.fetch.sqlite3')
@@ -58,7 +58,7 @@ dst.close()
 # The wake-events dir is mode 0755 but the parent /var/lib/jasper is
 # 0750 root:root, so we can't rsync directly without sudo. Symlinks
 # into /tmp work for both files.
-ssh "${PI_USER}@${PI_HOST}" "
+ssh_remote "
 sudo rm -rf /tmp/wake-events-fetch
 sudo mkdir -p /tmp/wake-events-fetch
 # Glob expansion must run as root because /var/lib/jasper/ is mode
@@ -145,7 +145,7 @@ PY
 ln -snf "${TS}" "${REPO_ROOT}/wake-events/latest"
 
 # Step 6: clean up the Pi-side staging
-ssh "${PI_USER}@${PI_HOST}" "
+ssh_remote "
 sudo rm -f /tmp/wake-events.fetch.sqlite3
 sudo rm -rf /tmp/wake-events-fetch
 "

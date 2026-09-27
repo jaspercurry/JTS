@@ -43,7 +43,7 @@ from jasper.audio_measurement.bundles import (
     record_artifact,
     write_json_artifact,
 )
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission.excitation_artifacts import (
     ensure_directory_mode,
     AdmissionArtifactError,
     AdmissionAuthority,
@@ -52,7 +52,7 @@ from jasper.audio_measurement.excitation_artifacts import (
 )
 from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.output_topology import OutputTopology, canonical_fingerprint
 from jasper.paths import resolve_state_path
 
 from . import measurement as _measurement
@@ -233,7 +233,7 @@ def _calibration_sha256(calibration_id: str) -> str | None:
     if not calibration_id:
         return None
     try:
-        from jasper.audio_measurement.calibration import load_calibration_record
+        from jasper.audio_measurement.calibration import load_calibration_record  # lazy: keeps NumPy out of jasper-web
 
         record = load_calibration_record(calibration_id)
     except (FileNotFoundError, ValueError, OSError, KeyError, TypeError):
@@ -392,10 +392,10 @@ def open_bundle(
     try:
         topology_fingerprints = {
             "topology_id": topology.topology_id,
-            "topology_fingerprint": _measurement._fingerprint(
+            "topology_fingerprint": canonical_fingerprint(
                 {
                     "topology_id": topology.topology_id,
-                    "hardware": _measurement._hardware_payload(topology),
+                    "hardware": topology.hardware.to_dict(),
                 }
             ),
             "output_assignments": [

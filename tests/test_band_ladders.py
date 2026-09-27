@@ -33,7 +33,6 @@ from tests.test_crossover_v2_round_frequency_view import (
     bass_fit_pairs as bass_fit_pairs,
     summed_capture_bundle as summed_capture_bundle,
 )
-from tests.test_cli_close_reference import _compare_argv, rounds as rounds
 from tests.test_crossover_v2_gate_sweep import direct_only_report as direct_only_report
 from tests.test_flat_spec_views import _position
 from tests.test_round_views_rear import _branch_diagnostic, _pair_curves
@@ -86,7 +85,6 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
     ("log_pooled", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("directivity", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("gate_sweep", "speaker_spec", "bands", ("band_hz",)),
-    ("close_reference", "speaker_spec", "bands", ("nominal_band_hz",)),
     ("ambient", "snr", "bands", ("band_hz",)),
     ("ambient", "crossover_snr", "bands", ("band_hz",)),
     ("snr_verdict", "snr", "bands", ("band_hz",)),
@@ -156,14 +154,6 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         root = request.getfixturevalue("gate_sweep_round")
         assert main(["sweep", "--scope", "round", str(root), "--rungs-ms", "5", "20"]) == 0
         payload = json.loads(capsys.readouterr().out)
-    elif builder == "close_reference":
-        out = tmp_path / "close.json"
-        assert main(_compare_argv(request.getfixturevalue("rounds"), out)) == 0
-        answer = json.loads(capsys.readouterr().out)
-        assert answer["ladder"] == ladder
-        windows = json.loads(out.read_text())["close_reference"]["windows"]
-        assert all(window["ladder"] == ladder for window in windows)
-        payload = windows[0]
     elif builder in ("replay", "bass_replay"):
         manifests = {}
         for stage in ("baseline", "full_boost", "delivered"):
@@ -174,7 +164,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             manifests[stage] = {
                 "schema": "jts_dsp_replay/1", "render": {"output_sha256": sha256_file(raw)},
                 "sample_rate_hz": 48000, "channels": 1, "graph_sha256": stage,
-                "stimulus_sha256": "stimulus", "main_db": -20, "bass_reference_db": -20,
+                "stimulus_sha256": "stimulus", "main_db": -20,
             }
         manifest = manifests.pop("delivered")
         manifest["bass_attribution"] = {"stages": manifests, "channels": [0], "descriptor": {}, "scope": "output"}

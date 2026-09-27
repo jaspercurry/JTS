@@ -56,7 +56,7 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     capture's ``setup.calibration`` reference becomes a stored
     ``CalibrationRecord``. Returns the record, or ``None`` when the capture
     declared no calibration or its reference names a DIFFERENT mic than the
-    one this capture reports (the 2026-07-20 incident). ``device`` is this
+    one this capture reports. ``device`` is this
     capture's realized input device (``CaptureAnswer.device``) — threaded
     through so that mismatch is caught where the calibration is resolved for
     THIS capture, not applied blind to whichever mic actually recorded.
@@ -402,7 +402,8 @@ def bind_production_play(
         before_play=_before_play, graph_yaml=session_graph.installed_graph_yaml,
         level_reference_yaml=session_graph.level_reference_yaml,
         roles=roles,
-        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate_id=spec.candidate_id),
+        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(
+            scope=spec.graph_scope, candidate_id=spec.candidate_id, cleared_layers=spec.cleared_layers),
     )
 
     return ProductionPlay(graph=session_graph, compose=compose)

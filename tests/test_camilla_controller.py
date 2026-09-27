@@ -33,6 +33,7 @@ from jasper.dsp_apply import (
     ValidationStatus,
     apply_dsp_config,
 )
+from jasper.volume_latch import duck_release_target_db
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records
@@ -616,14 +617,34 @@ async def test_every_ducking_swap_releases_against_the_canonical_target(
         assert fake.volume.values[-1] == pytest.approx(expected_db)
 
 
+@pytest.mark.parametrize(
+    "reference,current,entry,expected",
+    [
+        # Readable: the holder gives back its own 40 dB (-60 -> -20) and
+        # nothing else, never above the reference; the entry level is moot.
+        (-10.0, -60.0, -50.0, -20.0),
+        (-30.0, -60.0, -50.0, -30.0),
+        # Unreadable: the reference, never above the entry level.
+        (-10.0, None, -25.0, -25.0),
+        (-30.0, None, -25.0, -30.0),
+    ],
+)
+def test_the_duck_release_gives_back_its_own_depth_and_no_more(
+    reference, current, entry, expected,
+):
+    assert duck_release_target_db(
+        reference_db=reference, current_db=current, depth_db=40.0,
+        entry_db=entry,
+    ) == pytest.approx(expected)
+
+
 async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     tmp_path: Path,
 ) -> None:
     """Guards the clamp boundary only. A fader within GRAPH_SWAP_DUCK_DB of
     MIN_MAIN_VOLUME_DB cannot be ducked further without clamping, so the swap
     runs without one. It is unreachable from the product fader range — 0-1%%
-    listening is around -60 dB and the duck still applies there; the deepest a
-    stacked cue plus swap duck reaches is about -110 dB."""
+    listening is around -60 dB and the duck still applies there."""
     fake = _FakeClient()
     fake.volume.values.append(camilla_module.MIN_MAIN_VOLUME_DB + 1.0)
     fake.ops.clear()

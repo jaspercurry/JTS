@@ -65,7 +65,7 @@ def build_tuning_handoff_binding(
 _PROGRAM_PROMPT_LINES = {
     "rear": (
         "Rear previews read the pair model: bank it at the mark with "
-        f"sudo {_BIN}/jasper-round run --program rear --poses rear/pair_mark --wait, "
+        f"sudo {_BIN}/jasper-round run --program rear/pair --layout speaker_mark --wait, "
         f"then preview with sudo {_BIN}/jasper-crossover-prescriber judge --preview <doc> --round <pair round>.",
         "Compose the rear-muted copy and the variants as ordinary "
         f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
@@ -75,8 +75,8 @@ _PROGRAM_PROMPT_LINES = {
         "a person any bearing.",
     ),
     "bass": (
-        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --poses bass/nearfield "
-        "--mover human (microphone 3 cm from the woofer).",
+        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --layout seat_express "
+        "--mover human (microphone at the seat).",
     ),
 }
 

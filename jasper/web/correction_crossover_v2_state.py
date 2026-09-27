@@ -14,10 +14,14 @@ import logging
 import math
 import threading
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
-from jasper.atomic_io import atomic_write_text
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.active_speaker.crossover_v2.coordinator import (
+    ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
+)
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE, RESULT_KEEP_PREVIOUS
 from jasper.active_speaker import driver_base_trim
@@ -32,7 +36,25 @@ STATE_SCHEMA_VERSION = 1
 STATE_KIND = "jts_crossover_v2_flow_state"
 
 _state_lock = threading.RLock()
+# ``depth``: how many v2_state_locked() holds this thread is inside.
+_door = threading.local()
 _state_path_override: Path | None = None
+
+#: How long a request waits for the other web process to release the state.
+#: Sized like the DSP writer lock (``jasper.dsp_apply``).
+STATE_LOCK_TIMEOUT_S = 10.0
+#: The wait for a write past a commit point (a graph already live, a session
+#: already over): losing that write costs the way back, and a live holder
+#: writes in milliseconds. It stays well under the apply route's 60 s
+#: ``run_async`` budget, which it runs inside.
+POST_COMMIT_STATE_LOCK_TIMEOUT_S = 20.0
+
+
+class V2StateLockTimeout(TimeoutError):
+    """Another process held the durable v2 state past :data:`STATE_LOCK_TIMEOUT_S`."""
+
+    code = "crossover_v2_state_busy"
+
 
 # --------------------------------------------------------------------------- #
 # durable state
@@ -123,8 +145,43 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
         )
 
 
-def _persist_execution_result(session_id: str, **result: Any) -> None:
-    with _state_lock:
+@contextmanager
+def v2_state_locked(*, timeout_s: float | None = None) -> Iterator[None]:
+    """Hold the durable v2 state across a read-modify-write.
+
+    Both web processes write the state, so a thread's outermost hold takes
+    the sidecar flock first, waiting ``timeout_s`` (default
+    :data:`STATE_LOCK_TIMEOUT_S`) before raising :class:`V2StateLockTimeout`,
+    and only then the in-process lock, which it never holds while waiting.
+    A nested hold re-enters without taking the flock again.
+    """
+    depth = getattr(_door, "depth", 0)
+    timeout = STATE_LOCK_TIMEOUT_S if timeout_s is None else timeout_s
+    with ExitStack() as held:
+        if not depth:
+            path = _state_path()
+            started = time.monotonic()
+            try:
+                held.enter_context(advisory_file_lock(
+                    path.with_name(f".{path.name}.lock"), timeout_sec=timeout,
+                ))
+            except TimeoutError:
+                log_event(
+                    logger, "correction.crossover_v2_state_lock", level=logging.WARNING,
+                    result="timeout", wait_ms=round((time.monotonic() - started) * 1000),
+                    timeout_ms=round(timeout * 1000),
+                )
+                raise V2StateLockTimeout("another process holds the crossover state") from None
+        held.enter_context(_state_lock)
+        _door.depth = depth + 1
+        try:
+            yield
+        finally:
+            _door.depth = depth
+
+
+def persist_execution_result(session_id: str, **result: Any) -> None:
+    with v2_state_locked(timeout_s=POST_COMMIT_STATE_LOCK_TIMEOUT_S):
         state = load_v2_state()
         if not state or state.get("session_id") != session_id:
             return
@@ -146,7 +203,7 @@ def clear_v2_state() -> None:
             )
 
 
-def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
+def attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
     """The store-owned floor and current model-error count for one conductor.
 
     The host performs the I/O at conductor construction; the conductor
@@ -159,36 +216,35 @@ def _attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
 
 def reset_v2_journey_state() -> None:
     """Clear the journey; keep the playing graph's proof and reset disclosure."""
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
-    )
-
-    state = load_v2_state()
-    if state is None:
-        return
-    epoch = round_ordinal_epoch_from_state(state)
-    applied = bool(state.get("applied"))
-    if not applied and not epoch:
-        clear_v2_state()
-        return
-    receipt = state.get("round_receipt")
-    if applied and receipt is not None:
-        epoch += 1
-        ordinal = receipt.get("round_ordinal") if isinstance(receipt, Mapping) else None
-        log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
-                  round_ordinal_epoch=epoch,
-                  reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
-    clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
-             "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
-             "verify_priors": None, "evidence": None,
-             ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
-    if applied:
-        for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
-                    "accepted_sound_revision", "accepted_sound_declaration_change", "accepted_sound_candidate_fingerprint"):
-            clean[key] = state.get(key)
-    save_v2_state(clean)
-    log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
-              else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
+    # One hold across the read and the write: an apply between them would
+    # otherwise lose the way-back pointer it just wrote durably.
+    with v2_state_locked():
+        state = load_v2_state()
+        if state is None:
+            return
+        epoch = round_ordinal_epoch_from_state(state)
+        applied = bool(state.get("applied"))
+        if not applied and not epoch:
+            clear_v2_state()
+            return
+        receipt = state.get("round_receipt")
+        if applied and receipt is not None:
+            epoch += 1
+            ordinal = receipt.get("round_ordinal") if isinstance(receipt, Mapping) else None
+            log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
+                      round_ordinal_epoch=epoch,
+                      reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
+        clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
+                 "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
+                 "verify_priors": None, "evidence": None,
+                 ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
+        if applied:
+            for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
+                        "accepted_sound_revision", "accepted_sound_declaration_change", "accepted_sound_candidate_fingerprint"):
+                clean[key] = state.get(key)
+        save_v2_state(clean)
+        log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
+                  else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
 
 
 def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
@@ -210,7 +266,7 @@ def observe_apply_success(
         state["candidate"] = dict(selected_candidate)
     state["applied"] = True
     state["previous_applied_profile"] = dict(previous_applied_profile) if previous_applied_profile else None
-    # SF1 (adversarial review, 2026-07-20): do NOT blindly clear an existing
+    # Do NOT blindly clear an existing
     # failure code. In the ordinary happy path it is already None (MEASURE's
     # own accept clears it before the conductor ever triggers auto-apply) —
     # but a terminal session-death code (a Stop, a capture timeout) can
@@ -279,7 +335,7 @@ def review_declined(state: Mapping[str, Any] | None) -> bool:
     return str(decision.get("candidate_fingerprint") or "") == current
 
 
-def _resolve_measurement_level_trims(
+def resolve_measurement_level_trims(
     spec: Any, *, preset: Any, topology: Any,
 ) -> tuple[dict[str, float], str]:
     """This box's own per-driver level match, and which evidence answered.
@@ -324,6 +380,7 @@ def persist_conductor_state(
     evidence: Mapping[str, Any] | None = None,
     failure_refusals: Sequence[str] = (),
     failure_detail: str = "",
+    failure_roles: Sequence[str] = (),
 ) -> None:
     """Write the conductor's durable snapshot + host-observed failure state.
 
@@ -345,27 +402,28 @@ def persist_conductor_state(
 
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from .correction_crossover_v2_grade import post_apply_grade  # lazy: its projections' import cost
-
-    prior = load_v2_state() or {}
-    built = build_conductor_state(
-        conductor, prior,
-        failure_code=failure_code,
-        evidence=evidence,
-        failure_refusals=failure_refusals,
-        failure_detail=failure_detail,
-    )
-    session_id = built.state["session_id"]
-    applied_profile = load_applied_baseline_profile_state()
-    # Graded BEFORE the write: this is the grade the household is currently looking at.
-    prior_grade = post_apply_grade(prior, applied_profile=applied_profile)
-    prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
     from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
-    with _state_lock:
-        current = load_v2_state() or {}
-        if current.get("session_id") == session_id and current.get("execution"):
-            built.state["execution"] = current["execution"]
+    # One hold from reading the state being replaced to writing its successor:
+    # a write between them (an apply's way-back pointer) would otherwise be lost.
+    with v2_state_locked():
+        prior = load_v2_state() or {}
+        built = build_conductor_state(
+            conductor, prior,
+            failure_code=failure_code,
+            evidence=evidence,
+            failure_refusals=failure_refusals,
+            failure_detail=failure_detail,
+            failure_roles=failure_roles,
+        )
+        session_id = built.state["session_id"]
+        applied_profile = load_applied_baseline_profile_state()
+        # Graded BEFORE the write: this is the grade the household is currently looking at.
+        prior_grade = post_apply_grade(prior, applied_profile=applied_profile)
+        prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
+        if prior.get("session_id") == session_id and prior.get("execution"):
+            built.state["execution"] = prior["execution"]
         save_v2_state(built.state, durable=built.durable)
         bundle_id = (built.state.get("evidence") or {}).get("bundle_session_id")
         if isinstance(bundle_id, str) and Path(bundle_id).name == bundle_id:
@@ -399,14 +457,15 @@ def persist_conductor_state(
         )
 
 
-def _persist_terminal_failure(
+def persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (), detail: str = "",
+    failed_roles: Sequence[str] = (),
 ) -> bool:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
     verify priors survive so ``/v2/verify`` can re-arm.
 
-    SF2 (adversarial review, 2026-07-20): ``REASON_APPLY_FAILED`` is exempted
+    ``REASON_APPLY_FAILED`` is exempted
     from the pre-apply evidence reset. The §5.6 rationale for wiping
     ``accepted_phases``/``gain_plan_db`` is that a DEAD session makes the mic
     position unverifiable — but an auto-apply that came back blocked or
@@ -414,47 +473,47 @@ def _persist_terminal_failure(
     still exactly as good as it was. Keeping MEASURE accepted here is what
     lets ``crossover_v2_phase`` resolve to ``PHASE_APPLYING`` (not
     ``PHASE_CHECK``) so the envelope's apply-step failure screen — and the
-    specific blocked-issue nudge layered onto it — can actually render;
-    before this fix the reset always won, so that nudge was unreachable in
-    production (only reachable by injecting the phase directly in a test).
+    specific blocked-issue nudge layered onto it — can actually render.
     """
     from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
 
-    prior = load_v2_state()
-    session_id = str(getattr(conductor, "session_id", ""))
-    prior_verify = (prior or {}).get("verify")
-    prior_outcome = str(
-        (prior_verify or {}).get("outcome")
-        if isinstance(prior_verify, Mapping)
-        else ""
-    )
-    if (
-        isinstance(prior_verify, Mapping)
-        and prior_outcome in {"pass", "fail", "inconclusive"}
-        and (prior or {}).get("session_id") == session_id
-    ):
-        _persist_execution_result(session_id, cleanup_fault_code=code)
-        # consume() persists VERIFY before publishing capture_result. Later
-        # trouble is a cleanup fault, not a commissioning verdict.
-        log_event(
-            logger,
-            "correction.crossover_v2_terminal_verdict_preserved",
-            level=logging.WARNING,
-            session_id=session_id,
-            outcome=prior_outcome,
-            verdict_code=prior_verify.get("code") or "",
-            cleanup_fault_code=code,
+    with v2_state_locked(timeout_s=POST_COMMIT_STATE_LOCK_TIMEOUT_S):
+        prior = load_v2_state()
+        session_id = str(getattr(conductor, "session_id", ""))
+        prior_verify = (prior or {}).get("verify")
+        prior_outcome = str(
+            (prior_verify or {}).get("outcome")
+            if isinstance(prior_verify, Mapping)
+            else ""
         )
-        return True
+        if (
+            isinstance(prior_verify, Mapping)
+            and prior_outcome in {"pass", "fail", "inconclusive"}
+            and (prior or {}).get("session_id") == session_id
+        ):
+            persist_execution_result(session_id, cleanup_fault_code=code)
+            # consume() persists VERIFY before publishing capture_result. Later
+            # trouble is a cleanup fault, not a commissioning verdict.
+            log_event(
+                logger,
+                "correction.crossover_v2_terminal_verdict_preserved",
+                level=logging.WARNING,
+                session_id=session_id,
+                outcome=prior_outcome,
+                verdict_code=prior_verify.get("code") or "",
+                cleanup_fault_code=code,
+            )
+            return True
 
-    persist_conductor_state(
-        conductor, failure_code=code, failure_refusals=refusals, failure_detail=detail,
-    )
-    state = load_v2_state()
-    if state is None:
+        persist_conductor_state(
+            conductor, failure_code=code, failure_refusals=refusals, failure_detail=detail,
+            failure_roles=failed_roles,
+        )
+        state = load_v2_state()
+        if state is None:
+            return False
+        if not state.get("applied") and code != REASON_APPLY_FAILED:
+            state["accepted_phases"] = []
+            state["gain_plan_db"] = None
+        save_v2_state(state)
         return False
-    if not state.get("applied") and code != REASON_APPLY_FAILED:
-        state["accepted_phases"] = []
-        state["gain_plan_db"] = None
-    save_v2_state(state)
-    return False

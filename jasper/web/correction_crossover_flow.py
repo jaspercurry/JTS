@@ -26,7 +26,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     )
     body = f"""
 {header}
-<main class="page correction-measurement crossover-page" data-required-sr="48000">
+<main class="page correction-measurement" data-required-sr="48000">
   <section class="info-card info-card--accent">
     <p class="eyebrow">Speaker layer</p>
     <h2 class="section__title">Calibrate the active crossover</h2>
@@ -44,26 +44,6 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
     <div id="crossover-nudges" aria-live="polite"></div>
   </section>
 
-  <section id="crossover-cloud" class="info-card" aria-label="Before and after measurement" hidden>
-    <p id="crossover-cloud-eyebrow" class="eyebrow">Before and after</p>
-    <h2 id="crossover-cloud-title" class="section__title">What the microphone heard</h2>
-    <p id="crossover-cloud-basis" class="form-hint" hidden></p>
-    <p id="crossover-cloud-provenance" class="form-hint"></p>
-    <div class="crossover-chart-wrap">
-      <canvas id="crossover-cloud-chart" aria-label="Frequency response before and after correction"></canvas>
-    </div>
-    <ul class="crossover-chart-legend">
-      <li id="crossover-chart-legend-measure"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--measure"></span>Before correction</li>
-      <li id="crossover-chart-legend-verify"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--verify"></span>After correction</li>
-      <li id="crossover-chart-legend-predicted" hidden><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--predicted"></span>Expected after correction (not measured)</li>
-      <li id="crossover-chart-legend-corridor"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--corridor"></span>Spec tolerance</li>
-      <li id="crossover-chart-legend-excluded"><span class="crossover-chart-legend__swatch crossover-chart-legend__swatch--excluded"></span>Untrusted</li>
-    </ul>
-    <p id="crossover-cloud-pending" class="form-hint" hidden></p>
-    <p id="crossover-cloud-geometry" class="form-hint" hidden></p>
-    <div id="crossover-cloud-callouts"></div>
-  </section>
-
   <section class="info-card" aria-live="polite">
     <dl class="deflist"><dt>Round</dt><dd id="crossover-round-lines"></dd></dl>
     <div id="crossover-round-choice" hidden>
@@ -72,7 +52,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       <div id="crossover-round-start" class="form-actions"></div>
     </div>
     <div id="crossover-walk" class="capture-walk" hidden>
-      <!-- Page-local metric/imperial preference (#3629, #1941 Q2). Every
+      <!-- Page-local metric/imperial preference (#3629, #1941). Every
            prompt below already carries both units in one string
            (capture_plan.py's format_position_distance); the toggle only
            reorders which one leads -- see units.js. -->
@@ -81,7 +61,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
         <button type="button" class="segmented__btn" id="crossover-units-metric" aria-pressed="false">cm</button>
       </div>
       <p id="crossover-walk-progress" class="eyebrow"></p>
-      <!-- The per-position picture (#3629, #1941 R11): speaker, the mark,
+      <!-- The per-position picture (#3629, #1941): speaker, the mark,
            and an arrow to this prompt's spot -- see position-diagram.js.
            Hidden whenever the prompt carries no bearing to draw. -->
       <div id="crossover-walk-diagram" class="position-diagram-wrap" hidden></div>

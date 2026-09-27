@@ -46,14 +46,14 @@ FEATURE_MIN_DEPARTURE_DB = 0.10
 
 #: Two extrema closer together than half a feature band are one feature, not
 #: two. Deliberately NOT
-#: :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`: the
-#: 2026-08-19 record has peak/dip pairs 0.143 and 0.157 octaves apart,
+#: :data:`~.feature_classification.VERDICT_MATCH_TOLERANCE_OCTAVES`: a
+#: reference record has peak/dip pairs 0.143 and 0.157 octaves apart,
 #: inside that tolerance, and merging them would delete four genuine
 #: features.
 FEATURE_MIN_SEPARATION_OCT = FEATURE_HALF_OCT
 
 
-#: Bounded work per round. The 2026-08-19 record found nine; a response that
+#: Bounded work per round. A reference record found nine; a response that
 #: offers more than this is reporting texture rather than features. Each
 #: feature costs two full excess-group-delay runs in the C4 control pair,
 #: so this is the instrument's CPU bound as well as its honesty bound.
@@ -214,7 +214,7 @@ def _compose(
     )
     resolved_gates = gate["resolved_gates"]
     # The three words are quality_model's shared TrustLevel — `medium` spelled in
-    # full. An artifact banked before 2026-08-22 carries `med` and is
+    # full. An artifact using the legacy spelling carries `med` and is
     # normalised on the way back in by
     # feature_classification.read_feature_verdicts.
     confidence: TrustLevel

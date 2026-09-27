@@ -322,14 +322,23 @@ def test_apply_routes_save_clear_removes_existing_key():
     assert new == {}
 
 
-def test_apply_save_subway_direction_both_clears_default():
-    """'Both' means 'ask me each time' — drop the default so the model
-    prompts. Leaving the old value in would silently keep it active."""
-    current = {"JASPER_SUBWAY_DEFAULT_DIRECTION": "uptown"}
-    form = {"nyc_subway_direction": "both"}
+@pytest.mark.parametrize(
+    'key,saved,form',
+    [
+        # A marker key present with its "cleared" value (both/unchecked/
+        # empty) means the user explicitly deselected the preference, so
+        # the saved value must be dropped rather than left silently active.
+        ('JASPER_SUBWAY_DEFAULT_DIRECTION', 'uptown', {'nyc_subway_direction': 'both'}),
+        ('JASPER_CITIBIKE_EBIKE_ONLY', '1', {'citibike_stations': 'abc|9 Av'}),
+        ('JASPER_CITIBIKE_STATIONS', 'abc|9 Av,def|Atlantic', {'citibike_stations': ''}),
+    ],
+    ids=['direction-both', 'ebike-unchecked', 'stations-empty'],
+)
+def test_apply_save_clears_deselected_preference(key, saved, form):
+    current = {key: saved}
     new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
     assert err is None
-    assert "JASPER_SUBWAY_DEFAULT_DIRECTION" not in new
+    assert key not in new
 
 
 def test_apply_save_empty_picks_preserve_existing():
@@ -464,26 +473,6 @@ def test_apply_save_citibike_ebike_only_checkbox_persists():
     assert new["JASPER_CITIBIKE_EBIKE_ONLY"] == "1"
 
 
-def test_apply_save_citibike_ebike_only_unchecked_drops_flag():
-    """Marker present, checkbox absent → flag was unchecked. Drop
-    the env var so the daemon sees default-False."""
-    current = {"JASPER_CITIBIKE_EBIKE_ONLY": "1"}
-    form = {"citibike_stations": "abc|9 Av"}  # no ebike_only key
-    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
-    assert err is None
-    assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
-
-
-def test_apply_save_citibike_empty_stations_drops_saved():
-    """Marker present but value empty → user unchecked every station.
-    Drop the saved list so the tool disables on next daemon restart."""
-    current = {"JASPER_CITIBIKE_STATIONS": "abc|9 Av,def|Atlantic"}
-    form = {"citibike_stations": ""}
-    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
-    assert err is None
-    assert "JASPER_CITIBIKE_STATIONS" not in new
-
-
 def test_apply_save_citibike_does_not_disturb_other_providers():
     """Citi-Bike-only edit must not wipe subway / bus settings."""
     current = {
@@ -568,7 +557,7 @@ def test_index_html_with_coords_shows_citibike_card(monkeypatch):
     """Citi Bike card renders alongside the subway and bus cards when
     coords are inside the bbox. Stub `fetch_feed` so the render
     doesn't make a real GBFS HTTP call."""
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
 
     info = {"data": {"stations": [
         {"station_id": "abc", "name": "9 Av & 41 St",
@@ -605,7 +594,7 @@ def test_index_html_with_coords_shows_citibike_card(monkeypatch):
 
 
 def test_index_html_with_coords_renders_ebike_only_checked_when_set(monkeypatch):
-    import jasper.citibike as citibike_mod
+    import jasper.transit.citibike as citibike_mod
     monkeypatch.setattr(
         citibike_mod, "fetch_feed",
         lambda url, ttl, **kw: {"data": {"stations": []}},
@@ -850,8 +839,8 @@ def test_transit_env_file_mode_is_0640(tmp_path: Path):
 
 
 def test_system_instruction_includes_transit_nudge_when_unconfigured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", transit_configured=False)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", transit_configured=False)
     assert "jts.local/assistant/transit/" in prompt
     # Conditional framing per CLAUDE.md guidance — "if the user asks…"
     # rather than absolute "never".
@@ -859,14 +848,14 @@ def test_system_instruction_includes_transit_nudge_when_unconfigured():
 
 
 def test_system_instruction_omits_transit_nudge_when_configured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", transit_configured=True)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", transit_configured=True)
     assert "jts.local/assistant/transit/" not in prompt
 
 
 def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(
         location="",
         travel_routes_configured=False,
         hostname="jts2.local",
@@ -877,14 +866,14 @@ def test_system_instruction_includes_travel_routes_nudge_when_unconfigured():
 
 
 def test_system_instruction_omits_travel_routes_nudge_when_configured():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", travel_routes_configured=True)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", travel_routes_configured=True)
     assert "Travel time isn't set up yet" not in prompt
 
 
 def test_system_instruction_transit_configured_defaults_to_true():
     """Backwards-compat: callers not passing the new arg must NOT get
     the nudge. The signature default is `True`."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     assert "jts.local/assistant/transit/" not in prompt

@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared field helpers for versioned JSON artifacts."""
+"""Shared field helpers for versioned JSON artifacts, and the one owner of their
+identity rules: canonical JSON bytes, the strict and lenient fingerprints, the
+strict freeze, SHA-256 hex checks and text/file hashing."""
 
 from __future__ import annotations
 
@@ -14,9 +16,10 @@ import re
 import time
 from calendar import timegm
 from dataclasses import dataclass
-from typing import Any, Collection, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Read size for :func:`sha256_file` — bounded for the 415 MB Pi Zero 2 W.
 _HASH_CHUNK_BYTES = 1 << 16
@@ -43,6 +46,19 @@ def finite_float(value: Any) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
+
+
+def require_finite(
+    value: Any, *, field: str, error: Callable[[str], Exception] = ValueError, positive: bool = False,
+) -> float:
+    """:func:`finite_float`, or ``error`` naming ``field``; ``positive`` also
+    refuses zero and below."""
+    number = finite_float(value)
+    if number is None:
+        raise error(f"{field} must be a finite number")
+    if positive and number <= 0.0:
+        raise error(f"{field} must be positive")
+    return number
 
 
 def as_float(value: Any) -> float | None:
@@ -88,15 +104,80 @@ def sha256_file(path: str | os.PathLike[str]) -> str:
     return digest.hexdigest()
 
 
-def json_fingerprint(mapping: Mapping[str, Any]) -> str:
-    """SHA-256 hex of one mapping's canonical JSON: sorted keys, no spaces."""
-    canonical = json.dumps(
-        mapping,
+def sha256_text(text: str) -> str:
+    """SHA-256 hex of ``text``'s UTF-8 bytes."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def require_sha256_hex(
+    value: Any, *, field: str, error: Callable[[str], Exception] = ValueError,
+) -> str:
+    """``value`` when it is a lowercase SHA-256 hex digest, else ``error``
+    naming ``field`` — never a repair: padding and uppercase are refused."""
+    if isinstance(value, str) and _SHA256_HEX_RE.fullmatch(value) is not None:
+        return value
+    raise error(f"{field} must be a lowercase SHA-256 fingerprint")
+
+
+def freeze_json(
+    value: Any, *, field: str, error: Callable[[str], Exception] = ValueError, path: str = "$",
+) -> Any:
+    """A fresh copy of ``value`` in JSON's exact data model — ``None``,
+    ``bool``, ``int``, ``str``, finite ``float``, ``list`` and ``str``-keyed
+    mappings (copied to ``dict``) — else ``error`` naming ``field`` and the
+    ``path`` of the first refusal. Stricter than :func:`canonical_json_bytes`
+    on purpose: that writes a tuple as a list and ``{1: x}`` as ``{"1": x}``,
+    and an exact identity must not let two inputs share one encoding."""
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise error(f"{field} contains a non-finite number")
+        return value
+    if isinstance(value, Mapping):
+        frozen: dict[str, Any] = {}
+        for key, nested in value.items():
+            if type(key) is not str:
+                raise error(f"{field} contains a non-string key at {path}")
+            frozen[key] = freeze_json(nested, field=field, error=error, path=f"{path}.{key}")
+        return frozen
+    if type(value) is list:
+        return [
+            freeze_json(nested, field=field, error=error, path=f"{path}[{index}]")
+            for index, nested in enumerate(value)
+        ]
+    raise error(f"{field} contains a non-JSON value at {path}")
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """The strict canonical JSON encoding identities hash and persist: sorted
+    keys, no whitespace, ASCII only, finite numbers only (``ValueError`` on
+    NaN or infinity). Any change re-fingerprints every persisted record.
+    :func:`lenient_json_fingerprint` is a different rule with its own
+    persisted fingerprints; do not fold the two together."""
+    return json.dumps(
+        value,
+        allow_nan=False,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    ).encode("utf-8")
+
+
+def json_fingerprint(mapping: Mapping[str, Any]) -> str:
+    """SHA-256 hex of one mapping's :func:`canonical_json_bytes`."""
+    return hashlib.sha256(canonical_json_bytes(mapping)).hexdigest()
+
+
+def lenient_json_fingerprint(value: Any) -> str:
+    """SHA-256 hex of ``value`` under the older, lenient encoding: sorted keys
+    and no whitespace, but ``default=str`` stringifies any non-JSON value and
+    NaN or infinity passes through, so a ``Path`` hashes like its string and a
+    tuple like a list. Topology, baseline, measurement and wake-corpus
+    fingerprints on disk were minted with it, so its bytes must never change;
+    a new identity uses :func:`json_fingerprint`."""
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class CodedFieldError(ValueError):

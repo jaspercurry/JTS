@@ -49,7 +49,7 @@ class CounterBaselines:
     input_xruns: dict[str, int] | None = None
     usb_buffer_counts: tuple[int, int] | None = None
     fanin_pings_skipped: int | None = None
-    outputd_xruns: dict[str, int] | None = None
+    outputd_xruns: int | None = None
     service_restarts: dict[str, int | None] | None = None
     outputd_clipped: int | None = None
 
@@ -304,28 +304,20 @@ def _clipping(
 def _outputd_xruns(
     baselines: CounterBaselines, outputd: Mapping[str, Any],
 ) -> list[_Occurrence]:
-    counts = {
-        "content": as_int(mapping(outputd.get("content")).get("xrun_count")),
-        "dac": as_int(mapping(outputd.get("dac")).get("xrun_count")),
-    }
-    occurrences: list[_Occurrence] = []
-    if baselines.outputd_xruns is not None:
-        for stage, count in counts.items():
-            delta = count - baselines.outputd_xruns.get(stage, count)
-            if delta > 0:
-                occurrences.append((
-                    path_row(
-                        f"path.outputd_{stage}_xrun",
-                        title=(
-                            "Sound to the speaker recovered"
-                            if stage == "dac" else "Music path recovered"
-                        ),
-                        detail=f"Sound was interrupted {delta} time(s) and resumed.",
-                    ),
-                    delta,
-                ))
-    baselines.outputd_xruns = counts
-    return occurrences
+    count = as_int(mapping(outputd.get("dac")).get("xrun_count"))
+    previous = baselines.outputd_xruns
+    baselines.outputd_xruns = count
+    if previous is None or count <= previous:
+        return []
+    delta = count - previous
+    return [(
+        path_row(
+            "path.outputd_dac_xrun",
+            title="Sound to the speaker recovered",
+            detail=f"Sound was interrupted {delta} time(s) and resumed.",
+        ),
+        delta,
+    )]
 
 
 def record_counter_events(

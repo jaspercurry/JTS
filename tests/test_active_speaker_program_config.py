@@ -18,7 +18,7 @@ import logging
 
 import pytest
 
-from jasper.active_speaker.branch_chain import CrossoverSection
+from jasper.active_speaker.crossover_section import CrossoverSection
 import yaml as yaml_lib
 
 from jasper.active_speaker import (

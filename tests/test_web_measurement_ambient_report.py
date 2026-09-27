@@ -41,7 +41,7 @@ def test_a_legacy_stored_report_with_the_removed_fields_still_reads_as_no_bands(
     assert legacy_bands is None
     assert current_bands is None
     # Neither domain string is ever "deconvolved" — the only value any
-    # caller (driver_acoustics.py, program_analysis.py) branches on — so the
+    # caller (program_analysis.py) branches on — so the
     # two shapes are behaviorally identical to every real reader even though
     # their domain strings differ.
     assert legacy_domain != "deconvolved"

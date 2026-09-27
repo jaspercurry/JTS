@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -21,11 +20,12 @@ from jasper.dsp_apply import (
     same_config_file,
     validate_camilla_config,
 )
+from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
 from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
-from ._common import gate as _gate, issue as _issue
+from ._common import gate as _gate
 from .camilla_yaml import COMMISSIONING_FILTER_MODE, COMMISSIONING_HEADROOM_DB
 from .camilla_names import STARTUP_MUTE_GAIN_DB
 from .environment import read_camilla_statefile_config_path
@@ -60,7 +60,7 @@ COMMISSION_LOAD_PREFLIGHT_KIND = "jts_active_speaker_commission_load_preflight"
 # _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
 # acks the inline SetConfig before its readback side reflects the new graph, so
 # the post-load safety read can transiently return the staged all-muted anchor
-# (hardware-reproduced 2026-07-15 on JTS3: ~22 ms after the apply). Re-read on
+# (hardware-reproduced on JTS3: ~22 ms after the apply). Re-read on
 # this interval until the readback stops matching the anchor, bounded by the
 # budget so a load that never takes effect fails closed in a few seconds
 # instead of hanging apply_dsp_config's writer lock.
@@ -321,7 +321,6 @@ def build_driver_commission_load_preflight(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     current_config_path: str | Path | None = None,
@@ -362,7 +361,6 @@ def build_driver_commission_load_preflight(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         config_dir=config_dir,
         config_path=config_path,
@@ -409,7 +407,7 @@ def build_driver_commission_load_preflight(
     # this preflight runs inside the long-lived control daemon and the
     # socket-activated wizards, which never `EnvironmentFile=`d it and stay
     # alive across a reconcile.
-    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed
+    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed  # lazy: tests/_armed_transport.py patches ring_active_endpoint_armed
 
     candidate_playback_device = candidate.get("playback_device")
     transport_is_ring = candidate_playback_device in RING_PCM_DEVICES
@@ -566,7 +564,6 @@ async def load_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     path_safety_evidence_path: str | Path | None = None,
     staged_config: dict[str, Any] | None = None,
@@ -635,7 +632,6 @@ async def load_driver_commissioning_config(
         crossover_preview=crossover_preview,
         playback_device=playback_device,
         audible_gain_db=audible_gain_db,
-        volume_limit_db=volume_limit_db,
         filter_mode=filter_mode,
         path_safety_evidence_path=path_safety_evidence_path,
         current_config_path=prior_config_path,
@@ -661,23 +657,40 @@ async def load_driver_commissioning_config(
         in RING_PCM_DEVICES
         else "-"
     )
+    captured: dict[str, Any] = {"evidence": evidence}
 
-    if not preflight.get("load_allowed"):
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=staged_path,
-            last_action="load_blocked",
+    def _payload(
+        status: str,
+        last_action: str,
+        issues: list[dict[str, str]],
+        *,
+        candidate: str | None = candidate_path,
+        active: str | None = None,
+        dsp_apply: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return _commission_state_payload(
+            status=status,
+            candidate_config_path=candidate,
+            active_config_path=active,
+            previous_config_path=str(staged_path),
+            last_action=last_action,
             target=target,
             audible_evidence=evidence,
+            live_evidence=captured.get("live"),
+            durable_statefile_target=captured.get("durable_target"),
+            durable_statefile_intact=captured.get("durable_intact"),
             preflight=preflight,
-            issues=[
-                _normalise_issue(issue)
-                for issue in preflight.get("issues", [])
-                if isinstance(issue, dict)
-            ],
+            dsp_apply=dsp_apply,
+            issues=issues,
         )
+
+    if not preflight.get("load_allowed"):
+        issues = [
+            _normalise_issue(issue)
+            for issue in preflight.get("issues", [])
+            if isinstance(issue, dict)
+        ]
+        payload = _payload("blocked", "load_blocked", issues)
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked group=%s role=%s blockers=%d",
@@ -693,17 +706,7 @@ async def load_driver_commissioning_config(
             "commission_rollback_anchor_missing",
             f"all-muted staged rollback anchor does not exist: {staged_path}",
         )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
+        payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked reason=rollback_anchor_missing anchor=%s",
@@ -726,17 +729,7 @@ async def load_driver_commissioning_config(
                 f"{prior_config_path or '(none)'}"
             ),
         )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
+        payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked reason=active_graph_not_staged current=%s anchor=%s",
@@ -744,8 +737,6 @@ async def load_driver_commissioning_config(
             staged_path,
         )
         return {"preflight": preflight, "load": payload}
-
-    captured: dict[str, Any] = {"evidence": evidence}
 
     def _emit_in_lock() -> None:
         # apply_dsp_config runs this inside its writer lock, immediately before
@@ -763,7 +754,6 @@ async def load_driver_commissioning_config(
             crossover_preview=crossover_preview,
             playback_device=playback_device,
             audible_gain_db=audible_gain_db,
-            volume_limit_db=volume_limit_db,
             filter_mode=filter_mode,
             config_dir=config_dir,
             config_path=config_path,
@@ -786,7 +776,7 @@ async def load_driver_commissioning_config(
         # (1) The RUNNING graph (read back over the websocket, not the file) must
         #     match the intended per-driver mask + keep the protective high-pass.
         #     CamillaDSP acks the inline SetConfig before the readback reflects
-        #     the new graph (hardware-reproduced 2026-07-15: the first read
+        #     the new graph (hardware-reproduced: the first read
         #     ~22 ms after the load still returned the staged all-muted anchor),
         #     so poll until the readback stops matching the anchor — bounded by
         #     LIVE_CONFIRM_CONVERGENCE_BUDGET_S — and only then let the safety
@@ -893,27 +883,12 @@ async def load_driver_commissioning_config(
             validate=validate,
         )
     except DspApplyError as exc:
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=exc.state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "driver_commission_load_failed",
-                    f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
-                )
-            ],
+        issue = _issue(
+            "blocker",
+            "driver_commission_load_failed",
+            f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
         )
+        payload = _payload("failed", "load_failed", [issue], dsp_apply=exc.state.to_dict())
         _record_commission_state(payload, state_path=state_path)
         # Surface the safety reason (live-mask drift / missing HP / statefile
         # drift / unreadable graph) in the journal, not just the state file — the
@@ -931,21 +906,12 @@ async def load_driver_commissioning_config(
         return {"preflight": preflight, "load": payload}
 
     # live-confirm + S3 both passed inside the lock.
-    payload = _commission_state_payload(
-        status="loaded",
-        candidate_config_path=str(candidate_path),
-        active_config_path=apply_state.active_config_path or str(candidate_path),
-        previous_config_path=str(staged_path),
-        last_action="load",
-        target=target,
-        audible_evidence=evidence,
-        live_evidence=captured.get("live"),
-        durable_statefile_target=captured.get("durable_target"),
-        durable_statefile_intact=captured.get("durable_intact"),
-        preflight=preflight,
-        dsp_apply=apply_state.to_dict(),
-        issues=[],
-    )
+    applied: dict[str, Any] = {
+        "candidate": str(candidate_path),
+        "active": apply_state.active_config_path or str(candidate_path),
+        "dsp_apply": apply_state.to_dict(),
+    }
+    payload = _payload("loaded", "load", [], **applied)
     if not reconcile_output_hardware:
         payload["output_reconcile"] = {
             "status": "skipped",
@@ -971,27 +937,12 @@ async def load_driver_commissioning_config(
     if not _trigger_audio_hardware_reconcile(
         source="active_speaker_driver_commission_load"
     ):
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=str(candidate_path),
-            active_config_path=apply_state.active_config_path or str(candidate_path),
-            previous_config_path=str(staged_path),
-            last_action="output_reconcile_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=apply_state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "commission_output_hardware_reconcile_failed",
-                    "could not switch outputd to the active driver lane before tone playback",
-                )
-            ],
+        issue = _issue(
+            "blocker",
+            "commission_output_hardware_reconcile_failed",
+            "could not switch outputd to the active driver lane before tone playback",
         )
+        payload = _payload("failed", "output_reconcile_failed", [issue], **applied)
         payload["output_reconcile"] = {
             "status": "failed",
             "unit": AUDIO_HARDWARE_RECONCILE_UNIT,

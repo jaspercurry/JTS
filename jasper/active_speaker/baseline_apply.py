@@ -15,17 +15,14 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, DspApplyState, apply_dsp_config, dsp_writer_lock
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, sha256_text, utc_now_iso as _utc_now
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology, canonical_fingerprint as _fingerprint
 
-from ._common import issue as _issue
 from .baseline_profile import applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state
 from .baseline_record import protection_projection
 from .driver_base_trim import bank_applied_base_trim
-from .state_paths import (
-    baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path, config_text_sha256,
-)
+from .state_paths import baseline_candidate_config_path, baseline_config_path, baseline_profile_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +61,7 @@ async def load_composed_graph(
                 applied["source"]["fingerprint"] = _fingerprint({key: value for key, value in applied["source"].items() if key != "fingerprint"})
             if not audition:
                 target = baseline_candidate_config_path(rendered, directory / baseline_config_path().name)
-            sha256 = config_text_sha256(rendered)
+            sha256 = sha256_text(rendered)
             applied["config"] = {**profile.get("config", {}), "path": str(target), "basename": target.name,
                                  "sha256": sha256, "exists": True}
             atomic_write_text(target, rendered, mode=CONFIG_FILE_MODE)

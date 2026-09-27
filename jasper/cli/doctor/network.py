@@ -420,9 +420,8 @@ def check_wifi_recover_timer() -> CheckResult:
     jasper-wifi-recover.timer fires periodically with no resident RAM; a
     healthy tick is one NetworkManager read that exits silently. If the timer
     is disabled or masked, a scan-suppression wedge after a network flap has
-    no automatic recovery and the operator is back to a power cycle (the
-    2026-06-19 incident). Informational only — never fail-blocking; the box
-    is online or not regardless of this timer.
+    no automatic recovery and the operator is back to a power cycle.
+    Informational only — the box is online or not regardless of this timer.
 
     Skipped on dev hosts: no systemctl, or the unit was never installed."""
     label = "WiFi recover timer"
@@ -456,9 +455,8 @@ def check_avahi_daemon() -> CheckResult:
     user-facing mention of "visit http://jts.local/" silently fails.
 
     Pi OS Lite Trixie ships `libnss-mdns` (resolution-side) but does
-    NOT pre-install or enable avahi-daemon. install.sh added the
-    package starting 2026-05-24; on Pis bootstrapped before that this
-    check flags the gap so the operator knows to re-run install.sh.
+    NOT pre-install or enable avahi-daemon. A missing package requires
+    another install.sh run.
 
     Fires BEFORE check_avahi_jasper_control so the operator sees the
     package/daemon failure first, not the indirect "service not

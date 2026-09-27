@@ -532,6 +532,8 @@ def test_exempt_gating_block_shape():
         "f_valid_floor_hz": None,
         "f_trusted_hz": None,
         "floor_source": None,
+        "search_bound_ms": None,
+        "search_bound_source": None,
         "internal_reflection_ledger": [],
     }
 
@@ -1092,6 +1094,7 @@ def test_disclosure_fields_are_present_on_every_bound_source(name):
         "schema_version", "direct_peak_ms", "first_reflection_ms",
         "reflection_onset_ms", "window_ms", "window", "f_valid_floor_hz",
         "f_trusted_hz", "floor_source", "internal_reflection_ledger",
+        "search_bound_ms", "search_bound_source",
     }
     assert isinstance(fragment["internal_reflection_ledger"], list)
     if fragment["floor_source"] is None:

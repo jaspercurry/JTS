@@ -32,17 +32,21 @@ import contextlib
 import hashlib
 import json
 import logging
-import time
+import os
+import subprocess
+import sys
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL, open_bundle
+from jasper.atomic_io import env_lock_path, flock_held
 from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired
@@ -82,6 +86,7 @@ from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossove
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
+from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_fields, event_records
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
@@ -516,8 +521,9 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
         wav = b"take-bytes"
 
     # A lateral pose names its prompted spot ``pose_id``; every other phase
-    # calls it ``position_id``. The two vocabularies ``spatial._take_identity``
-    # keeps apart, so the lateral row drives the shape a pose really banks.
+    # calls it ``position_id``. The two vocabularies
+    # ``crossover_v2_banked_round._take_identity`` keeps apart, so the lateral
+    # row drives the shape a pose really banks.
     id_key = "pose_id" if phase == PHASE_LATERAL else "position_id"
     bank(
         _Result(),
@@ -560,452 +566,68 @@ def test_status_publishes_the_banked_seat_level_once(banked, request):
     load.assert_called_once()
 
 
-def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
-    """PR-4's ``/state`` surface: per band, only ``within_target``; the
-    excluded-interval COUNT, not the intervals; the geometry verdict's two
-    household-relevant bits. The full per-null τ/r/evidence numbers stay in
-    the durable state's own ``pipeline`` sub-key (not re-derived here) and
-    the bundle artifact — this is the dashboard-sized read, not a third
-    owner of the same data."""
-    v2state.save_v2_state({
-        "session_id": "cap_state",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-                "positions": [],
-                "pipeline": {
-                    "available": True,
-                    "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
-                    "spec": {
-                        "overall_within_target": False,
-                        "reference_db": -27.27,
-                        "bands": [
-                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
-                             "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
-                             "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
-                             "tolerance_db": 1.5},
-                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
-                             "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
-                             "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
-                             "tolerance_db": 2.0},
-                            # The top band graded past its NOMINAL 16 kHz edge:
-                            # this session's microphone is trusted to 20 kHz.
-                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
-                             "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
-                             "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
-                             "tolerance_db": 2.5},
-                        ],
-                    },
-                    "flatness": {
-                        "max_db": -4.85, "max_hz": 11480.0,
-                        "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
-                        "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
-                        "evaluable": True, "passed": False,
-                    },
-                    "validity_floor_hz": 187.5,
-                },
-            },
-            PHASE_CLOUD_VERIFY: {
-                "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
-                "positions": [],
-                "pipeline": {"available": False, "reason": "combine_failed"},
-            },
-        },
-    })
-
-    block = v2status.crossover_v2_status_block()
-    cloud = block["cloud"]
-    assert set(cloud) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
-
-    measure = cloud[PHASE_CLOUD_MEASURE]
-    assert measure["geometry_locked"] is True
-    assert measure["thin_evidence"] is False
-    # Computed straight from the geometry verdict (SF-1 review finding,
-    # 2026-07-27), not read out of the pipeline's own copy — the fixture
-    # above deliberately carries no ``pipeline.geometry_guidance`` key to
-    # prove that.
-    assert measure["geometry_guidance"] == (
-        "The measured echo pattern did not change between microphone "
-        "positions. Spreading the microphone further apart next time may "
-        "help JTS tell the speaker's own sound apart from the room's."
-    )
-    assert measure["overall_within_target"] is False
-    assert measure["excluded_interval_count"] == 2
-    # Per-band ``max_deviation_db``/``tolerance_db`` ride along
-    # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
-    # and per-band numbers missing from the only projection a page sees is
-    # the pressure that grows a second derivation downstream.
-    #
-    # ``max_deviation_hz`` and the GRADED edges ride along for the same
-    # reason: a dB with no frequency names no defect to fix, and the top
-    # band's graded edge no longer equals its nominal one -- a row printing
-    # only ``f_hi_hz`` here would say 16 kHz about a band graded to 20.
-    assert measure["spec_bands"] == [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
-         "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
-         "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
-         "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
-         "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
-         "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
-         "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
-         "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
-         "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
-         "tolerance_db": 2.5},
-    ]
-    # PR-7: the report-level reference the tolerance corridor is centered on
-    # rides the entry too, copied verbatim like everything else here.
-    assert measure["reference_db"] == -27.27
-    # The gauge is copied verbatim; the clamp is separable from interference
-    # on this live surface (PR-5 SF-2), so a reader can tell a combed room
-    # apart from one capture's collapsed gate.
-    assert measure["flatness"]["max_db"] == -4.85
-    assert measure["flatness"]["rms_db"] == 1.37
-    assert measure["validity_floor_hz"] == 187.5
-
-    # A group whose pipeline never became available (combine_failed) reports
-    # the honest "nothing to disclose" shape, never a fabricated pass --
-    # excluded_interval_count is None, not 0 (SF-1 review finding,
-    # 2026-07-27): 0 would read as "the pipeline looked and found nothing",
-    # a fabricated-clean claim for a pipeline that never ran.
-    verify = cloud[PHASE_CLOUD_VERIFY]
-    assert verify["geometry_locked"] is False
-    assert verify["overall_within_target"] is None
-    assert verify["excluded_interval_count"] is None
-    assert verify["spec_bands"] == []
-    assert verify["geometry_guidance"] == ""
-    # Same rule for the two PR-5 keys: unavailable means unknown, never a
-    # fabricated zero or a floor of 0 Hz.
-    assert verify["flatness"] is None
-    # PR-7: same rule again for the chart's own reference level.
-    assert verify["reference_db"] is None
-    assert verify["validity_floor_hz"] is None
-
-
-def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
-    """#2245: JSON integers are unbounded and ``json`` round-trips one
-    happily (a hand-edited or hostile durable state file), but ``float()``
-    on one that large RAISES ``OverflowError`` rather than returning
-    ``inf`` — on the wizard's poll path, where an escaping conversion is a
-    500 on a plain page load. The same hazard
-    :func:`household_findings_status` already guards (the ``10 ** 400``
-    case in ``test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it``
-    below); ``_finite`` — read here through ``spec.reference_db``, the
-    exact path PR #2242's review found it unreachable-but-real on — now
-    catches it too.
-    """
-    v2state.save_v2_state({
-        "session_id": "cap_overflow",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-                "positions": [],
-                "pipeline": {
-                    "available": True,
-                    "merged_excluded_bands_hz": [],
-                    "spec": {
-                        "overall_within_target": True,
-                        "reference_db": 10 ** 400,
-                        "bands": [],
-                    },
-                },
-            },
-        },
-    })
-
-    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
-    assert measure["reference_db"] is None
-    assert measure["overall_within_target"] is True
-
-
-def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():
-    """SF-1 review finding (2026-07-27): a locked group's "spread the mic
-    further" guidance must survive an unrelated downstream pipeline failure,
-    not disappear with it -- geometry locking is decided and RECORDED
-    BEFORE the honest-instrument pipeline ever runs (see
-    ``_close_cloud_group``), so the guidance is a pure function of the
-    geometry verdict alone. Before the fix, an unavailable pipeline
-    defaulted ``geometry_guidance`` to ``""`` regardless of the geometry
-    verdict -- a locked-but-pipeline-failed group silently lost its one
-    actionable piece of copy. Also pins the sibling fix: ``excluded_interval_count``
-    is ``None``, never a fabricated ``0``, when the pipeline never became
-    available."""
-    v2state.save_v2_state({
-        "session_id": "cap_state_locked_unavailable",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {
-                    "locked": True, "reason": "geometry_locked",
-                    "thin_evidence": False,
-                },
-                "positions": [],
-                "pipeline": {"available": False, "reason": "combine_failed"},
-            },
-        },
-    })
-
-    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
-    assert measure["geometry_locked"] is True
-    assert measure["excluded_interval_count"] is None
-    assert measure["overall_within_target"] is None
-    assert measure["spec_bands"] == []
-    assert measure["geometry_guidance"] == (
-        "The measured echo pattern did not change between microphone "
-        "positions. Spreading the microphone further apart next time may "
-        "help JTS tell the speaker's own sound apart from the room's."
-    )
-
-
-def test_state_cloud_block_is_none_before_any_group_closes():
-    v2state.save_v2_state({"session_id": "cap_fresh"})
-    assert v2status.crossover_v2_status_block()["cloud"] is None
-
-
-def test_provenance_note_reflects_whether_the_group_matches_the_active_session():
-    """The household-facing half of the same marker
-    (``compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
-    told apart rather than collapsed: the stamped producer matches the
-    caller's current session (nothing to say — the chart is fresh); it
-    disagrees (a group carried forward from an earlier session — say so);
-    or there is no stamp at all (a durable state written before this marker
-    existed — unknown, not stale, so an upgrade cannot manufacture a false
-    warning for data nobody ever mis-attributed)."""
-    pipeline = {"available": True, "spec": {"overall_within_target": True, "bands": []}}
-    stamped_state = {
-        PHASE_CLOUD_VERIFY: {
-            "geometry": {"locked": False},
-            "positions": [],
-            "pipeline": pipeline,
-            "session_id": "cap_producer_session",
-        },
-    }
-
-    fresh = v2projection.compact_cloud_status(
-        stamped_state, current_session_id="cap_producer_session",
-    )
-    assert fresh[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-    stale = v2projection.compact_cloud_status(
-        stamped_state, current_session_id="cap_rearm_session",
-    )
-    assert stale[PHASE_CLOUD_VERIFY]["provenance_note"] == (
-        "This chart is from a previous session's measurement — "
-        "re-measure to see this session's own result."
-    )
-
-    legacy_state = {
-        PHASE_CLOUD_VERIFY: {
-            "geometry": {"locked": False}, "positions": [], "pipeline": pipeline,
-        },
-    }
-    legacy = v2projection.compact_cloud_status(
-        legacy_state, current_session_id="cap_rearm_session",
-    )
-    assert legacy[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-    # Backward compatibility: an existing caller that never passes
-    # current_session_id at all (every test seam before this PR) still gets
-    # the honest "unknown" reading, not a crash or a fabricated verdict.
-    no_current = v2projection.compact_cloud_status(stamped_state)
-    assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-
-def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
-    """A new VERIFY capture keeps the applied candidate and its cloud evidence.
-
-    B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
-    (the re-arm's ``index_phase_map={1: PHASE_VERIFY}``) has no
-    group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
-    ``None`` for it — but the OLD session-id-gated carry-forward turned that
-    ``None`` into a destructive overwrite of a real prior cloud verdict.
-    One tap of "Try again" (the PRIMARY next_action after a failed verify)
-    used to blank `/state.crossover_v2.cloud`, the envelope's ``cloud`` key,
-    AND make the doctor report "no cloud-measurement session recorded yet"
-    for a session that very much ran.
-
-    Walks: a completed cloud session (durable state seeded, mirroring what
-    ``persist_conductor_state`` would have written) -> the REAL re-arm
-    conductor + the REAL ``persist_conductor_state`` call (the exact
-    production seam the verify-only prepare's ``_open`` uses, mirroring
-    ``test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm``'s
-    own pattern for the way-back pointer) -> asserts all three surfaces
-    (`/state`, the envelope, the doctor) still see the cloud verdict. The
-    candidate assertion also pins #2079's crash/retry write identity: the
-    fingerprint must survive this same new-session rebind so a recovery
-    VERIFY cannot become a second model-error observation.
-    """
+def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch):
+    """A state file from an older build carries ``cloud``,
+    ``evidence.cloud_artifacts`` and ``evidence.household_findings``. It still
+    loads everywhere, no surface reports or grades those stale blocks, and the
+    next persist does not carry them. The applied candidate still survives a
+    re-arm's new session id (#2079)."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.cli.doctor import correction
-    from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
 
-    cloud_block = {
-        PHASE_CLOUD_MEASURE: {
-            "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-            "positions": [{"position_id": "cloud_measure_09", "index": 9, "attempt": 9}],
-            "pipeline": {
-                "available": True,
-                "geometry_guidance": "Spread the mic further.",
-                "merged_excluded_bands_hz": [[8000.0, 9000.0]],
-                "spec": {
-                    "overall_within_target": False,
-                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False}],
-                },
-            },
+    passing_group = {
+        "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
+        "positions": [{"position_id": "cloud_verify_09", "index": 9, "attempt": 9}],
+        "pipeline": {
+            "available": True,
+            "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+            "spec": {"overall_within_target": True, "bands": []},
+            "curve": {"freqs_hz": [100.0, 1000.0], "magnitude_db": [0.0, 0.0]},
+            "flatness": {"max_db": 0.4, "evaluable": True, "passed": True},
         },
+        "session_id": "cap_original_session",
     }
     v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-original"},
         "applied": True,
-        "cloud": cloud_block,
+        "cloud": {PHASE_CLOUD_MEASURE: passing_group, PHASE_CLOUD_VERIFY: passing_group},
         "evidence": {
             "bundle_session_id": "bundle-1",
             "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"},
+            "household_findings": [{"household_copy": "An old finding.", "at": 1.0}],
         },
     })
-
-    # The real production seam: the verify-only prepare's _open mints a
-    # conductor bound to a NEW capture session id and immediately persists it
-    # ("Keep the durable candidate/applied facts; rebind the session id.").
-    conductor = CrossoverV2Session(
-        session_id="cap_rearm_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=V2FlowSeams(
-            analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(check=lambda *a, **k: None),
-        ),
-        driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        index_phase_map={1: PHASE_VERIFY},
-    )
-    v2state.persist_conductor_state(
-        conductor, failure_code=None, evidence={"bundle_session_id": "bundle-2"},
-    )
-
-    # Surface 1: the durable state itself.
-    state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["candidate"] == {"fingerprint": "fp-original"}
-    assert state["cloud"] == cloud_block
-    assert state["evidence"]["cloud_artifacts"] == {
-        PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"
-    }
-
-    # Surface 2: /state's compact projection.
-    compact = v2status.crossover_v2_status_block()["cloud"]
-    assert compact is not None
-    assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-    assert compact[PHASE_CLOUD_MEASURE]["overall_within_target"] is False
-
-    # Surface 3: the envelope.
     monkeypatch.setattr(
         v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
-    status = {
+
+    block = v2status.crossover_v2_status_block()
+    assert not {"cloud", "cloud_chart", "findings"} & set(block)
+    grade = block["post_apply_grade"]
+    assert grade["state"] == v2grade.GRADE_UNVERIFIED
+    assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
+    envelope = build_crossover_envelope_v2({
         "active": True,
         "capture": {"status": "awaiting_capture"},
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2status.crossover_v2_status_block(),
-    }
-    envelope = build_crossover_envelope_v2(status)
-    assert envelope["cloud"] is not None
-    assert envelope["cloud"][PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-
-    # Surface 4 (named "all three" in the review, the doctor makes four):
-    # the doctor no longer reports "no cloud-measurement session recorded".
-    monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
-    r = check_crossover_v2_cloud_pipeline()
-    # A recorded cloud_measure entry means the check no longer takes its
-    # REASON_CLOUD_NOT_RUN "nothing recorded yet" branch; with no
-    # cloud_verify present the spec-fail does not gate, so this stays ok.
-    # The row also folds in the applied-grade finding: this rearm's state IS
-    # applied but has no VERIFY outcome yet, which the fold-in now discloses
-    # rather than staying silent about (the gap the row's own docstring
-    # names).
-    assert r.status == "ok"
-    assert r.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
-
-
-def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
-    """N5 review finding (2026-07-27): the B1 fix's guard is "carry ``cloud``
-    forward ONLY when THIS conductor's own session has no group phase" — the
-    inverse must also hold, and nothing asserted it before this test (a
-    regression to an unconditional carry-forward would have gone green).
-
-    A conductor whose OWN session DOES include a group phase (a fresh,
-    full — not verify-only — session that has started walking a cloud but
-    has not closed any group of its OWN yet) must report ``cloud`` as
-    honestly ``None`` for THIS session, never silently inheriting a stale
-    verdict from whatever the previous session left behind.
-    """
-    v2state.save_v2_state({
-        "session_id": "cap_stale_prior_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-stale"},
-        "applied": True,
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked"},
-                "positions": [
-                    {"position_id": "cloud_measure_09", "index": 9, "attempt": 9}
-                ],
-                "pipeline": {"available": True, "spec": {"overall_within_target": False}},
-            },
-        },
+        "crossover_v2": block,
     })
+    assert not {"cloud", "cloud_chart", "expert_details"} & set(envelope)
+    doctor = correction.check_crossover_v2_cloud_pipeline()
+    assert doctor.status == "ok"
+    assert doctor.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
 
-    # A NEW full session whose own index_phase_map includes a cloud group
-    # phase — mirrors the B1 test's verify-only conductor, but with
-    # PHASE_CLOUD_MEASURE instead of PHASE_VERIFY, so this session's
-    # session_phases DOES overlap GROUP_PHASES. It has not walked far enough
-    # to close that group yet.
-    conductor = CrossoverV2Session(
-        session_id="cap_fresh_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=V2FlowSeams(
-            analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(check=lambda *a, **k: None),
-        ),
-        driver_spacing_m=0.15,
-        accepted_phases=(),
-        applied=False,
-        index_phase_map={1: PHASE_CLOUD_MEASURE},
+    v2state.persist_conductor_state(
+        _rearm_conductor_for_persist("cap_rearm_session", {1: PHASE_VERIFY}),
+        failure_code=None, evidence={"bundle_session_id": "bundle-2"},
     )
-    v2state.persist_conductor_state(conductor, failure_code=None, evidence=None)
-
     state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_fresh_session"
-    # Honestly None -- "this session has not closed a group yet" -- never
-    # the previous session's stale verdict.
-    assert state["cloud"] is None
-    assert v2status.crossover_v2_status_block()["cloud"] is None
-
-
-def _seeded_session_with_a_banked_finding(copy: str) -> None:
-    """A completed measuring session whose fit banked one household finding."""
-    v2state.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "evidence": {
-            "bundle_session_id": "bundle-stage-1",
-            v2durable.FINDING_HOUSEHOLD_REFS_KEY: [
-                {"household_copy": copy, "at": time.time()},
-            ],
-        },
-    })
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["candidate"] == {"fingerprint": "fp-original"}
+    assert "cloud" not in state
+    assert state["evidence"] == {"bundle_session_id": "bundle-2"}
 
 
 def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
@@ -1076,7 +698,6 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     assert "fc_selection" not in (v2state.load_v2_state() or {})
 
 
-_FINDING_COPY = "Two measurements of how this speaker's ranges balance disagreed."
 _RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
 
 
@@ -1118,13 +739,6 @@ def _dig(payload, path, *, missing=None):
     ("seed", "state_path", "status_path", "expected"),
     (
         pytest.param(
-            lambda: _seeded_session_with_a_banked_finding(_FINDING_COPY),
-            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
-            ("findings", 0, "household_copy"),
-            _FINDING_COPY,
-            id="banked-finding",
-        ),
-        pytest.param(
             lambda: _seeded_session_with_a_reservation(
                 {"ripple_reservation": _RIPPLE_RESERVATION}),
             ("measure", "ripple_reservation"),
@@ -1146,8 +760,8 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     seed, state_path, status_path, expected,
 ):
     """Walks the real seam: seeded durable state -> the REAL re-arm conductor
-    -> the REAL ``persist_conductor_state`` -> the three surfaces the
-    disclosure has to reach (durable state, ``/state``, the done screen).
+    -> the REAL ``persist_conductor_state`` -> the two surfaces the
+    disclosure has to reach (durable state and ``/state``).
     """
     seed()
     v2state.persist_conductor_state(
@@ -1167,40 +781,13 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     assert _dig(status, status_path) == expected
 
 
-@pytest.mark.parametrize(
-    ("seed", "state_path", "cleared_state", "status_path", "cleared_status"),
-    (
-        pytest.param(
-            lambda: _seeded_session_with_a_banked_finding(
-                "An old finding nobody re-measured."),
-            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY),
-            # REMOVED from the evidence map, not written as None.
-            _ABSENT,
-            ("findings",),
-            [],
-            id="banked-finding",
-        ),
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"ripple_reservation": _RIPPLE_RESERVATION}),
-            ("measure",),
-            # Still there, holding None: the key is the whole measure block.
-            None,
-            ("measure",),
-            None,
-            id="ripple-reservation",
-        ),
-    ),
-)
-def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
-    seed, state_path, cleared_state, status_path, cleared_status,
-):
+def test_a_fresh_measurement_clears_what_the_previous_session_disclosed():
     """The converse, and the reason the predicate is MEASURE rather than an
     unconditional carry: a new measuring session owns the answer to "what did
     this measurement learn", so a clean retake must not replay a caveat about a
     capture the household already replaced.
     """
-    seed()
+    _seeded_session_with_a_reservation({"ripple_reservation": _RIPPLE_RESERVATION})
 
     # A fresh full session: its own session_phases include MEASURE.
     v2state.persist_conductor_state(
@@ -1209,139 +796,9 @@ def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
         evidence={"bundle_session_id": "bundle-fresh"},
     )
 
-    assert _dig(v2state.load_v2_state(), state_path, missing=_ABSENT) is cleared_state
-    assert _dig(v2status.crossover_v2_status_block(), status_path) == cleared_status
-
-
-def _plant_unbankable_v2_state(state: Any) -> None:
-    """Plant durable state that ``save_v2_state`` itself would REFUSE.
-
-    Since #2839 the writer passes ``allow_nan=False``, so it can no longer
-    produce a state file carrying a non-finite number. A file written by a
-    build that predates that guard still can, and ``json.loads`` accepts the
-    bare ``NaN`` / ``Infinity`` literals on the way back in — so the FILE, not
-    the writer, is the surface the reader guards below defend, exactly as
-    ``10 ** 400`` is (JSON integers are unbounded and no writer produces one
-    either). Written the way that build would have: the envelope through the
-    real writer, the value it now refuses spliced in after.
-    """
-    v2state.save_v2_state({"session_id": "cap_placeholder"})
-    path = Path(v2state._state_path())
-    envelope = json.loads(path.read_text(encoding="utf-8"))
-    path.write_text(
-        json.dumps({**envelope, **state}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _findings_state(rows: Any) -> None:
-    """Durable state whose projection is exactly ``rows``.
-
-    Planted as a file rather than through ``save_v2_state``: the rows here are
-    hostile by construction, and some of them are values the writer refuses
-    since #2839 — see :func:`_plant_unbankable_v2_state`. The subject of these
-    tests is the projection layer, not the writer.
-    """
-    _plant_unbankable_v2_state({
-        "session_id": "cap_projection",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-        "evidence": {
-            "bundle_session_id": "bundle-1",
-            v2durable.FINDING_HOUSEHOLD_REFS_KEY: rows,
-        },
-    })
-
-
-@pytest.mark.parametrize("copy", [
-    42,                     # the gate's own mutation subject — `str(42)` = "42"
-    42.5,
-    True,                   # bool is an int; `str(True)` = "True"
-    None,                   # `str(None or "")` = "" — falsy, but still not text
-    ["a sentence"],
-    {"text": "a sentence"},
-    "",
-    "   ",
-    "\n\t ",
-])
-def test_a_row_without_a_real_sentence_is_dropped_never_coerced(copy):
-    """**A finding is prose or it is nothing.** Never `str()`-ed into existence.
-
-    The failure this forbids is not cosmetic: a coerced row puts a fabricated
-    sentence — "42", "True", "None" — into the one register this program
-    promises is household-readable, on the screen that tells someone their
-    speaker is tuned. Dropping is the honest answer to a row this build cannot
-    read.
-    """
-    _findings_state([{"household_copy": copy, "at": time.time()}])
-    assert v2status.crossover_v2_status_block()["findings"] == []
-
-
-def test_a_good_row_survives_beside_every_unusable_one():
-    """Guards the guard: the drops above are a FILTER, not this layer refusing
-    to project at all. A test suite where every projection came back empty
-    would pass the assertions above while shipping nothing."""
-    _findings_state([
-        {"household_copy": 42, "at": time.time()},
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-        "not even an object",
-        {"household_copy": "", "at": time.time()},
-    ])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-    ]
-
-
-@pytest.mark.parametrize("at", [
-    None,
-    "2026-07-29T10:00:00Z",   # an ISO string is not this file's clock
-    True,                     # bool is an int, and it is not a timestamp
-    [1_700_000_000.0],
-    float("nan"),
-    float("inf"),
-    float("-inf"),
-    10 ** 400,                # nit 1: `float()` RAISES OverflowError here
-])
-def test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it(at):
-    """**The date is dropped; the sentence is not.** An unreadable ``at`` means
-    "we cannot say when", which the envelope renders as "From your measurement
-    earlier: …" — a real disclosure with no date CLAIM. Losing the whole finding
-    over a bad byte in its timestamp would trade a missing date for a missing
-    diagnosis.
-
-    ``10 ** 400`` is the nit-1 case and it is reachable through the file, not
-    theoretical: JSON integers are unbounded, `json` round-trips one happily,
-    and `float()` on it RAISES `OverflowError` rather than returning `inf` — on
-    the wizard's 1.5 s poll path, where an escape is a 500 on a plain page load.
-    """
-    _findings_state([{"household_copy": "A real one.", "at": at}])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": None},
-    ]
-
-
-def test_the_projection_reads_only_its_two_fields():
-    """A durable row written by a later build — one that persists the mechanism
-    beside the copy — must not leak that field onto `/state`. The reader NAMES
-    what it takes rather than passing a row through, so a field added upstream
-    cannot publish itself here."""
-    _findings_state([{
-        "household_copy": "A real one.",
-        "at": 1_700_000_000.0,
-        "mechanism": "M7",
-        "evidence": {"disagreement_db": 3.2307},
-    }])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-    ]
-
-
-@pytest.mark.parametrize("rows", [None, {}, "findings", 7, [None, 5, "x"]])
-def test_a_malformed_projection_block_reads_as_no_findings(rows):
-    """A whole projection key that is not a list of objects is "nothing banked",
-    never a crash on the poll path."""
-    _findings_state(rows)
-    assert v2status.crossover_v2_status_block()["findings"] == []
+    # Still there, holding None: the key is the whole measure block.
+    assert _dig(v2state.load_v2_state(), ("measure",), missing=_ABSENT) is None
+    assert v2status.crossover_v2_status_block()["measure"] is None
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():
@@ -1409,9 +866,8 @@ def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
 
 
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
-    """A conductor of the verify-only prepare's shape, seams stubbed — the same
-    construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
-    uses to exercise the REAL ``persist_conductor_state``."""
+    """A conductor of the verify-only prepare's shape, seams stubbed, for the
+    REAL ``persist_conductor_state``."""
     return CrossoverV2Session(
         session_id=session_id,
         source_preset=_preset(),
@@ -1434,9 +890,8 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
 def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     """#1927: the history the disclosure reads must survive the opening
     persist of a re-arm, which runs BEFORE any usable VERIFY attempt has set
-    this session's own reference. Same carry-forward shape as ``tier`` and
-    ``cloud`` — a re-arm runs under a brand-new capture session id, so a
-    session-id guard would drop it on the first "Try again"."""
+    this session's own reference. A re-arm runs under a brand-new capture
+    session id, so a session-id guard would drop it on the first "Try again"."""
     reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
     v2state.save_v2_state({
         "session_id": "cap_original_session",
@@ -1553,83 +1008,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
-def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
-    """D4: "the chart feed keeps one decimation owner".
-
-    The predicted curve and the cloud curves are drawn in one frame, so they
-    must be strided by the SAME function at the SAME ceiling — a second inline
-    copy of the stride is how two curves in one chart end up at silently
-    different densities. Pinned by handing both projections the identical raw
-    curve and requiring identical output.
-
-    **The ceiling is now a HARD one (gate finding on #1858, SF-1) — re-derived,
-    not adjusted to match.** This used to read "the ceiling is a SOFT one":
-    ``max(1, n // CAP)`` floor-division stride, so a length not a multiple of
-    it overshot by up to one stride (1031 raw points strode by 4 and yielded
-    258, not 256). That was tolerable only because every persisted length that
-    ever reached this function historically overshot its OWN cap
-    (``_decimate_sum``'s old raw stride landed at/above 512-513 for a real
-    capture). #1858's block-average fix
-    to ``_decimate_sum`` undershoots its cap instead (a 32769-bin capture
-    persists at 504, not 512-513) — landing the predicted curve's persisted
-    length just below ``CAP * 2``, where the OLD floor-division stride
-    computed ``step = 1`` (no reduction at all: 504 rendered, not ~252),
-    silently doubling the prediction's density against the cloud curves in
-    the same frame and breaking this function's own soft-ceiling promise.
-    Fixed at this owner with ceiling division (``-(-n // CAP)``), which
-    guarantees ``len(rendered) <= CAP`` unconditionally — re-derived here on
-    the SAME 1031-point fixture: ``ceil(1031 / 256) = 5`` (not floor's 4), so
-    1031 strode by 5 yields 207, not 258. Both curve families still ride the
-    identical function, so the "one owner" pin is unmoved; only the stride
-    arithmetic inside that one owner changed, verified by direct sweep (see
-    ``test_a_realized_prediction_stays_within_the_chart_cap``)
-    over 1..5000 plus 2000 random larger lengths: max observed output was
-    exactly 256, never more, for any input."""
-    n = v2projection.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
-    freqs = [100.0 + i for i in range(n)]
-    mags = [float(i % 5) for i in range(n)]
-    raw = {"freqs_hz": freqs, "magnitude_db": mags}
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {"pipeline": {"available": True, "curve": raw}},
-        },
-        "verify_priors": {"predicted_sum": raw},
-    })
-    block = v2status.crossover_v2_status_block()
-    predicted = block["prediction"]["curve"]
-    # THE pin: one owner, so identical input yields byte-identical output.
-    assert predicted == block["cloud_chart"][PHASE_CLOUD_MEASURE]["curve"]
-    assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
-    # Genuinely decimated, to exactly the shared owner's (now ceiling-division)
-    # stride -- re-derived: ceil(1031 / 256) = 5, not floor's 4.
-    stride = -(-n // v2projection.CHART_CURVE_MAX_JSON_POINTS)
-    assert stride == 5
-    assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
-    assert len(predicted["freqs_hz"]) == 207
-    # The hard ceiling itself: never CAP + stride (the old soft promise),
-    # always CAP outright.
-    assert len(predicted["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-
-
-def test_a_realized_prediction_stays_within_the_chart_cap():
-    """Gate finding on #1858 (SF-1): pin the REALIZED wire length, not the
-    constants that feed it. The persist-time decimator (``_decimate_sum``)
-    and the chart-time re-decimation (``decimate_curve_for_chart``) are driven
-    at real FFT-bin grid sizes — the 65536- and 16384-point windows' 32769-
-    and 8193-bin grids — so the bound is a property of the functions, not of
-    one fixture that happens to clear it.
-    """
-    for n_fft in (1 << 16, 1 << 14):
-        freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)
-        persisted = v2durable._decimate_sum((freqs, np.zeros(freqs.size)))
-        rendered = v2projection.decimate_curve_for_chart(
-            persisted["freqs_hz"], persisted["magnitude_db"],
-        )
-        assert len(rendered["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-
-
 def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     """Issue #1858: ``_decimate_sum`` must anti-alias before reducing point
     count, not stride-pick raw bins.
@@ -1690,37 +1068,6 @@ def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     # a stride-picked raw bin is dominated by whichever ripple phase it
     # happened to land on, comparable to the ripple's own amplitude.
     assert np.median(old_err) > 1.0
-
-
-def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
-    """``None`` is load-bearing on every field of this block.
-
-    Three absences, three honest shapes: no priors at all ⇒ no block; a curve
-    with no stored report (a state written before D4, or a prediction the
-    evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
-    bands — never ``False``, which would read as a measured failure, and never
-    ``True``, which the compact-cloud rule already forbids fabricating."""
-    v2state.save_v2_state({"session_id": "cap_x", "verify_priors": None})
-    assert v2status.crossover_v2_status_block()["prediction"] is None
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "verify_priors": {"predicted_sum": None, "predicted_spec": None},
-    })
-    assert v2status.crossover_v2_status_block()["prediction"] is None
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "verify_priors": {
-            "predicted_sum": {"freqs_hz": [100.0, 200.0], "magnitude_db": [0.0, 0.0]},
-            "predicted_spec": None,
-        },
-    })
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
-    assert prediction["overall_within_target"] is None
-    assert prediction["spec_bands"] == []
-    assert prediction["reference_db"] is None
 
 
 def test_observe_apply_success_marks_the_state_applied():
@@ -1831,53 +1178,8 @@ def test_status_block_reports_an_applied_but_ungraded_result():
     assert grade["verify_outcome"] is None
 
 
-def test_status_block_reports_a_graded_result_from_either_instrument():
-    """Both a passing VERIFY and a graded post-apply cloud are real checks, and
-    the tiers differ in which one they run — express omits the post-apply group
-    entirely, so keying only on the cloud would call every express session
-    ungraded."""
-    v2state.save_v2_state({
-        "session_id": "cap_graded_verify",
-        "applied": True,
-        "verify": {"outcome": "pass"},
-    })
-    by_verify = v2status.crossover_v2_status_block()["post_apply_grade"]
-    # Verified at the mark only — express's whole grade, and distinguishable
-    # from a walked post-apply group WITHOUT consulting `tier`.
-    assert by_verify["state"] == v2grade.GRADE_MARK_VERIFIED
-    assert by_verify["graded"] is True
-
-    # The cloud instrument grading ALONE. #2464 moved this fixture off
-    # ``outcome="inconclusive"`` — that pairing now grades ``inconclusive``,
-    # and pinning it here pinned the mask instead of the claim this test
-    # makes. A session whose VERIFY produced no outcome at all is the honest
-    # way to ask "does a closed group grade on its own".
-    v2state.save_v2_state({
-        "session_id": "cap_graded_cloud",
-        "applied": True,
-        "cloud": {
-            PHASE_CLOUD_VERIFY: {
-                "geometry": {"locked": False},
-                "pipeline": {
-                    "available": True,
-                    "spec": {"overall_within_target": False, "bands": []},
-                    "merged_excluded_bands_hz": [],
-                },
-                "session_id": "cap_graded_cloud",
-            },
-        },
-    })
-    by_cloud = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert by_cloud["state"] == v2grade.GRADE_GRADED
-    # A grade that exists and FAILED is still a grade — "we checked and it is
-    # out of spec" is a different claim from "we never checked", and item 7's
-    # headline is what renders the first one.
-    assert by_cloud["post_apply_spec_passed"] is False
-
-
-def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
-                   claims=None):
-    """An applied session, optionally with a post-apply cloud group."""
+def _applied_state(*, tier=None, verify_outcome="pass", claims=None):
+    """An applied session."""
     state = {
         "session_id": "cap_r19",
         "session_phases": [PHASE_VERIFY, PHASE_CLOUD_VERIFY],
@@ -1889,8 +1191,6 @@ def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
     }
     if tier is not None:
         state["tier"] = tier
-    if cloud_verify is not None:
-        state["cloud"] = {PHASE_CLOUD_VERIFY: cloud_verify}
     return state
 
 
@@ -2193,65 +1493,6 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     assert fields["outcome"] == "inconclusive"
 
 
-_NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
-
-
-def _closed_cloud_group(*, passed, flatness=_NO_GAUGE):
-    """A closed post-apply group in DURABLE shape, as the conductor writes it."""
-    pipeline = {
-        "available": True,
-        "spec": {"overall_within_target": passed, "bands": []},
-        # Four excluded intervals — the jts3 2026-08-07 shape.
-        "merged_excluded_bands_hz": [
-            [1400.0, 1900.0], [3000.0, 3200.0], [5000.0, 5400.0], [9000.0, 9600.0],
-        ],
-    }
-    if flatness is not _NO_GAUGE:
-        pipeline["flatness"] = flatness
-    return {
-        # Never locked — the same checkpoint fact the cloud-pipeline doctor
-        # line prints beside this group.
-        "geometry": {"locked": False},
-        "pipeline": pipeline,
-        "session_id": "cap_r19",
-    }
-
-
-_GRADED_AND_FAILED_FLATNESS = {
-    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
-    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
-    "evaluable": True, "passed": False,
-}
-
-
-def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
-    """#2160 — the jts3 2026-08-07 shape, reproduced.
-
-    ``overall_within_target=False`` reaches ``GRADE_GRADED`` because a
-    graded-and-failed group IS graded, and every consuming surface read that
-    state name as a clean result: doctor printed ``applied and graded
-    (state=graded, verify=pass)`` beside a cloud line reading ``spec=fail
-    worst=-4.63dB``. ``state`` cannot carry the difference; ``spatial`` does,
-    and the failing gauge's own number rides with it so no consumer re-derives
-    it. The ruling is grade-and-disclose: the tune stays, the failure is
-    loud."""
-    v2state.save_v2_state(_applied_state(
-        tier="full",
-        cloud_verify=_closed_cloud_group(
-            passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
-        ),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2grade.GRADE_GRADED  # unchanged vocabulary
-    assert grade["spatial"] == v2grade.GRADE_SPATIAL_FAILED
-    # A failed grade is a COMPLETED grade — the tier delivered what it
-    # promised, and what it delivered is a miss.
-    assert grade["scope"] == v2grade.GRADE_SCOPE_SPATIAL
-    assert grade["complete"] is True
-    assert grade["spatial_worst_db"] == pytest.approx(-4.628)
-    assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
-
-
 @pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
 @pytest.mark.parametrize("poses,complete", [
     ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
@@ -2307,50 +1548,9 @@ def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypa
     assert asked_beyond_mark(state, applied_profile=None) is True
 
 
-_PASSING_GROUP = {"passed": True, "flatness": {
-    **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
-}}
-
-_UNMEASURABLE_FLATNESS = {
-    **_GRADED_AND_FAILED_FLATNESS,
-    "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
-}
-
-_PASSING = _closed_cloud_group(**_PASSING_GROUP)
-
-
 @pytest.mark.parametrize(
     ("state", "expected"),
     (
-        pytest.param(
-            {"tier": "full", "cloud_verify": _PASSING},
-            # No number beside a pass: printing the margin of a pass next to a
-            # failure verdict is how the two get confused.
-            {"spatial": v2grade.GRADE_SPATIAL_PASSED,
-             "scope": v2grade.GRADE_SCOPE_SPATIAL, "complete": True,
-             "spatial_worst_db": None, "spatial_worst_hz": None},
-            id="closed-and-passing-group-is-a-complete-spatial-grade",
-        ),
-        # Reading an unmeasurable spectrum as a miss states a measurement that
-        # never happened. No spatial CLAIM exists, so the delivered width falls
-        # back to what the mark proved — on Full, short of the promise.
-        pytest.param(
-            {"tier": "full", "cloud_verify": _closed_cloud_group(
-                passed=False, flatness=_UNMEASURABLE_FLATNESS)},
-            {"spatial": v2grade.GRADE_SPATIAL_UNMEASURABLE,
-             "spatial_worst_db": None, "scope": v2grade.GRADE_SCOPE_MARK,
-             "complete": True},
-            id="an-ungradeable-group-is-not-a-failure",
-        ),
-        # Unmeasurable is claimed only on POSITIVE evidence: a state written
-        # before the gauge shipped carries a real ``overall_within_target=False`` and
-        # no ``flatness``, and downgrading that on the ABSENCE of an instrument
-        # is the fabricated reading pointed the other way.
-        pytest.param(
-            {"tier": "full", "cloud_verify": _closed_cloud_group(passed=False)},
-            {"spatial": v2grade.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
-            id="a-failing-group-with-no-gauge-stays-a-failure",
-        ),
         # A pre-tier state file, or one from a later build: this build cannot
         # know what was promised, and manufacturing an incompleteness warning
         # about a promise it never read is worse than saying what it said.
@@ -2369,19 +1569,12 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
              "scope": v2grade.GRADE_SCOPE_NONE, "complete": False},
             id="a-verify-that-did-not-pass-delivers-no-scope",
         ),
-        # #2464: a failed or undecided mark-VERIFY caps the badge whatever the
-        # group says. ``cloud_verdict`` was tested BEFORE the fail arm, so any
-        # closed group masked it. The spatial instrument's own verdict is
-        # untouched and still rides its own field (#2160 rider) — capping the
-        # badge is not co-locating the two facts.
+        # #2464: a failed mark-VERIFY caps the badge.
         pytest.param(
             {"tier": "full", "verify_outcome": "fail",
-             "claims": {"integration": {"status": "fail", "max_db": 4.2}},
-             "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_FAILED, "graded": False,
-             "spatial": v2grade.GRADE_SPATIAL_PASSED,
-             "post_apply_spec_passed": True},
-            id="a-failed-verify-is-not-masked-by-a-passing-spatial-grade",
+             "claims": {"integration": {"status": "fail", "max_db": 4.2}}},
+            {"state": v2grade.GRADE_FAILED, "graded": False},
+            id="a-failed-tracking-claim-caps-the-badge",
         ),
         # ``verify.outcome`` grades capture and tracking health ONLY, so a
         # crossover-region claim that missed its tolerance rides a clean
@@ -2390,8 +1583,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "verify_outcome": "pass",
              "claims": {"integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "fail", "max_db": 4.31,
-                                     "worst_hz": 1590.4}},
-             "cloud_verify": _PASSING},
+                                     "worst_hz": 1590.4}}},
             {"state": v2grade.GRADE_FAILED, "graded": False,
              "verify_outcome": "pass"},
             id="a-failed-absolute-claim-caps-the-badge-on-a-clean-capture",
@@ -2402,39 +1594,19 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "verify_outcome": "fail",
              "claims": {"integration": {"status": "not_evaluated"},
                         "absolute": {"status": "not_evaluated",
-                                     "reason": "no_trusted_region"}},
-             "cloud_verify": _PASSING},
+                                     "reason": "no_trusted_region"}}},
             {"state": v2grade.GRADE_FAILED},
             id="an-outcome-fail-whose-claims-could-not-grade-still-caps",
-        ),
-        # The same masking defect one arm over: the ``inconclusive`` arm was
-        # unreachable behind the closed-group test.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "inconclusive",
-             "cloud_verify": _closed_cloud_group(passed=False)},
-            {"state": v2grade.GRADE_INCONCLUSIVE, "graded": False},
-            id="an-inconclusive-verify-is-not-masked-by-a-closed-group",
-        ),
-        # The cap is scoped to a FAILED or undecided VERIFY. On a clean pass
-        # the walked group is the wider claim and still wins the state word,
-        # or this demotes every correctly graded Full session.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "pass",
-             "claims": {"integration": {"status": "pass", "max_db": 0.7},
-                        "absolute": {"status": "pass", "max_db": 0.8}},
-             "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_GRADED, "graded": True, "complete": True},
-            id="a-clean-pass-still-grades-on-the-wider-spatial-claim",
         ),
         # Absence of claims is a pre-R18 state file, never a fail and never a
         # pass-of-claims: the outcome stands as the only record there is.
         pytest.param(
-            {"tier": "full", "verify_outcome": "pass", "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_GRADED},
+            {"tier": "full", "verify_outcome": "pass"},
+            {"state": v2grade.GRADE_MARK_VERIFIED, "graded": True},
             id="no-claims-block-graded-on-a-passing-outcome-alone",
         ),
         pytest.param(
-            {"tier": "full", "verify_outcome": "fail", "cloud_verify": _PASSING},
+            {"tier": "full", "verify_outcome": "fail"},
             {"state": v2grade.GRADE_FAILED},
             id="no-claims-block-graded-on-a-failing-outcome-alone",
         ),
@@ -2443,10 +1615,10 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
 def test_the_post_apply_grade_badge_table(state, expected):
     """What ``post_apply_grade`` publishes for each shape of applied session.
 
-    ``state`` is the vocabulary every consuming surface keys on; ``spatial``,
-    ``scope`` and ``complete`` say how wide the claim is and whether the tier
-    delivered what it promised. A row asserts only the fields its own shape
-    decides — the rest are pinned by the rows that turn on them.
+    ``state`` is the vocabulary every consuming surface keys on; ``scope`` and
+    ``complete`` say how wide the claim is and whether the tier delivered what
+    it promised. A row asserts only the fields its own shape decides — the
+    rest are pinned by the rows that turn on them.
     """
     v2state.save_v2_state(_applied_state(**state))
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -2462,7 +1634,6 @@ def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     # warn every speaker that has never been commissioned.
     assert grade["complete"] is True
     assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
-    assert grade["spatial"] == v2grade.GRADE_SPATIAL_ABSENT
     assert grade["graded"] is True
 
 
@@ -4021,7 +3192,6 @@ class _StubConductor:
     measure_gate_window_ms = None
     verify_pilot_transfer_reference = None
     verify_level_reference_reset = None
-    session_phases: tuple = ()
 
     def __init__(
         self, session_id: str = "s1", *, applied: bool = True,
@@ -4036,20 +3206,28 @@ class _StubConductor:
             session_id=self._session_id, accepted_phases=(),
             session_phases=self._session_phases,
             applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None, cloud_close="",
+            candidate_fingerprint=None,
         )
 
 
-def test_only_verify_rebind_carries_an_accepted_sound_revision():
-    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
+def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
+    """The carries follow the snapshot's phases; the stub has no ``session_phases`` of its own (#4806)."""
+    v2state.save_v2_state({
+        "session_id": "old", "accepted_sound_revision": 4,
+        "measure": {"calibration_reservation": True},
+    })
     v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
+    state = v2state.load_v2_state() or {}
+    assert state["accepted_sound_revision"] == 4
+    assert state["measure"] == {"calibration_reservation": True}
 
     v2state.persist_conductor_state(
         _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
         failure_code=None,
     )
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
+    state = v2state.load_v2_state() or {}
+    assert state["accepted_sound_revision"] is None
+    assert state["measure"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -4110,6 +3288,127 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
             f"{key!r} is written by the apply path and erased by "
             "persist_conductor_state — add a carry-forward line for it"
         )
+
+
+_APPLY_IN_ANOTHER_PROCESS = """
+import sys
+from jasper.web import correction_crossover_v2_state as v2state
+v2state.set_state_path_for_tests(sys.argv[1])
+print("started", flush=True)
+with v2state.v2_state_locked():
+    v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+"""
+
+
+def _apply_recording_a_new_pointer() -> None:
+    with v2state.v2_state_locked():
+        v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+
+
+def _start_apply(apart: str, state_path: Path) -> Callable[[float], bool]:
+    """Start an apply in another thread or process; answer whether it ended."""
+    if apart == "thread":
+        thread = threading.Thread(target=_apply_recording_a_new_pointer)
+        thread.start()
+
+        def thread_ended(timeout: float) -> bool:
+            thread.join(timeout)
+            return not thread.is_alive()
+        return thread_ended
+    root = Path(__file__).resolve().parents[1]
+    child = subprocess.Popen(
+        [sys.executable, "-c", _APPLY_IN_ANOTHER_PROCESS, str(state_path)],
+        cwd=root, env={**os.environ, "PYTHONPATH": str(root)}, stdout=subprocess.PIPE, text=True,
+    )
+    with child.stdout:
+        assert child.stdout.readline().strip() == "started"
+
+    def child_ended(timeout: float) -> bool:
+        try:
+            return child.wait(timeout) == 0
+        except subprocess.TimeoutExpired:
+            return False
+    return child_ended
+
+
+@pytest.mark.parametrize("apart", ["thread", "process"])
+@pytest.mark.parametrize("rewrite", [
+    pytest.param(lambda: v2state.reset_v2_journey_state(), id="reset"),
+    pytest.param(lambda: v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None), id="persist"),
+])
+def test_an_apply_landing_inside_a_state_rewrite_keeps_its_way_back_pointer(monkeypatch, tmp_path, rewrite, apart):
+    """A rewrite reads the state and writes a successor built from that read.
+    An apply in another thread or web process that records its way-back
+    pointer between the two must not lose it."""
+    v2state.save_v2_state({"session_id": "s1", "applied": True, "previous_candidate_fingerprint": "old"})
+    applies: list[Callable[[float], bool]] = []
+    read = v2state.load_v2_state
+
+    def read_then_start_an_apply():
+        state = read()
+        if not applies:
+            applies.append(_start_apply(apart, tmp_path / "v2_state.json"))
+            applies[0](0.5)  # an apply the rewrite does not hold off lands here
+        return state
+
+    monkeypatch.setattr(v2state, "load_v2_state", read_then_start_an_apply)
+    rewrite()
+
+    [apply_ended] = applies
+    assert apply_ended(10)
+    assert read()["previous_candidate_fingerprint"] == "new"
+
+
+def test_a_state_rewrite_refuses_by_code_while_another_process_holds_the_state(monkeypatch, tmp_path, caplog):
+    v2state.save_v2_state({"session_id": "s1", "applied": True})
+    monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
+
+    with spawn_lock_holder(tmp_path / "v2_state.json", hold_seconds=60):
+        with pytest.raises(v2state.V2StateLockTimeout) as refused:
+            v2state.reset_v2_journey_state()
+
+    assert refused.value.code == "crossover_v2_state_busy"
+    assert v2state.load_v2_state()["session_id"] == "s1"
+    assert event_fields(caplog, "correction.crossover_v2_state_lock")["result"] == "timeout"
+
+
+def test_two_threads_in_one_process_never_hold_the_state_together(tmp_path):
+    lock = Path(env_lock_path(str(tmp_path / "v2_state.json")))
+    a_in, a_go, b_in, b_go = (threading.Event() for _ in range(4))
+
+    def hold(entered, release):
+        with v2state.v2_state_locked():
+            entered.set()
+            release.wait(10)
+
+    first = threading.Thread(target=hold, args=(a_in, a_go))
+    first.start()
+    assert a_in.wait(10)
+    second = threading.Thread(target=hold, args=(b_in, b_go))
+    second.start()
+    assert not b_in.wait(0.3)
+    a_go.set()
+    assert b_in.wait(10)
+    assert flock_held(lock, missing=False) is True  # the second holder's own flock, not the first's
+    b_go.set()
+    first.join(10)
+    second.join(10)
+
+
+@pytest.mark.parametrize("write", [
+    pytest.param(lambda: v2state.persist_terminal_failure(_StubConductor("s1", applied=False), "internal_error"),
+                 id="terminal_failure"),
+    pytest.param(lambda: v2state.persist_execution_result("s1", volume_restore="exact_restored"), id="execution_result"),
+])
+def test_a_post_commit_write_outwaits_a_holder_a_request_gives_up_on(monkeypatch, tmp_path, write):
+    v2state.save_v2_state({"session_id": "s1", "applied": False})
+    before = v2state.load_v2_state()
+    monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
+
+    with spawn_lock_holder(tmp_path / "v2_state.json", hold_seconds=0.5):
+        write()
+
+    assert v2state.load_v2_state() != before
 
 
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
@@ -4794,11 +4093,11 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_program
-    from jasper.active_speaker.measurement_programs import program
+    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_preset
+    from jasper.active_speaker.measurement_programs import preset
 
-    selected = program("bass")
-    body = {"plan": request_for_program(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
+    selected = preset("bass")
+    body = {"plan": request_for_preset(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -4874,7 +4173,6 @@ def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypat
 @pytest.mark.parametrize("run_id", [None, "same"])
 def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run_id):
     from concurrent.futures import ThreadPoolExecutor
-    import threading
     from jasper.active_speaker.crossover_v2.position_gate import PositionGate
     from jasper.web import correction_capture as capture, correction_handlers as handlers
     from tests.test_correction_crossover_v2_wired import _fake_handler

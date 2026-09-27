@@ -101,6 +101,7 @@ from ..control import control_token
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..local_sources.markers import local_sources_allowed
 from ..log_event import log_event
+from ..multiroom import config as grouping_config, effective_role
 from ..multiroom.config import LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
 from ..secret_redaction import redact_secrets
 
@@ -194,10 +195,7 @@ def bonded_follower_park_reason() -> str:
 def bonded_follower_leader_addr() -> str:
     """Return the effective follower's leader address, if readable."""
     try:
-        from ..multiroom.config import load_config
-        from ..multiroom.effective_role import effective_follower_leader_addr
-
-        return effective_follower_leader_addr(load_config()) or ""
+        return effective_role.effective_follower_leader_addr(grouping_config.load_config()) or ""
     except Exception:  # noqa: BLE001 — fail-open
         return ""
 

@@ -20,12 +20,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.camilla_config_contract import (
-    DEFAULT_VOLUME_LIMIT_DB,
-    read_camilla_devices_config,
-)
+from jasper.camilla_config_contract import read_camilla_devices_config
 from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
     OutputTopology,
@@ -33,7 +30,7 @@ from jasper.output_topology import (
     subwoofer_speaker_groups,
 )
 
-from ._common import gate as _gate, issue as _issue, software_guard_needed as _software_guard_needed
+from ._common import gate as _gate, software_guard_needed as _software_guard_needed
 from .camilla_yaml import (
     COMMISSIONING_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
@@ -262,49 +259,45 @@ def load_staged_startup_config(
     """Return the latest staged-config evidence, failing soft when absent."""
 
     path = staged_metadata_path(metadata_path)
+
+    def _payload(
+        status: str,
+        issues: list[dict[str, str]],
+        next_step: str = "Stage a fresh protected startup config.",
+    ) -> dict[str, Any]:
+        return {
+            "artifact_schema_version": SCHEMA_VERSION,
+            "kind": STAGED_STARTUP_CONFIG_KIND,
+            "status": status,
+            "metadata_path": str(path),
+            "config": None,
+            "issues": issues,
+            "next_step": next_step,
+        }
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": STAGED_STARTUP_CONFIG_KIND,
-            "status": "not_staged",
-            "metadata_path": str(path),
-            "config": None,
-            "issues": [],
-            "next_step": "Stage a protected startup config from the saved output setup.",
-        }
+        return _payload(
+            "not_staged",
+            [],
+            "Stage a protected startup config from the saved output setup.",
+        )
     except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "artifact_schema_version": SCHEMA_VERSION,
-            "kind": STAGED_STARTUP_CONFIG_KIND,
-            "status": "unreadable",
-            "metadata_path": str(path),
-            "config": None,
-            "issues": [
-                _issue(
-                    "blocker",
-                    "staged_config_metadata_unreadable",
-                    f"could not read staged active-speaker metadata: {type(exc).__name__}",
-                )
-            ],
-            "next_step": "Stage a fresh protected startup config.",
-        }
-    return payload if isinstance(payload, dict) else {
-        "artifact_schema_version": SCHEMA_VERSION,
-        "kind": STAGED_STARTUP_CONFIG_KIND,
-        "status": "unreadable",
-        "metadata_path": str(path),
-        "config": None,
-        "issues": [
-            _issue(
-                "blocker",
-                "staged_config_metadata_not_object",
-                "staged active-speaker metadata is not a JSON object",
-            )
-        ],
-        "next_step": "Stage a fresh protected startup config.",
-    }
+        issue = _issue(
+            "blocker",
+            "staged_config_metadata_unreadable",
+            f"could not read staged active-speaker metadata: {type(exc).__name__}",
+        )
+        return _payload("unreadable", [issue])
+    if isinstance(payload, dict):
+        return payload
+    issue = _issue(
+        "blocker",
+        "staged_config_metadata_not_object",
+        "staged active-speaker metadata is not a JSON object",
+    )
+    return _payload("unreadable", [issue])
 
 
 def _target_outputs_for_groups(
@@ -723,20 +716,10 @@ def _stage_protected_startup_config_locked(
             # real path: this same config is what later freezes as the durable
             # profile. Per-driver unmute is a transient runtime load, never the
             # frozen boot config — so the staged candidate is fully muted.
-            #
-            # Every device field is named EXPLICITLY, like the applied path's
-            # emit: a field added to `ActiveEmitDevices` and not added here is
-            # the subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
-                capture_device=devices.capture_device,
-                capture_format=devices.capture_format,
-                playback_format=devices.playback_format,
-                chunksize=devices.chunksize,
-                target_level=devices.target_level,
-                queuelimit=devices.queuelimit,
-                enable_rate_adjust=devices.enable_rate_adjust,
+                **devices.emit_kwargs(),
                 audible_outputs=frozenset(),
                 out_path=out_path,
             )
@@ -916,7 +899,6 @@ def prepare_driver_commissioning_config(
     crossover_preview: dict[str, Any] | None = None,
     playback_device: str | None = None,
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     config_dir: str | Path | None = None,
     config_path: str | Path | None = None,
@@ -1053,22 +1035,12 @@ def prepare_driver_commissioning_config(
     ):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            # Every device field is named EXPLICITLY, like the anchor's emit: a
-            # field added to `ActiveEmitDevices` and not added here is the
-            # subset-forwarding defect this block exists to close.
             emitted_config = emit_active_speaker_commissioning_config(
                 bound_preset,
                 playback_device=resolved_playback_device,
-                capture_device=devices.capture_device,
-                capture_format=devices.capture_format,
-                playback_format=devices.playback_format,
-                chunksize=devices.chunksize,
-                target_level=devices.target_level,
-                queuelimit=devices.queuelimit,
-                enable_rate_adjust=devices.enable_rate_adjust,
+                **devices.emit_kwargs(),
                 audible_outputs=audible_outputs,
                 audible_gain_db=audible_gain_db,
-                volume_limit_db=volume_limit_db,
                 startup_headroom_db=COMMISSIONING_HEADROOM_DB,
                 out_path=out_path,
                 filter_mode=filter_mode,

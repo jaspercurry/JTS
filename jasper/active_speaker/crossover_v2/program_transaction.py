@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol
 
-from jasper.audio_measurement.playback import (
+from jasper.audio_measurement.admission.playback import (
     PlaybackError, PlaybackObservation, WavPlaybackCancelled,
     WavPlaybackCancelledBeforeSpawn,
 )

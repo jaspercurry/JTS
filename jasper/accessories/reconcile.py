@@ -9,12 +9,15 @@ the runtime decision: if BlueZ says an adapter-backed remote profile is paired,
 publish the matching ``JASPER_MANUAL_MIC_SOURCES`` entry; otherwise publish
 none. That keeps rare hardware from imposing resident cost on every speaker.
 
-The published env file IS the instruction to the adapter: adapters run as tasks
-inside the always-on ``jasper-input`` process (ADR-0225), which reads the file
-at startup and runs exactly the adapters it names. So this module's only
-systemd action for the mic half is to ``try-restart`` that host when the
-published set changes — never enable, disable or stop it, which would take the
-HID button bridge (volume, push-to-talk) down with it.
+Adapters run as tasks inside the always-on ``jasper-input`` process
+(ADR-0225), which reads this module's adapter plan at startup and runs exactly
+the adapters it names. The plan leads the armed file voice reads: a source is
+armed only once the restarted host reports its adapter up, and leaves the
+armed file before its adapter stops (ADR-0372). This module's only systemd
+action for the mic half is to ``try-restart`` that host when the plan changes,
+or when the install asks (``--restart-hosts``) so the host loads new code —
+never enable, disable or stop it, which would take the HID button bridge
+(volume, push-to-talk) down with it.
 
 Where wake detection runs, it owns the *accessory* fact alone: the voice-input
 gate marker is the AND of "no local mic" and "no accessory mic", so moving this
@@ -31,6 +34,7 @@ import contextlib
 import logging
 import os
 import subprocess
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,12 +57,16 @@ from jasper.service_units import (
 from jasper.source_intent import source_intent_enabled
 from jasper.systemd_probe import unit_state
 
+from . import status as accessory_status
 from ._dbus import variant_value
 from .mic_env import (
+    ADAPTER_PLAN_HEADER,
     DEFAULT_ACCESSORY_MIC_ENV_FILE,
+    adapter_plan_path,
+    parse_manual_mic_sources,
     render_manual_mic_env,
 )
-from .registry import KNOWN_PROFILES, RemoteProfile, lookup_by_name
+from .registry import adapter_mic_profiles, lookup_by_name
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -72,8 +80,8 @@ VOICE_UNIT = JASPER_VOICE_SERVICE
 # voice_follows_accessory_mic.
 VOICE_INPUT_GATE_UNIT = AEC_RECONCILE_SERVICE
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
-# Per adapter host, and only when the published set changed: one try-restart,
-# then one active-state probe of the result.
+# Per adapter host, on a pass that restarts it: one try-restart, then one
+# active-state probe of the result.
 _ADAPTER_SYSTEMCTL_CALLS = 2
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
@@ -85,9 +93,15 @@ _VOICE_REFRESH_SYSTEMCTL_CALLS = 2
 _VOICE_REFRESH_TIMEOUT_BUDGET_SEC = (
     _VOICE_REFRESH_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
 )
+# A host restart returns once the process exists; its adapter still has to
+# import and ask BlueZ before a source may be armed. Unmeasured on a Pi Zero
+# 2 W: the owner pass times it.
+_ADAPTER_VERIFY_TIMEOUT_SEC = 10.0
+_ADAPTER_VERIFY_POLL_SEC = 0.25
 _OWNER_OPERATION_TIMEOUT_BUDGET_SEC = (
     BLUEZ_DISCOVERY_TIMEOUT_SEC
     + _ADAPTER_TIMEOUT_BUDGET_SEC
+    + _ADAPTER_VERIFY_TIMEOUT_SEC
     + _VOICE_REFRESH_TIMEOUT_BUDGET_SEC
 )
 
@@ -171,18 +185,6 @@ def _is_truthy(value) -> bool:
     return bool(variant_value(value))
 
 
-def adapter_mic_profiles() -> tuple[RemoteProfile, ...]:
-    """Profiles that can publish a manual mic source through an adapter."""
-
-    return tuple(
-        profile for profile in KNOWN_PROFILES
-        if profile.mic.status == "adapter"
-        and profile.mic.capture_profile_id
-        and profile.mic.device
-        and profile.mic.adapter_host_service
-    )
-
-
 def adapter_mic_hosts() -> tuple[str, ...]:
     """Every process this reconciler asks to re-read the published sources."""
 
@@ -236,11 +238,12 @@ def write_manual_mic_env(
     sources: Mapping[str, str],
     *,
     path: str = DEFAULT_ACCESSORY_MIC_ENV_FILE,
+    header: str = "",
 ) -> bool:
-    """Publish the voice env file. Returns True when on-disk state changed."""
+    """Publish a sources file. Returns True when on-disk state changed."""
 
     target = Path(path)
-    body = render_manual_mic_env(sources)
+    body = render_manual_mic_env(sources, header=header)
     if not body:
         try:
             existing_body = target.read_text(encoding="utf-8")
@@ -259,6 +262,54 @@ def write_manual_mic_env(
         return False
     atomic_write_text(path, body, mode=0o644)
     return True
+
+
+def _publish(sources: Mapping[str, str], path: str, *, header: str = "") -> bool:
+    """``write_manual_mic_env``, with a failed write made authoritative."""
+    try:
+        return write_manual_mic_env(sources, path=path, header=header)
+    except OSError as exc:
+        raise AccessoryReconcileError(
+            f"could not publish accessory mic sources: {exc}"
+        ) from exc
+
+
+def _body(path: str) -> str:
+    """A published file's body, "" when there is none. A failed read is as
+    authoritative as a failed write."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise AccessoryReconcileError(f"could not read {path}: {exc}") from exc
+
+
+async def _verify_adapters(sources: Sequence[str]) -> tuple[str, ...]:
+    """Wait, bounded, for each source's adapter to report a BlueZ answer.
+
+    That answer — the remote connected, or asleep — is the readiness check a
+    source passes before it is armed (ADR-0372): it passes once ``not_armed``
+    is all that stops it streaming. Returns failure lines for the caller's
+    list, like ``refresh_adapter_hosts``.
+    """
+    deadline = time.monotonic() + _ADAPTER_VERIFY_TIMEOUT_SEC
+    while True:
+        snap = accessory_status.snapshot()
+        unverified = {
+            source: why for source in sources
+            if (why := accessory_status.mic_not_ready_reason(
+                source, snap, armed=False,
+            )) != accessory_status.MIC_NOT_READY_NOT_ARMED
+        }
+        if not unverified:
+            return ()
+        if time.monotonic() >= deadline:
+            return tuple(
+                f"{source}: adapter not verified ({why})"
+                for source, why in sorted(unverified.items())
+            )
+        await asyncio.sleep(_ADAPTER_VERIFY_POLL_SEC)
 
 
 Systemctl = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -324,10 +375,11 @@ def refresh_adapter_hosts(
     """Converge each adapter host against the sources just published.
 
     ``restart`` is the *apply* step and runs only when the published set
-    changed, because a restart is what makes the host re-read the file.
-    ``try-restart`` only, never enable/disable/stop: the host is the always-on
-    HID bridge, whose unit state the installer owns, and stopping it for an
-    unpaired accessory would take volume and push-to-talk with it.
+    changed, because a restart is what makes the host re-read the file, or
+    when the install needs the host on its new code. ``try-restart`` only,
+    never enable/disable/stop: the host is the always-on HID bridge, whose
+    unit state the installer owns, and stopping it for an unpaired accessory
+    would take volume and push-to-talk with it.
 
     ``require_active`` is the *observe* step and runs on every pass, changed
     set or not. ``try-restart`` succeeds against a host that is stopped or
@@ -554,6 +606,7 @@ async def reconcile_once(
     env_file: str = DEFAULT_ACCESSORY_MIC_ENV_FILE,
     systemctl: Systemctl = _systemctl,
     reason: str = "manual",
+    restart_hosts: bool = False,
 ) -> AccessoryMicPlan:
     intent_error: BluetoothSourceIntentError | None = None
     try:
@@ -595,30 +648,46 @@ async def reconcile_once(
         # deliberately retained only as shared control-plane infrastructure.
         plan = AccessoryMicPlan(sources={}, active_profiles=())
 
-    # Publish first in both directions: the file is what the host reads, so the
-    # refresh below is what applies it, and a refresh before the write would
-    # apply the previous plan. This gives up the old teardown ordering, which
-    # stopped the producer before withdrawing its source — unreachable now that
-    # the file is the only handle on the adapter. A write that fails therefore
-    # leaves the previous plan running — which is an authoritative failure, not
-    # the fail-soft I/O class main() exits 0 on: a failed unlink under
-    # Bluetooth Off leaves the adapter streaming behind a green oneshot.
+    # Withdraw, instruct the host, then arm (ADR-0372). A source stays armed
+    # only while its adapter runs untouched, so a pass that restarts the host
+    # withdraws every source first and re-arms each once verified. A failed
+    # read or write is authoritative, not the fail-soft I/O class main() exits
+    # 0 on: a failed unlink under Bluetooth Off leaves the adapter streaming
+    # behind a green oneshot.
+    plan_file = adapter_plan_path(env_file)
+    armed_body = _body(env_file)
+    host_changed = restart_hosts or render_manual_mic_env(
+        plan.sources, header=ADAPTER_PLAN_HEADER,
+    ) != _body(plan_file)
     try:
-        env_changed = write_manual_mic_env(plan.sources, path=env_file)
-    except OSError as exc:
-        raise AccessoryReconcileError(
-            f"could not publish accessory mic sources: {exc}"
-        ) from exc
+        armed_before = () if host_changed else parse_manual_mic_sources(armed_body)
+    except ValueError:  # corrupt: arms nothing, and this pass rewrites it
+        armed_before = ()
+    armed = {
+        source: device for source, device in plan.sources.items()
+        if source in armed_before
+    }
+    _publish(armed, env_file)
+    _publish(plan.sources, plan_file, header=ADAPTER_PLAN_HEADER)
     hosts = adapter_mic_hosts()
     adapter_failures = refresh_adapter_hosts(
         hosts,
-        restart=env_changed,
+        restart=host_changed,
         require_active=bool(plan.sources),
         systemctl=systemctl,
     )
+    pending = sorted(plan.sources.keys() - armed.keys())
+    if pending and not adapter_failures:
+        adapter_failures += await _verify_adapters(pending)
+        if not adapter_failures:
+            armed = dict(plan.sources)
+            _publish(armed, env_file)
+    # Voice read the armed file when it last started, so only a pass that
+    # leaves it different has anything for voice to converge on.
+    env_changed = render_manual_mic_env(armed) != armed_body
     if voice_follows_accessory_mic():
         voice, voice_failures = converge_voice_unit(
-            wanted=bool(plan.sources),
+            wanted=bool(armed),
             env_changed=env_changed,
             systemctl=systemctl,
         )
@@ -663,8 +732,9 @@ async def reconcile_once(
         role_allowed=int(role_allowed),
         profiles=",".join(plan.active_profiles) or "(none)",
         sources=",".join(plan.sources) or "(none)",
+        armed=",".join(sorted(armed)) or "(none)",
         hosts=",".join(hosts) or "(none)",
-        host_restarted=int(env_changed),
+        host_restarted=int(host_changed),
         env_changed=int(env_changed),
         voice=voice,
     )
@@ -676,6 +746,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--env-file", default=DEFAULT_ACCESSORY_MIC_ENV_FILE)
     parser.add_argument("--reason", default="manual")
     parser.add_argument("--reason-file", default=DEFAULT_RECONCILE_REQUEST_FILE)
+    parser.add_argument(
+        "--restart-hosts", action="store_true",
+        help="restart the adapter hosts even when the plan is unchanged, "
+        "withdrawing their sources first (the install's new code)",
+    )
     return parser.parse_args(argv)
 
 
@@ -688,7 +763,10 @@ def main(argv: list[str] | None = None) -> int:
     # the direct boot/install starts, which carry no request file.
     reason = claim_reconcile_request(args.reason_file) or args.reason
     try:
-        asyncio.run(reconcile_once(env_file=args.env_file, reason=reason))
+        asyncio.run(reconcile_once(
+            env_file=args.env_file, reason=reason,
+            restart_hosts=args.restart_hosts,
+        ))
         return 0
     except AccessoryReconcileError as exc:
         log_event(

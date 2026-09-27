@@ -18,6 +18,7 @@ from .camilla_yaml import _branch_context, linearization_headroom_db
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from .state_paths import baseline_profile_state_path
+from .environment import read_camilla_statefile_config_path
 
 SCHEMA_VERSION = 1
 BASELINE_PROFILE_KIND = "jts_active_speaker_baseline_profile_candidate"
@@ -334,8 +335,6 @@ def applied_profile_displacement(
     :data:`APPLIED_PROFILE_RUNNING_UNKNOWN` ("could not check"), a different
     answer from "checked and it moved".
     """
-
-    from .environment import read_camilla_statefile_config_path
 
     config = (applied or {}).get("config")
     recorded = str(config.get("path") or "") if isinstance(config, Mapping) else ""

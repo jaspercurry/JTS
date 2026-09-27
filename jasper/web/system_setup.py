@@ -36,6 +36,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..platform import systemd
+from . import _wizard_cli
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
@@ -182,13 +184,10 @@ def _make_handler(
 def make_server(target, *, control_base: str = DEFAULT_CONTROL_BASE) -> ThreadingHTTPServer:
     """Build the dashboard server. `target` is a socket / (host, port)
     tuple / int port per systemd.make_http_server's contract."""
-    from ..platform import systemd
     return systemd.make_http_server(target, _make_handler(control_base))
 
 
 def main(argv: list[str] | None = None) -> int:
-    from . import _wizard_cli
-
     return _wizard_cli.run_wizard_cli(
         "jasper-system-web",
         "Status dashboard at /system/ and /system/audio/ for JTS",

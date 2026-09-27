@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import os
 from typing import TYPE_CHECKING, Any
 
+from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import utc_now_iso
 
 # httpx is imported lazily inside the fetch helpers — this module is
@@ -261,10 +261,6 @@ def load_cache(path: str = DEFAULT_CACHE_PATH) -> dict[str, DiscoverySnapshot]:
 
 
 def _write_cache(path: str, snapshots: dict[str, DiscoverySnapshot]) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp = path + ".tmp"
     payload = {
         "version": 1,
         "providers": {
@@ -277,18 +273,7 @@ def _write_cache(path: str, snapshots: dict[str, DiscoverySnapshot]) -> None:
             for provider_id, snapshot in sorted(snapshots.items())
         },
     }
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f, indent=2, sort_keys=True)
-            f.write("\n")
-    except Exception:  # noqa: BLE001
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    os.replace(tmp, path)
+    atomic_write_json(path, payload, mode=0o600, group_from_parent=False)
 
 
 def refresh_provider_cache(

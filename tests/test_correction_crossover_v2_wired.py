@@ -8,15 +8,19 @@ from __future__ import annotations
 
 from tests.crossover_v2_fixtures import _inline_spec
 
-from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
+from jasper.active_speaker.round_copy import coverage_lines
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
+from jasper.active_speaker.crossover_v2.spatial import analysis_curve_records
 from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
 import io
+import json
 import logging
 import threading
 from dataclasses import replace
@@ -32,7 +36,7 @@ from jasper.active_speaker import arm_walk
 from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
-from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
@@ -46,8 +50,9 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
 from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
-from jasper.audio_measurement.program import build_measure_program
+from jasper.audio_measurement.program import ExcitationProgram, build_measure_program
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
@@ -75,8 +80,10 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
-    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _verify_pilot, plan_context,
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _pilot_obs, _verify_analysis, _verify_pilot,
+    plan_context,
 )
+from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
 
 RATE = 48_000
@@ -540,7 +547,7 @@ def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp
     v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0,
                           "verify": {"outcome": "pass", "code": "verified"}})
     assert v2state.load_v2_state()["updated_at"] == 200.0
-    assert v2state._persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
+    assert v2state.persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
     state = v2state.load_v2_state()
     assert state["verify"] == {"outcome": "pass", "code": "verified"}
     assert state["execution"]["cleanup_fault_code"] == "internal_error"
@@ -582,8 +589,8 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     conductor = _conductor(flow)
     control = signals or plan_run.RunSignals()
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
     request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
@@ -653,7 +660,7 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
     manifest.reason, manifest.detail = reason, detail
     monkeypatch.setattr(plan_run, "run_plan", AsyncMock(return_value=manifest))
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         asyncio.run(runner(session))
     envelope = refusal_envelope(caught.value)
@@ -666,11 +673,11 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
 @pytest.mark.parametrize("step,code", [("capture", "internal_error"), ("compose", "program_not_composed"),
                                       ("analysis", "internal_error")])
 async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, tmp_path, box, step, code):
-    persist, terminal = v2state.persist_conductor_state, v2state._persist_terminal_failure
+    persist, terminal = v2state.persist_conductor_state, v2state.persist_terminal_failure
     runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(v2state, "persist_conductor_state", persist)
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", terminal)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", terminal)
     failure = Mock(side_effect=ValueError("x"))
     if step == "compose":
         monkeypatch.setattr(fakes.play, "run", ProgramPlaybackTransaction(compose=failure, session_volume_plan=None).run)
@@ -684,6 +691,37 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert saved["code"] == manifest.reason == code
     assert saved["detail"] == manifest.detail == "ValueError: x"
     assert fakes.graph.restores == 1
+
+
+@pytest.mark.parametrize("failed, kept", [(("tweeter",), True), (("woofer", "tweeter"), True), (("tweeter",), False)])
+async def test_a_channel_map_stop_names_its_drivers_on_the_page(monkeypatch, tmp_path, box, failed, kept):
+    """The drivers whose CHECK pilots failed the channel map reach the durable failure, low to
+    high, the page's sentence and the round's lines; a verdict from before they were kept names none (#1922)."""
+    persist, terminal = v2state.persist_conductor_state, v2state.persist_terminal_failure
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
+    monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(v2state, "persist_conductor_state", persist)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", terminal)
+    check = replace(_check_analysis(SimpleNamespace(program_id="check"), channel_map=False),
+                    pilots=tuple(_pilot_obs(role, channel_map_ok=role not in failed) for role in ("tweeter", "woofer")))
+
+    def assess(*_args, **_kwargs):
+        verdict = capture_dispatch.assess(check, phase="check")
+        return verdict if kept else replace(verdict, evidence={
+            key: value for key, value in verdict.evidence.items()
+            if not key.startswith(refusal_copy.CHANNEL_MAP_FAILED_PREFIX)})
+
+    monkeypatch.setattr(plan_run, "assess", assess)
+    with pytest.raises(refusal_copy.CrossoverV2Refused):
+        await runner(session)
+    named, code = failed if kept else (), refusal_copy.REASON_CHANNEL_MAP_MISMATCH
+    failure = v2state.load_v2_state()["failure"]
+    assert (failure["code"], failure.get("failed_roles", [])) == (code, list(named))
+    page = build_crossover_envelope_v2(_status(applied=False, failure=failure))
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert page["verdict_text"] == refusal_copy.reason_message(code, spec, failed_roles=named)
+    assert (page["verdict_text"] != spec.message) is kept
+    assert page["verdict_text"] in coverage_lines({}, manifest.to_dict())[-1]
 
 
 @pytest.mark.parametrize("opened", [False, True])
@@ -821,7 +859,7 @@ def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_pa
     })
     monkeypatch.setattr(correction_capture, "_capture_stop_request", signals.request_stop)
     failures = []
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, code, **kw: failures.append(code))
     with pytest.raises(CaptureStopped):
         asyncio.run(runner(session))
     assert manifest.records.snapshots[-1]["reason"] == code
@@ -1053,6 +1091,68 @@ def test_host_binds_session_level_only_to_check_priors(
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 
+@pytest.mark.parametrize("pose,purpose,readable,band", [
+    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", True, ("gate_floor", "far_field_ceiling", ())),
+    ({"pose_kind": "close", "mark_distance_m": 0.015, "pose_driver": "woofer:rear"}, "reference", True,
+     (None, "near_field_limit", ())),
+    ({"pose_kind": "seat", "mark_distance_m": None}, "room", True, (None, None, ())),
+    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", False, None),
+])
+def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, purpose, readable, band):
+    """A banked take carries the band it trusts, from its pose, the declared
+    cone of the drivers that played and the declared room; an unreadable room
+    banks the take without one and says so (ADR-0366 §3)."""
+    records = SimpleNamespace(enrich=None, after_bank=None)
+
+    def declared_room():
+        if not readable:
+            raise ValueError("unreadable")
+        return DeclaredGeometry(speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0)
+
+    monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
+    monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
+    monkeypatch.setattr(correction_run_host, "predictive_program_for_spec", lambda _context: None)
+    monkeypatch.setattr(correction_run_host, "load_declared_geometry", declared_room)
+    correction_run_host.bind_run_door(
+        host=SimpleNamespace(session_volume_plan=lambda: None),
+        device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
+        production=SimpleNamespace(graph=None), conductor=_conductor(FlowSeams(), index_phase_map={1: "verify"}),
+        refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
+        context=SimpleNamespace(radiating_diameter_mm_by_role={"woofer": 114.0, "tweeter": 25.0}),
+    )
+
+    record = records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+                                   "measurement_purpose": purpose, **pose})
+
+    banked = record.get("trusted_band")
+    assert (None if banked is None else (banked["low_source"], banked["high_source"], banked["undeclared"])) == band
+    assert [event["error_type"] for event in event_field_maps(caplog, "correction.take_band_not_banked")] == (
+        [] if readable else ["ValueError"])
+
+
+@pytest.mark.parametrize("declared,pose,distance_m", [
+    (True, {"pose_kind": "bearing", "mark_distance_m": 0.5}, 0.5),
+    (True, {"pose_kind": "bearing", "mark_distance_m": None}, 1.0),
+    (False, {"pose_kind": "bearing", "mark_distance_m": 0.5}, None),
+])
+def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(monkeypatch, declared, pose, distance_m):
+    """A take's gate searches as far as the declared room's first bounce at its
+    own pose's distance, a pose that states none at the mark; with no room
+    declared it searches as far as the default (#3665 item 10)."""
+    fakes = FlowSeams()
+    conductor = _conductor(fakes, index_phase_map={1: "verify"})
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    room = DeclaredGeometry(speaker_height_m=1.4, mic_height_m=1.4, distance_m=2.0)
+    monkeypatch.setattr(correction_run_host, "load_declared_geometry", lambda: room if declared else None)
+    correction_run_host.bind_plan_analysis(conductor, records, evidence={},
+                                           manifest=SimpleNamespace(calibration={}, capture_record=dict))
+
+    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+                          "program": conductor.program_for_phase("verify").to_dict(), **pose})
+
+    assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
+
+
 @pytest.mark.parametrize("scope, phase", [
     ("drivers", "check"), ("drivers", "measure"), ("timing", "entry_baseline"),
     ("candidate", "verify"), ("candidate_branches", "lateral"),
@@ -1128,7 +1228,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     session = SimpleNamespace(session_id=manifest.run_id)
     door = _run_door(tmp_path, box, fakes, manifest, records)
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "_persist_execution_result", lambda *a, **k: None)
+    monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
     signals = plan_run.RunSignals()
     run = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
@@ -1158,12 +1258,19 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert len(raw) == record["wav_bytes"]
     assert decode_wav_to_mono(raw)[0].size == 32
     if analysis_error is not None:
-        assert "capture_calibration" not in record
+        assert "capture_calibration" not in record and "curves" not in record
         assert record["analysis_error"] == {
             "code": refusal_copy.REASON_INTERNAL_ERROR, "error_type": type(analysis_error).__name__,
         }
         return
     assert "analysis_error" not in record
+    program = ExcitationProgram.from_dict(record["program"])
+    curves = analysis_curve_records(_verify_analysis(program), program)
+    # Only a room take banks its curves (ADR-0373); every take's reach its run-manifest row.
+    assert record.get("curves") == (curves if pose.get("kind") == "seat" else None)
+    manifest, = (tmp_path / "sessions").rglob(RUN_MANIFEST_FILENAME)
+    assert [take["curve"] for group in json.loads(manifest.read_text())["sets"]
+            for take in group["takes"]] == curves != []
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)

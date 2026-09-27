@@ -8,10 +8,17 @@ Three families, one owner: the per-frequency cut depth the cross-position
 spread supports; the taper that returns the correction to flat below the
 ceiling (`See ADR-0256` rules 1-2 — the ceiling is the applied tune's trusted
 floor and arrives here as an argument, never derived); and the evidence a
-proposed low-frequency BOOST must show before it is admitted
-(`See docs/room-correction-regime-plan.md` D5: spatial persistence, a modally
-plausible shape, bounded headroom). A preference tilt is Layer 4 and is never
-measured, so no target curve lives here.
+proposed low-frequency BOOST must show before it is admitted. A preference
+tilt is Layer 4 and is never measured, so no target curve lives here.
+
+The boost rule (`See ADR-0369`): a boost spends headroom, so it is admitted
+only on the room's own spatial evidence — a dip that persists across
+positions, shaped like a room mode rather than an interference null (which EQ
+cannot fill), within bounded headroom. One seat cannot establish persistence:
+repeating one seat reduces random error but is no spatial survey. A gated
+high-frequency interference registry cannot classify a low-frequency room
+null. An average dip is not permission to spend headroom on an unresolved
+cancellation.
 
 Nothing here reads a file, knows what a candidate is, or decides policy: a
 caller supplies the median, the spread and the ceiling, and gets arrays and
@@ -77,9 +84,7 @@ _SIGMA_EPSILON_DB: float = 1e-6
 #: Span of the taper below the ceiling, in octaves (ADR-0256 rule 2).
 ROOM_TAPER_OCTAVES: float = 1.0 / 3.0
 
-# Boost admission. `See docs/room-correction-regime-plan.md` D5: one seat
-# cannot establish spatial persistence, and an average dip is not permission
-# to spend headroom on an unresolved cancellation.
+# Boost admission: the module docstring's boost rule.
 ROOM_BOOST_MIN_POSITIONS: int = 3
 ROOM_BOOST_PRESENCE_MIN_FRACTION: float = 0.7
 #: A position sees the dip when its own level sits at least this far below
@@ -262,11 +267,10 @@ def admit_boost(
 
     ``deviations_db`` is positions x bins, each row a position's deviation
     FROM ``median_db`` on the ``freqs_hz`` grid. The dip is evaluated at the
-    nearest grid bin. Refusals are ordered as D5 states the claims: enough
-    positions, then a dip deep enough to matter and shallow enough to be a
-    mode rather than a null, then wide enough for a Q <= 8 bell, then present
-    at enough positions. Never raises: an unusable input is an un-admitted
-    finding with a reason.
+    nearest grid bin. Refusals are ordered: enough positions, then a dip deep
+    enough to matter and shallow enough to be a mode rather than a null, then
+    wide enough for a Q <= 8 bell, then present at enough positions. Never
+    raises: an unusable input is an un-admitted finding with a reason.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     median = np.asarray(median_db, dtype=np.float64)

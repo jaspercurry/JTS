@@ -42,7 +42,7 @@ REFUSE_PROGRAM_UNMATCHED = "round_program_hash_unmatched"
 REFUSE_RADIATED_BAND_MISSING = "round_radiated_band_missing"
 REFUSE_CAPTURE_UNREADABLE = "round_capture_unreadable"
 #: A branch role was asked of a take whose record kept no branch diagnostic;
-#: only a take played in the ``branches`` regime keeps one (#5632 F8).
+#: only a take played in the ``branches`` regime keeps one (#5632).
 REFUSE_BRANCH_DIAGNOSTIC_MISSING = "round_branch_diagnostic_missing"
 #: A role was asked of a take that kept impulses, none of them for that role.
 REFUSE_ROLE_NOT_RECORDED = "round_role_not_recorded"
@@ -191,7 +191,7 @@ def radiated_band_of(
     Public because :mod:`.feature_classifier` asks the same question of the
     sidecars it loads itself. Absent yields ``None`` rather than a default
     span: the un-intersected band priced a tweeter from 357 Hz where it has no
-    output and over-reported by 3x (E5, #1969).
+    output and over-reported by 3x (#1969).
     """
     los: list[float] = []
     his: list[float] = []
@@ -523,7 +523,8 @@ def _capture_response(
         }) from exc
 
 
-# Published close-reference refusal names also serve the shared selector.
+# Published names the shared selector raises; the close-reference view that
+# named them retired (ADR-0366 §5).
 REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND = "close_reference_unreadable_round"
 REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 

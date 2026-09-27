@@ -16,16 +16,17 @@ both load on a 1 GB Pi).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
-from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.biquad import (
-    RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
+    FilterSpec,
+    filter_response_complex, freq_trig,
 )
+
+from .crossover_section import CrossoverSection
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB
@@ -47,17 +48,6 @@ HEADROOM_MARGIN_DB: float = 1.0
 # biquads evaluate a cascade's analytic zero to a residue of order 1e-4 dB; 0.01 dB is
 # two orders above that.
 _PEAK_EPS_DB: float = 0.01
-
-# Domain every chain peak is taken over: essentially DC to Nyquist, appended to every
-# evaluation grid. A shelf's extreme is at an EDGE, not its corner (a 20 Hz/20 kHz grid
-# reads a +12 dB Lowshelf at 30 Hz as 9.69 dB); sampling both edges captures the
-# asymptote exactly.
-_GRID_EDGE_LO_HZ: float = 1.0
-_GRID_EDGE_HI_HZ: float = 0.4999 * RESPONSE_SAMPLE_RATE_HZ
-
-# Top of the representable band, where a filter may still SIT (not where background
-# samples stop -- see ``_evaluation_grid``).
-_NYQUIST_HZ: float = 0.5 * RESPONSE_SAMPLE_RATE_HZ
 
 # BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
@@ -87,14 +77,14 @@ _GRID_HF_TAIL_STEP_HZ: float = 25.0
 # pays none of it.
 CHAIN_GRID_HZ: np.ndarray = np.unique(np.concatenate([
     np.geomspace(
-        _GRID_EDGE_LO_HZ,
-        _GRID_EDGE_HI_HZ,
+        EVALUABLE_HZ_MIN,
+        EVALUABLE_HZ_MAX,
         round(
             _CHAIN_GRID_POINTS_PER_OCTAVE
-            * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)
+            * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN)
         ) + 1,
     ),
-    np.arange(_GRID_HF_TAIL_FROM_HZ, _GRID_EDGE_HI_HZ, _GRID_HF_TAIL_STEP_HZ),
+    np.arange(_GRID_HF_TAIL_FROM_HZ, EVALUABLE_HZ_MAX, _GRID_HF_TAIL_STEP_HZ),
 ]))
 CHAIN_GRID_HZ.flags.writeable = False
 
@@ -111,19 +101,20 @@ def _evaluation_grid(
     filters: Sequence[Mapping[str, Any]], grid_hz: np.ndarray | None,
 ) -> np.ndarray:
     """``grid_hz`` (or :data:`CHAIN_GRID_HZ`) unioned with every filter's own centre frequency
-    and the two domain edges. Tamper hardening, not optional: a peak on a fixed log grid
-    is blind to anything narrower than its spacing (a +12 dB Q-2000 Peaking filter
-    between two bins reads -0.0 dB). A centre goes in at its OWN frequency up to
-    NYQUIST, not merely :data:`_GRID_EDGE_HI_HZ`; one at or above Nyquist is left to the
-    background grid, reading the mirrored extremum to within 0.103 dB. Each adjacent
-    centre pair's geometric midpoint goes in too -- centres alone under-read a
-    between-centres peak by up to 0.58 dB.
+    and the two domain edges, because a shelf's extreme is at an EDGE, not its corner (a
+    20 Hz/20 kHz grid reads a +12 dB Lowshelf at 30 Hz as 9.69 dB). Tamper hardening, not
+    optional: a peak on a fixed log grid is blind to anything narrower than its spacing (a
+    +12 dB Q-2000 Peaking filter between two bins reads -0.0 dB). A centre goes in at its
+    OWN frequency up to NYQUIST, not merely :data:`~jasper.biquad.EVALUABLE_HZ_MAX`; one at
+    or above Nyquist is left to the background grid, reading the mirrored extremum to
+    within 0.103 dB. Each adjacent centre pair's geometric midpoint goes in too -- centres
+    alone under-read a between-centres peak by up to 0.58 dB.
     """
     base = CHAIN_GRID_HZ if grid_hz is None else np.asarray(grid_hz, dtype=np.float64)
-    extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ]
+    extra = [EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX]
     centres = sorted(
         freq for entry in filters
-        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < _NYQUIST_HZ
+        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < RESPONSE_NYQUIST_HZ
     )
     extra.extend(centres)
     extra.extend(
@@ -136,7 +127,7 @@ def _evaluation_grid(
 def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
     """One sample per shelf, out past its corner where its extremum actually is (#2846).
 
-    Below ``_GRID_EDGE_LO_HZ`` for a Lowshelf, which is legal and deliberate: a grid
+    Below ``EVALUABLE_HZ_MIN`` for a Lowshelf, which is legal and deliberate: a grid
     point is a place to evaluate the digital cascade, not a claim about the domain. A
     Highshelf's sample is capped at Nyquist, where the bilinear transform lands its
     infinite-frequency asymptote exactly.
@@ -149,45 +140,9 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
             continue
         out.append(
             freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
-            else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
+            else min(freq * _SHELF_ASYMPTOTE_RATIO, RESPONSE_NYQUIST_HZ)
         )
     return out
-
-
-@dataclass(frozen=True)
-class CrossoverSection:
-    """One Linkwitz-Riley section a branch runs through. ``order`` is the LR order the graph
-    emits (:data:`jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`).
-    """
-
-    fc_hz: float
-    order: int
-    highpass: bool
-
-
-def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection, ...]]:
-    """Map each driver role to the Linkwitz-Riley sections its branch runs through, from a
-    preset's crossover regions. The single derivation for both the session and the
-    emitter, so the two cannot drift apart. A role with no region gets no sections (runs
-    FULL RANGE in the emitted graph). ``regions`` are duck-typed on
-    ``lower_driver``/``upper_driver``/``fc_hz``/``order``, mirroring
-    ``camilla_yaml._emit_baseline_driver_definitions``.
-    """
-    out: dict[str, list[CrossoverSection]] = {}
-    for region in regions:
-        fc_hz = float(getattr(region, "fc_hz", 0.0))
-        order = int(getattr(region, "order", 0))
-        lower = getattr(region, "lower_driver", None)
-        upper = getattr(region, "upper_driver", None)
-        if lower is not None:
-            out.setdefault(str(lower), []).append(
-                CrossoverSection(fc_hz=fc_hz, order=order, highpass=False)
-            )
-        if upper is not None:
-            out.setdefault(str(upper), []).append(
-                CrossoverSection(fc_hz=fc_hz, order=order, highpass=True)
-            )
-    return {role: tuple(sections) for role, sections in out.items()}
 
 
 class RoleProtectionDisagrees(ValueError):
@@ -372,110 +327,6 @@ def radiating_band_hz(
     return lo_hz, hi_hz
 
 
-# ka at which a circular piston is taken to be BEAMING outright, named by
-# #1675's owner ruling, disclosure only (ADR-0011). ka=2 is roughly -6 dB at
-# 45 deg off-axis (checked in
-# docs/research/2026-07-23-driver-linearization/03-fact-check.md claim L).
-BEAMING_KA = 2.0
-
-
-def beaming_onset_hz(radiating_diameter_mm: float, *, ka: float = BEAMING_KA) -> float:
-    """Frequency at which a piston of this diameter reaches ``ka``. ``f = ka*c / (2*pi*a)``;
-    JTS3 woofer's 114 mm diameter gives 957.7 Hz at ka=1. GEOMETRY, not DSP-fixable
-    (#1675). Non-positive input raises.
-    """
-    if not math.isfinite(radiating_diameter_mm) or radiating_diameter_mm <= 0.0:
-        raise ValueError(
-            f"radiating diameter must be positive (got {radiating_diameter_mm})"
-        )
-    if not math.isfinite(ka) or ka <= 0.0:
-        raise ValueError(f"ka must be positive (got {ka})")
-    radius_m = float(radiating_diameter_mm) / 2000.0
-    return ka * DEFAULT_SOUND_SPEED_M_S / (2.0 * math.pi * radius_m)
-
-
-#: Driver diameters of margin added to the piston far-field distance by
-#: :func:`recommended_distance`; chosen so #3501's anchor cases land right
-#: (5.5 in/2.5 kHz -> ~12 in, 12 in/500 Hz -> ~25 in, 2.5 in/2.5 kHz -> ~5 in).
-K_MARGIN = 2.0
-
-#: Placement slop the operator is held to, metres (+/- 0.5 in); priced by
-#: :func:`placement_tolerance_db`.
-PLACEMENT_TOLERANCE_M = 0.0127
-
-#: Aim slop that costs nothing measurable in a close capture's validity band
-#: (woofer is omnidirectional there).
-AIM_TOLERANCE_DEG = 5.0
-
-
-def far_field_ceiling_hz(
-    diameter_m: float,
-    distance_m: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> float:
-    """Highest frequency at which ``distance_m`` is still the driver's far field. Rayleigh
-    distance ``2*a**2/lambda`` GROWS with frequency, so solving for ``f`` gives a
-    CEILING: near-field at HIGH frequencies, never low ones.
-    """
-    radius = 0.5 * float(diameter_m)
-    if radius <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    return float(sound_speed_m_s) * float(distance_m) / (2.0 * radius**2)
-
-
-def placement_tolerance_db(
-    distance_m: float, *, tolerance_m: float = PLACEMENT_TOLERANCE_M
-) -> float:
-    """MAGNITUDE of the 1/r correction's uncertainty under ``+/- tolerance_m`` of mic
-    placement, dB. An uncertainty, never a signed gain to apply.
-    """
-    return 20.0 * math.log10((float(distance_m) + float(tolerance_m)) / float(distance_m))
-
-
-def recommended_distance(
-    diameter_m: float,
-    fc_hz: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> dict[str, Any]:
-    """Where to put the mic for a close reference of this driver (#3501). ``r =
-    2*a**2/lambda_top + K_MARGIN*diameter`` at ``f_top = fc/2``; both terms returned
-    separately (margin dominates, far-field term is the correction).
-    """
-    diameter = float(diameter_m)
-    if diameter <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    if fc_hz <= 0.0:
-        raise ValueError(f"fc must be positive, got {fc_hz}")
-    f_top = 0.5 * float(fc_hz)
-    lambda_top = float(sound_speed_m_s) / f_top
-    radius = 0.5 * diameter
-    far_field_m = 2.0 * radius**2 / lambda_top
-    margin_m = K_MARGIN * diameter
-    distance_m = far_field_m + margin_m
-    return {
-        "driver_diameter_m": diameter,
-        "driver_diameter_in": diameter / METERS_PER_INCH,
-        "fc_hz": float(fc_hz),
-        "band_top_hz": f_top,
-        "wavelength_top_m": lambda_top,
-        "far_field_term_m": far_field_m,
-        "margin_term_m": margin_m,
-        "k_margin": K_MARGIN,
-        "distance_m": distance_m,
-        "distance_in": distance_m / METERS_PER_INCH,
-        "direct_gain_over_1m_db": 20.0 * math.log10(1.0 / distance_m),
-        "placement_tolerance_m": PLACEMENT_TOLERANCE_M,
-        "placement_tolerance_db": placement_tolerance_db(distance_m),
-        "aim_tolerance_deg": AIM_TOLERANCE_DEG,
-        "far_field_ceiling_hz": far_field_ceiling_hz(
-            diameter, distance_m, sound_speed_m_s=sound_speed_m_s
-        ),
-        "sound_speed_m_s": float(sound_speed_m_s),
-    }
-
-
 def chain_response(
     filters: Sequence[Mapping[str, Any]], freqs_hz: np.ndarray,
 ) -> np.ndarray:
@@ -549,7 +400,7 @@ def camilla_evaluation_grid(filters: Sequence[Mapping[str, Any]]) -> np.ndarray:
         for octaves in _CENTRE_NEIGHBOUR_OCTAVES:
             for ratio in (2.0 ** octaves, 2.0 ** -octaves):
                 freq = record["freq"] * ratio
-                if 0.0 < freq <= _NYQUIST_HZ:
+                if 0.0 < freq <= RESPONSE_NYQUIST_HZ:
                     neighbours.append(freq)
     grid = _evaluation_grid(records, None)
     if not neighbours:
@@ -720,7 +571,7 @@ def branch_chain_peak_db(
     """The evaluated peak of ``crossover ⊗ linearization ⊗ trim``, dB (#1808). The real gain
     this branch applies to the program at its loudest frequency; positive means the
     pre-split headroom has to absorb it. Replaces the per-branch SUM of positive filter
-    gains, which on the 2026-07-28 JTS3 profile charged 22.458 dB against a realized
+    gains, which on a real JTS3 profile charged 22.458 dB against a realized
     peak of +4.00 dB. ``trim_db`` is the branch's own attenuation (always <= 0), added
     exactly. Cut-only short-circuit: with no positive filter gain the answer is ``min(0,
     trim_db)`` without evaluating anything (numpy-free).
@@ -755,7 +606,7 @@ def branch_chain_peak(
 
 def headroom_charge_db(peak_db: float) -> float:
     """Program-domain attenuation a branch peaking at ``peak_db`` needs. ``0.0`` for any chain
-    that never exceeds unity (owner ruling 2026-07-28, #1808); otherwise the peak plus
+    that never exceeds unity (#1808); otherwise the peak plus
     :data:`HEADROOM_MARGIN_DB`.
     """
     if peak_db <= _PEAK_EPS_DB:

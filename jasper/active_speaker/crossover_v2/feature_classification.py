@@ -5,8 +5,8 @@
 """What KIND of feature is that, read from a banked verdict — nothing else.
 The verdict FORMAT, not the pipeline: :mod:`.feature_classifier` computes the
 number (``docs/active-speaker-tuning-layers-design.md`` stage P3 rule 1).
-Verdict strings are the 2026-08-19 lab's spelling, character for character —
-re-spelling would stop matching records on disk. ``defect-*`` is necessary,
+Verdict strings must match banked records byte for byte — re-spelling would
+stop matching records on disk. ``defect-*`` is necessary,
 NOT sufficient (run-log §9.2): the two bars remove features sign-of-filter is
 the wrong instrument for; they do not recommend. An untypeable row is
 dropped, never turned into ``ambiguous``.
@@ -93,7 +93,7 @@ CLASSIFICATIONS = frozenset({
 #: the verdicts are read off fractional-octave-smoothed curves, so a centre
 #: is not locatable finer than the smoothing width. It absorbs the
 #: evidence's own locating error and does NOT keep a filter away from its
-#: neighbours — two of the 2026-08-19 record's eight gaps (0.143 and 0.157
+#: neighbours — two of a reference record's eight gaps (0.143 and 0.157
 #: octaves) sit inside it, both peak–dip pairs, which is why
 #: :func:`defect_cuttable_at` lets the NEAREST verdict decide. Symmetric in
 #: octaves rather than Hz, like every other frequency tolerance here.
@@ -157,8 +157,8 @@ UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 #: because it contains both and the evidence publishing it cannot separate
 #: them. Deliberately not a member of :data:`UNCERTAINTY_KINDS`: a third
 #: member would dress a refusal up as a third answer. A figure carrying it
-#: is published apart from a block's ``fields`` list — see the evidence
-#: packet's cross-seat sigma ``uncertainty.unseparated``.
+#: is published apart from a block's ``fields`` list, under
+#: ``uncertainty.unseparated``.
 UNCERTAINTY_UNSEPARATED = "unseparated"
 
 #: Which :data:`LAB_ROW_FIELDS` columns ARE uncertainties, and of what. All
@@ -244,7 +244,7 @@ class FeatureVerdict:
     gate_verdict: str
     #: ``"high"`` / ``"medium"`` / ``"low"`` — the shared
     #: :data:`~jasper.audio_measurement.quality_model.TrustLevel` words. An
-    #: artifact banked before 2026-08-22 carries ``"med"`` and is normalised on
+    #: artifact using the legacy spelling carries ``"med"`` and is normalised on
     #: the way in by :func:`read_feature_verdicts`; any other string is kept
     #: verbatim, since an unknown value is evidence about the writer.
     confidence: str
@@ -253,8 +253,8 @@ class FeatureVerdict:
     #: its target is a different and cheaper mistake than one wider than it.
     measured_q: float | None
     #: How far the feature departs from its neighbours, dB, unsigned, when the
-    #: artifact carried one — a DIP's own depth. Optional because no row of the
-    #: 2026-08-19 record carries it, which is why nothing gates on it; it rides
+    #: artifact carried one — a DIP's own depth. Optional because no row of a
+    #: reference record carries it, which is why nothing gates on it; it rides
     #: the receipt's ``classification_basis`` for a reader to weigh.
     depth_db: float | None
 
@@ -325,8 +325,8 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-#: The one legacy spelling this column has ever carried. The classifier wrote
-#: ``med`` until 2026-08-22 and those artifacts are on disk forever, so the
+#: The one legacy spelling this column has ever carried. The classifier used to
+#: write ``med`` and those artifacts are on disk forever, so the
 #: READER maps it and only the reader does. A one-entry table rather than
 #: an inline ``if``: the next legacy spelling is a row here.
 _LEGACY_CONFIDENCE: dict[str, str] = {"med": "medium"}
@@ -355,7 +355,7 @@ def defect_cuttable_at(
     ``tolerance_octaves``, whatever it said, or ``None`` when nothing was
     classified there; ``vouching`` is that same verdict only when its
     classification is :data:`DEFECT_CUTTABLE`, never a more agreeable one
-    standing further away. Two of the 2026-08-19 record's eight gaps are
+    standing further away. Two of a reference record's eight gaps are
     narrower than the tolerance and both are peak–dip pairs, so an
     any-in-radius rule lets a cut aimed at the 4582 Hz minimum-phase dip cite
     the 4149 Hz peak, and cutting a minimum-phase dip deepens it.

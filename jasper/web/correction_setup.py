@@ -180,7 +180,7 @@ def _dispatch_crossover(handler: _Handler) -> None:
     path = route_path(handler.path)
 
     if path == "/crossover/v2/session":
-        # v2 commission sessions (Wave 5a). ValueError covers both the
+        # v2 commission sessions. ValueError covers both the
         # host's typed CrossoverV2Refused (a subclass) and shared
         # precondition refusals — same contract as the capture routes.
         try:
@@ -457,7 +457,7 @@ def _get_crossover_status(handler: _Handler) -> None:
     from . import correction_crossover_flow
 
     def _crossover_status(_handler):
-        # W6.1 E3: lazy wall-clock-ceiling enforcement on read —
+        # Lazy wall-clock-ceiling enforcement on read —
         # a session volume that outlived its 1800 s ceiling is
         # force-drained here (cheap in-memory stale check first).
         correction_capture._enforce_session_volume_ceiling(v2volume)
@@ -472,7 +472,7 @@ def _get_crossover_envelope(handler: _Handler) -> None:
     from . import correction_crossover_flow
 
     def _crossover_envelope(_handler):
-        # W6.1 E3: the wizard and remote driver both poll this route,
+        # The wizard and remote driver both poll this route,
         # so it promptly drains a walked-away or slow-driver session.
         correction_capture._enforce_session_volume_ceiling(v2volume)
         return correction_crossover_flow.handle_envelope(
@@ -593,7 +593,7 @@ _POST_ROUTES = {
     # remote tier or from the person holding the tape on a hand-walked wired
     # round (#2879).
     "/crossover/v2/position-ready": _dispatch_crossover,
-    # The WIRED session's all-spots-measured confirmation (#2662 W2b) — the
+    # The WIRED session's all-spots-measured confirmation (#2662) — the
     # local stand-in for the phone's authenticated completion event.
     "/crossover/v2/complete": _dispatch_crossover,
     # The WIRED session's per-take retake — the local stand-in for the phone's

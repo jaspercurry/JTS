@@ -36,9 +36,10 @@ adapter-verb set); the settle never goes under :data:`SETTLE_FLOOR_S`,
 validated at configure time and MEASURED per release.
 
 Attestation, not a nanny: the adapter requires two ``--confirm-*`` flags per
-move; the operator answers ONCE with ``--attest-rig-clear``, mapped to both
-flags on every move. A power sign is the one thing that voids it, since
-that is when the saved zero may no longer be the acoustic axis.
+move; the operator answers ONCE with ``--attest-rig-clear``, which the CLI
+checks before a walk starts, and every move carries both flags. A power sign
+is the one thing that voids it, since that is when the saved zero may no
+longer be the acoustic axis.
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ logger = logging.getLogger(__name__)
 #: pose it says).
 SETTLE_FLOOR_S = 10.0
 
-#: The settle proven on hardware (2026-08-19): the value the graded night
+#: The settle proven on hardware: the value the graded night
 #: ran, spending 5% of the gate's 600 s hold.
 DEFAULT_SETTLE_S = 30.0
 
@@ -336,7 +337,6 @@ class TurntableMover:
     """
 
     tool_path: Path = DEFAULT_TOOL_PATH
-    attest_rig_clear: bool = False
     timeout_s: float = 300.0
     python: str = field(default_factory=lambda: sys.executable)
     run: Callable[..., Any] = subprocess.run
@@ -400,10 +400,6 @@ class TurntableMover:
         return parse_power(payload)
 
     def move_to(self, degrees: int) -> bool:
-        if not self.attest_rig_clear:
-            # Unreachable via the CLI; kept since this class is directly
-            # constructible and confirmations must never be forged by default.
-            raise ArmWalkRefused("moving needs an explicit rig-clear attestation")
         # The vendor stop request is the movement handshake, not a brake.
         self.move_failure = {}
         code, payload = self._invoke("stop")
@@ -907,8 +903,7 @@ class ArmWalk:
                 moved = self._mover.move_to(0)
             self._sleep(PARK_SETTLE_S)
             offset = self._mover.offset_deg()
-        except (ArmWalkRefused, OSError, RuntimeError, ValueError,
-                subprocess.SubprocessError) as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             # Reported, not raised: this runs in the walk's own `finally`, and
             # raising would replace the walk's verdict with the park's.
             self._trail.emit("parked", level=logging.ERROR, ok=False,
@@ -976,8 +971,8 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     an unbroken run of them is named for what it is. A capture block is not by
     itself a live session -- the wizard keeps the FINISHED session's block
     in its one capture slot, so a terminal ``status`` must be read, not merely
-    the block's presence (measured 2026-08-21: a closed jts3 round was
-    reported stuck 300 s later because the walk had no way to see the close).
+    the block's presence (measured: a closed jts3 round was reported stuck
+    300 s later because the walk had no way to see the close).
     """
     if status is None:
         return Poll(None, True, None, readable=False)

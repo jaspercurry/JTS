@@ -31,10 +31,11 @@ from typing import Any, Mapping
 from jasper.atomic_io import atomic_write_json, fsync_directory
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionAuthority,
 )
+from jasper.json_fields import canonical_json_bytes
 
 from .bundles import (
     ensure_directory_mode,
@@ -109,13 +110,7 @@ class _PublishOutcomeUnknown(OSError):
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
     try:
-        return json.dumps(
-            dict(value),
-            allow_nan=False,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
+        return canonical_json_bytes(dict(value))
     except (TypeError, ValueError) as exc:
         raise CommissioningEvidenceStoreError(
             CommissioningEvidenceStoreErrorCode.MALFORMED,

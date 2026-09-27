@@ -33,11 +33,10 @@ from ...doctor_contract import (
     summarize,
 )
 from ...fanin.latency_mode import (
-    LatencyApplyError,
-    apply_requested_mode,
     normalize_mode,
     options as _usb_latency_options,
     read_state as _read_usb_latency_state,
+    write_requested_mode,
 )
 from ...local_sources import (
     local_source_audio_refresh_units,
@@ -45,7 +44,7 @@ from ...local_sources import (
 )
 from ...log_event import log_event
 from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
-from .. import aec_endpoints
+from ...source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker
@@ -72,6 +71,16 @@ _diagnostics_refresh_lock = threading.Lock()
 _diagnostics_refresh_started_at: float | None = None
 
 
+def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
 def _diagnostics_unit_in_flight() -> bool:
     """Is the doctor oneshot still running? Asked of systemd, not inferred from
     the elapsed time, so a run that died WITHOUT writing a report (OOM-killed,
@@ -82,7 +91,7 @@ def _diagnostics_unit_in_flight() -> bool:
     per request. A `oneshot` reads `activating` while it runs.
     """
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "show", "--property=ActiveState", "--value", "jasper-doctor-json.service",
         )
     except (subprocess.SubprocessError, OSError):
@@ -118,7 +127,7 @@ def _start_diagnostics_refresh(
     with _diagnostics_refresh_lock:
         _diagnostics_refresh_started_at = now
     try:
-        proc = aec_endpoints._run_unit_systemctl(
+        proc = _run_unit_systemctl(
             "--no-block", "start", "jasper-doctor-json.service",
         )
         error = "" if proc.returncode == 0 else (
@@ -660,8 +669,8 @@ class SystemRoutes(ControlHandlerMixin):
             self._send_json({"error": str(e)}, status=400)
             return
         try:
-            apply_requested_mode(mode)
-        except (OSError, LatencyApplyError) as e:
+            write_requested_mode(mode)
+        except OSError as e:
             logger.exception("USB latency apply failed")
             self._send_json(
                 {
@@ -669,6 +678,22 @@ class SystemRoutes(ControlHandlerMixin):
                     "selected_mode": mode,
                 },
                 status=502,
+            )
+            return
+        # Through the unit, never in-process: its pass reads the saved mode
+        # under the entry lock and the install fence (#5868).
+        result = restart_broker.manage_units(
+            USB_COUPLING_UNIT,
+            verb="start",
+            reason="usb_latency_mode",
+            no_block=False,
+            timeout=unit_action_timeout_sec(USB_COUPLING_UNIT, "start"),
+        )
+        if not result.get("ok"):
+            self._send_refused(
+                error=result.get("error") or result.get("stderr") or f"rc={result.get('rc')}",
+                code="usb_latency_apply_failed",
+                selected_mode=mode,
             )
             return
         _mark_usb_latency_applying(mode)

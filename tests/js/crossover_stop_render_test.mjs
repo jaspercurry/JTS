@@ -31,8 +31,6 @@ let postResponse = { capture: { status: "stopping" } };
 // Lets a test hold a postJSON call pending so it can inspect render() state
 // while that request is still in flight, then release it explicitly.
 let postGate = null;
-// PR-7's before/after visualization (./cloud.js) is out of scope for this
-// harness — it only pins the Stop-measurement flow — so a no-op stands in.
 const { elements, render, runAction, stopCapture } = await crossoverMainModule({
   extraStubs: {
     getJSON: async () => nextEnvelope,
@@ -40,8 +38,6 @@ const { elements, render, runAction, stopCapture } = await crossoverMainModule({
       if (postGate) await postGate;
       return postResponse;
     },
-    renderCloud: () => {},
-    redrawCloudChart: () => {},
   },
   exportNames: ["render", "runAction", "stopCapture"],
 });

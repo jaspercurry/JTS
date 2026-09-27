@@ -15,6 +15,7 @@ import numpy as np
 from scipy.optimize import minimize_scalar
 
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
+from jasper.audio_measurement.alignment import _bandlimit
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
     OVERLAP_OCTAVE_RATIO,
@@ -43,6 +44,7 @@ from .model import (
     IR_POST_MS,
     IR_PRE_MS,
     logger,
+    MeasurementGeometry,
     SummedAlignmentReference,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
@@ -50,14 +52,15 @@ from .model import (
     RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SEARCH_STEP_DB,
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
+    SEGMENT_SEARCH_S,
 )
-from .signals import _band_average_db, _complex_tf
+from .signals import _above_modal_tails_hz, _band_average_db, _complex_tf
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
 
 
-def _deconvolve_window(
+def deconvolve_window(
     capture: np.ndarray,
     segment: ProgramSegment,
     anchor: int,
@@ -129,6 +132,29 @@ def recorded_impulse(
     )
 
 
+def _sweep_over_ambient_db(
+    full_ir: np.ndarray, origin_index: int, segment: ProgramSegment, ambient: np.ndarray, sample_rate: int,
+) -> float | None:
+    """dB by which one deconvolved sweep's peak within :data:`SEGMENT_SEARCH_S` of its
+    scheduled start clears the loudest sample, over the span :func:`recorded_impulse`
+    keeps, of the take's ambient window repeated to the same length and deconvolved the
+    same way (#5672). Read above :data:`WITNESS_BAND_FLOOR_HZ` where the sweep reaches
+    past it: below it, the floor a take hears after its pilots can sit well above the
+    floor of its ambient window. Not ``impulse_shape``'s peak-to-noise (ADR-0355): its noise
+    is the 40 ms before an onset that noise alone can place, and this needs a scheduled silence.
+    """
+    tail = round(DEFAULT_VERIFY_TAIL_S * sample_rate)
+    room, _ = deconvolve_window(np.resize(ambient, origin_index + segment.n_samples + tail),
+                                 segment, origin_index, sample_rate)
+    band = _above_modal_tails_hz(segment)
+    if band is not None:
+        full_ir, room = (_bandlimit(ir, sample_rate, *band) for ir in (full_ir, room))
+    search = round(SEGMENT_SEARCH_S * sample_rate)
+    peak = float(np.max(np.abs(full_ir[max(0, origin_index - search):origin_index + search + 1])))
+    floor = float(np.max(np.abs(room[:kept_end(origin_index, room.size, sample_rate)])))
+    return 20.0 * math.log10(peak / floor) if peak > 0 and floor > 0 else None
+
+
 def _gate_floor_hz(fragment: Mapping[str, Any]) -> float | None:
     """Validity floor from a gate fragment, or ``None`` when ungateable.
 
@@ -167,7 +193,7 @@ def _raw_sweep_segment(
     capture: np.ndarray, segment: ProgramSegment, anchor: int,
 ) -> np.ndarray:
     """The raw captured samples of one sweep segment, at the SAME schedule
-    anchor :func:`_deconvolve_window` uses.
+    anchor :func:`deconvolve_window` uses.
 
     Deliberately the scheduled window rather than the located one: the SNR
     verdict describes the response this anchor produced, so a level read
@@ -274,7 +300,7 @@ def _driver_snr_block(
     return block
 
 
-def _driver_response(
+def driver_response(
     role: str,
     full_ir: np.ndarray,
     sample_rate: int,
@@ -285,15 +311,17 @@ def _driver_response(
     n_fft: int,
     radiated_band_hz: tuple[float, float] | None = None,
     capture_segment: np.ndarray | None = None,
-    gate_exempt_reason: str | None = None,
+    geometry: MeasurementGeometry = MeasurementGeometry(),
     preserve_timing: bool = False,
     alignment_band_hz: tuple[float, float] | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
-    ``gate_exempt_reason`` keeps the room in: the response is the arrival
-    window ungated, with :func:`gating.exempt_gating_block` saying why and no
-    validity floor claimed (a seat take, ADR-0260; a near-field one, ADR-0360).
+    ``geometry.gate_exempt_reason`` keeps the room in: the response is the
+    arrival window ungated, with :func:`gating.exempt_gating_block` saying why
+    and no validity floor claimed (a seat take, ADR-0260; a near-field one,
+    ADR-0360). Otherwise the gate searches for a reflection up to
+    ``geometry.declared_first_bounce_s`` (#3665 item 10).
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate
@@ -310,22 +338,23 @@ def _driver_response(
     one. See :func:`_driver_snr_block` for why the verdict cannot be built
     from ``full_ir`` in that case.
     """
+    exempt = geometry.gate_exempt_reason
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
         full_ir, sample_rate, direct_peak_idx=peak_idx,
         pre_arrival_ms=IR_PRE_MS,
         post_arrival_ms=(1000 * DEFAULT_VERIFY_TAIL_S
-                         if gate_exempt_reason is not None else IR_POST_MS),
+                         if exempt is not None else IR_POST_MS),
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    if gate_exempt_reason is not None:
+    if exempt is not None:
         gated_ir = ir
-        gating_block = gating.exempt_gating_block(
-            ir, sample_rate, reason=gate_exempt_reason
-        )
+        gating_block = gating.exempt_gating_block(ir, sample_rate, reason=exempt)
         validity_floor_hz = None
     else:
-        gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+        gated_ir, fragment = gating.gate_impulse_response(
+            ir, sample_rate, declared_first_bounce_s=geometry.declared_first_bounce_s,
+        )
         delta = gate_disclosure.pre_post_gate_delta(
             ir, gated_ir, sample_rate,
             trusted_floor_hz=fragment["f_trusted_hz"],
@@ -370,13 +399,14 @@ def _aligned_branch_tf(
     n_fft: int,
     *,
     calibration: "CalibrationCurve | None",
+    declared_first_bounce_s: float | None = None,
 ):
     """Delay-referenced, gating-consistent complex TF for the sum prediction.
 
     :func:`deconv.direct_arrival_window` places each branch's direct peak at
     the same fixed offset inside the window (bulk delay removed) without a
     circular roll, which would inject a spurious echo. The windowed IR then
-    runs through the SAME adaptive reflection gate :func:`_driver_response`
+    runs through the SAME adaptive reflection gate :func:`driver_response`
     applies — a fixed window alone bakes a room reflection into the
     predicted sum that VERIFY's measured sum has already gated out (traced
     once to a 15 cm desk-bounce producing a spurious ~1125 Hz null).
@@ -387,7 +417,9 @@ def _aligned_branch_tf(
         pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+    gated_ir, fragment = gating.gate_impulse_response(
+        ir, sample_rate, declared_first_bounce_s=declared_first_bounce_s,
+    )
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     return freqs, H, fragment
 
@@ -943,6 +975,6 @@ def solve_ripple_optimal_trim(
     return best_trim, best_ripple, seed_trim_db
 
 
-def _n_fft_for(*irs: np.ndarray) -> int:
+def n_fft_for(*irs: np.ndarray) -> int:
     longest = max(ir.size for ir in irs)
     return max(8192, 1 << (max(longest, 1) - 1).bit_length())

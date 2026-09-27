@@ -47,7 +47,6 @@ OUTPUT_HARDWARE_STATE_KIND = "jts_output_hardware_state"
 
 APPLE_USB_C_DONGLE_DEVICE_ID = APPLE_USB_C_DONGLE_ID
 DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_ID
-DUAL_APPLE_LEGACY_ACTIVE_DEVICE_ID = "dual_apple_usb_c_dac_active_2way"
 
 APPLE_USB_VENDOR_ID, APPLE_USB_PRODUCT_ID = APPLE_USB_C_DONGLE.usb_ids[0].split(
     ":",
@@ -71,8 +70,6 @@ def normalize_output_device_id(raw: str | None) -> str:
             f"output device id must be a string, got {type(raw).__name__}"
         )
     value = (raw or "").strip().strip("'\"").lower().replace("-", "_")
-    if value == DUAL_APPLE_LEGACY_ACTIVE_DEVICE_ID:
-        return DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
     return value or "unknown"
 
 
@@ -234,7 +231,7 @@ class OutputHardwareState:
         which want :attr:`observed_profile_id` instead. Mirrors
         ``apply_observed_single_policy`` /
         ``apply_observed_composite_policy`` in
-        ``deploy/bin/jasper-audio-hardware-reconcile`` bit for bit: a single
+        ``jasper/audio_hardware/reconcile_hardware.py`` bit for bit: a single
         DAC counts only while this record is ``ready`` AND names the card it
         selected; the dual-Apple composite counts as soon as it is named,
         parked or not, because its helper services are driven either way.

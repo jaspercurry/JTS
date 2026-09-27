@@ -19,7 +19,7 @@ from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX, spatial_support
@@ -335,6 +335,26 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
     assert (answer["code"], answer["detail"]["section"]) == ("set_required", "room")
     assert answer["detail"]["evidence"]["sets"] == [{"set_id": f"set-{i}", "candidate_id": f"candidate-{i}",
                                                     "role": "summed", "take_count": 0} for i in range(2)]
+
+
+@pytest.mark.parametrize("named_by", ["bank", "bundle"])
+def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by):
+    """A room view run after the bank is not the round's evidence (ADR-0371)."""
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    round_dir = bank_seat_round(tmp_path)
+    (round_dir / "packet.json").write_text(json.dumps({"room": []}))
+    (round_dir / "room.json").write_text(json.dumps({"median": _room_median()}))
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                "rationale": "room", "sections": {"room": _document()}}))
+    named = str(round_dir if named_by == "bank" else round_inputs(round_dir).session_dir)
+    assert cli.main(["contract", "--round", named, "--section", "room"]) == 0
+    assert json.loads(capsys.readouterr().out)["evidence_status"] == ROOM_NOT_BANKED
+    assert cli.main(["judge", str(path), "--round", named, "--root", str(root)]) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["code"], answer["detail"]["section"], answer["next_action"]["id"]) == (
+        ROOM_NOT_BANKED, "room", "measure_room")
 
 
 @pytest.mark.parametrize("filters,code", [

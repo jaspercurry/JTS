@@ -36,7 +36,7 @@ ROOM_BAND_SPLITS_HZ = (60.0, 120.0)
 BEST_EFFORT_ABOVE_HZ = 16000.0
 SPEC_BANDS = ((GATED_SPEC_LOWER_EDGE_HZ, 2000.0, 1.5), (2000.0, 8000.0, 2.0), (8000.0, BEST_EFFORT_ABOVE_HZ, 2.5))
 SPEC_BAND_EDGES_HZ = tuple((lo, hi) for lo, hi, _ in SPEC_BANDS)
-# Static capture-quality edges; the room correction ceiling may vary (room-correction-regime-plan.md).
+# Static capture-quality edges; the room correction ceiling may vary (`See ADR-0256`).
 SNR_BANDS_HZ = (("sub_bass", 20.0, 80.0), ("bass", 80.0, 160.0),
                 ("upper_bass", 160.0, 350.0), ("transition", 350.0, 1000.0))
 CROSSOVER_SNR_BANDS_HZ = (*SNR_BANDS_HZ, ("mid", 1000.0, 4000.0), ("treble", 4000.0, 12000.0))

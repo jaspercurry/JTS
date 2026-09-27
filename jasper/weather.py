@@ -19,7 +19,7 @@ Both lookups are cached in-memory per `WeatherClient`:
   (`FORECAST_TTL_SECONDS`), so repeated weather questions about the
   same place within one session share a single fetch instead of
   re-hitting Open-Meteo each time. Mirrors the GBFS TTL cache in
-  `jasper.citibike` (`_CacheEntry` + `time.monotonic`).
+  `jasper.transit.citibike` (`_CacheEntry` + `time.monotonic`).
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ class _Location:
 
 @dataclass(frozen=True)
 class _CacheEntry:
-    """One TTL-cached forecast response. Mirrors `jasper.citibike`'s
+    """One TTL-cached forecast response. Mirrors `jasper.transit.citibike`'s
     `_CacheEntry`: `timestamp` is a `time.monotonic()` reading (immune
     to wall-clock jumps), `data` is the parsed Open-Meteo JSON."""
     timestamp: float
@@ -809,7 +809,7 @@ class WeatherClient:
         # Short TTL cache keyed by rounded coords. `self._units` is fixed
         # per client, so it doesn't need to be in the key. Within the TTL
         # a burst of same-location questions shares one fetch; after it,
-        # the entry is stale and we refetch. Mirrors jasper.citibike's
+        # the entry is stale and we refetch. Mirrors jasper.transit.citibike's
         # `fetch_feed` TTL hop. 4 decimals (~11 m) collapses geocoded and
         # default-coordinate lookups for the same spot onto one key.
         key = (round(loc.lat, 4), round(loc.lon, 4))

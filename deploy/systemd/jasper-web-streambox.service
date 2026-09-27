@@ -1,0 +1,54 @@
+[Unit]
+Description=Jasper streambox web setup service (renderer/DSP + assistant wizards)
+# Socket-activated by the profile-scoped jasper-web.socket installed from
+# deploy/systemd/jasper-web-streambox.socket. The service exits after 10 min idle.
+Requires=jasper-web.socket
+After=jasper-web.socket network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=notify
+WatchdogSec=30s
+EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# Every wizard this tier can host sources its own file, after jasper.env so
+# wizard values win. Omissions: wake_model.env (no wake capability here) and
+# google_credentials.env (the /google wizard reads that file directly).
+EnvironmentFile=-/var/lib/jasper-intsecrets/spotify_credentials.env
+EnvironmentFile=-/var/lib/jasper/voice_provider.env
+EnvironmentFile=-/var/lib/jasper-secrets/voice_keys.env
+EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
+EnvironmentFile=-/var/lib/jasper/weather.env
+EnvironmentFile=-/var/lib/jasper/transit.env
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
+Restart=on-failure
+RestartSec=2
+
+# Needs /var/lib/jasper for wizard state, /var/lib/jasper-intsecrets for
+# Spotify/HA wizard credentials, /var/lib/jasper-secrets for the LLM keys the
+# /voice + /google wizards replace, generated CamillaDSP configs for /sound/,
+# BlueZ's local name for Bluetooth, and systemd-passed loopback fds.
+# No User= here (this unit still runs root — see
+# tests/test_systemd_hardening.py), so no SupplementaryGroups= is needed to
+# read voice_keys.env at 0640 root:jasper-secrets.
+# `-` on the secrets compartment: a non-prefixed missing path fails mount
+# namespacing (226/NAMESPACE) and would take every wizard on this tier down,
+# not just the assistant ones, on a box installed before that compartment
+# was created here.
+# UMask=0007 — wizard-written state under /var/lib/jasper(-secrets|-intsecrets)
+# lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
+UMask=0007
+
+# OOM wizard tier — see jasper/_oom_adj.py
+OOMScoreAdjust=200
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/jasper -/var/lib/jasper-secrets /var/lib/jasper-intsecrets /var/lib/camilladsp/configs /etc/bluetooth
+
+[Install]
+# WantedBy left out intentionally — enabling the .socket pulls in the service
+# on demand. `systemctl enable jasper-web.socket`.

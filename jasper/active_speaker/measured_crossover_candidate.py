@@ -21,7 +21,11 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
-from jasper.active_speaker.delay_graph import quantized_delay_ms
+from jasper.active_speaker.delay_graph import (
+    DelayGraphProofError,
+    prove_static_delay_binding,
+    quantized_delay_ms,
+)
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
     DspPredecessor,
@@ -43,9 +47,8 @@ from jasper.audio_measurement.room_limits import (
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import PeqFilter, total_positive_boost_db
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, issue, require_sha256_hex
 
-from ._common import issue, require_sha256_hex
 from .camilla_names import driver_delay_name as _driver_delay_name
 from .camilla_yaml import (
     _channels_for_role,
@@ -71,6 +74,7 @@ from .rear_calibration import (
     RearCalibrationError,
     read_rear_calibration,
 )
+from .linearization_fit import linearization_filters_by_role
 
 SCHEMA_VERSION = 1
 CANDIDATE_KIND = "jts_measured_crossover_candidate_v2"
@@ -240,9 +244,7 @@ def _validated_room_correction(
     if not isinstance(basis["round_id"], str) or not basis["round_id"].strip():
         _refuse(_ROOM_INVALID, "basis.round_id must be a non-empty string")
     try:
-        require_sha256_hex(
-            basis[ROOM_MEDIAN_FIELD], f"basis.{ROOM_MEDIAN_FIELD}", ValueError
-        )
+        require_sha256_hex(basis[ROOM_MEDIAN_FIELD], field=f"basis.{ROOM_MEDIAN_FIELD}")
     except ValueError as exc:
         _refuse(_ROOM_INVALID, str(exc))
     if not isinstance(basis["admitted_boosts_hz"], list):
@@ -908,8 +910,6 @@ def compile_candidate_config(
     excluded by ``apply_region_polarity=False``.
     """
 
-    from .linearization_fit import linearization_filters_by_role
-
     preset = effective_preset(candidate)
     corrections = driver_corrections(candidate)
     linearization = linearization_filters_by_role(candidate.linearization)
@@ -936,11 +936,6 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     """
 
     import yaml as _yaml
-
-    from jasper.active_speaker.delay_graph import (
-        DelayGraphProofError,
-        prove_static_delay_binding,
-    )
 
     preset = effective_preset(candidate)
     view = view_from_yaml_dict(_yaml.safe_load(yaml_text))

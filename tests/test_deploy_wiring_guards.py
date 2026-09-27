@@ -12,6 +12,7 @@ import pytest
 
 from . import nginx_site
 from ._shell_corpus import shell_files
+from .install_surface import installer_shell_paths
 from .test_install_core_audio_graph_loop import staged_file_copies
 from .systemd_unit_helpers import value_for, values_for
 
@@ -19,7 +20,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
 _DEPLOY_TO_PI = _REPO / "scripts" / "deploy-to-pi.sh"
 
-_INSTALL_SCRIPTS = [_DEPLOY / "install.sh", *sorted((_DEPLOY / "lib" / "install").glob("*.sh"))]
+_INSTALL_SCRIPTS = installer_shell_paths()
 
 
 # ----------------------------------------------------------------------
@@ -35,8 +36,6 @@ _SHIPPED_GLOBS = (
     "udev/*.rules",
     "bin/*",
     "usbsink/*",
-    "*.service",
-    "*.socket",
     "nginx/*.conf",
 )
 
@@ -163,9 +162,7 @@ _ENV_FILE_RE = re.compile(r"^EnvironmentFile=-?(\S+)", re.MULTILINE)
 
 
 def _unit_files() -> list[Path]:
-    units = [p for p in _DEPLOY.glob("systemd/**/*") if p.is_file()]
-    units += list(_DEPLOY.glob("*.service")) + list(_DEPLOY.glob("*.socket"))
-    return sorted(set(units))
+    return sorted(p for p in _DEPLOY.glob("systemd/**/*") if p.is_file())
 
 
 def test_wizard_env_files_load_after_jasper_env():
@@ -236,14 +233,14 @@ _PROXY_RE = re.compile(r"proxy_pass\s+http://127\.0\.0\.1:(\d+)")
 def test_wizard_socket_ports_match_nginx_upstreams():
     """The PR #118 bug class: a wizard port live on one side only.
 
-    Every ListenStream in the wizard sockets (deploy/*.socket) needs an
+    Every ListenStream in the wizard sockets (deploy/systemd/jasper-*.socket) needs an
     nginx proxy_pass or it's an unreachable backend; every 127.0.0.1
     proxy_pass needs a socket (or jasper-control) behind it or the
     route 502s. Both directions enforced; intentional exceptions live
     in the allowlists above and fail when they go stale.
     """
     socket_ports: dict[int, str] = {}
-    for sock in sorted(_DEPLOY.glob("*.socket")):
+    for sock in sorted(_DEPLOY.glob("systemd/jasper-*.socket")):
         for port in _LISTEN_RE.findall(sock.read_text()):
             socket_ports[int(port)] = sock.name
     nginx_ports = {int(p) for p in _PROXY_RE.findall(nginx_site.conf_text("full"))}
@@ -264,7 +261,7 @@ def test_wizard_socket_ports_match_nginx_upstreams():
         if port not in socket_ports and port not in _NGINX_ONLY_PORTS
     )
     assert not unbacked, (
-        f"nginx proxy_pass ports with no ListenStream in deploy/*.socket: "
+        f"nginx proxy_pass ports with no ListenStream in deploy/systemd/jasper-*.socket: "
         f"{unbacked} — that route 502s (PR #118). Add the ListenStream or "
         "allowlist in _NGINX_ONLY_PORTS with a reason."
     )
@@ -336,12 +333,12 @@ _RECOVERABLE_ALWAYS_ON_UNITS = (
 )
 
 _RECOVERABLE_SOCKET_WEB_UNITS = (
-    _DEPLOY / "jasper-web.service",
-    _DEPLOY / "jasper-web-streambox.service",
-    _DEPLOY / "jasper-bluetooth-web.service",
-    _DEPLOY / "jasper-correction-web.service",
-    _DEPLOY / "jasper-system-web.service",
-    _DEPLOY / "jasper-chat-web.service",
+    _DEPLOY / "systemd" / "jasper-web.service",
+    _DEPLOY / "systemd" / "jasper-web-streambox.service",
+    _DEPLOY / "systemd" / "jasper-bluetooth-web.service",
+    _DEPLOY / "systemd" / "jasper-correction-web.service",
+    _DEPLOY / "systemd" / "jasper-system-web.service",
+    _DEPLOY / "systemd" / "jasper-chat-web.service",
 )
 
 

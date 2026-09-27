@@ -2,17 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the per-leg + threshold helpers in
-jasper.control.aec_endpoints. These are the Python-side counterpart to
-tests/test_aec_reconcile.py (which covers the bash mapping from
-the same aec_mode.env state file to /etc/jasper/jasper.env).
-
-The HTTP endpoints (/aec, /aec/leg, /aec/threshold) are exercised
-end-to-end by test_control_server.py via the live ThreadingHTTPServer
-fixture — that file is the right place to add route-level tests if
-the endpoint behavior changes. Here we pin the helpers themselves
-so a regression in parse/write logic surfaces fast.
-"""
+"""AEC status reads and profile-intent writes. HTTP cases live in test_control_server_aec."""
 from __future__ import annotations
 
 import json
@@ -32,6 +22,7 @@ from jasper.chip_aec.policy import (
 )
 from jasper.cli.doctor import aec
 from jasper.control import aec_endpoints
+from jasper.control.handlers import aec as aec_routes
 from jasper.mics import xvf3800
 from jasper.web import wake_setup
 
@@ -43,9 +34,9 @@ _MAINTENANCE_UNIT = "jasper-enhanced-aec-install.service"
     ("probe", "state", "expected"),
     [
         # Job liveness: a Type=oneshot mid-run must not look interrupted.
-        ("_unit_active", "active", True),
-        ("_unit_active", "activating", True),
-        ("_unit_active", "inactive", False),
+        ("unit_active", "active", True),
+        ("unit_active", "activating", True),
+        ("unit_active", "inactive", False),
         # Bridge readiness: `activating` is not yet carrying reference audio.
         ("_aec_bridge_active", "active", True),
         ("_aec_bridge_active", "activating", False),
@@ -63,7 +54,7 @@ def test_aec_probes_choose_their_own_activating_verdict(
         ),
     )
     call = getattr(aec_endpoints, probe)
-    result = call(_MAINTENANCE_UNIT) if probe == "_unit_active" else call()
+    result = call(_MAINTENANCE_UNIT) if probe == "unit_active" else call()
     assert result is expected
 
 
@@ -82,25 +73,25 @@ def test_batched_probe_spawns_once_and_falls_back_on_an_unresolved_unit(monkeypa
     monkeypatch.setattr(aec_endpoints.systemd_probe.subprocess, "run", fake_run)
 
     with aec_endpoints._batched_unit_probes(
-        aec_endpoints._AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
+        aec_endpoints.AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
     ):
         assert aec_endpoints._aec_bridge_active() is True
-        assert aec_endpoints._unit_active(_MAINTENANCE_UNIT) is True
+        assert aec_endpoints.unit_active(_MAINTENANCE_UNIT) is True
 
     assert len(spawns) == 2
     assert spawns[0] == [
         "systemctl", "is-active",
-        aec_endpoints._AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
+        aec_endpoints.AEC_BRIDGE_SERVICE, _MAINTENANCE_UNIT,
     ]
     assert spawns[1] == ["systemctl", "is-active", _MAINTENANCE_UNIT]
 
 
 @pytest.fixture
 def aec_mode_file(tmp_path: Path, monkeypatch):
-    """Redirect _AEC_MODE_FILE at a tmp path so the helpers don't
+    """Redirect AEC_MODE_FILE at a tmp path so the helpers don't
     touch the real /var/lib/jasper/aec_mode.env."""
     path = tmp_path / "aec_mode.env"
-    monkeypatch.setattr(aec_endpoints, "_AEC_MODE_FILE", str(path))
+    monkeypatch.setattr(aec_endpoints, "AEC_MODE_FILE", str(path))
     return path
 
 
@@ -228,7 +219,7 @@ def test_write_aec_leg_preserves_other_keys(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    aec_endpoints._write_aec_leg("dtln", True)
+    aec_routes._write_aec_leg("dtln", True)
     body = aec_mode_file.read_text()
     assert "JASPER_AEC_MODE=disabled" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body
@@ -241,7 +232,7 @@ def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
     seed the file must still succeed — write_env_file creates the
     file path's parent if needed."""
     assert not aec_mode_file.exists()
-    aec_endpoints._write_aec_leg("raw", False)
+    aec_routes._write_aec_leg("raw", False)
     state = aec_endpoints._read_aec_state()
     assert state["leg_raw"] is False
     assert state["profile"] == "custom"
@@ -249,7 +240,7 @@ def test_write_aec_leg_creates_file_when_missing(aec_mode_file):
 
 def test_write_aec_leg_rejects_invalid_leg(aec_mode_file):
     with pytest.raises(ValueError, match="invalid leg"):
-        aec_endpoints._write_aec_leg("not-a-leg", True)
+        aec_routes._write_aec_leg("not-a-leg", True)
 
 
 def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
@@ -257,7 +248,7 @@ def test_write_aec_leg_writes_zero_for_off(aec_mode_file):
     bash reconciler's normalize_bool reads these on the next pass
     and "" would silently default to the type default rather than
     the operator's explicit choice."""
-    aec_endpoints._write_aec_leg("dtln", False)
+    aec_routes._write_aec_leg("dtln", False)
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_DTLN=0" in body
     assert "JASPER_AUDIO_INPUT_PROFILE=custom" in body
@@ -269,7 +260,7 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=1\n"
     )
-    aec_endpoints._write_audio_input_profile("xvf_chip_aec")
+    aec_routes._write_audio_input_profile("xvf_chip_aec")
     body = aec_mode_file.read_text()
     assert "JASPER_AUDIO_INPUT_PROFILE=xvf_chip_aec" in body
     assert "JASPER_AEC_MODE=auto" in body
@@ -282,7 +273,7 @@ def test_write_audio_input_profile_writes_profile_and_legacy_keys(aec_mode_file)
 
 def test_write_audio_input_profile_rejects_custom(aec_mode_file):
     with pytest.raises(ValueError, match="invalid profile"):
-        aec_endpoints._write_audio_input_profile("custom")
+        aec_routes._write_audio_input_profile("custom")
 
 
 def test_aec_mode_interleaved_writers_preserve_each_others_keys(
@@ -302,36 +293,21 @@ def test_aec_mode_interleaved_writers_preserve_each_others_keys(
             and not first_write_paused.is_set()
         )
 
-    def pausing_atomic_write(
-        path,
-        text,
-        *,
-        mode=0o644,
-        group_from_parent=True,
-        preserve_target_stat=False,
-        durable=False,
-    ):
+    def pausing_atomic_write(path, text, **kwargs):
         if should_pause(text):
             first_write_paused.set()
             assert release_first_write.wait(timeout=2)
-        return real_atomic_write(
-            path,
-            text,
-            mode=mode,
-            group_from_parent=group_from_parent,
-            preserve_target_stat=preserve_target_stat,
-            durable=durable,
-        )
+        return real_atomic_write(path, text, **kwargs)
 
     def write_raw_off():
         try:
-            aec_endpoints._write_aec_leg("raw", False)
+            aec_routes._write_aec_leg("raw", False)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
     def write_dtln_on():
         try:
-            aec_endpoints._write_aec_leg("dtln", True)
+            aec_routes._write_aec_leg("dtln", True)
         except BaseException as e:  # noqa: BLE001
             errors.append(e)
 
@@ -368,26 +344,11 @@ def test_wake_model_and_threshold_interleaved_writers_preserve_both_keys(
     release_model_write = threading.Event()
     errors: list[BaseException] = []
 
-    def pausing_atomic_write(
-        path,
-        text,
-        *,
-        mode=0o644,
-        group_from_parent=True,
-        preserve_target_stat=False,
-        durable=False,
-    ):
+    def pausing_atomic_write(path, text, **kwargs):
         if "JASPER_WAKE_MODEL=alexa" in text and not model_write_paused.is_set():
             model_write_paused.set()
             assert release_model_write.wait(timeout=2)
-        return real_atomic_write(
-            path,
-            text,
-            mode=mode,
-            group_from_parent=group_from_parent,
-            preserve_target_stat=preserve_target_stat,
-            durable=durable,
-        )
+        return real_atomic_write(path, text, **kwargs)
 
     def write_model():
         try:
@@ -434,16 +395,16 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     because one UI affordance can eventually map to several concrete legs."""
     from jasper.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
-    for toggle, tokens in aec_endpoints._TOGGLE_TO_TOKEN.items():
+    for toggle, tokens in aec_routes._TOGGLE_TO_TOKEN.items():
         for token in tokens:
             assert token in wake_tokens, (
                 f"toggle {toggle!r} -> {token!r} is not a wake_input leg"
             )
     # The collision the map exists to document: operator "raw" == "off".
-    assert aec_endpoints._TOGGLE_TO_TOKEN["raw"] == ("off",)
+    assert aec_routes._TOGGLE_TO_TOKEN["raw"] == ("off",)
     assert by_token("off").udp_port == 9877
-    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
-    assert aec_endpoints._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
+    assert aec_routes._TOGGLE_TO_TOKEN["chip_aec_150"] == ("chip_aec_150",)
+    assert aec_routes._TOGGLE_TO_TOKEN["chip_aec_210"] == ("chip_aec_210",)
 
 
 # ---------- _write_wake_threshold ------------------------------------------
@@ -524,7 +485,7 @@ def test_read_wake_threshold_default_matches_daemon_config(wake_model_file, monk
     assert wake_models.read_wake_threshold() == Config.from_env().wake_threshold
 
 
-# ---------- _aec_full_status -----------------------------------------------
+# ---------- aec_full_status -----------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -554,7 +515,7 @@ def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
         "JASPER_MIC_DEVICE_CHIP_AEC_150": "udp:9887",
         "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
     }
-    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: env)
+    monkeypatch.setattr(aec_endpoints, "fresh_jasper_env", lambda: env)
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     if probe_fails:
         def _boom():
@@ -564,7 +525,7 @@ def test_audio_profile_status_answers_the_same_on_doctor_and_aec(
     else:
         _stub_xvf_runtime(monkeypatch)
 
-    endpoint = aec_endpoints._aec_full_status()
+    endpoint = aec_endpoints.aec_full_status()
     from_doctor = aec._audio_profile_status_for_doctor(
         bridge_active=True, env=env,
     )
@@ -600,7 +561,7 @@ def test_aec_full_status_includes_legs_and_threshold(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -617,7 +578,7 @@ def test_aec_full_status_includes_legs_and_threshold(
             "ordinary /aec polling must not inspect optional enhanced AEC"
         ),
     )
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
     assert "enhanced_aec" not in status
     assert status["mode"] == "auto"
     assert status["bridge_active"] is True
@@ -829,9 +790,9 @@ def test_aec_full_status_with_disabled_aec(aec_mode_file, wake_model_file, monke
     )
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
-    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "fresh_jasper_env", lambda: {})
     monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
     assert status["mode"] == "disabled"
     assert status["profile"] == "direct_mic"
     assert status["bridge_active"] is False
@@ -872,9 +833,9 @@ def test_aec_full_status_surfaces_the_reconciler_bridge_verdict(
     monkeypatch.setenv("JASPER_AEC_BRIDGE_READY_MARKER", str(marker))
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
     _stub_xvf_runtime(monkeypatch, variant=None, present=False, channels=None)
-    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
+    monkeypatch.setattr(aec_endpoints, "fresh_jasper_env", lambda: {})
 
-    assert aec_endpoints._aec_full_status()["bridge_ready"] == {
+    assert aec_endpoints.aec_full_status()["bridge_ready"] == {
         "ready": False,
         "reason": "",
         "marker": str(marker),
@@ -882,7 +843,7 @@ def test_aec_full_status_surfaces_the_reconciler_bridge_verdict(
 
     marker.write_text("reason=systemd\n")
 
-    assert aec_endpoints._aec_full_status()["bridge_ready"] == {
+    assert aec_endpoints.aec_full_status()["bridge_ready"] == {
         "ready": True,
         "reason": "systemd",
         "marker": str(marker),
@@ -907,8 +868,8 @@ def test_aec_full_status_chip_available_tracks_firmware(
         present=True,
         channels=2,
     )
-    monkeypatch.setattr(aec_endpoints, "_fresh_jasper_env", lambda: {})
-    status = aec_endpoints._aec_full_status()
+    monkeypatch.setattr(aec_endpoints, "fresh_jasper_env", lambda: {})
+    status = aec_endpoints.aec_full_status()
     # Applied leg state reflects reconciler output; raw_intent preserves
     # the operator's unavailable chip request.
     assert status["raw_intent"]["leg_chip_aec"] is True
@@ -919,10 +880,10 @@ def test_aec_full_status_chip_available_tracks_firmware(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
-    assert aec_endpoints._aec_full_status()["legs"]["chip_aec"]["available"] is True
+    assert aec_endpoints.aec_full_status()["legs"]["chip_aec"]["available"] is True
 
 
 def _unvalidated_beam_plan_runtime_profile() -> xvf3800.RuntimeProfile:
@@ -957,7 +918,7 @@ def _aec_endpoints_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: True)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -965,7 +926,7 @@ def _aec_endpoints_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
             "JASPER_AEC_CHIP_AEC_ENABLED": "1",
         },
     )
-    return aec_endpoints._aec_full_status()
+    return aec_endpoints.aec_full_status()
 
 
 def _doctor_chip_aec_status(monkeypatch, aec_mode_file) -> dict:
@@ -1017,11 +978,11 @@ def test_aec_full_status_commission_carries_last_run_verdict(
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    monkeypatch.setattr(aec_endpoints, "unit_active", lambda unit: False)
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
     outcome = tmp_path / "chip-aec-commission.json"
@@ -1032,7 +993,7 @@ def test_aec_full_status_commission_carries_last_run_verdict(
         aec_endpoints.commission_record, "OUTCOME_PATH", outcome,
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["commission"] == {
         "running": False,
@@ -1052,7 +1013,7 @@ def test_aec_full_status_surfaces_required_xvf_firmware_update(
         "JASPER_WAKE_LEG_CHIP_AEC=0\n"
     )
     monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
-    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    monkeypatch.setattr(aec_endpoints, "unit_active", lambda unit: False)
     monkeypatch.setattr(aec_endpoints, "_read_xvf_firmware_update_state", lambda: {})
     _stub_xvf_runtime(
         monkeypatch,
@@ -1062,11 +1023,11 @@ def test_aec_full_status_surfaces_required_xvf_firmware_update(
     )
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["firmware_update"]["state"] == "update_required"
     assert status["firmware_update"]["required"] is True
@@ -1095,7 +1056,7 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1105,7 +1066,7 @@ def test_aec_full_status_auto_profile_resolves_chip_when_available(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["profile"] == "auto"
     assert status["bridge_role"] == "chip_aec_carrier"
@@ -1153,7 +1114,7 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1165,7 +1126,7 @@ def test_custom_chip_beam_toggle_uses_saved_intent_until_reconcile(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
     toggles = {
         toggle["id"]: toggle
         for toggle in status["mic_settings"]["fusion"]["toggles"]
@@ -1194,7 +1155,7 @@ def test_aec_full_status_testing_profile_cannot_bypass_managed_xvf_policy(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1209,7 +1170,7 @@ def test_aec_full_status_testing_profile_cannot_bypass_managed_xvf_policy(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["profile"] == "xvf_chip_aec_testing"
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
@@ -1238,7 +1199,7 @@ def test_aec_full_status_flex_linear_auto_parks_without_software_fallback(
     _stub_xvf_runtime(monkeypatch, variant=xvf3800.VARIANT_FLEX_LINEAR_6CH)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
@@ -1252,7 +1213,7 @@ def test_aec_full_status_flex_linear_auto_parks_without_software_fallback(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["legs"]["chip_aec"]["available"] is False
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
@@ -1276,7 +1237,7 @@ def test_aec_full_status_chip_aec_request_never_reports_stale_software_fallback(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1290,7 +1251,7 @@ def test_aec_full_status_chip_aec_request_never_reports_stale_software_fallback(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["raw_intent"]["leg_chip_aec"] is True
     assert status["legs"]["chip_aec"]["configured"] is False
@@ -1322,7 +1283,7 @@ def test_aec_full_status_explicit_chip_failure_reports_actionable_park(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1340,7 +1301,7 @@ def test_aec_full_status_explicit_chip_failure_reports_actionable_park(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["bridge_role"] == "pending"
     assert status["software_aec3"]["active"] is False
@@ -1378,7 +1339,7 @@ def test_aec_full_status_names_stale_saved_aec_card(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
@@ -1387,7 +1348,7 @@ def test_aec_full_status_names_stale_saved_aec_card(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["audio_profile"]["state"] == "waiting_bridge"
     assert "configured AEC mic L16K6Ch" in status["audio_profile"]["reason"]
@@ -1418,7 +1379,7 @@ def test_aec_full_status_stale_aec_card_does_not_report_software_active(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "L16K6Ch",
@@ -1428,7 +1389,7 @@ def test_aec_full_status_stale_aec_card_does_not_report_software_active(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["bridge_active"] is True
     assert status["bridge_role"] == "pending"
@@ -1459,7 +1420,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
     _stub_xvf_runtime(monkeypatch)
     monkeypatch.setattr(
         aec_endpoints,
-        "_fresh_jasper_env",
+        "fresh_jasper_env",
         lambda: {
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
@@ -1471,7 +1432,7 @@ def test_aec_full_status_chip_aec_applied_requires_runtime_env(
         },
     )
 
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
 
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["session_source"] == "Chip AEC 150 beam via :9876"
@@ -1493,7 +1454,7 @@ def test_aec_full_status_survives_firmware_probe_error(
     monkeypatch.setattr(
         "jasper.mics.xvf3800.detect_runtime_profile", _boom,
     )
-    status = aec_endpoints._aec_full_status()
+    status = aec_endpoints.aec_full_status()
     assert status["legs"]["chip_aec"]["available"] is False
     assert "microphone" in status
 
@@ -1506,7 +1467,7 @@ def test_write_aec_leg_chip_aec_150_writes_boolean(aec_mode_file):
         "JASPER_WAKE_LEG_RAW=1\n"
         "JASPER_WAKE_LEG_DTLN=0\n"
     )
-    aec_endpoints._write_aec_leg("chip_aec_150", True)
+    aec_routes._write_aec_leg("chip_aec_150", True)
     body = aec_mode_file.read_text()
     assert "JASPER_WAKE_LEG_CHIP_AEC_150=1" in body
     assert "JASPER_WAKE_LEG_RAW=1" in body   # preserved

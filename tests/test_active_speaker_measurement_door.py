@@ -18,6 +18,7 @@ from jasper import measurement_window as coordinator
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 from types import SimpleNamespace
 
@@ -32,7 +33,7 @@ from jasper.active_speaker.crossover_v2.door import (
     level_window,
 )
 from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
@@ -42,6 +43,8 @@ from jasper.volume_owner import VolumeOwner, install_volume_owner, volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
 from tests._async_wait import wait_signalled
+from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
+from jasper.active_speaker.crossover_section import sections_by_role
 
 ENTRY_CONFIG = "entry.yml"
 VOLUME_STATE = "session_volume.json"
@@ -89,8 +92,6 @@ def _profile() -> MeasurementGraphProfile:
     already carries its own zeroed delay lane and a second mapping key would
     play with no delay and bank as a delayed take.
     """
-    from jasper.active_speaker.branch_chain import sections_by_role
-
     preset = _preset()
     return MeasurementGraphProfile(
         preset=preset,
@@ -373,6 +374,21 @@ async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box
         "each variant axis must make a different graph with its own fingerprint"
     )
     assert "# inverted_roles=" in box.loaded[1]
+
+
+def test_the_door_compiles_a_take_with_the_layers_its_purpose_clears(tmp_path, box):
+    """The door compiles the named candidate with the layers the take's purpose
+    clears emptied, as that take's own graph (ADR-0370)."""
+    profile = _profile()
+    candidate = replace(_trial_candidate(profile), bass_extension=BASS_EXTENSION)
+    graph = bind_measurement_graph(profile, camilla_factory=lambda: box, config_dir=tmp_path, candidate=candidate)
+    cleared = ("room_correction", "bass_extension")
+    graph.select_scope("candidate", candidate.fingerprint, {}, cleared)
+
+    played = graph.graph_yaml()
+
+    assert played == compile_tuning_graph(profile, candidate=candidate, cleared_layers=cleared)
+    assert played != compile_tuning_graph(profile, candidate=candidate)
 
 
 @pytest.mark.parametrize("inverted,delays,trims", [

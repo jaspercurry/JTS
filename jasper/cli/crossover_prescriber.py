@@ -9,6 +9,7 @@ import argparse
 import json
 import shlex
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,8 @@ from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescript
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    DERIVED_VIEWS, CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
-    packet_feature_classifications, packet_region_band_hz,
+    DERIVED_VIEWS, CrossoverEvidencePacketError, build_round_evidence, contract_currency,
+    packet_driver_passbands_hz, packet_feature_classifications, round_evidence,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -40,7 +41,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
-from jasper.active_speaker.rear_calibration import compile_rear_stage, diagnostic_seed, read_rear_calibration
+from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.atomic_io import atomic_write_json
@@ -50,26 +51,6 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
 REASON_UNWRITABLE = "output_unwritable"
-
-
-def _cmd_rear_calibration(args: argparse.Namespace) -> int:
-    try:
-        if args.seed:
-            if args.sample_rate is None:
-                raise ValueError("--sample-rate is required; use the installed DSP rate")
-            return answered(read_rear_calibration(diagnostic_seed(args.sample_rate)))
-        document = read_rear_calibration(json.loads(read_source_bytes(args.document)), sample_rate=args.sample_rate)
-        answer = {"calibration": document, "adopted": False,
-                  "requires_electrical_fitting": document["case"] == "acoustic_targets"}
-        routing = (args.channels, args.front, args.rear, args.tweeter)
-        if any(value is not None for value in routing):
-            if any(value is None for value in routing):
-                raise ValueError("stage compilation requires --channels, --front, --rear and --tweeter")
-            answer["stage"] = compile_rear_stage(document, channel_count=args.channels,
-                front_channel=args.front, rear_channel=args.rear, tweeter_channel=args.tweeter)
-        return answered(answer)
-    except (OSError, ValueError, TypeError) as exc:
-        return failed(EXIT_REFUSED, "rear_calibration_invalid", str(exc))
 
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
@@ -94,6 +75,8 @@ def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
         document = json.loads(read_source_bytes(str(source))) if isinstance(source, Path) else source
         median = document.get("median", document) if isinstance(document, Mapping) else document
         return read_room_median(median), room_median_sha256(median)
+    except RoomPrescriptionRefused:
+        raise
     except (OSError, ValueError, RecursionError) as exc:
         raise RoomPrescriptionRefused(ROOM_MEDIAN_UNAVAILABLE, str(exc)) from exc
 
@@ -104,9 +87,11 @@ def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[Bank
 
 def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> dict[str, Any]:
     kind = preview_kind(document)
-    base, evidence, capture_id = None, None, None
+    base, evidence, capture_id, cabinet = None, None, None, None
     try:
-        if kind != "rear_calibration":
+        if kind == "rear_calibration":
+            cabinet = rear_cabinet_channels(classify_output_contract(load_output_topology()))
+        else:
             base, _ = _document_base(document, Path(args.root) if args.root else None)
             evidence = _document_evidence(args, document)
         if kind == "emitted_graph" and args.round:
@@ -115,7 +100,7 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
         section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
         raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
     return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                         base=base, evidence=evidence, capture_id=capture_id)
+                                         base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
@@ -183,7 +168,8 @@ def _cmd_document(args: argparse.Namespace) -> int:
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
         answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
-                  "measurement_status": "unmeasured", "adopted": False}
+                  "measurement_status": "unmeasured", "adopted": False,
+                  "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
         if args.command == "judge":
             answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
         else:
@@ -207,33 +193,17 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
     if args.session_dir is None:
         raise CrossoverEvidencePacketError("name a round directory")
     inputs = inputs or round_inputs(Path(args.session_dir))
-    return build_crossover_evidence_packet(
-        inputs.session_dir, round_context=inputs,
-        # No default for the flow state: the web host rewrites it as a round
-        # runs, so a defaulted state would move the packet's fingerprint.
-        state_path=Path(args.state) if args.state else None,
-        driver_draft_path=(
-            Path(args.drivers) if args.drivers else inputs.design_draft_path
-        ),
-        applied_profile_path=(
-            Path(args.applied_profile)
-            if args.applied_profile
-            else inputs.applied_profile_path
-        ),
-        repeat_floor_path=(
-            Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path
-        ),
-        declared_geometry_path=(
-            Path(args.declared_geometry)
-            if args.declared_geometry
-            else inputs.declared_geometry_path
-        ),
-        # No default, same reason as ``state_path``: the CamillaDSP statefile
-        # is live, mutable system state, and a defaulted read would make two
-        # honest rebuilds of the same round disagree on the packet's
-        # fingerprint depending purely on when each ran (#3316).
-        statefile_path=None,
+    if not any((args.state, args.drivers, args.applied_profile, args.repeat_floor, args.declared_geometry)):
+        return round_evidence(inputs)
+    # A status what-if: built from the inputs named, fingerprinted as built.
+    named = replace(
+        inputs,
+        design_draft_path=Path(args.drivers) if args.drivers else inputs.design_draft_path,
+        applied_profile_path=Path(args.applied_profile) if args.applied_profile else inputs.applied_profile_path,
+        repeat_floor_path=Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path,
+        declared_geometry_path=Path(args.declared_geometry) if args.declared_geometry else inputs.declared_geometry_path,
     )
+    return build_round_evidence(named, state_path=Path(args.state) if args.state else None)
 
 
 
@@ -261,12 +231,6 @@ def _cmd_contract(args: argparse.Namespace) -> int:
 
 
 
-def _band_phrase(lo: float, hi: float) -> str:
-    """One frequency span, spelled the one way this tool spells it."""
-    return f"{lo:.1f}-{hi:.1f} Hz"
-
-
-
 def _passband_phrase(role: str, lo: float, hi: float) -> str:
     """One role's declared band, to whole hertz.
 
@@ -287,7 +251,7 @@ def _reason(block: dict[str, Any], packet_error: str) -> str:
     """Why a section has nothing to report, from whichever layer knows.
 
     The packet builder's failure wins when there is one; below that, the
-    block's own ``_absence`` reason, passed through untranslated. "not
+    block's own ``absence`` reason, passed through untranslated. "not
     reported" only when a block says unavailable and names no reason.
     """
     if packet_error:
@@ -298,25 +262,16 @@ def _reason(block: dict[str, Any], packet_error: str) -> str:
 
 
 def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
-    """One side of the packet's incumbent block, classified but not reconciled.
+    """The packet's applied incumbent, classified.
 
-    The packet makes no judgement between its two records, so neither does
-    this. An empty list is ``available`` with zero filters: "the round recorded
-    an empty incumbent" and "no receipt was readable" are the two facts a
+    An empty list is ``available`` with zero filters: "the profile applied an
+    empty correction" and "no profile was readable" are the two facts a
     prescription author most needs kept apart, because a prescription is a
-    TOTAL. The reason is echoed only from the absence shape the packet builder
-    writes, so a receipt whose ``incumbent`` is some other object cannot print
-    that object's ``reason`` key as though the builder had explained something.
+    TOTAL.
     """
     if isinstance(value, list):
         return {"available": True, "n_filters": len(value)}
-    authored = (
-        isinstance(value, dict) and value.get("status") == "not_evaluated"
-    )
-    return {
-        "available": False,
-        "reason": _reason(value if authored else {}, packet_error),
-    }
+    return {"available": False, "reason": _reason(value if isinstance(value, dict) else {}, packet_error)}
 
 
 
@@ -390,26 +345,10 @@ def _degree_list(block: dict[str, Any], key: str) -> list[int]:
 def _banked_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
-    """The round, and the two bounds a prescription of either class reads.
-
-    The region (this round's evidence) and the classified features (the
-    classification view filed beside it) ride inside the banked section.
-    ``walk`` has its own availability — ``lateral_poses`` is filled by
-    ACCEPTED takes while ``available`` needs a ``round_receipt.json``, so a
-    measurement-only angle walk banks poses and no receipt.
-    """
-    region = packet_region_band_hz(packet)
+    """The round, its classified features (the classification view filed
+    beside it) and its walk (the ACCEPTED lateral takes)."""
     verdicts = packet_feature_classifications(packet)
     candidates = _candidate_records()
-    region_state: dict[str, Any] = {
-        "available": region is not None,
-        "band_hz": [region[0], region[1]] if region else None,
-        "reason": (
-            None
-            if region
-            else _reason(_block(packet, "crossover_region"), packet_error)
-        ),
-    }
     classification = {
         "available": bool(verdicts),
         "n_verdicts": len(verdicts) if verdicts else 0,
@@ -432,19 +371,12 @@ def _banked_section(
     }
     # "0 deg" is not a raise worth a clause.
     raised = [deg for deg in walk["elevations_deg"] if deg]
-    round_block = _block(packet, "round")
     session = _block(packet, "session")
-    available = bool(round_block.get("available"))
-    reason = None if available else _reason(round_block, packet_error)
+    available = bool(session)
+    reason = None if available else _reason(session, packet_error)
     summary = (
         (
-            f"round {session.get('round_id')} in session "
-            f"{session.get('bundle_session_id')}"
-            + (
-                f", region {_band_phrase(*region_state['band_hz'])}"
-                if region_state["available"]
-                else f", no region ({region_state['reason']})"
-            )
+            f"round in session {session.get('bundle_session_id')}"
             + (
                 f", {classification['n_verdicts']} classified feature(s)"
                 if classification["available"]
@@ -452,7 +384,7 @@ def _banked_section(
             )
         )
         if available
-        else f"no round receipt ({reason})"
+        else f"no round ({reason})"
     ) + (
         f"; {walk['n_takes']} walk take(s) at "
         f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
@@ -473,8 +405,6 @@ def _banked_section(
         "available": available,
         "reason": reason,
         "bundle_session_id": session.get("bundle_session_id"),
-        "round_id": session.get("round_id"),
-        "region": region_state,
         "classification": classification,
         "walk": walk,
         "candidates": candidates,
@@ -487,12 +417,7 @@ def _applied_section(
     packet: dict[str, Any] | None, packet_error: str
 ) -> dict[str, Any]:
     block = _block(packet, "incumbent")
-    from_receipt = _incumbent_record(block.get("from_round_receipt"), packet_error)
-    from_profile = _incumbent_record(block.get("from_applied_profile"), packet_error)
-    return {
-        "from_round_receipt": from_receipt,
-        "from_applied_profile": from_profile,
-    }
+    return {"from_applied_profile": _incumbent_record(block.get("from_applied_profile"), packet_error)}
 
 
 
@@ -553,9 +478,12 @@ def status_document(
         "latest_agent_note": None, "context_error": None,
     }
     recent = []
+    currency = None
     try:
         if session_dir:
-            context.update(context_artifacts(round_inputs(Path(session_dir)), Path(session_dir)))
+            inputs = round_inputs(Path(session_dir))
+            context.update(context_artifacts(inputs, Path(session_dir)))
+            currency = contract_currency(inputs)
         else:
             for bundle in recent_round_sessions():
                 path = str(banked_round_of(bundle) or bundle)
@@ -594,6 +522,7 @@ def status_document(
         },
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "contracts": (packet or {}).get("contracts"),
+        "packet_contracts": currency,
         "packet_error": packet_error or None,
         "selected_round": session_dir,
         "recent_rounds": recent,
@@ -642,14 +571,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    rear = sub.add_parser("rear-calibration", help="inspect acoustic targets or compile an editable rear DSP stage; never applies")
-    source = rear.add_mutually_exclusive_group(required=True)
-    source.add_argument("--document", metavar="FILE")
-    source.add_argument("--seed", action="store_true", help="print an explicitly untuned, muted starting document")
-    rear.add_argument("--sample-rate", type=int, metavar="HZ")
-    for name in ("channels", "front", "rear", "tweeter"):
-        rear.add_argument("--" + name, type=int, help="explicit physical channel count / zero-based assignment for stage compilation")
-    rear.set_defaults(func=_cmd_rear_calibration)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
     contract.add_argument("--round", metavar="DIR")
     add_set_argument(contract)
@@ -665,7 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--round", dest="round", metavar="DIR")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
-            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>; banks nothing")
+            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
             command.add_argument("--out", metavar="FILE", help="write the full preview here and answer with its summary; "

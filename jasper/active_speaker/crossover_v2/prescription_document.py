@@ -24,7 +24,7 @@ from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
 )
 from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
-from jasper.active_speaker.profile import SIDES_BY_LAYOUT
+from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
@@ -40,7 +40,7 @@ from . import room_prescription as room
 from . import topology_prescription as topology
 from .capture_prediction import capture_prediction
 from .forward_model import ForwardModelError
-from .evidence_packet.readers import packet_feature_classifications, packet_positional_evidence
+from .evidence_packet.readers import packet_feature_classifications
 from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
@@ -173,7 +173,10 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
-            branch_context=_branch_context(preset, driver_corrections(base.candidate)),
+            # A role with no crossover region (a one-way speaker's) still has a
+            # branch; ((), 0.0) is what the emitter's headroom charge assumes.
+            branch_context={**dict.fromkeys(required_driver_roles(preset.way_count), ((), 0.0)),
+                            **_branch_context(preset, driver_corrections(base.candidate))},
             room_peqs=room_peqs_from_correction(selected.get("room", base.candidate.room_correction) or {}, preset),
             classifications=packet_feature_classifications(packet),
             incumbent_filters=linearization_filters_by_role(base.candidate.linearization),
@@ -185,7 +188,6 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         prescription_blend = blend.read_blend_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             band_hz=speaker["blend"]["bounds"]["band_hz"],
-            positional_evidence=packet_positional_evidence(packet),
         )
         assert prescription_blend is not None
         return blend.blend_prescription_to_candidate_fields(prescription_blend)["blend_correction"], prescription_blend.to_dict()
@@ -273,14 +275,22 @@ def preview_kind(document: Mapping[str, Any]) -> str:
 def preview_prescription_document(
     document: Mapping[str, Any], *, round_dir: Path | None, base: BankedCandidate | None = None,
     evidence: PrescriptionEvidence | None = None, capture_id: str | None = None,
+    cabinet: tuple[int, int, int] | None = None,
 ) -> dict[str, Any]:
+    """``cabinet`` is the declared ``(front woofer, rear woofer, tweeter)``
+    outputs a rear preview compiles its stage at; without one it refuses."""
     kind = preview_kind(document)
     sections = document["sections"]
     payload: Any = document
     kwargs: dict[str, Any]
     preview_function: Callable[..., dict[str, Any]]
+    extra: dict[str, Any] = {}
     try:
         if kind == "rear_calibration":
+            if cabinet is None:
+                raise PrescriptionDocumentRefused(
+                    "rear_calibration_topology_unsupported", kind,
+                    "the declared layout has no cabinet of one front woofer, one rear woofer and one tweeter")
             if round_dir is None:
                 raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, "a rear preview needs --round <pair round>")
             preview_function = preview_rear_section
@@ -306,6 +316,12 @@ def preview_prescription_document(
                 preview_function = _preview_emitted_graph
                 kwargs = {"round_dir": round_dir, "base": base, "evidence": evidence, "capture_id": capture_id}
         preview = preview_function(payload, **kwargs)
+        if cabinet is not None and kind == "rear_calibration":
+            front, rear, tweeter = cabinet
+            validated = rear_calibration.read_rear_calibration(payload, sample_rate=DEFAULT_SAMPLE_RATE)
+            extra["compiled_stage"] = rear_calibration.compile_rear_stage(
+                validated, front_channel=front, rear_channel=rear, tweeter_channel=tweeter,
+                channel_count=max(cabinet) + 1) if validated["case"] == "electrical_dsp" else None
     except room.RoomPrescriptionRefused as exc:
         raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
     except rear_calibration.RearCalibrationError as exc:
@@ -316,7 +332,8 @@ def preview_prescription_document(
         raise
     except (KeyError, TypeError, ValueError) as exc:
         raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, str(exc)) from exc
-    return {"section": kind, "sections": sorted(sections), "preview": preview, "adopted": False, "banked": False}
+    return {"section": kind, "sections": sorted(sections), "preview": preview, **extra,
+            "adopted": False, "banked": False}
 
 
 def _refused_section(code: str) -> str | None:

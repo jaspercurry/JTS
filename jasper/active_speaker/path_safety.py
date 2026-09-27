@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import sha256_file, utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, sha256_file, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from jasper.paths import resolve_state_path
 
-from ._common import coerce_finite_float, issue as _issue, software_guard_needed
+from ._common import coerce_finite_float, software_guard_needed
 from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .driver_protection import (
     format_protection_hz,
@@ -33,6 +33,7 @@ from .driver_protection import (
 )
 from .environment import CAMILLA_CLASS_ACTIVE_PARKED, classify_camilla_config_text
 from .profile import ActiveSpeakerConfigError
+from .staging import load_staged_startup_config
 
 SCHEMA_VERSION = 1
 PATH_SAFETY_EVIDENCE_KIND = "jts_active_speaker_path_safety_evidence"
@@ -680,8 +681,6 @@ def build_startup_load_path_safety_evidence(
     """
 
     if staged_config is None:
-        from .staging import load_staged_startup_config
-
         staged = load_staged_startup_config()
     else:
         staged = staged_config
@@ -886,7 +885,7 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
     evidence_source = raw.get("evidence_source")
     if evidence_source is None:
         raise ActiveSpeakerConfigError("path safety evidence source is required")
-    if evidence_source not in SUPPORTED_EVIDENCE_SOURCES:
+    if not isinstance(evidence_source, str) or evidence_source not in SUPPORTED_EVIDENCE_SOURCES:
         raise ActiveSpeakerConfigError("unsupported path safety evidence source")
     paths = raw.get("paths")
     if not isinstance(paths, dict):
@@ -986,57 +985,43 @@ def evaluate_path_safety_evidence(raw: Any) -> dict[str, Any]:
     }
 
 
-def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
-    """The path-safety evidence at ``path`` evaluated, or the blocker saying why it cannot be."""
+# Never share a gate or code between statuses; see #5708.
+_EVIDENCE_BLOCKERS = {
+    "missing": ("evidence_missing", "path_safety_evidence_missing"),
+    "unreadable": ("evidence_unreadable", "path_safety_evidence_unreadable"),
+    "invalid": ("evidence_invalid", "path_safety_evidence_invalid"),
+}
+
+
+def read_path_safety_evidence(
+    path: str | Path | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The evidence at ``path`` evaluated and the document it came from, or a
+    blocker and ``None``: missing (no path), unreadable (the read raised
+    ``OSError``) or invalid (not UTF-8 JSON the evaluator accepts)."""
     if path is None:
-        return {
-            "provided": False,
-            "status": "missing",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_missing",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_missing",
-                    "active-speaker path-safety evidence was not provided",
-                )
-            ],
-        }
-    try:
-        raw = Path(path).read_text(encoding="utf-8")
-    except OSError as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "unreadable",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_unreadable",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_unreadable",
-                    f"could not read active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    try:
-        payload = json.loads(raw)
-        report = evaluate_path_safety_evidence(payload)
-    except (json.JSONDecodeError, ActiveSpeakerConfigError) as e:
-        return {
-            "provided": True,
-            "path": str(path),
-            "status": "invalid",
-            "ok_to_load_active_config": False,
-            "load_gate": "evidence_invalid",
-            "issues": [
-                _issue(
-                    "blocker",
-                    "path_safety_evidence_invalid",
-                    f"invalid active-speaker path-safety evidence: {e}",
-                )
-            ],
-        }
-    report["provided"] = True
-    report["path"] = str(path)
-    return report
+        status, detail = "missing", "active-speaker path-safety evidence was not provided"
+    else:
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            report = evaluate_path_safety_evidence(raw)
+        except OSError as exc:
+            status, detail = "unreadable", f"could not read active-speaker path-safety evidence: {exc}"
+        except ValueError as exc:
+            status, detail = "invalid", f"invalid active-speaker path-safety evidence: {exc}"
+        else:
+            return {**report, "provided": True, "path": str(path)}, raw
+    load_gate, code = _EVIDENCE_BLOCKERS[status]
+    return {
+        "provided": path is not None,
+        **({} if path is None else {"path": str(path)}),
+        "status": status,
+        "ok_to_load_active_config": False,
+        "load_gate": load_gate,
+        "issues": [_issue("blocker", code, detail)],
+    }, None
+
+
+def path_safety_evidence_payload(path: str | Path | None) -> dict[str, Any]:
+    """:func:`read_path_safety_evidence`'s report alone."""
+    return read_path_safety_evidence(path)[0]

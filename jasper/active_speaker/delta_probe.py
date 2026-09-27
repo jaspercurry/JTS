@@ -104,7 +104,7 @@ def advice_deferral(probe: Any | None) -> str:
 
 # Max |realized − commanded| tolerated below DELTA_PROBE_HF_SPLIT_HZ.
 # Matches crossover_v2.contracts.VERIFY_TOLERANCE_DB, and must stay below 1.70 dB:
-# the 2026-07-27 shelf-Q realization error this probe exists to catch peaked
+# the shelf-Q realization error this probe exists to catch peaked
 # there (0.2 dB margin — the exceedance-WIDTH rule carries the rest).
 DELTA_PROBE_TOLERANCE_LOW_DB: float = 1.5
 
@@ -130,7 +130,7 @@ DELTA_PROBE_MIN_COMMANDED_DB: float = 0.5
 # DELTA_PROBE_HF_SPLIT_HZ (#2521), equal to DELTA_PROBE_TOLERANCE_HIGH_DB by
 # design. NOT applied below the split (do not raise DELTA_PROBE_MIN_COMMANDED_DB
 # to match): on this module's keystone fixture a flat 1.0 dB floor drops the
-# 2026-07-27 shelf-Q defect's exceedance from 0.575 to 0.307 octaves, under
+# shelf-Q defect's exceedance from 0.575 to 0.307 octaves, under
 # DELTA_PROBE_MIN_EXCEEDANCE_OCTAVES.
 DELTA_PROBE_MIN_COMMANDED_HIGH_DB: float = 2.5
 
@@ -564,7 +564,7 @@ def classify_delta_probe(
     # Intersect the mic-trust ceiling here (#2649) — the caller derives the
     # ceiling, this function owns no gate of its own, but one place decides
     # which bins are graded. Grading bins measured through a mic nobody
-    # trusts manufactured 90% of the 2026-08-16 round's squared error.
+    # trusts manufactured 90% of one graded round's squared error.
     lo_hz, hi_hz = requested_band_hz
     graded_hi_hz = hi_hz
     if trust_ceiling_hz is not None and float(trust_ceiling_hz) < graded_hi_hz:
@@ -627,7 +627,7 @@ def classify_delta_probe(
     # The FRAME between the two curves, fitted over the QUIET bins (#2521):
     # a slope measured where the correction asked for nothing is uncommanded
     # by construction. NOT fitted over the graded bins — on the keystone
-    # fixture, a two-parameter fit there let the 2026-07-27 shelf-Q defect
+    # fixture, a two-parameter fit there let the shelf-Q defect
     # set its own frame and subtract itself, taking its exceedance from
     # 0.575 octaves to zero.
     frame = (

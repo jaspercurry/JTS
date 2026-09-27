@@ -73,7 +73,7 @@ def crossover_v2_status_block(
     # Count is derived from its persistence owner on every state read. Keeping
     # a second copy in journey state made crash recovery and offline store
     # repair observable as two contradictory counts.
-    store_count = v2state._attempt_loop_store_snapshot().model_error_count
+    store_count = v2state.attempt_loop_store_snapshot().model_error_count
     try:
         needs_recovery = bool(v2volume.session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
@@ -106,8 +106,6 @@ def crossover_v2_status_block(
         "attempts_loop": {
             "store_count": store_count,
         },
-        "cloud_chart": _projection.chart_cloud_status((state or {}).get("cloud")),
-        "findings": _projection.household_findings_status(state),
         # The across-rounds view no single receipt can carry: per spec band,
         # how much of what was commanded arrived, over how many banked rounds,
         # and how much those rounds disagreed. Read from the banked receipts

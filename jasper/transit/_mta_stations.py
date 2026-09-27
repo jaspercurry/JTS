@@ -4,7 +4,7 @@
 
 """Shared MTA-stations CSV loader for the subway runtime client + provider.
 
-Both `jasper.subway` (the arrivals tool runtime) and
+Both `jasper.transit.subway` (the arrivals tool runtime) and
 `jasper.transit.providers.nyc_subway` (the wizard's stop finder) need
 parsed station rows. v1 had each of them re-implement the CSV parse,
 which (1) doubled the import-time IO and (2) was a drift hazard if

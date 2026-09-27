@@ -19,9 +19,9 @@ from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
 )
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 
-from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 
 __all__ = [
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
@@ -93,7 +93,7 @@ class NoCrossoverSectionsError(CrossoverV2ContractError):
 class CandidateFcDisagreementError(CrossoverV2ContractError):
     """Sections in one candidate context name more than one crossover corner.
 
-    The 2026-08-10 defect's shape, refused at construction.
+    The dual-Fc defect's shape, refused at construction.
     """
 
     refusal_reason = "candidate_fc_disagreement"
@@ -105,17 +105,11 @@ class CandidateFcDisagreementError(CrossoverV2ContractError):
 
 
 def _finite(value: Any, *, field_name: str) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise CrossoverV2ContractError(f"{field_name} must be a finite real number")
-    return number
+    return require_finite(value, field=field_name, error=CrossoverV2ContractError)
 
 
 def _positive(value: Any, *, field_name: str) -> float:
-    number = _finite(value, field_name=field_name)
-    if number <= 0.0:
-        raise CrossoverV2ContractError(f"{field_name} must be positive")
-    return number
+    return require_finite(value, field=field_name, error=CrossoverV2ContractError, positive=True)
 
 
 def _text(value: Any, *, field_name: str) -> str:
@@ -173,7 +167,7 @@ class CandidateAcousticContext(FingerprintedRecord):
 
     A context owns the corner AND the sections together, so a planner holding
     one cannot ask a second question about which crossover it is planning — the
-    2026-08-10 dual-Fc defect, made impossible.
+    dual-Fc defect, made impossible.
 
     Agreement is checked at construction and is EXACT, not toleranced: these
     sections are built in-process from a single float, so any inequality is a
@@ -296,7 +290,6 @@ LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 
 # --------------------------------------------------------------------------- #
-# constants the flow used to own
 # --------------------------------------------------------------------------- #
 
 # Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor

@@ -10,7 +10,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_VOLUME_LIMIT_DB,
 )
 from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.biquad import PeqFilter
@@ -48,7 +47,6 @@ def emit_active_speaker_program_bake_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
 ) -> str:
@@ -81,7 +79,6 @@ def emit_active_speaker_program_bake_config(
         sample_rate=sample_rate,
         chunksize=chunksize,
         target_level=target_level,
-        volume_limit_db=volume_limit_db,
         profile_id=profile_id,
         output_trim_db=output_trim_db,
         playback_pipe_path=SNAPFIFO,

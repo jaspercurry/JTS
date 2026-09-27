@@ -19,10 +19,10 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 from .atomic_io import flock_held
 from .camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
-    DEFAULT_VOLUME_LIMIT_DB,
     VolumeLimitViolation,
     check_volume_limit,
 )
+from .camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from .log_event import log_event
 from .volume_latch import (
     READBACK_TOLERANCE_DB,

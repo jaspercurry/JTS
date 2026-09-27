@@ -88,9 +88,10 @@ MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC = 1.0
 # Test seam for deterministic lease-expiry interleavings without wall-clock
 # sleeps. Production retains asyncio.sleep exactly.
 _measurement_safety_sleep = asyncio.sleep
-# Same-purpose seam for aggregate-deadline arithmetic. Keeping it local avoids
-# patching ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
-_measurement_monotonic = time.monotonic
+# The measurement clock: this lease's aggregate deadlines and the age of
+# ``volume_measurement_gate``'s flag. One seam, so tests need not patch
+# ``time.monotonic`` process-wide (which would corrupt asyncio clocks).
+measurement_monotonic = time.monotonic
 
 
 def _remaining_lease_sec(value: object) -> float | None:
@@ -254,12 +255,12 @@ class MeasurementHold:
         coordinators branch only on that field and would otherwise skip lease
         renewal and RESUME during a rolling deploy.
         """
-        started = _measurement_monotonic()
+        started = measurement_monotonic()
         total_deadline = started + MEASUREMENT_PAUSE_TOTAL_TIMEOUT_SEC
         setup_deadline = (
             started + MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC
         )
-        remaining = setup_deadline - _measurement_monotonic()
+        remaining = setup_deadline - measurement_monotonic()
         if remaining <= 0.0:
             self._log_pause_timeout("transition_lock")
             raise TimeoutError("MEASURE_PAUSE aggregate deadline expired")
@@ -343,7 +344,7 @@ class MeasurementHold:
                         0.0,
                         min(
                             MEASUREMENT_INFLIGHT_DRAIN_SEC,
-                            setup_deadline - _measurement_monotonic(),
+                            setup_deadline - measurement_monotonic(),
                         ),
                     )
                 )
@@ -383,7 +384,7 @@ class MeasurementHold:
     ) -> None:
         """Await one cancellation-aware setup step inside the shared budget."""
 
-        remaining = deadline_monotonic - _measurement_monotonic()
+        remaining = deadline_monotonic - measurement_monotonic()
         if remaining <= 0.0:
             operation.close()
             self._log_pause_timeout(phase)
@@ -458,13 +459,13 @@ class MeasurementHold:
             return False
         previous.cancel()
         deferred_cancel = False
-        started = _measurement_monotonic()
+        started = measurement_monotonic()
         deadline = started + MEASUREMENT_SAFETY_JOIN_TIMEOUT_SEC
         if deadline_monotonic is not None:
             deadline = min(deadline, deadline_monotonic)
         join_bound_sec = max(0.0, deadline - started)
         while not previous.done():
-            remaining = deadline - _measurement_monotonic()
+            remaining = deadline - measurement_monotonic()
             if remaining <= 0:
                 log_event(
                     logger,
@@ -659,7 +660,7 @@ class MeasurementHold:
         event: str,
         trigger: str,
     ) -> None:
-        remaining = deadline_monotonic - _measurement_monotonic()
+        remaining = deadline_monotonic - measurement_monotonic()
         if remaining <= 0.0:
             operation.close()
             log_event(

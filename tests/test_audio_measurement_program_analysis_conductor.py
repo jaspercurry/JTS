@@ -12,11 +12,12 @@ import dataclasses
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
 from jasper.active_speaker.linearization_fit import FitVocabulary
 from jasper.audio_measurement import program_analysis
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
@@ -79,7 +80,7 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         return np.fft.irfft(plants[role] * response * sign, n=n_fft), 192
 
     monkeypatch.setattr(
-        program_analysis.dispatch, "_deconvolve_window", exact_deconvolution
+        program_analysis.dispatch, "deconvolve_window", exact_deconvolution
     )
     program = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, roles,

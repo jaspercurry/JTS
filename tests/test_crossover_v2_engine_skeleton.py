@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from itertools import count
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import pytest
 
-from jasper.active_speaker.driver_acoustics import CAPTURE_GEOMETRIES
 from jasper.volume_latch import READBACK_TOLERANCE_DB
 from jasper.audio_measurement.program_analysis import polarity_label
 
@@ -33,14 +33,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
-    MEASURE_REGIMES,
     POLARITIES,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
     REGIME_NEAR_FIELD,
-    REGIME_REFERENCE_AXIS,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
@@ -56,8 +54,10 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
     STAGE_ADMIT,
     STAGE_PLAY,
     STAGE_RESTORE,
+    PlaybackInterrupted,
     PlaybackOutcome,
 )
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.active_speaker.crossover_v2.session import (
     UNPROVEN_LEVEL,
     MeasureOutcome,
@@ -67,6 +67,8 @@ from jasper.active_speaker.crossover_v2.session import (
 from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 
 from tests._async_wait import wait_signalled
+from tests._log_events import event_field_maps
+from tests.crossover_v2_banked_round import _DESIGN_AXIS_GEOMETRY
 
 
 # --------------------------------------------------------------------------- #
@@ -90,9 +92,11 @@ class _Graph:
     #: One entry per install: the level match that stimulus asked for.
     level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
+    cleared_layers: list = field(default_factory=list)
 
-    def select_scope(self, scope, candidate_id="", branch_channels=None):
+    def select_scope(self, scope, candidate_id="", branch_channels=None, cleared_layers=()):
         self.scopes.append((scope, candidate_id))
+        self.cleared_layers.append(tuple(cleared_layers))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
@@ -378,6 +382,10 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         {"kind": MEASURE_KIND_BASELINE, "positions": (22.5,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (True,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
+        # Only a candidate graph has layers to clear (ADR-0370).
+        {"kind": MEASURE_KIND_BASELINE, "cleared_layers": ("room_correction",)},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate", "candidate_id": "fp", "cleared_layers": ("",)},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate", "candidate_id": "fp", "cleared_layers": ("room",)},
     ],
 )
 def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
@@ -456,11 +464,6 @@ def test_the_measure_kinds_are_the_index_columns_and_no_more():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_regime_words_are_driver_acoustics_own():
-    assert set(MEASURE_REGIMES) == set(CAPTURE_GEOMETRIES)
-    assert {REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS} == set(MEASURE_REGIMES)
-
-
 def test_the_polarity_words_are_the_measurement_frames_own():
     """``polarity_label`` calls itself "the ONE spelling of the map".
 
@@ -474,10 +477,10 @@ def test_the_polarity_words_are_the_measurement_frames_own():
     assert set(POLARITIES) == {POLARITY_NORMAL, POLARITY_INVERTED}
 
 
-def test_the_design_axis_is_spelled_the_way_spatial_spells_it():
+def test_the_design_axis_is_spelled_the_way_the_take_fixture_spells_it():
     """``()`` means the design axis, and the design axis is ``0`` there."""
-    assert DESIGN_AXIS_DEG == spatial._DESIGN_AXIS_GEOMETRY.degrees
-    assert spatial._DESIGN_AXIS_GEOMETRY.axis == POSITION_AXIS_HORIZONTAL
+    assert DESIGN_AXIS_DEG == _DESIGN_AXIS_GEOMETRY.degrees
+    assert _DESIGN_AXIS_GEOMETRY.axis == POSITION_AXIS_HORIZONTAL
 
 
 # --------------------------------------------------------------------------- #
@@ -637,7 +640,8 @@ async def test_failed_open_cleanup_retains_the_graph_for_a_later_close():
 async def test_each_take_selects_and_records_its_graph_scope_and_program_phase():
     session, parts = _session(play=_Play(wav_path="summed/take.wav"))
     specs = [
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline"),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline",
+                    cleared_layers=("room_correction", "bass_extension")),
         MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
         MeasureSpec(kind=MEASURE_KIND_BASELINE),
     ]
@@ -645,7 +649,10 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
         for spec in specs:
             await session.measure(spec)
     assert parts["graph"].scopes == [("candidate", "baseline"), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
+    # A take names its parent candidate and the layers its graph played cleared (ADR-0370).
+    assert parts["graph"].cleared_layers == [("room_correction", "bass_extension"), (), (), ()]
     records = parts["records"].banked
+    assert [record.get("cleared_layers") for record in records] == [["room_correction", "bass_extension"], None, None, None]
     assert [record["graph_scope"] for record in records] == ["candidate", "candidate", "candidate", "drivers"]
     assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
     assert len({record["graph_fingerprint"] for record in records}) == 3
@@ -1154,9 +1161,10 @@ async def test_a_transaction_that_never_reached_play_banks_nothing():
     assert outcome.stimuli[0].incident == "capture_timeout"
 
 
-async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
+async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest(caplog):
     """The continue-not-break rule: one failed position must not end the walk,
     and every entry says what became of its own stimulus."""
+    caplog.set_level(logging.INFO, logger=TuningSession.__module__)
     session, parts = _session(play=_Play(script=[
         (STAGE_RESTORE, ""),
         (STAGE_ADMIT, "capture_timeout"),
@@ -1173,6 +1181,39 @@ async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     assert [s.incident for s in outcome.stimuli] == ["", "capture_timeout", ""]
     assert [s.banked for s in outcome.stimuli] == [True, False, True]
     assert [row["position_deg"] for row in parts["records"].banked] == [-22, 22]
+    assert [(event["position_deg"], event["path"], event["incident"])
+            for event in event_field_maps(caplog, "active_speaker.stimulus_measured")] == [
+        ("-22", "rec-1", "null"), ("0", "null", "capture_timeout"), ("22", "rec-2", "null")]
+
+
+@dataclass
+class _StoppedPlay(_Play):
+    """A stop that lands after the stimulus played: the audio is on disk."""
+
+    async def run(self, **kwargs: Any) -> PlaybackOutcome:
+        await super().run(**kwargs)
+        raise PlaybackInterrupted(PlaybackObservation(emission="completed"), wav_path="c/x.wav")
+
+
+@dataclass
+class _FailingRecords(_Records):
+    async def bank(self, record: Mapping[str, Any]) -> str:
+        raise OSError("disk full")
+
+
+@pytest.mark.parametrize("records, path", [(_Records(), "rec-1"), (_FailingRecords(), "null")])
+async def test_a_stop_after_play_banks_what_played_and_still_stops(caplog, records, path):
+    """The stop outranks a failed bank; either way the stimulus is on the record."""
+    caplog.set_level(logging.INFO, logger=TuningSession.__module__)
+    session, _ = _session(play=_StoppedPlay(), records=records)
+
+    with pytest.raises(PlaybackInterrupted) as stopped:
+        async with session:
+            await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+    assert isinstance(stopped.value.__context__, OSError) == (path == "null")
+    (event,) = event_field_maps(caplog, "active_speaker.stimulus_measured")
+    assert (event["path"], event["interrupted"], event["error"]) == (path, "true", "null")
 
 
 async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():

@@ -12,8 +12,8 @@
 #
 # Concurrency: install.sh and an operator CLI can run the same transition. The
 # reconcile CLI serializes every entry behind an advisory flock
-# (/run/jasper-fanin-coupling.lock) with a bounded wait and aborts loudly (unit
-# lands `failed`, doctor-visible) on contention.
+# (/run/jasper-fanin-coupling.lock) with a bounded wait. A contended --auto logs
+# WARNING and exits 0, leaving the box to the pass that holds the lock.
 [Unit]
 Description=Converge the fan-in ring coupling + resolve the USB combo
 Documentation=https://github.com/jaspercurry/JTS/blob/main/docs/audio-paths.md
@@ -27,7 +27,7 @@ StartLimitIntervalSec=0
 After=jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-control.service
 Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 
-# A contention-aborted --auto parks this unit failed (doctor-visible via
+# A failed pass leaves this unit failed (doctor-visible via
 # check_service_runtime_state). Nothing retries it automatically — recovery
 # is event-driven: next boot, deploy (install.sh runs --auto), a /sources/
 # toggle (broker start), or a manual `systemctl start` per the doctor's

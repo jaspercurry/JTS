@@ -46,8 +46,8 @@ class _PreAudio32Peer:
 
     Models `read_command`'s dispatch exactly at the one point that matters — an
     unrecognized verb is an `Err`, and the connection task's `Err` arm returns,
-    which drops the stream. It accepts control lines and narrow payloads so a
-    green narrow assertion means "this peer works", not "this peer is broken".
+    which drops the stream. It accepts narrow payloads so an incorrect legacy
+    verb cannot pass the rejection checks.
     """
 
     def __init__(self, sock: socket.socket) -> None:
@@ -112,21 +112,6 @@ def peer_pair():
             pass
 
 
-def test_a_pre_audio32_peer_accepts_the_narrow_wire(peer_pair):
-    """The control: this peer is a working fan-in for every narrow-wire box.
-
-    Without it, the wide assertion below could pass because the harness is
-    broken rather than because the verb was rejected.
-    """
-    ours, peer = peer_pair
-    adapter = _OutputdStreamAdapter(ours, wire_wide=False)
-    payload = b"\x01\x02\x03\x04" * 512
-    error = _write_until_error(adapter, payload)
-    assert error is None, f"a narrow wire must not disturb a pre-AUDIO32 peer: {error}"
-    assert peer.accepted_audio_bytes > 0
-    assert peer.rejected_line is None
-
-
 def test_a_pre_audio32_peer_hangs_up_on_the_wide_wire(peer_pair):
     """The banked exposure, in-tree: rejection is a dead socket, not a bad sample.
 
@@ -141,7 +126,7 @@ def test_a_pre_audio32_peer_hangs_up_on_the_wide_wire(peer_pair):
     silently discarding the reply.
     """
     ours, peer = peer_pair
-    adapter = _OutputdStreamAdapter(ours, wire_wide=True)
+    adapter = _OutputdStreamAdapter(ours)
     payload = b"\x01\x02\x03\x04" * 512
     error = _write_until_error(adapter, payload)
     assert isinstance(error, OSError), (
@@ -165,7 +150,7 @@ def test_the_rejected_connection_cannot_carry_a_failure_cue_either(peer_pair):
     only because a stale peer is unreachable.
     """
     ours, peer = peer_pair
-    adapter = _OutputdStreamAdapter(ours, wire_wide=True)
+    adapter = _OutputdStreamAdapter(ours)
     payload = b"\x01\x02\x03\x04" * 512
     assert isinstance(_write_until_error(adapter, payload), OSError)
     peer.join()

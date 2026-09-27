@@ -15,7 +15,8 @@ from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology_strict
 
-from .branch_chain import branch_headroom_db, sections_by_role
+from .branch_chain import branch_headroom_db
+from .crossover_section import sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate, load_applied_candidate
 from .baseline_profile import (
     load_applied_baseline_profile_state,
@@ -165,22 +166,18 @@ def baseline_candidate_id() -> str:
 
 def resolve_alignment(
     base: MeasuredCrossoverCandidate, selected: Mapping[str, Any], *, roles: Sequence[str],
-    saved: Mapping[str, Any] | None, commissioning: Mapping[str, Any],
+    saved: Mapping[str, Any] | None, read: Mapping[str, Any],
 ) -> tuple[MeasuredCrossoverAlignment, AlignmentSource]:
     """Resolve timing once for the trial graph and apply record. See ADR-0319."""
-    read = commissioning.get("alignment") or {}
-    measured = read.get("timing_verdict") == TIMING_MEASURED and commissioning.get("status") in (None, "awaiting_apply")
     if "alignment" in selected:
         pin = selected["alignment"]
         if not pin:
             return MeasuredCrossoverAlignment(), "cleared"
-        if not isinstance(pin, MeasuredCrossoverAlignment):
-            fields = alignment_to_candidate_fields(pin, roles=roles)
-            return MeasuredCrossoverAlignment(*fields[:2], fields[2] or base.alignment.polarity or "keep"), "document"
-        return pin, "measured" if measured else "document"
+        fields = alignment_to_candidate_fields(pin, roles=roles)
+        return MeasuredCrossoverAlignment(*fields[:2], fields[2] or base.alignment.polarity or "keep"), "document"
     source: AlignmentSource = "saved" if saved is not None else "measured"
     pair = saved if saved is not None else read.get("committed") or {}
-    if saved is not None or measured:
+    if saved is not None or read.get("timing_verdict") == TIMING_MEASURED:
         fields = alignment_to_candidate_fields({**pair, "alignment_status": "ok"}, roles=roles)
         return MeasuredCrossoverAlignment(*fields), source
     return base.alignment, "base"
@@ -220,8 +217,8 @@ def compose_candidate(
     }
     roles = required_driver_roles(preset.way_count)
     resolved_alignment, alignment_source = resolve_alignment(
-        base.candidate, selected, roles=roles,
-        saved=(base_profile or {}).get("timing"), commissioning=evidence.get("commissioning") or {},
+        base.candidate, selected, roles=roles, saved=(base_profile or {}).get("timing"),
+        read=(evidence.get("commissioning") or {}).get("alignment") or {},
     )
     base_analysis = base.candidate.analysis
     read = ((base_analysis.get("evidence") or {}).get("commissioning") or {}).get("alignment") or {}

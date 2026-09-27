@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
 
@@ -134,19 +135,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise BundleError(f"{path.name} must be a JSON object")
     return data
-
-
-def _write_json_atomically(
-    path: Path,
-    payload: dict[str, Any],
-    *,
-    file_mode: int | None = None,
-) -> None:
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, default=str))
-    if file_mode is not None:
-        tmp_path.chmod(file_mode)
-    tmp_path.replace(path)
 
 
 def relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
@@ -346,7 +334,10 @@ def record_artifact(
         "generated_at": time.time(),
         "artifacts": [by_path[path] for path in sorted(by_path)],
     }
-    _write_json_atomically(_manifest_path(bundle_dir), manifest)
+    atomic_write_json(
+        _manifest_path(bundle_dir), manifest, mode=None,
+        group_from_parent=False, default=str,
+    )
     return entry
 
 
@@ -380,7 +371,9 @@ def write_json_artifact(
     )
     target_path = bundle_dir / rel_path
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_atomically(target_path, payload, file_mode=file_mode)
+    atomic_write_json(
+        target_path, payload, mode=file_mode, group_from_parent=False, default=str,
+    )
     record_artifact(
         bundle_dir,
         rel_path,

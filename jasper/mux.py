@@ -94,7 +94,6 @@ from .airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
-from .control.volume_ops import make_duck_active_probe
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .music_sources import (
     MUSIC_SOURCE_VALUES,
@@ -106,7 +105,6 @@ from .platform import wire
 from .platform.status_socket import (
     FANIN_STATUS_SOCKET,
     MUX_CONTROL_SOCKET_PATH,
-    VOICE_CONTROL_SOCKET_PATH,
 )
 from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
@@ -182,9 +180,8 @@ class _ControlVerb(NamedTuple):
     bad_arity: str | None
 
 
-# The control socket's vocabulary, one entry per verb; the clients that send
-# them spell the words in jasper/platform/wire.py. Spelled as literals here
-# because tests/test_platform_wire.py greps this file for each verb it emits.
+# See jasper/platform/wire.py for sender verbs; tests/test_platform_wire.py
+# checks them against the _CONTROL_VERBS keys.
 _CONTROL_VERBS: dict[str, _ControlVerb] = {
     "STATUS": _ControlVerb(0, "_control_status", None),
     "AUTO": _ControlVerb(0, "auto_select", None),
@@ -1088,11 +1085,6 @@ class Mux:
             camilla=primary_controller(),
             backend=RendererClient(librespot_state_path=self._librespot_state_path),
             spotify_router=self._ensure_spotify_router(),
-            duck_active_probe=make_duck_active_probe(
-                os.environ.get(
-                    "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
-                ),
-            ),
         )
         return self._volume_coordinator
 

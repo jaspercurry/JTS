@@ -95,10 +95,7 @@ TTS_SEGMENT_END = "SEGMENT_END"
 TTS_CONTENT_METER_PAUSE = "CONTENT_METER_PAUSE"
 TTS_CONTENT_METER_RESUME = "CONTENT_METER_RESUME"
 
-# The payload verb DECLARES the connection's sample width: "AUDIO" is S16LE,
-# "AUDIO32" is S32LE at spine scale. See `TtsWireWidth` in
-# rust/jasper-tts-protocol/src/lib.rs.
-TTS_AUDIO_NARROW = "AUDIO"
+# Stereo S32_LE at spine scale.
 TTS_AUDIO_WIDE = "AUDIO32"
 
 
@@ -111,9 +108,8 @@ def tts_gain(db: float) -> str:
     return f"GAIN {db:.3f}"
 
 
-def tts_audio(verb: str, byte_count: int) -> str:
-    """Header for one payload chunk; ``verb`` is TTS_AUDIO_NARROW/_WIDE."""
-    return f"{verb} {byte_count}"
+def tts_audio(byte_count: int) -> str:
+    return f"{TTS_AUDIO_WIDE} {byte_count}"
 
 
 def tts_segment_start(

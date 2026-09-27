@@ -89,7 +89,7 @@ def status_payload() -> dict[str, Any]:
     """Return active-crossover targets and saved measurement evidence.
 
     While a capture holds the microphone, its reader thread shares this
-    process (#5632 F1). So the slow blocks — the setup report with its two
+    process (#5632). So the slow blocks — the setup report with its two
     graph compiles, the banked-round timing and the receipt ledger — come
     from the run's first answer, and ``snapshot_at`` says when that was
     read. The run's own receipt and packet show in the first answer after
@@ -129,7 +129,7 @@ def status_payload() -> dict[str, Any]:
         payload["timing"] = timing_status_lines(applied, recent.get("speaker"))
     else:
         payload["timing"] = snapshot["timing"]
-    # v2 session state (Wave 5a). Fail-soft: an unreadable v2 state must
+    # v2 session state. Fail-soft: an unreadable v2 state must
     # never take down the whole status surface.
     try:
         from .correction_crossover_v2_status import crossover_v2_status_block

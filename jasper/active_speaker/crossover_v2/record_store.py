@@ -19,12 +19,6 @@ from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
 from jasper.log_event import log_event
 
-from jasper.attribution.session_identity import (
-    ALIAS_CAPTURE_SESSION_ID,
-    SessionIdentity,
-    stamp_session_identity,
-)
-
 from ..commissioning_evidence_store import CommissioningEvidenceStore
 from ..run_manifest import RUN_MANIFEST_KIND, RUN_MANIFEST_FILENAME
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
@@ -37,16 +31,14 @@ from .contracts import (
 
 __all__ = [
     "CHECK_EVIDENCE_KIND",
-    "CLOUD_EVIDENCE_KIND",
     "BankedRecordStore",
 ]
 
 logger = logging.getLogger(__name__)
 
-#: The two artifact kinds no producer names for itself: a check bundle and a
-#: cloud group are plain dicts, so their discriminator is spelled here.
+#: The one artifact kind no producer names for itself: a check bundle is a
+#: plain dict, so its discriminator is spelled here.
 CHECK_EVIDENCE_KIND = "jts_crossover_v2_check_evidence"
-CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 
 #: The keys the STORE owns on an enveloped record. A record that arrives
 #: carrying one is refused rather than overwritten.
@@ -61,7 +53,6 @@ class _Route:
     relative_path: Callable[[str, Mapping[str, Any]], str]
     enveloped: bool
     live: bool = False
-    stamp_identity: bool = False
     verify: Callable[[Mapping[str, Any], Mapping[str, Any]], None] | None = None
 
 
@@ -112,11 +103,6 @@ _ROUTES: dict[str, _Route] = {
     ),
     CHECK_EVIDENCE_KIND: _Route(
         lambda capture, _r: f"{_round_dir(capture)}/check.json", enveloped=True,
-    ),
-    CLOUD_EVIDENCE_KIND: _Route(
-        lambda capture, r: f"{_round_dir(capture)}/{_required(r, 'phase')}.json",
-        enveloped=True,
-        stamp_identity=True,
     ),
     CANDIDATE_KIND: _Route(
         lambda capture, _r: f"{_round_dir(capture)}/candidate.json",
@@ -218,26 +204,12 @@ class BankedRecordStore:
         }
         if measure is not None:
             payload[MEASURE_KIND_KEY] = measure
-        payload = {
+        return {
             "schema_version": _SCHEMA_VERSION,
             "kind": discriminator,
             "capture_session_id": self.capture_session_id,
             **payload,
         }
-        if route.stamp_identity:
-            payload = stamp_session_identity(payload, self._identity())
-        return payload
-
-    def _identity(self) -> SessionIdentity:
-        """This session across two namespaces, as the cloud payload records it.
-
-        The bundle id is canonical because the bundle is the retention unit;
-        the capture id is minted after it and is not derivable from it.
-        """
-        return SessionIdentity(
-            session_id=str(self.evidence.session_id),
-            aliases={ALIAS_CAPTURE_SESSION_ID: str(self.capture_session_id)},
-        )
 
     def _publish(
         self, relative: str, payload: Mapping[str, Any], route: _Route,

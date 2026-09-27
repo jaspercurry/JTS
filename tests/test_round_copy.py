@@ -9,7 +9,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFU
 from jasper.active_speaker.round_copy import (
     LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts,
 )
-from jasper.active_speaker.measurement_programs import program
+from jasper.active_speaker.measurement_programs import plan_poses, run_preset
 from jasper.active_speaker.measurement_view import round_status
 
 
@@ -94,7 +94,7 @@ def test_a_near_field_pose_is_named_by_its_driver_and_distance():
     """A cardioid near-field round names each placement by its driver and
     distance (ADR-0360)."""
     names = [pose_name({"kind": pose.kind, "distance_m": pose.distance_m, "driver": pose.driver})
-             for pose in program("nearfield", "cardioid").poses]
+             for pose in plan_poses(run_preset("nearfield"), ("tweeter", "woofer", "woofer:rear"))]
     assert names == ["woofer at 15 mm", "woofer at 30 mm", "rear woofer at 15 mm", "rear woofer at 30 mm"]
 
 

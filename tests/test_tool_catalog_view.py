@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper.tool_catalog_view — the light read/overlay side of the catalog.
+"""jasper.tools.tool_catalog_view — the light read/overlay side of the catalog.
 
 The wizard (and /state) read voice's /run/jasper/tools.json and overlay the
 FRESH disabled-set so the UI converges on a toggle without waiting on — or
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import json
 
-from jasper import tool_catalog_view as view
-from jasper.tool_state import ToolState
+from jasper.tools import tool_catalog_view as view
+from jasper.tools.tool_state import ToolState
 
 
 def _write(path, payload):

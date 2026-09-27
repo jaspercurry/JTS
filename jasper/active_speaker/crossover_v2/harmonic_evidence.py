@@ -24,10 +24,40 @@ from typing import Any
 import numpy as np
 
 from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
-from jasper.audio_measurement.program import ExcitationProgram, KIND_COURTESY_TONE, write_program_wav
+from jasper.audio_measurement.program import (
+    ExcitationProgram,
+    FrequencyBand,
+    KIND_COURTESY_TONE,
+    KIND_SWEEP,
+    MEASURE_SWEEP_F_HI_HZ,
+    MEASURE_SWEEP_F_LO_HZ,
+    PROGRAM_SAMPLE_RATE_HZ,
+    RoleBand,
+    _intersect_band,
+    build_measure_program,
+    write_program_wav,
+)
 from jasper.json_fields import sha256_file
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
+from jasper.audio_measurement import deconv
+from jasper.audio_measurement.calibration import (
+    DEFAULT_SIGN_CONVENTION,
+    SUPPORTED_MODELS,
+    parse_calibration_text,
+)
+from jasper.audio_measurement.distortion import read_segment_distortion, worst_clear_of_floor
+from jasper.audio_measurement.program_analysis import (
+    CAPTURE_BOUND_MARGIN_S,
+    MeasurementGeometry,
+    MeasurementPriors,
+    analysis_diagnostic_summary,
+    analyze_program_capture,
+    estimate_drift,
+    locate_global_offset,
+    locate_segments,
+)
+from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from .round_inputs import banked_round_of, round_inputs
 
 from ..profile import DRIVER_ROLES_BY_WAY
@@ -38,6 +68,7 @@ from .evidence_packet import (
     round_artifact_dir,
 )
 from .journey import PHASE_MEASURE
+from .programs import courtesy_prelude_for_phase, leading_pilot_role, pilot_gains
 
 __all__ = [
     "DEFAULT_BANDS_HZ",
@@ -120,7 +151,7 @@ _DOWNSTREAM_GRID_DB: tuple[float, ...] = tuple(
 #: the repeat agreement, and the integrity flags.
 #:
 #: ``max_residual_samples`` and ``glitch_detected`` are deliberately ABSENT.
-#: D7 (``b98e9380f``, 2026-08-18) replaced the estimator behind them, so
+#: Commit ``b98e9380f`` replaced the estimator behind them, so
 #: every capture banked before that commit records a value from the blunter
 #: instrument and comparing either would report a deliberate product
 #: improvement as a broken reconstruction. A banked-vs-replay disagreement
@@ -231,14 +262,6 @@ def _banked_sweep_durations_s(
     raw = state.get("measure_sweep_durations_s")
     if not isinstance(raw, Mapping):
         return None
-    from jasper.audio_measurement.program import (
-        MEASURE_SWEEP_F_HI_HZ,
-        MEASURE_SWEEP_F_LO_HZ,
-        PROGRAM_SAMPLE_RATE_HZ,
-        FrequencyBand,
-        _intersect_band,
-    )
-    from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 
     durations: dict[str, float] = {}
     for role in bands:
@@ -306,17 +329,6 @@ def rebuild_measure_program(
     Solve unbanked volume and prelude; use banked sweep durations when present.
     Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
-    from jasper.audio_measurement.program import (
-        FrequencyBand,
-        RoleBand,
-        build_measure_program,
-    )
-
-    from .programs import (
-        courtesy_prelude_for_phase,
-        leading_pilot_role,
-        pilot_gains,
-    )
 
     roles = banked_roles(state)
     raw_gains = state.get("gain_plan_db")
@@ -409,7 +421,7 @@ def rebuild_measure_program(
             "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
             "downstream_grid_step_db": 0.5,
             # Two booleans, not one: "was anything banked" and "was what was banked
-            # usable" are different facts (#2923 fix round 2). Absent from banking is
+            # usable" are different facts (#2923). Absent from banking is
             # (False, False); banked-something-unusable is (True, False); banked and
             # used to compose every attempt above is (True, True) — reaching THIS
             # raise even so means the banked duration was fine and something else is
@@ -585,10 +597,6 @@ def _sign_convention(calibration_id: str) -> str:
     catch it — which is why the convention is resolved from the id the SESSION
     banked rather than from a default or a flag.
     """
-    from jasper.audio_measurement.calibration import (
-        DEFAULT_SIGN_CONVENTION,
-        SUPPORTED_MODELS,
-    )
 
     parts = set(str(calibration_id).split("-"))
     for key, spec in SUPPORTED_MODELS.items():
@@ -613,7 +621,6 @@ def _calibration_for(captures: list[dict[str, Any]], text: str | None):
                 "carries the microphone's own response across an octave"
             ),
         }
-    from jasper.audio_measurement.calibration import parse_calibration_text
 
     calibration_id = str(captures[0]["sidecar"].get("setup_calibration_id") or "")
     convention = _sign_convention(calibration_id)
@@ -681,19 +688,6 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
     not evidence about a speaker — and a sidecar carrying NONE of the gate
     fields is refused outright: zero comparisons is not a passed gate.
     """
-    from jasper.audio_measurement import deconv
-    from jasper.audio_measurement.distortion import read_segment_distortion
-    from jasper.audio_measurement.program import KIND_SWEEP
-    from jasper.audio_measurement.program_analysis import (
-        CAPTURE_BOUND_MARGIN_S,
-        MeasurementGeometry,
-        MeasurementPriors,
-        _estimate_drift,
-        _global_offset,
-        _locate_segments,
-        analysis_diagnostic_summary,
-        analyze_program_capture,
-    )
 
     banked = sidecar.get("diagnostic") or {}
     compared = sum(
@@ -728,9 +722,9 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
         sample_rate=rate,
         max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S,
     )
-    global_offset, _first, stimuli, _ambiguous = _global_offset(program, bounded, rate)
-    locations = _locate_segments(program, bounded, rate, global_offset, stimuli)
-    epsilon = _estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
+    global_offset, _first, stimuli, _ambiguous = locate_global_offset(program, bounded, rate)
+    locations = locate_segments(program, bounded, rate, global_offset, stimuli)
+    epsilon = estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
 
     readings = []
     for segment in program.stimulus_segments():
@@ -759,8 +753,8 @@ def _median(values: Sequence[float]) -> float:
 def _spread(values: Sequence[float]) -> float | None:
     """Sample standard deviation across in-capture repeats, or ``None``.
 
-    ``None`` below two real values rather than 0.0, on the cross-seat block's
-    rule: a sample standard deviation is UNDEFINED at n=1 and a zero would say
+    ``None`` below two real values rather than 0.0: a sample standard
+    deviation is UNDEFINED at n=1 and a zero would say
     the repeats agreed. ``statistics.stdev`` RAISES at n < 2 instead of
     returning a silent NaN, and the ``len < 2`` guard stands in front of it.
     """
@@ -840,7 +834,6 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
 
     worst: dict[str, Any] = {}
     floor_fraction: dict[str, float] = {}
-    from jasper.audio_measurement.distortion import worst_clear_of_floor
 
     for order in orders:
         pooled = np.median(

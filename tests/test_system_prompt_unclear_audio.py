@@ -9,8 +9,8 @@ triggers rather than relying on a single "don't call any tool" rule.
 
 
 def test_unclear_audio_section_present():
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     # The section header concept (clarification request) must exist.
     # We don't pin literal wording too tightly — phrasing may evolve —
     # but the user-visible clarification line and the "no tool" rule
@@ -25,8 +25,8 @@ def test_unclear_audio_lists_fragment_trigger():
     clear and the user said exactly that one word' and then hallucinates
     a tool call. Pinning these literal example fragments because they
     are the exact ones observed in production failures."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     assert "fragment" in prompt.lower()
     assert "What?" in prompt
     assert "That's" in prompt
@@ -38,6 +38,6 @@ def test_unclear_audio_lists_empty_args_antipattern():
     hallucination signature. Including this anti-pattern in the prompt
     lets the model self-detect: 'I'm about to pass empty strings — I
     must be guessing.'"""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     assert "empty-string arguments" in prompt

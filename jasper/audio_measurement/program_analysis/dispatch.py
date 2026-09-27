@@ -50,8 +50,8 @@ from .check import (
     _pilot_verdicts,
     _solve_gain_plan,
 )
-from .drift import _estimate_drift, _sweep_occurrences_by_role
-from .locate import _global_offset, _locate_segments, _staircase_offset
+from .drift import estimate_drift, _sweep_occurrences_by_role
+from .locate import locate_global_offset, locate_segments, _staircase_offset
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR, ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
@@ -82,10 +82,10 @@ from .model import (
 from .response import (
     _aligned_branch_tf,
     branch_level_bands_hz,
-    _deconvolve_window,
-    _driver_response,
+    deconvolve_window,
+    driver_response,
     _gate_floor_hz,
-    _n_fft_for,
+    n_fft_for,
     polarity_label,
     polarity_sign_of,
     predicted_branch_sum,
@@ -95,6 +95,7 @@ from .response import (
     _ripple_db,
     _select_alignment_pair,
     _select_summed_alignment_pair,
+    _sweep_over_ambient_db,
     solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
@@ -149,17 +150,17 @@ def analyze_program_capture(
 
     probe = is_level_probe(program)
     if not probe:
-        global_offset, _first, stimuli, anchor = _global_offset(program, capture, sample_rate)
+        global_offset, _first, stimuli, anchor = locate_global_offset(program, capture, sample_rate)
     else:
         (global_offset, stimuli), anchor = _staircase_offset(program, capture, sample_rate), None
-    locations = _locate_segments(program, capture, sample_rate, global_offset, stimuli)
+    locations = locate_segments(program, capture, sample_rate, global_offset, stimuli)
 
     if probe:
         # A level probe is read for its levels alone (ADR-0365).
         analysis = ProgramAnalysis(phase=program.phase, program_id=program.program_id, locations=tuple(locations))
     elif is_branch_program(program):
         analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
-                                    gate_exempt_reason=geometry.gate_exempt_reason)
+                                    geometry=geometry)
     elif program.phase == PROGRAM_PHASE_CHECK:
         analysis = _analyze_check(
             program, capture, sample_rate, global_offset, locations, priors,
@@ -346,14 +347,14 @@ def _repeat_driver_responses(
     n_fft: int,
     impulses: Mapping[str, RecordedImpulse],
     alignment_band_hz: tuple[float, float] | None = None,
-    gate_exempt_reason: str | None = None,
+    geometry: MeasurementGeometry = MeasurementGeometry(),
 ) -> tuple[DriverResponse, ...]:
     """Per-repeat responses for ``linearization_envelope.compute_sigma_curve``."""
     out: list[DriverResponse] = []
     for repeat_index, loc in enumerate(occurrences[1:], start=1):
         seg = program.segment(loc.segment_id)
         full_ir, _pre = sweep_irs[seg.segment_id]
-        resp = _driver_response(
+        resp = driver_response(
             role, full_ir, sample_rate,
             calibration=calibration, ambient_report=ambient_report,
             fc_hz=fc_hz, n_fft=n_fft,
@@ -362,7 +363,7 @@ def _repeat_driver_responses(
             capture_segment=_raw_sweep_segment(
                 capture, seg, global_offset + seg.start_sample,
             ),
-            gate_exempt_reason=gate_exempt_reason,
+            geometry=geometry,
         )
         out.append(replace(resp, repeat_index=repeat_index, impulse=impulses[seg.segment_id]))
     return tuple(out)
@@ -380,7 +381,7 @@ def _analyze_measure(
     # ``None`` is legal for exactly one shape: a 1-way passive main. On a
     # TWO-branch program it still raises below, where ``seg_t`` is known.
     fc_hz = None if priors.crossover_fc_hz is None else float(priors.crossover_fc_hz)
-    drift = _estimate_drift(program, capture, sample_rate, locations)
+    drift = estimate_drift(program, capture, sample_rate, locations)
 
     seg_w = program.segment("sweep_w")
     seg_t = next(
@@ -400,7 +401,7 @@ def _analyze_measure(
     impulses = {}
     # Divide measured epsilon out of the reference so clock drift cannot smear the IR.
     for seg in sweeps.values():
-        full_ir, pre = _deconvolve_window(
+        full_ir, pre = deconvolve_window(
             capture, seg, global_offset + seg.start_sample, sample_rate, epsilon=epsilon,
         )
         impulses[seg.segment_id] = recorded_impulse(
@@ -411,14 +412,14 @@ def _analyze_measure(
         ), pre)
     woofer_full_ir = sweep_irs[seg_w.segment_id][0]
     tweeter_full_ir = sweep_irs[seg_t.segment_id][0] if seg_t is not None else None
-    n_fft = _n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
+    n_fft = n_fft_for(*[ir for ir in (woofer_full_ir, tweeter_full_ir) if ir is not None])
 
     branches = [(seg_w, woofer_full_ir)]
     if seg_t is not None and tweeter_full_ir is not None:
         branches.append((seg_t, tweeter_full_ir))
     responses = tuple(
         replace(
-            _driver_response(
+            driver_response(
                 seg.role, full_ir, sample_rate,
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft,
@@ -427,7 +428,7 @@ def _analyze_measure(
                 capture_segment=_raw_sweep_segment(
                     capture, seg, global_offset + seg.start_sample,
                 ),
-                gate_exempt_reason=geometry.gate_exempt_reason,
+                geometry=geometry,
             ),
             impulse=impulses[seg.segment_id],
             repeat_responses=_repeat_driver_responses(
@@ -437,7 +438,7 @@ def _analyze_measure(
                 calibration=calibration, ambient_report=priors.ambient_report,
                 fc_hz=fc_hz, n_fft=n_fft, impulses=impulses,
                 alignment_band_hz=alignment_band_hz,
-                gate_exempt_reason=geometry.gate_exempt_reason,
+                geometry=geometry,
             ),
         )
         for seg, full_ir in branches
@@ -531,8 +532,11 @@ def _build_candidate(
     repeat_responses: tuple[DriverResponse, ...] = (),
     geometry: MeasurementGeometry | None = None,
 ) -> tuple[CrossoverCandidate, tuple[np.ndarray, np.ndarray]]:
-    freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration)
-    _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration)
+    bounce_s = geometry.declared_first_bounce_s if geometry is not None else None
+    freqs, W, gate_w = _aligned_branch_tf(woofer_full_ir, sample_rate, n_fft, calibration=calibration,
+                                          declared_first_bounce_s=bounce_s)
+    _f2, T, gate_t = _aligned_branch_tf(tweeter_full_ir, sample_rate, n_fft, calibration=calibration,
+                                        declared_first_bounce_s=bounce_s)
     lo, hi = overlap_band_hz(
         fc_hz, tweeter_sweep_lo_hz=tweeter_sweep_lo_hz, woofer_sweep_hi_hz=woofer_sweep_hi_hz,
     )
@@ -893,17 +897,17 @@ def _analyze_verify(
         ) for loc in locations]
         # Averaging can hide a clipped individual pass; retain the raw clip evidence.
         locations = [replace(loc, clipped=loc.clipped or raw.clipped) for loc, raw in zip(
-            _locate_segments(program, averaged, sample_rate, global_offset, {}), locations)]
-    full_ir, pre = _deconvolve_window(
+            locate_segments(program, averaged, sample_rate, global_offset, {}), locations)]
+    full_ir, pre = deconvolve_window(
         averaged,
         seg, global_offset + seg.start_sample, sample_rate
     )
-    n_fft = _n_fft_for(full_ir)
-    summed = _driver_response(
+    n_fft = n_fft_for(full_ir)
+    summed = driver_response(
         "summed", full_ir, sample_rate,
         calibration=calibration, ambient_report=None, fc_hz=fc_hz, n_fft=n_fft,
         radiated_band_hz=_radiated_band_hz(seg),
-        gate_exempt_reason=geometry.gate_exempt_reason,
+        geometry=geometry,
     )
     summed = replace(
         summed, late_energy=impulse_late_energy(full_ir, sample_rate_hz=sample_rate),
@@ -1060,6 +1064,7 @@ def _analyze_verify(
         program, sample_rate, locations, frame_ledger, capture=aligned, offset=global_offset,
         repeat_locations=repeat_locations, alignment=alignment,
     )
+    ambient = _pilot_ambient_samples(program, capture, global_offset)
     return ProgramAnalysis(
         phase=program.phase,
         program_id=program.program_id,
@@ -1078,4 +1083,6 @@ def _analyze_verify(
         pilot_snr_ok=pilot_snr_ok,
         capture_integrity=integrity,
         glitch_detected=integrity.glitched,
+        sweep_over_ambient_db=(None if ambient is None
+                               else _sweep_over_ambient_db(full_ir, pre, seg, ambient, sample_rate)),
     )

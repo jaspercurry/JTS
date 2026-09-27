@@ -61,10 +61,6 @@ DEPLOY_DIRECTION=""
 
 cd "$REPO_ROOT"
 
-ssh_remote() {
-    ssh "${SSH_BATCH_OPTS[@]}" "$SSH_TARGET" "$@"
-}
-
 ssh_remote_tty() {
     ssh -tt "${SSH_BATCH_OPTS[@]}" "$SSH_TARGET" "$@"
 }
@@ -1042,10 +1038,9 @@ fi
 # nginx under the speaker's real hostname. This exercises the exact
 # path a browser takes — nginx → socket-activated system wizard →
 # jasper-control behind its management-host guard — and fails the
-# deploy loudly instead of leaving a silently broken dashboard. The
-# 2026-06-11 regression (every /system/ poll 403ing with
-# host_not_allowed) shipped invisibly because nothing probed this path
-# at deploy time. Retries cover jasper-control's restart window and
+# deploy loudly instead of leaving a silently broken dashboard: a host
+# guard that 403s every /system/ poll (host_not_allowed) is otherwise
+# invisible at deploy time. Retries cover jasper-control's restart window and
 # the wizard's socket-activation cold start.
 if [[ "$REMOTE_INSTALL_PROFILE" == "streambox" ]]; then
     echo "==> Verifying streambox management surface (Host: ${HOSTNAME_FOR_INSTALL})"

@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 from jasper.json_fields import finite_float as _finite
 
 from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
-from .journey import GROUP_PHASES, PHASE_MEASURE
+from .journey import PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,6 @@ DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.
 
 __all__ = [
     "DEFAULT_V2_STATE_PATH",
-    "FINDING_HOUSEHOLD_REFS_KEY",
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",
     "V2ConductorSnapshot",
@@ -126,7 +125,6 @@ class V2ConductorSnapshot:
         }
 
 
-FINDING_HOUSEHOLD_REFS_KEY = "household_findings"
 MAX_PERSISTED_SUM_POINTS = 512
 
 
@@ -429,6 +427,7 @@ def build_conductor_state(
     evidence: Mapping[str, Any] | None = None,
     failure_refusals: Sequence[str] = (),
     failure_detail: str = "",
+    failure_roles: Sequence[str] = (),
 ) -> ConductorState:
     """The whole document one persist writes, over the one it is replacing.
 
@@ -443,11 +442,6 @@ def build_conductor_state(
 
     snap = conductor.snapshot()
     measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
-    failure_pilot_heard = (
-        getattr(conductor, "last_failure_pilot_heard", None)
-        if failure_code == getattr(conductor, "last_failure_code", None)
-        else None
-    )
     if (
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
@@ -455,6 +449,8 @@ def build_conductor_state(
     ):
         conductor.note_restore_observed()
         snap = conductor.snapshot()
+    # Every MEASURE-scoped carry keys on the phases this document records (#4806).
+    runs_measure = PHASE_MEASURE in snap.session_phases
     if hasattr(snap, "attempt_history"):
         attempts_loop_state: dict[str, Any] | None = {
             "history": [
@@ -497,16 +493,11 @@ def build_conductor_state(
                     if failure_refusals
                     else {}
                 ),
-                **(
-                    {"pilot_heard": bool(failure_pilot_heard)}
-                    if failure_pilot_heard is not None
-                    else {}
-                ),
+                **({"failed_roles": [str(role) for role in failure_roles]} if failure_roles else {}),
             }
             if failure_code
             else None
         ),
-        "cloud": None,
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
             "predicted_spec": None,
@@ -521,9 +512,7 @@ def build_conductor_state(
         },
         "evidence": dict(evidence) if evidence else None,
     }
-    if PHASE_MEASURE in snap.session_phases:
-        state["verify_priors"]["pilot_transfer_reference"] = None
-    elif state["verify_priors"]["pilot_transfer_reference"] is None:
+    if not runs_measure:
         prior_reference = (prior.get("verify_priors") or {}).get(
             "pilot_transfer_reference"
         )
@@ -533,38 +522,14 @@ def build_conductor_state(
         state["applied"] = True
     if state["candidate"] is None and isinstance(prior.get("candidate"), Mapping):
         if prior.get("session_id") == snap.session_id or (
-            prior.get("applied") is True and PHASE_MEASURE not in snap.session_phases
+            prior.get("applied") is True and not runs_measure
         ):
             state["candidate"] = dict(prior["candidate"])
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
-
-    conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
-    if not (conductor_session_phases & GROUP_PHASES):
-        if state["cloud"] is None and isinstance(prior.get("cloud"), Mapping):
-            state["cloud"] = dict(prior["cloud"])
-        prior_evidence = prior.get("evidence")
-        if isinstance(prior_evidence, Mapping) and "cloud_artifacts" in prior_evidence:
-            merged_evidence = dict(state["evidence"] or {})
-            merged_evidence.setdefault(
-                "cloud_artifacts", prior_evidence["cloud_artifacts"]
-            )
-            state["evidence"] = merged_evidence
-    if PHASE_MEASURE not in conductor_session_phases:
-        prior_evidence = prior.get("evidence")
-        if (
-            isinstance(prior_evidence, Mapping)
-            and FINDING_HOUSEHOLD_REFS_KEY in prior_evidence
-        ):
-            merged_evidence = dict(state["evidence"] or {})
-            merged_evidence.setdefault(
-                FINDING_HOUSEHOLD_REFS_KEY,
-                prior_evidence[FINDING_HOUSEHOLD_REFS_KEY],
-            )
-            state["evidence"] = merged_evidence
-        if isinstance(prior.get("measure"), Mapping) and state["measure"] is None:
-            state["measure"] = dict(prior["measure"])
+    if not runs_measure and isinstance(prior.get("measure"), Mapping):
+        state["measure"] = dict(prior["measure"])
     for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
         if key in prior:
             state[key] = prior[key]
@@ -578,8 +543,7 @@ def build_conductor_state(
     for key in ("accepted_sound_revision", "accepted_sound_declaration_change"):
         state[key] = (
             prior.get(key)
-            if prior.get("accepted_sound_candidate_fingerprint")
-            or PHASE_MEASURE not in snap.session_phases
+            if prior.get("accepted_sound_candidate_fingerprint") or not runs_measure
             else None
         )
     state["round_receipt"] = prior.get("round_receipt")

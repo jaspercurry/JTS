@@ -3,10 +3,14 @@
 
 """Measurement screen facts and plan choices, separate from speaker setup."""
 
+from dataclasses import replace
 from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, available_programs, program
+from .measurement_programs import (
+    BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, Preset,
+    available_presets, plan_poses, preset, run_preset,
+)
 from .round_copy import round_lines, packet_lines, round_verdict
 from .wizard_client import CAPTURE_CANCEL_PATH
 
@@ -37,15 +41,13 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     return {**result, "capture": None, "pending": {**held, "actions": actions} if live else None, "busy": live}
 
 
-#: Registry ids whose layout, purpose, and regime duplicate another id's
-#: (reviewer finding R4-D9): ``seat/cloud`` mirrors ``room/cloud`` and
-#: ``seat/express`` mirrors ``room/seat``. Offered only when a link names one:
-#: the ids stay registered and resolve through :func:`program` (ADR-0277).
-_ALIAS_PLAN_IDS = frozenset({"seat/cloud", "seat/express"})
+def _choice_id(row: Preset, layout: str) -> str:
+    """A page choice: the preset id at its default layout, ``preset@layout`` at another."""
+    return row.preset if layout == row.layout else f"{row.preset}@{layout}"
 
 
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
-    from .angle_capture import REGIME_BRANCHES, request_for_program  # lazy: measurement planning
+    from .angle_capture import REGIME_BRANCHES, request_for_preset  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
     from .crossover_v2.refusal_copy import (  # lazy: measurement planning
         CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
@@ -57,20 +59,21 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
 
     view = load_commissioning_view()
     programs = view["programs"]
-    hidden = _ALIAS_PLAN_IDS - {selected_id}
-    plans = {f"{name}/{size}": program(name, size) for name, size in available_programs()
-             if f"{name}/{size}" not in hidden}
+    targets = view["near_field_drivers"]
+    rows = [preset(name) for name in available_presets()]
+    plans = {_choice_id(row, layout): run_preset(row.preset, layout) for row in rows for layout in row.layouts}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
-                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(view["near_field_drivers"]))}
-    default = program(view["next_action"].get("program") or programs[0])
+                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
+    default = preset(view["next_action"].get("program") or programs[0])
     refused = bool(selected_id) and selected_id not in plans
-    default_id = selected_id or f"{default.program_id}/{default.size}"
+    default_id = selected_id or default.preset
     choices = []
     for plan_id, plan in plans.items():
+        walked = replace(plan, poses=plan_poses(plan, targets))
         choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
-                                  "poses": plan.mic_move_count, "captures": plan.capture_count}
+                                  "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
             if plan.regime == REGIME_BRANCHES:
                 # See issue #5321.
@@ -85,7 +88,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                     # raisers pass; some carry no code.
                     choice.update(code=exc.code or None, lines=[str(exc)])
                 else:
-                    request = request_for_program(plan, mover=plan.mover or "human")
+                    request = request_for_preset(plan, mover=plan.mover or "human", targets=targets)
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
                     facts = preview_schedule(request, captures, context)
                     choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",

@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from ...bus import parse_bus_stops
+from ...transit.bus import parse_bus_stops
 from ...config import Config
 from ...env_load import parse_bool_value
 from ...transit import enabled_pack_ids
@@ -873,7 +873,7 @@ def check_citibike(cfg: Config) -> CheckResult:
     setup_url = f"http://{cfg.hostname}/assistant/transit/"
     # Transit config does not ride typed Config fields: read the wizard's
     # SSOT env directly, with the same parser the provider uses.
-    from ...citibike import parse_saved_stations
+    from ...transit.citibike import parse_saved_stations
     saved = list(parse_saved_stations(os.environ.get("JASPER_CITIBIKE_STATIONS", "")))
     if not saved:
         return CheckResult(
@@ -882,7 +882,7 @@ def check_citibike(cfg: Config) -> CheckResult:
             reason=REASON_CITIBIKE_NOT_CONFIGURED,
         )
     try:
-        from ...citibike import (
+        from ...transit.citibike import (
             INFO_TTL_SECONDS,
             STATION_INFO_URL,
             fetch_feed,

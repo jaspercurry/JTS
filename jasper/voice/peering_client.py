@@ -50,9 +50,8 @@ class PeeringClient:
         if not self._enabled:
             return None
         try:
-            from ..peering.uds import send_request
+            from ..peering.uds import send_request  # lazy: optional transport stays fail-open (ADR-0128)
         except ImportError:
-            # peering package not installed — keep wake working.
             return None
         try:
             return await send_request(

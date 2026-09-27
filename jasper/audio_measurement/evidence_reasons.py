@@ -18,7 +18,6 @@ NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 PROGRAM_MISSING = "classification_program_missing"
 REASON_COVERAGE_SHORT = "coverage_short"
-REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
 REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
 REASON_FIT_NOT_FINITE = "fit_not_finite"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
@@ -27,7 +26,6 @@ REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
 REASON_MARK_RESPONSE_UNAVAILABLE = "mark_response_unavailable"
 REASON_NON_BEARING = "non_bearing_pose"
 REASON_NO_COMPARISON = "no_candidate_comparison"
-REASON_NO_CURVE_GRID = "no_curve_grid"
 REASON_NO_IMPULSE = "no_impulse"
 REASON_NO_MARK_PAIRS = "no_mark_pairs"
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
@@ -38,24 +36,15 @@ REASON_REFUSED = "round_views_refused"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
 REASON_SNR_SHORT = "snr_short"
 REASON_TOO_FEW_POSITIONS = "too_few_positions"
-REASON_TOO_FEW_SEATS = "too_few_seats"
 REASON_UNREADABLE = "round_views_unreadable_round"
 REASON_UNWRITABLE = "round_views_unwritable_out"
-REFUSE_AT_HZ_OFF_SPEC_TABLE = "close_reference_at_hz_off_spec_table"
-REFUSE_GATE_NOT_POSITIVE = "close_reference_gate_not_positive"
 REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
 REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
-REFUSE_RATE_MISMATCH = "close_reference_rate_mismatch"
+ROOM_NOT_BANKED = "room_not_banked"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
-UNRESOLVED_LOW_CONFIDENCE = "alignment_confidence_below_floor"
-UNRESOLVED_NO_CANCELLATION = "agreement_without_cancellation"
-UNRESOLVED_OUTSIDE_VALIDITY = "band_outside_validity"
-UNRESOLVED_RESIDUAL_SMALL = "disagreement_without_residual"
-VERDICT_AGREEMENT = "agreement"
-VERDICT_ROOM_DOMINATED = "room_dominated"
-VERDICT_UNRESOLVED = "unresolved"
+TAKE_CURVES_NOT_BANKED = "take_curves_not_banked"
 
 EVIDENCE_REASONS = MappingProxyType({
     CAPTURES_UNREADABLE: "The round has an admissible capture shape but its stamped audio cannot be read.",
@@ -71,7 +60,6 @@ EVIDENCE_REASONS = MappingProxyType({
     NO_FEATURES_DETECTED: "No pooled-response feature exceeds the measured capture-to-capture scatter.",
     PROGRAM_MISSING: "No banked program matches the stimulus bytes recorded by the round captures.",
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
-    REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
     REASON_FIT_NOT_FINITE: "A fitted filter term is NaN or infinite, so the fit is published without numbers.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
@@ -80,7 +68,6 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
     REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
     REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat spread for it.",
-    REASON_NO_CURVE_GRID: "The positions block carries no curve grid, so there are no bins to take a spread over.",
     REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
     REASON_NO_MARK_PAIRS: "The round has fewer than two takes of this driver at one placement, so no mark pair exists for a repeat spread.",
     REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
@@ -91,22 +78,13 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
     REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum is not comparable with the measured sum.",
     REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
-    REASON_TOO_FEW_SEATS: "Too few usable seats support the requested comparison; a sample spread needs at least two member curves.",
     REASON_UNREADABLE: "The round view could not read its input round.",
     REASON_UNWRITABLE: "The round view could not write its output artifact.",
-    REFUSE_AT_HZ_OFF_SPEC_TABLE: "The requested close-reference frequency has no specification tolerance.",
-    REFUSE_GATE_NOT_POSITIVE: "The requested close-reference gate is not finite and positive.",
     REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
     REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
     REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
     REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
-    REFUSE_RATE_MISMATCH: "The close and far captures have different sample rates.",
+    ROOM_NOT_BANKED: "The banked round holds no room view by the name asked; a room view run after the bank is not its evidence.",
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
-    UNRESOLVED_LOW_CONFIDENCE: "The alignment confidence is below the comparison threshold.",
-    UNRESOLVED_NO_CANCELLATION: "The responses agree without enough cancellation to support that agreement.",
-    UNRESOLVED_OUTSIDE_VALIDITY: "The band has too few points inside the valid comparison range.",
-    UNRESOLVED_RESIDUAL_SMALL: "The responses disagree without a large enough residual to identify the room.",
-    VERDICT_AGREEMENT: "The close and far responses agree and the residual supports cancellation.",
-    VERDICT_ROOM_DOMINATED: "The close and far responses disagree with a large room residual.",
-    VERDICT_UNRESOLVED: "The close-reference comparison cannot resolve speaker response from room response.",
+    TAKE_CURVES_NOT_BANKED: "No take in the measurement banked analysed curves, so it has none to draw.",
 })

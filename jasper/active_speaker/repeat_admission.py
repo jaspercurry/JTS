@@ -10,13 +10,13 @@ import json
 import logging
 import re
 import threading
-import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.json_fields import utc_now_iso
 from jasper.log_event import log_event
 from jasper.paths import resolve_state_path
 
@@ -36,14 +36,6 @@ _UUID_HEX_RE = re.compile(r"^[0-9a-f]{32}$")
 
 def state_path(path: str | Path | None = None) -> Path:
     return resolve_state_path(path, STATE_PATH_ENV, DEFAULT_STATE_PATH)
-
-
-
-
-
-
-def _now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _base() -> dict[str, Any]:
@@ -190,12 +182,12 @@ def claim_owner(*, path: str | Path | None = None) -> dict[str, Any]:
                     "status": "aborted",
                     "reason": reason,
                     "inflight": None,
-                    "updated_at": _now(),
+                    "updated_at": utc_now_iso(),
                 })
                 targets[key] = entry
                 aborted.append((key, entry))
         if aborted:
-            state.update({"targets": targets, "updated_at": _now()})
+            state.update({"targets": targets, "updated_at": utc_now_iso()})
             _write(target, state)
             for target_id, entry in aborted:
                 log_event(

@@ -51,9 +51,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..accounts import ACCOUNT_NAME_PATTERN, valid_account_name
 from ..atomic_io import write_env_file
 from ..env_file import read_env_file
+from ..env_load import GOOGLE_CREDENTIALS_ENV_PATH as CREDS_FILE
 from ..google_creds import (
     GOOGLE_SCOPES,
     GoogleAccount,
@@ -89,14 +91,6 @@ logger = logging.getLogger(__name__)
 # setup walkthrough, callouts, and the copy-row widget).
 _PAGE_CSS_HREF = "/assets/google/google.css"
 
-
-# Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
-# jasper-voice picks it up via `EnvironmentFile=`. This file lives in
-# the setgid `jasper-secrets` dir (readable only by jasper-voice +
-# jasper-web), so a tempfile written here inherits group
-# `jasper-secrets`. GOOGLE_CLIENT_SECRET is no longer on the broad
-# `jasper` group; the /system/diagnostics jasper-doctor reads it as root.
-CREDS_FILE = "/var/lib/jasper-secrets/google_credentials.env"
 
 # Google OAuth client IDs end in `.apps.googleusercontent.com`.
 # Loose pattern — Google has changed the leading numeric chunk's
@@ -250,7 +244,7 @@ def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bo
               <input id="client_secret" name="client_secret" type="password" required
                      autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
                      placeholder="GOCSPX-…">
-              <p class="form-hint">Stored on this speaker only at <code>/var/lib/jasper-secrets/google_credentials.env</code>. Never sent anywhere except Google.</p>
+              <p class="form-hint">Stored on this speaker only at <code>{CREDS_FILE}</code>. Never sent anywhere except Google.</p>
             </div>
             <div class="form-actions">
               <button type="submit" class="btn btn--primary">Save credentials →</button>
@@ -1024,7 +1018,6 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
     systemd.make_http_server's contract."""
-    from ..platform import systemd
     cfg = {
         "creds_path": creds_path,
         "redirect_uri": redirect_uri or resolved_google_redirect_uri(),

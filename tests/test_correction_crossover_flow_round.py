@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_poses, run_preset
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
@@ -19,7 +20,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     refusal_copy_for,
 )
 from jasper.web import correction_crossover_flow as flow
-from jasper.active_speaker.measurement_programs import available_programs
+from jasper.active_speaker.measurement_programs import available_presets
 from tests.crossover_v2_fixtures import _roles
 
 
@@ -37,18 +38,19 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
         planned.append(request.program), preview(request, *args))[1])
-    visible = [(name, size) for name, size in available_programs()
-               if f"{name}/{size}" not in measurement_view._ALIAS_PLAN_IDS]
-    choices = measurement_view.round_choices({}, "tournament/full")
-    assert planned == ["tournament/full"]
-    assert [c["id"] for c in choices] == [f"{name}/{size}" for name, size in visible]
+    visible = [(preset_id, layout) for preset_id in available_presets() for layout in run_preset(preset_id).layouts]
+    choices = measurement_view.round_choices({}, "room/seat@seat_cube")
+    assert planned == ["room/seat"]
+    assert [c["id"] for c in choices] == [
+        preset if layout == run_preset(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
-    assert [c["id"] for c in choices if c["default"]] == ["tournament/full"]
-    assert [(c["poses"], c["captures"]) for c in choices] == [
-        (program(name, size).mic_move_count, program(name, size).capture_count) for name, size in visible]
-    selected = next(c for c in choices if c["id"] == "tournament/full")
-    assert selected["action"]["body"]["plan"]["program"] == "tournament/full"
-    assert len(selected["action"]["body"]["plan"]["stops"]) == 3
+    assert [c["id"] for c in choices if c["default"]] == ["room/seat@seat_cube"]
+    walked = [replace(row, poses=plan_poses(row, _VIEW["near_field_drivers"]))
+              for row in (run_preset(preset, layout) for preset, layout in visible)]
+    assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
+    selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
+    plan = selected["action"]["body"]["plan"]
+    assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)
 
 
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):
@@ -74,13 +76,14 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
 
 
 
-@pytest.mark.parametrize("selected", ["nearfield/rear", "nearfield/nope"])
+@pytest.mark.parametrize("selected", ["front_rear/express", "nearfield/nope"])
 def test_a_program_the_speaker_does_not_offer_is_refused_on_its_row(monkeypatch, selected):
-    """A link naming a program this speaker does not offer, such as a rear
-    woofer's near-field row on a 2-way, is refused on its own row instead of
+    """A link naming a program this speaker does not offer, such as the front
+    and rear woofer pair on a 2-way, is refused on its own row instead of
     silently selecting another program."""
-    monkeypatch.setattr(coordinator, "load_commissioning_view",
-                        lambda: {**_VIEW, "near_field_drivers": ("tweeter", "woofer")})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
+        **_VIEW, "programs": tuple(name for name in RUNNABLE_PROGRAMS if name != "rear"),
+        "near_field_drivers": ("tweeter", "woofer")})
     choices = measurement_view.round_choices({}, selected)
     refused = next(c for c in choices if c["id"] == selected)
     assert (refused["code"], refused["default"], "action" in refused) == (
@@ -108,33 +111,11 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
 
     assert code == 200
     choices = {c["id"]: c for c in envelope["round_choices"]}
-    assert len(choices) == len(available_programs()) - len(measurement_view._ALIAS_PLAN_IDS)
+    assert len(choices) == sum(len(run_preset(preset_id).layouts) for preset_id in available_presets())
     selected = choices["speaker/mark"]
     assert selected["code"] == REASON_MEASUREMENT_TARGETS_MISSING
     assert "action" not in selected
     assert selected["lines"]
-
-
-def test_alias_ids_are_hidden_from_the_picker_but_still_resolve(monkeypatch):
-    """R4-D9: seat/cloud duplicates room/cloud and seat/express duplicates
-    room/seat. The picker offers only one of each pair, but both ids stay
-    registered and keep resolving, and a link naming one selects it
-    (ADR-0277: registry ids are banked-round identities)."""
-    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
-                        lambda *a, **kw: context)
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
-
-    choices = measurement_view.round_choices({}, "speaker/mark")
-
-    ids = {c["id"] for c in choices}
-    assert "seat/cloud" not in ids
-    assert "seat/express" not in ids
-    assert program("seat", "cloud").program_id == "seat"
-    assert program("seat", "express").program_id == "seat"
-    linked = next(c for c in measurement_view.round_choices({}, "seat/cloud") if c["default"])
-    assert (linked["id"], linked["action"]["id"], "code" in linked) == ("seat/cloud", "run_program", False)
 
 
 def test_pre_round_choice_survives_a_stopped_run(monkeypatch):

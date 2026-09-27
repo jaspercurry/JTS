@@ -35,7 +35,6 @@ import {
   fmtFreq,
   fmtFreqShort,
   fmtQ,
-  fmtTrim,
   ico,
 } from "/assets/sound-profile/js/format.js";
 import {
@@ -43,28 +42,20 @@ import {
   el,
   eqEditor,
   followerMode,
-  outputPage,
   pageMode,
   resetEqEditor,
+  status,
 } from "/assets/sound-profile/js/state.js";
 (function() {
   initCardioidCompare(pageMode === 'eq' && !followerMode ? el('now-playing') : null);
   var LIMIT_DEFAULTS = {
     simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
     min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, cut_max_q: 1.4,
-    simple_bands: [], headroom_trim_max_db: 12,
-    // volume_floor_default_db is owned by the backend (volume_curve.
-    // DEFAULT_VOLUME_FLOOR_DB → /state limits) and read via volumeFloorDefault().
-    // These three are the payload-absent fallbacks only.
-    volume_floor_min_db: -60, volume_floor_max_db: -10, volume_floor_default_db: -50
+    simple_bands: []
   };
   var DEFAULT_SAVED_ID = 'stock:flat';
   // Fallback for a `status: "blocked"` body with no message of its own.
   var EQ_BLOCKED_MESSAGE = 'Sound EQ is unavailable for this speaker setup.';
-  // What the settings card says while the loaded graph refuses to carry EQ.
-  // The per-reason remedy belongs on /sound/eq/, not on a setting's card.
-  var EQ_BLOCKED_CARD_MESSAGE = 'The setting is saved, but sound EQ is not ' +
-    'audible until this speaker’s setup can carry it.';
   var FLAT = function() {
     return {enabled: true, curve_id: 'flat',
             simple_eq: zeroSimple(), parametric_bands: [],
@@ -77,22 +68,12 @@ import {
   var allCollapsed = false;
 
   var applied = FLAT();        // persisted profile
-  var volumeFloorSaving = false;
   var dspWriteEpoch = 'none';
   var applying = false;
   var liveSourceSeq = 0, liveSourcePending = false, liveSourceOptions = {};
   var previewTimer = null, previewSeq = 0;
   var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
-  var statusText = '', statusErr = false;
   var ZERO_DETENT_DB = 0.1;
-  var volumeFloorTone = {
-    active: false,
-    timer: null,
-    inFlight: false,
-    pending: null,
-    generation: 0,
-    savedNotice: false
-  };
   function zeroSimple() {
     var out = {};
     (eqEditor.simpleBands.length ? eqEditor.simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
@@ -104,15 +85,6 @@ import {
       });
     }
     return out;
-  }
-  function status(msg, isErr) {
-    statusText = msg || '';
-    statusErr = !!isErr;
-    var node = el('status');
-    if (node) {
-      node.textContent = statusText;
-      node.className = 'status-line' + (statusErr ? ' status-line--err' : '');
-    }
   }
 
   // ---- profile helpers ------------------------------------------------
@@ -337,11 +309,6 @@ import {
     });
   }
   function render() {
-    if (pageMode !== 'eq') {
-      renderOutput();
-      status(statusText, statusErr);
-      return;
-    }
     // The tab strip and the now-playing plot describe an editor this page is
     // not showing, and the plot would sit empty, so both go with it.
     ['eq-tabs', 'now-playing'].forEach(function(id) {
@@ -350,7 +317,6 @@ import {
     });
     if (eqEditor.carrierBlock) {
       renderEqCarrierBlocked();
-      status(statusText, statusErr);
       return;
     }
     renderTabs();
@@ -358,53 +324,6 @@ import {
     if (eqEditor.view === 'off') renderOff();
     else if (eqEditor.view === 'saved') renderSaved();
     else renderDraft();
-    status(statusText, statusErr);
-  }
-
-  function renderOutput() {
-    el('view-body').innerHTML = '<div class="saved-stack">' +
-      renderI2sHatSetting() + renderSetupSoundSettings() + '</div>';
-  }
-
-  function renderI2sHatSetting() {
-    var hat = outputPage.i2sHat;
-    if (!hat || hat.visibility === 'hidden') return '';
-    var profiles = hat.profiles || [];
-    var selectedId = hat.desired_profile_id || '';
-    var issue = hat.intent_error ? 'Saved setting could not be read: ' + hat.intent_error : hat.reason;
-    var warnings = hat.warnings || [];
-    var options = '<option value=""' + (selectedId ? '' : ' selected') + '>None / unmanaged</option>' +
-      profiles.map(function(p) {
-        return '<option value="' + escapeHtml(p.id) + '"' +
-          (selectedId === p.id ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
-      }).join('');
-    // A HAT that identifies itself is applied for the operator, so the picker
-    // is shown only for the HATs that cannot be detected (ADR-0234).
-    var control = hat.detected_profile_id ?
-      '<p class="setting-row__hint"><strong>I²S audio HAT.</strong> Detected: ' +
-        escapeHtml(hat.detected_label || hat.detected_profile_id) +
-        ' — managed automatically.</p>' :
-      '<div class="field">' +
-        '<label for="set-i2s-hat">I²S audio HAT</label>' +
-        '<select id="set-i2s-hat"' + (!hat.available ? ' disabled' : '') +
-          ' aria-label="I²S audio HAT">' + options + '</select>' +
-        '<p class="setting-row__hint">Pick the HAT you fitted. Only HATs that cannot identify themselves are listed.</p>' +
-      '</div>';
-    return '<section class="sound-settings">' +
-      '<div class="setting-row setting-row--stack">' +
-        control +
-        (issue ? '<p class="setting-row__hint">' + escapeHtml(issue) + '</p>' : '') +
-        warnings.map(function(w) {
-          return '<p class="setting-row__hint output-template-warning">' + escapeHtml(w) + '</p>';
-        }).join('') +
-        (hat.restart_required ? '<div class="info-card info-card--accent" role="status">' +
-          '<p><strong>Restart required.</strong> The saved boot setting changed.</p>' +
-          '<a class="btn btn--primary" href="/system/">Open Restart control</a></div>' : '') +
-        (hat.shared_usb_data_port ? '<p class="setting-row__hint"><strong>Shared USB data port:</strong> Enabling this setting reserves this shared port for gadget/peripheral use after restart, so it can no longer host a USB output DAC and output moves to the HAT. While the HAT powers the Pi, do not connect an ordinary powered micro-USB host cable: it supplies 5 V and can back-power the Pi. Use a VBUS-isolated data connection/adapter or leave the port disconnected.</p>' : '') +
-        '<p class="setting-row__hint"><strong>Hardware safety:</strong> Shut down and remove all power ' +
-          'before installing or removing the HAT. Never power the Pi through the HAT and another power input at the same time. ' +
-          'Never hot-plug. Start the first playback at a very low level.</p>' +
-      '</div></section>';
   }
 
   // ./apply and ./live-draft refuse with the same typed body /state carries,
@@ -489,126 +408,6 @@ import {
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === eqEditor.selectedId, false); }).join('') + '</div></div></section>';
     el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
-  }
-  function fmtVolumeFloor(v) {
-    v = Number(v);
-    if (!isFinite(v)) v = volumeFloorDefault();
-    return v.toFixed(1) + ' dB';
-  }
-  function volumeFloorLimits() {
-    var floorMin = Number(limits.volume_floor_min_db);
-    var floorMax = Number(limits.volume_floor_max_db);
-    if (!isFinite(floorMin)) floorMin = -60;
-    if (!isFinite(floorMax)) floorMax = -10;
-    return {min: floorMin, max: floorMax};
-  }
-  // The reset/default volume floor, owned by the backend (volume_curve.
-  // DEFAULT_VOLUME_FLOOR_DB → /state limits.volume_floor_default_db). Single
-  // read point so the page never hardcodes the value; LIMIT_DEFAULTS supplies
-  // the payload-absent fallback.
-  function volumeFloorDefault() {
-    var value = Number(limits.volume_floor_default_db);
-    if (!isFinite(value)) value = Number(LIMIT_DEFAULTS.volume_floor_default_db);
-    return value;
-  }
-  function savedVolumeFloorDb() {
-    var bounds = volumeFloorLimits();
-    var floor = Number(outputPage.soundSettings.volume_floor_db);
-    if (!isFinite(floor)) floor = volumeFloorDefault();
-    return clamp(floor, bounds.min, bounds.max);
-  }
-  function coerceVolumeFloorDb(value) {
-    var bounds = volumeFloorLimits();
-    var floor = Number(value);
-    if (!isFinite(floor)) floor = savedVolumeFloorDb();
-    return clamp(floor, bounds.min, bounds.max);
-  }
-  function volumeFloorValue() {
-    return outputPage.volumeFloorDraftDb === null || outputPage.volumeFloorDraftDb === undefined ?
-      savedVolumeFloorDb() : coerceVolumeFloorDb(outputPage.volumeFloorDraftDb);
-  }
-  function volumeFloorDirty(v) {
-    return Math.abs(coerceVolumeFloorDb(v) - savedVolumeFloorDb()) >= 0.05;
-  }
-  function syncVolumeFloorControls(v) {
-    var value = coerceVolumeFloorDb(v);
-    var node = el('set-volume-floor-readout');
-    if (node) node.textContent = fmtVolumeFloor(value);
-    var resetButton = el('view-body').querySelector('[data-act="reset-volume-floor"]');
-    if (resetButton) resetButton.disabled = Math.abs(value - volumeFloorDefault()) < 0.05;
-    var saveButton = el('volume-floor-save-button');
-    if (saveButton) {
-      var dirty = volumeFloorDirty(value);
-      saveButton.disabled = volumeFloorSaving || !dirty;
-      saveButton.textContent = volumeFloorSaving ? 'Saving' : (dirty ? 'Save floor' : 'Saved');
-    }
-  }
-  function setVolumeFloorDraft(v) {
-    outputPage.volumeFloorDraftDb = coerceVolumeFloorDb(v);
-    syncVolumeFloorControls(outputPage.volumeFloorDraftDb);
-  }
-  function renderMatchLoudnessSetting() {
-    var ml = outputPage.soundSettings.match_loudness ? ' checked' : '';
-    return '<div class="setting-row">' +
-        '<div class="setting-row__text">' +
-          '<p class="setting-row__title">Match loudness</p>' +
-          '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
-        '</div>' +
-        '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
-          ' aria-label="Match loudness"><span class="track"></span></label>' +
-      '</div>';
-  }
-  function renderSetupSoundSettings() {
-    var trim = Number(outputPage.soundSettings.headroom_trim_db) || 0;
-    var trimMax = Number(limits.headroom_trim_max_db) || 12;  // backend clamps authoritatively
-    var floorBounds = volumeFloorLimits();
-    var floorMin = floorBounds.min;
-    var floorMax = floorBounds.max;
-    var defaultFloor = volumeFloorDefault();
-    var floor = volumeFloorValue();
-    var advancedOpen = trim > 0 || Math.abs(floor - defaultFloor) >= 0.05;
-    var toneLabel = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
-    var resetDisabled = Math.abs(floor - defaultFloor) < 0.05 ? ' disabled' : '';
-    var saveDisabled = (volumeFloorSaving || !volumeFloorDirty(floor)) ? ' disabled' : '';
-    var saveLabel = volumeFloorSaving ? 'Saving' :
-      (volumeFloorDirty(floor) ? 'Save floor' : 'Saved');
-    return '<section class="sound-settings">' +
-      (outputPage.blocked ? '<div class="info-card" role="status"><p>' +
-        EQ_BLOCKED_CARD_MESSAGE + '</p></div>' : '') +
-      renderMatchLoudnessSetting() +
-      '<details class="advanced"' + (advancedOpen ? ' open' : '') + '>' +
-        '<summary>Advanced</summary>' +
-        '<div class="setting-row setting-row--stack">' +
-          '<div class="setting-row__text">' +
-            '<p class="setting-row__title">Volume floor</p>' +
-            '<p class="setting-row__hint">The 1% listening level. 0% stays fully muted.</p>' +
-          '</div>' +
-          '<div class="headroom-control">' +
-            '<input type="range" class="headroom-range" id="set-volume-floor" min="' + floorMin +
-              '" max="' + floorMax + '" step="1" value="' + floor + '" aria-label="Volume floor in dB">' +
-            '<button type="button" class="btn btn--ghost btn--compact" id="volume-floor-tone-button" ' +
-              'data-act="toggle-volume-floor-tone">' + toneLabel + '</button>' +
-            '<button type="button" class="btn btn--primary btn--compact" id="volume-floor-save-button" ' +
-              'data-act="save-volume-floor"' + saveDisabled + '>' + saveLabel + '</button>' +
-            '<button type="button" class="btn btn--ghost btn--compact" data-act="reset-volume-floor"' +
-              resetDisabled + '>Reset floor</button>' +
-            '<span class="headroom-readout" id="set-volume-floor-readout">' + fmtVolumeFloor(floor) + '</span>' +
-          '</div>' +
-        '</div>' +
-        '<div class="setting-row setting-row--stack">' +
-          '<div class="setting-row__text">' +
-            '<p class="setting-row__title">Extra headroom</p>' +
-            '<p class="setting-row__hint">Digital attenuation for full-volume setups into your own amp. ' +
-              'Leave at Off unless you hear clipping.</p>' +
-          '</div>' +
-          '<div class="headroom-control">' +
-            '<input type="range" class="headroom-range" id="set-headroom" min="0" max="' + trimMax +
-              '" step="0.5" value="' + trim + '" aria-label="Extra headroom in dB">' +
-            '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
-          '</div>' +
-        '</div>' +
-      '</details>' +
-    '</section>';
   }
   function rangeRow(label, value, min, max, opts) {
     opts = opts || {};
@@ -869,170 +668,12 @@ import {
     }
   }
 
-  // Global sound settings. Optimistic: the controls already show the user's
-  // input, so on success we just ingest; on failure we revert and re-render.
-  async function saveSettings(patch) {
-    var prev = outputPage.soundSettings;
-    outputPage.soundSettings = Object.assign({}, outputPage.soundSettings, patch);
-    try {
-      var payload = await postJSON('./settings', patch);
-      // The setting is saved either way; a blocked body says the loaded graph
-      // refused to carry it, and the card holds that until the next save. The
-      // card is the refusal's surface, so the status line is left for the
-      // warnings a save can ALSO raise (a blocked body never carries
-      // `warning` — same server branch — so in practice that is volume_warning).
-      var blocked = payload.status === 'blocked';
-      var blockChanged = blocked !== outputPage.blocked;
-      outputPage.blocked = blocked;
-      ingestState(payload);
-      if (blockChanged) render();
-      if (payload.warning) status(payload.warning, true);
-      else if (payload.volume_warning) status(payload.volume_warning, true);
-      return true;
-    } catch (e) {
-      outputPage.soundSettings = prev;
-      status('Could not save sound settings: ' + e.message, true);
-      render();
-      return false;
-    }
-  }
-
-  async function saveI2sHatProfileId(profileId, input) {
-    if (input) input.disabled = true;
-    try {
-      var payload = await postJSON('./i2s-hat', {profile_id: profileId || null});
-      if ('desired_profile_id' in payload) outputPage.i2sHat = payload;
-      if (payload.warnings && payload.warnings.length)
-        return status(payload.warnings[0], true);
-      status(payload.restart_required ?
-        'I²S HAT setting saved. Restart required.' : 'I²S HAT setting saved.');
-    } catch (e) {
-      if (e.body && 'desired_profile_id' in e.body) {
-        outputPage.i2sHat = e.body;
-        return status('Setting saved, but the boot change could not be applied. Try again; if it still fails, open System and run diagnostics.', true);
-      }
-      status('Could not save I²S HAT setting: ' + e.message, true);
-    } finally {
-      render();
-    }
-  }
-
-  function setVolumeFloorToneButton() {
-    var button = el('volume-floor-tone-button');
-    if (!button) return;
-    button.textContent = volumeFloorTone.active ? 'Stop tone' : 'Start tone';
-  }
-
-  function scheduleVolumeFloorToneUpdate(value, options) {
-    options = options || {};
-    value = Number(value);
-    if (!isFinite(value)) return;
-    if (!volumeFloorTone.active && !options.force) return;
-    volumeFloorTone.pending = value;
-    if (volumeFloorTone.timer) clearTimeout(volumeFloorTone.timer);
-    volumeFloorTone.timer = setTimeout(function() {
-      volumeFloorTone.timer = null;
-      flushVolumeFloorToneUpdate();
-    }, options.immediate ? 0 : 120);
-  }
-
-  async function flushVolumeFloorToneUpdate() {
-    if (volumeFloorTone.inFlight) return;
-    var value = volumeFloorTone.pending;
-    var generation = volumeFloorTone.generation;
-    volumeFloorTone.pending = null;
-    if (value === null || value === undefined) return;
-    volumeFloorTone.inFlight = true;
-    try {
-      var payload = await postJSON('./volume-floor/audition', {volume_floor_db: value});
-      if (generation !== volumeFloorTone.generation) {
-        if (!volumeFloorTone.active) stopVolumeFloorTone({quiet: true});
-        return;
-      }
-      volumeFloorTone.active = true;
-      setVolumeFloorToneButton();
-      var toneStatus = '1% calibration tone at ' +
-        fmtVolumeFloor(payload.volume_floor_db || value) + '.';
-      if (volumeFloorTone.savedNotice) {
-        toneStatus = 'Volume floor saved. ' + toneStatus;
-        volumeFloorTone.savedNotice = false;
-      }
-      status(toneStatus);
-    } catch (e) {
-      volumeFloorTone.active = false;
-      setVolumeFloorToneButton();
-      status('Could not play volume-floor tone: ' + e.message, true);
-    } finally {
-      volumeFloorTone.inFlight = false;
-      if (volumeFloorTone.pending !== null && volumeFloorTone.pending !== undefined) {
-        flushVolumeFloorToneUpdate();
-      }
-    }
-  }
-
-  function startVolumeFloorTone() {
-    volumeFloorTone.active = true;
-    volumeFloorTone.generation += 1;
-    volumeFloorTone.savedNotice = false;
-    setVolumeFloorToneButton();
-    scheduleVolumeFloorToneUpdate(volumeFloorValue(), {force: true, immediate: true});
-  }
-
-  async function resetVolumeFloor() {
-    var floor = volumeFloorDefault();
-    var floorInput = el('set-volume-floor');
-    if (floorInput) floorInput.value = floor;
-    setVolumeFloorDraft(floor);
-    await saveVolumeFloor();
-  }
-
-  async function saveVolumeFloor() {
-    var floor = volumeFloorValue();
-    volumeFloorSaving = true;
-    syncVolumeFloorControls(floor);
-    var saved = await saveSettings({volume_floor_db: floor});
-    volumeFloorSaving = false;
-    if (saved) {
-      outputPage.volumeFloorDraftDb = null;
-      syncVolumeFloorControls(savedVolumeFloorDb());
-      if (volumeFloorTone.active) {
-        volumeFloorTone.savedNotice = true;
-        scheduleVolumeFloorToneUpdate(savedVolumeFloorDb(), {immediate: true});
-      } else {
-        status('Volume floor saved.');
-      }
-    } else {
-      syncVolumeFloorControls(volumeFloorValue());
-    }
-  }
-
-  async function stopVolumeFloorTone(options) {
-    options = options || {};
-    volumeFloorTone.active = false;
-    volumeFloorTone.generation += 1;
-    volumeFloorTone.savedNotice = false;
-    volumeFloorTone.pending = null;
-    if (volumeFloorTone.timer) {
-      clearTimeout(volumeFloorTone.timer);
-      volumeFloorTone.timer = null;
-    }
-    setVolumeFloorToneButton();
-    try {
-      await postJSON('./volume-floor/stop', {reason: options.reason || 'stop'},
-        {keepalive: !!options.keepalive});
-      if (!options.quiet) status('Volume-floor tone stopped.');
-    } catch (e) {
-      if (!options.quiet) status('Could not stop volume-floor tone: ' + e.message, true);
-    }
-  }
-
   function ingestState(payload) {
     limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
     eqEditor.simpleBands = limits.simple_bands || [];
     if (payload.curves) { eqEditor.curvesById = {}; payload.curves.forEach(function(c) { eqEditor.curvesById[c.id] = c; }); }
     if (payload.profile_library) eqEditor.library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-    if (payload.sound_settings) outputPage.soundSettings = payload.sound_settings;
     // Every /state and every successful apply carries the field, so a fixed
     // layout drops the block at the next render instead of needing a reload.
     var carrier = payload.eq_carrier;
@@ -1137,12 +778,6 @@ import {
     else if (act === 'finalize-name') { finalizeName(); }
     else if (act === 'overwrite') { overwrite(); }
     else if (act === 'reset-draft') { resetDraft(); }
-    else if (act === 'toggle-volume-floor-tone') {
-      if (volumeFloorTone.active) stopVolumeFloorTone();
-      else startVolumeFloorTone();
-    }
-    else if (act === 'save-volume-floor') { saveVolumeFloor(); }
-    else if (act === 'reset-volume-floor') { resetVolumeFloor(); }
   });
   // Mode + band-type segmented buttons (delegated).
   el('view-body').addEventListener('click', function(ev) {
@@ -1208,15 +843,6 @@ import {
   });
   el('view-body').addEventListener('input', function(ev) {
     if (ev.target.id === 'name-input') { eqEditor.nameDraft = ev.target.value; return; }
-    if (ev.target.id === 'set-headroom') {
-      var ro = el('set-headroom-readout');           // live readout; commit on 'change'
-      if (ro) ro.textContent = fmtTrim(ev.target.value);
-    }
-    if (ev.target.id === 'set-volume-floor') {
-      var floor = Number(ev.target.value);
-      setVolumeFloorDraft(floor);
-      scheduleVolumeFloorToneUpdate(volumeFloorValue());
-    }
   });
   el('view-body').addEventListener('change', function(ev) {
     var field = ev.target.getAttribute('data-field');
@@ -1240,15 +866,6 @@ import {
     // the one live-draft for it.
     if (range) {
       schedulePreview(); requestLiveSource({immediate: false});
-      return;
-    }
-    if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
-    else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
-    else if (ev.target.id === 'set-i2s-hat') saveI2sHatProfileId(ev.target.value, ev.target);
-    else if (ev.target.id === 'set-volume-floor') {
-      var floor = Number(ev.target.value);
-      setVolumeFloorDraft(floor);
-      if (volumeFloorTone.active) scheduleVolumeFloorToneUpdate(volumeFloorValue(), {immediate: true});
     }
   });
   el('view-body').addEventListener('keydown', function(ev) {
@@ -1365,11 +982,6 @@ import {
       }
     }
   }
-  async function loadOutputHardware() {
-    try { outputPage.i2sHat = (await getJSON('./output-topology')).i2s_hat; }
-    catch (e) { status(e.message, true); }
-    render();
-  }
   async function loadState() {
     try {
       var payload = await getJSON('./state');
@@ -1385,17 +997,11 @@ import {
         eqEditor.view = 'off';
       }
       render();
-      // The Output page reads the I2S HAT off the topology payload; the
-      // safety-limits deep link belongs to the speaker page.
-      if (pageMode === 'output') loadOutputHardware();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }
   }
   window.addEventListener('pagehide', function() {
-    if (volumeFloorTone.active || volumeFloorTone.inFlight) {
-      stopVolumeFloorTone({keepalive: true, quiet: true, reason: 'pagehide'});
-    }
     // A Draft is live in CamillaDSP but persisted nowhere, so leaving the page
     // would keep it audible with no surface that shows it. Put the persisted
     // profile back. Never gated on the page really going away: bfcache freezes

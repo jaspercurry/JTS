@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from jasper.active_speaker import branch_chain
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import durable_state
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
@@ -27,7 +26,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.branch_chain import crossover_response_complex, sections_by_role
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.active_speaker.flat_spec import (
@@ -196,8 +196,8 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     raw = _two_way_preset()
     raw["crossover_regions"][0]["upper_polarity"] = "inverted"
     preset = ActiveSpeakerPreset.from_mapping(raw)
-    woofer = branch_chain.CrossoverSection(6000.0, 4, False)
-    tweeter = branch_chain.CrossoverSection(300.0, 4, True)
+    woofer = CrossoverSection(6000.0, 4, False)
+    tweeter = CrossoverSection(300.0, 4, True)
     supplied = {"woofer": [woofer], "tweeter": [tweeter]}
     c = _conductor(
         FakeSeams(), source_preset=preset,

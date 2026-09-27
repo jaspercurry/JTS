@@ -26,6 +26,8 @@ from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
     HEADROOM_MARGIN_DB,
     chain_response,
+    crossover_response_db,
+    _evaluation_grid,
 )
 from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 from jasper.active_speaker.crossover_v2.blend_prescription import (
@@ -50,11 +52,12 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     read_driver_prescription,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    DERIVED_VIEWS,
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
 )
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import _mapping
+from jasper.json_fields import as_mapping
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
@@ -77,6 +80,8 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from tests.test_crossover_v2_blend_prescription import _bundle
+from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 
 #: The CLI tests here build a packet from a live session bundle with no
 #: --drivers/--applied-profile, so none may read this machine's own.
@@ -199,12 +204,13 @@ def _speaker(
     statefile was banked at all, distinct from a statefile that IS there and
     names a different config.
     """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    # Nested under bank/bundle/ (like a real bank) so a classification write
+    # resolves beside the round instead of falling back to the cwd.
+    session, _ = _bundle(tmp_path / "bank" / "bundle")
     if classification is None:
         classification = _classification()
     if classification is not False:
-        (round_dir / "feature_classification.json").write_text(
+        view_path(round_inputs(session), "feature_classification.json").write_text(
             json.dumps(classification)
         )
     draft_path = None
@@ -263,13 +269,13 @@ def packet_incumbent_linearization(
 
     if not isinstance(packet, dict):
         return None
-    block = _mapping(packet.get("incumbent")).get("linearization")
+    block = as_mapping(packet.get("incumbent")).get("linearization")
     if not isinstance(block, dict):
         return None
     roles = block.get("from_applied_profile")
     if not isinstance(roles, dict):
         return None
-    # The builder writes an ``_absence`` here when no profile reached it, and
+    # The builder writes an ``absence`` here when no profile reached it, and
     # that shape is checked by name rather than inferred from its contents —
     # ``_incumbent_record``'s rule, for the same reason: an absence and a role
     # map are both dicts, and telling them apart by duck-typing would make a
@@ -464,22 +470,6 @@ def test_a_declared_band_past_nyquist_is_clamped_not_dropped():
     assert bands["tweeter"] == (1000.0, RESPONSE_SAMPLE_RATE_HZ / 2.0)
 
 
-def test_the_band_is_not_the_crossover_region(packet):
-    """The class's whole point: a driver is correctable outside the handoff.
-
-    The packet's own crossover region is 824-3297 Hz. The tweeter's declared
-    band reaches 20 kHz, and a cut at 5 kHz — six times the region's own
-    centre — is accepted here and would be refused ``filter_outside_region`` by
-    the blend gate at any Q.
-    """
-    region = packet["crossover_region"]["band_hz"]
-    assert TWEETER_FEATURE_HZ > region[1]
-
-    prescription = _gate(packet, _document([_cut()], packet))
-
-    assert prescription.filters[0]["freq"] == TWEETER_FEATURE_HZ
-
-
 # --------------------------------------------------------------------------- #
 # the packet
 # --------------------------------------------------------------------------- #
@@ -491,8 +481,8 @@ def test_the_packet_carries_the_bands_and_the_verdicts(packet):
         "tweeter": [TWEETER_BAND[0], TWEETER_BAND[1]],
         "woofer": [WOOFER_BAND[0], WOOFER_BAND[1]],
     }
-    assert packet["feature_classification"]["available"] is True
-    assert packet["feature_classification"]["n_rows_readable"] == 2
+    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is True
+    assert packet[DERIVED_VIEWS]["feature_classification"]["n_rows_readable"] == 2
 
 
 def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
@@ -509,26 +499,8 @@ def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
 def test_a_missing_classification_is_reported_not_papered_over(tmp_path):
     packet = _speaker(tmp_path, classification=False)
 
-    assert packet["feature_classification"]["available"] is False
-    assert packet["feature_classification"]["reason"] == "source_absent"
-
-
-def test_the_not_built_disclosure_stops_being_printed_once_one_is_banked(
-    tmp_path, packet
-):
-    """"We did not look" must not be printed beside the thing we looked at.
-
-    The ``per_bin_minimum_phase_class`` entry was unconditional before a round
-    could carry banked verdicts. Left unconditional it would be the packet's own
-    honesty block telling a reader to disregard a block two keys above it.
-    """
-    without = _speaker(tmp_path / "b", classification=False)
-
-    fields = {entry["field"] for entry in packet["not_evaluated"]}
-    assert "per_bin_minimum_phase_class" not in fields
-    assert "per_bin_minimum_phase_class" in {
-        entry["field"] for entry in without["not_evaluated"]
-    }
+    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is False
+    assert packet[DERIVED_VIEWS]["feature_classification"]["reason"] == "source_absent"
 
 
 def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path):
@@ -544,7 +516,7 @@ def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path
         "not even a row",
     ]))
 
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
     assert block["n_rows_banked"] == 4
     assert block["n_rows_readable"] == 1
 
@@ -576,7 +548,7 @@ def test_the_packet_carries_the_whole_lab_row_beside_the_gate_view(tmp_path):
     """
     row = _lab_row(WOOFER_FEATURE_HZ)
     packet = _speaker(tmp_path, classification=_classification([row]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     # Imported, not restated: the gate view is whatever the register types.
     assert block["verdicts"] == [read_feature_verdicts([row])[0].to_dict()]
@@ -599,7 +571,7 @@ def test_a_lab_column_outside_the_allowlist_is_withheld_and_named(tmp_path):
     packet = _speaker(tmp_path, classification=_classification([
         {**row, "wav_path": path},
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["lab_rows"] == [row]
     # The NAME is published — that is the point of an allowlist that reports
@@ -623,7 +595,7 @@ def test_a_row_the_typed_reader_dropped_keeps_its_working_and_reaches_no_gate(
         _lab_row(WOOFER_FEATURE_HZ, classification="   "),
         "not even a row",
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["n_rows_banked"] == 3
     assert block["n_rows_readable"] == 1
@@ -648,7 +620,7 @@ def test_every_published_uncertainty_labels_itself_random_or_systematic(packet):
     ``gate_slack`` — the fixed dB bar a corrected depth change is TESTED
     against — is on the second list rather than labelled as either.
     """
-    uncertainty = packet["feature_classification"]["uncertainty"]
+    uncertainty = packet[DERIVED_VIEWS]["feature_classification"]["uncertainty"]
     fields = uncertainty["fields"]
     not_uncertainties = uncertainty["not_uncertainties"]
 
@@ -700,7 +672,7 @@ def test_a_non_finite_lab_column_becomes_null_and_is_named(tmp_path):
             is_dip=False,
         ),
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["lab_rows"][0]["z_local"] is None
     assert block["lab_rows"][0]["frac_of_nmp"] is None
@@ -763,12 +735,13 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # Every boost refusal the gate can raise is named in the block a prescriber
     # reads, so a bar it can walk into is a bar it was told about.
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
-    # `filter_q_out_of_range` joined this set on 2026-08-29: the Q CEILING is a
-    # boost-only bar now, so the block a boost's author reads is where it has to
-    # be named. The floor refusal left the same day and must not be here.
+    # The Q ceiling and the declared band are boost-only bars (ADR-0367), so the
+    # block a boost's author reads is where they have to be named.
     assert set(fmt["boosts"]["refusals"]) == {
         dp.COMPOSED_BOOST_EXCEEDED,
         dp.FILTER_Q_OUT_OF_RANGE,
+        dp.FILTER_OUTSIDE_PASSBAND,
+        dp.PASSBAND_UNAVAILABLE,
     }
     # …and all ELEVEN retired slugs are gone from the module entirely, not
     # merely from this block: a prescriber that could still read
@@ -833,17 +806,12 @@ def test_no_prescription_is_the_deterministic_path_untouched(packet):
     (TWEETER_BAND[1] + 0.1, False),
 ])
 def test_the_passband_edges_are_inclusive_and_refuse_by_name(packet, freq, ok):
-    """Exactness is legal; one step past is `driver_filter_outside_passband`.
+    """A boost's band is inclusive; one step past is `driver_filter_outside_passband`.
 
     Both sides, because a bound tested on one side only is a bound whose
     direction nothing pins.
     """
-    rows = [_verdict(freq)]
-    document = _document([_cut(freq=freq)], packet)
-    packet = dict(packet)
-    packet["feature_classification"] = {
-        "available": True, "verdicts": [read_feature_verdicts(rows)[0].to_dict()],
-    }
+    document = _document([_boost(freq=freq)], packet)
     if ok:
         assert _gate(packet, document).filters[0]["freq"] == freq
         return
@@ -1012,16 +980,56 @@ def test_a_role_the_speaker_declares_no_band_for_is_refused_by_name(packet):
     assert excinfo.value.evidence["declared_roles"] == ["tweeter", "woofer"]
 
 
-def test_a_packet_with_no_declared_band_refuses_rather_than_inventing_one(tmp_path):
-    packet = _speaker(tmp_path, draft=None)
+_BANDS = {"woofer": WOOFER_BAND, "tweeter": TWEETER_BAND}
+# A tweeter band reaching both extremes the emitter spells, so the rows that use
+# it are IN-band filters.
+_EDGE_BANDS = {**_BANDS, "tweeter": (1e-4, 24000.0)}
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
 
-    assert excinfo.value.reason == dp.PASSBAND_UNAVAILABLE
-    # F-7: this refusal used to read like a speaker-data problem when the
-    # ordinary cause is a missing/unreadable --drivers evidence source.
-    assert "--drivers" in excinfo.value.detail
+@pytest.mark.parametrize(("filters", "passbands", "pins", "reason", "outside"), [
+    pytest.param([_cut()], _BANDS, {}, None, 0, id="cut in band"),
+    pytest.param([_cut(freq=1200.0)], _BANDS, {}, None, 1, id="cut out of band"),
+    pytest.param([_cut()], {}, {}, None, 1, id="cut with no declared band"),
+    pytest.param([_cut()], {}, {"tweeter": -3.0}, None, 1, id="pinned cut with no declared band"),
+    pytest.param([_boost()], _BANDS, {}, None, 0, id="boost in band"),
+    pytest.param([_boost(freq=1200.0)], _BANDS, {}, dp.FILTER_OUTSIDE_PASSBAND, None,
+                 id="boost out of band"),
+    pytest.param([_boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None, id="boost with no declared band"),
+    pytest.param([_cut(), _boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None,
+                 id="mixed with no declared band"),
+    pytest.param([_boost(gain=60.0), _cut(freq=1200.0)], _BANDS, {}, dp.COMPOSED_BOOST_EXCEEDED, None,
+                 id="boost past headroom beside a cut out of band"),
+    pytest.param([_cut(role="midrange")], {}, {}, dp.ROLE_UNKNOWN, None, id="role the speaker lacks"),
+    pytest.param([_cut(freq=0.5)], _BANDS, {}, dp.FILTER_MALFORMED, None, id="cut below the evaluable range"),
+    pytest.param([_cut(freq=23999.0)], _BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut past the evaluable range"),
+    pytest.param([_cut(freq=1e-4, q=1e6)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band below the evaluable range"),
+    pytest.param([_cut(freq=23999.9999, q=1e6)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band past the evaluable range"),
+    pytest.param([_boost(freq=23999.9999)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="boost in band past the evaluable range"),
+    pytest.param([_cut(q=5e-5)], _EDGE_BANDS, {}, dp.FILTER_MALFORMED, None,
+                 id="cut in band below the evaluable Q"),
+    pytest.param([_cut(q=2e6)], _EDGE_BANDS, {}, dp.FILTER_Q_OUT_OF_RANGE, None,
+                 id="cut in band past the evaluable Q"),
+])
+def test_the_declared_band_bounds_a_boost_and_discloses_a_cut(filters, passbands, pins, reason, outside):
+    """ADR-0367: every boost refusal stands; a cut outside the band is admitted and counted.
+
+    Every filter, in band or not, stays inside the evaluator's domain and Q range (ADR-0374).
+    """
+    document = _document(filters, {"packet_fingerprint": "fp"}, pinned_trim_db=pins)
+    args = dict(packet_fingerprint="fp", passbands_hz=passbands, classifications=None,
+                incumbent_filters={"tweeter": INCUMBENT_TWEETER}, branch_context=BRANCH_CONTEXT)
+    if reason is not None:
+        with pytest.raises(BlendPrescriptionRefused) as excinfo:
+            read_driver_prescription(document, **args)
+        assert excinfo.value.reason == reason
+        return
+    receipt = read_driver_prescription(document, **args).to_dict()
+    assert receipt["cuts_outside_passband"] == outside
+    assert receipt["pinned_trim_db"] == pins
 
 
 def test_the_per_role_filter_count_is_the_branchs_own_ceiling(packet, tmp_path):
@@ -1279,7 +1287,7 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     {"tweeter": float("inf")},
     # A legal JSON number, a legal Python int, and `float()` RAISES on it — so
     # it escapes an isinstance-then-float check as an OverflowError rather than
-    # a refusal, which is the shape `_finite_number`'s own docstring records
+    # a refusal, which is the shape `finite_number`'s own docstring records
     # having already escaped this family once.
     {"tweeter": 10 ** 400},
     # Positive is the hearing-relevant one: the emitted graph refuses a positive
@@ -2104,9 +2112,6 @@ def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
     """
     import numpy as np
 
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, _evaluation_grid, crossover_response_db,
-    )
     from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 
     grid = np.unique(np.concatenate([
@@ -2347,7 +2352,6 @@ def test_an_all_cuts_document_routes_exactly_as_it_did_before_the_boost_class(
 
 
 def test_the_span_clause_is_what_makes_the_bound_sound():
-    from jasper.active_speaker.branch_chain import CHAIN_GRID_HZ, _evaluation_grid
     from jasper.active_speaker.crossover_v2 import driver_prescription as dp
 
     role_filters = [
@@ -2364,27 +2368,6 @@ def test_the_span_clause_is_what_makes_the_bound_sound():
     # And the grid reaches outside the declared band, which is the domain half.
     assert grid.min() < 40.0
     assert grid.max() > 3000.0
-
-
-def test_the_boost_floor_is_the_cut_floor_because_it_is_the_same_argument():
-    """One literal, two names, asserted AT SOURCE.
-
-    ``_MIN_FILTER_GAIN_DB``'s "inaudible, wastes a filter slot" does not depend
-    on the sign, so the pair is DEFINED together rather than restated beside
-    each other. An `is` check cannot prove that — CPython interns equal float
-    constants, so two independent `= 0.5` literals would also pass it — so the
-    source line is what gets read.
-    """
-    import inspect
-
-    from jasper.active_speaker.linearization_fit import _MIN_FILTER_GAIN_DB
-
-    assert DRIVER_MIN_BOOST_DB == DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
-    source = inspect.getsource(dp)
-    assert "DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB" in source, (
-        "the boost floor must be DEFINED BY the cut floor, not restated as a "
-        "second literal that could drift"
-    )
 
 
 def test_defect_boostable_at_is_the_cut_readers_mirror(tmp_path):
@@ -2757,8 +2740,6 @@ def test_a_cut_at_every_corner_of_the_envelope_is_a_stable_biquad_at_48_khz(
     import math
 
     import numpy as np
-
-    from jasper.active_speaker.branch_chain import chain_response
 
     fs = 48_000.0
     amplitude = 10.0 ** (gain_db / 40.0)

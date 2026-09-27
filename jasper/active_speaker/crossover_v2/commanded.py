@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-from jasper.active_speaker.branch_chain import sections_by_role
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, CrossoverRegion
 
 from .contracts import CandidateAcousticContext, CrossoverV2ContractError

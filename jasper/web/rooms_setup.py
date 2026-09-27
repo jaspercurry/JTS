@@ -55,9 +55,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..identity import reader as identity
 from ..control import household_credential
 from ..multiroom.airplay_latency import with_airplay_latency_fit
+from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
 from ..multiroom.state import read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
@@ -903,8 +905,6 @@ def _balance_trims_from_db(balance_db: float) -> tuple[float, float, bool]:
     louder side stays at 0 dB and the opposite side is attenuated, so the pair
     keeps as much digital headroom as the requested relative balance allows.
     """
-    from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
-
     requested = float(balance_db)
     left = min(TRIM_DB_MAX, -requested)
     right = min(TRIM_DB_MAX, requested)
@@ -1224,5 +1224,4 @@ def make_server(target) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer. `target` is either an (host, port)
     tuple (direct bind) or an already-bound socket (from systemd socket
     activation — see jasper/web/__main__.py)."""
-    from ..platform.systemd import make_http_server
-    return make_http_server(target, _make_handler())
+    return systemd.make_http_server(target, _make_handler())

@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.fanin_coupling import RING_A_CHANNELS
@@ -16,27 +16,26 @@ from ..camilla_names import (
     driver_baseline_limiter_name,
     driver_delay_name,
     driver_limiter_name,
+    driver_mute_name,
     output_commission_mute_name,
+    program_protection_name,
     protective_tweeter_hp_name,
     sub_baseline_gain_name,
     sub_baseline_limiter_name,
     sub_lowpass_name,
     sub_startup_limiter_name,
+    sub_startup_mute_name,
 )
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .devices import _finite_float
 from .filters import (
     APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_FILTER_MODE,
     _crossover_filter_name,
     _driver_linearization_chain_names,
-    _driver_mute_name,
-    _program_protection_name,
     _protective_tweeter_hp_frequency,
-    _sub_startup_mute_name,
 )
 from .topology import (
     _bass_management_active,
@@ -138,7 +137,7 @@ def _driver_filter_chain(preset: ActiveSpeakerPreset, role: str) -> list[str]:
         if region.upper_driver == role:
             names.append(_crossover_filter_name(role, region, highpass=True))
     names.append(driver_delay_name(role))
-    names.append(_driver_mute_name(role))
+    names.append(driver_mute_name(role))
     names.append(driver_limiter_name(role))
     return names
 
@@ -186,7 +185,7 @@ def _sub_startup_filter_chain() -> list[str]:
     return [
         sub_lowpass_name(),
         sub_startup_limiter_name(),
-        _sub_startup_mute_name(),
+        sub_startup_mute_name(),
     ]
 
 
@@ -347,12 +346,12 @@ def _commissioning_driver_filter_chain(
         return [
             *([driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
-                _program_protection_name(role, index)
+                program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
             ),
             driver_limiter_name(role),
         ]
-    excluded = {_driver_mute_name(role)}
+    excluded = {driver_mute_name(role)}
     if filter_mode == APPLIED_RESPONSE_FILTER_MODE:
         excluded.add(protective_tweeter_hp_name(role))
     return [name for name in _driver_filter_chain(preset, role) if name not in excluded]

@@ -179,7 +179,7 @@ code = [
   "jasper/conversation_history.py",
   "jasper/web/chat_setup.py",
   "jasper/cli/doctor/web.py",
-  "deploy/jasper-chat-web.*",
+  "deploy/systemd/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
   "deploy/nginx/**",
 ]
@@ -199,9 +199,9 @@ code = [
   "jasper/voice_daemon.py",
   "jasper/vad.py",
   "jasper/tools/**",
-  "jasper/tool_state.py",
-  "jasper/tool_catalog_view.py",
-  "jasper/tool_prompt_overrides.py",
+  "jasper/tools/tool_state.py",
+  "jasper/tools/tool_catalog_view.py",
+  "jasper/tools/tool_prompt_overrides.py",
   "jasper/web/tools_setup.py",
   "jasper/cues/**",
   "jasper/web/voice_setup.py",
@@ -329,9 +329,11 @@ code = [
   # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
   # that preference EQ, headroom and the tuning fits all predict with.
   "jasper/biquad.py",
-  # Shared with audio-routing-and-renderers: it owns the device/volume_limit
-  # defaults.
+  # Shared with audio-routing-and-renderers: it owns the device defaults and
+  # the volume_limit door.
   "jasper/camilla_config_contract.py",
+  # Renders the one devices block; volume_limit is 0.0 by construction.
+  "jasper/camilla_emit.py",
   "jasper/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_profile_apply.py",
@@ -356,7 +358,7 @@ code = [
   "jasper/tools/spotify.py",
   "jasper/web/spotify_setup.py",
   "deploy/bin/jasper-librespot-event",
-  "deploy/jasper-web.*",
+  "deploy/systemd/jasper-web.*",
   "deploy/systemd/librespot.service",
   "scripts/claim-librespot.sh",
   "tests/test_spotify*.py",
@@ -523,15 +525,13 @@ code = [
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
   "deploy/assets/correction/crossover.css",
-  "deploy/jasper-correction-web.*",
+  "deploy/systemd/jasper-correction-web.*",
   "docs/active-crossover-information-design.md",
 ]
 docs = [
   "docs/measurement-loop-doctrine.md",
   "docs/active-crossover-information-design.md",
   "docs/active-speaker-tuning-layers-design.md",
-  "docs/gating-v2-plan.md",
-  "docs/room-correction-regime-plan.md",
   "docs/tuning-playbook.md",
   # Entry route, generated tool menu, artifact effects, and diagnostic access.
   "docs/tuning-operator-runbook.md",
@@ -572,10 +572,10 @@ id = "transit-and-citibike"
 safety = "safe-ci"
 code = [
   "jasper/google_routes.py",
-  "jasper/subway.py",
-  "jasper/bus.py",
+  "jasper/transit/subway.py",
+  "jasper/transit/bus.py",
   "jasper/transit/**",
-  "jasper/citibike.py",
+  "jasper/transit/citibike.py",
   "jasper/tools/travel_routes.py",
   "jasper/tools/bus.py",
   "jasper/tools/subway.py",
@@ -761,7 +761,7 @@ code = [
   "deploy/systemd/jasper-input.service",
   "deploy/systemd/jts-audio.slice",
   "deploy/systemd/jts-mic.slice",
-  "deploy/jasper-system-web.*",
+  "deploy/systemd/jasper-system-web.*",
   "deploy/bin/jasper-apply-airplay-mode",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/bin/jasper-bootloop-guard",

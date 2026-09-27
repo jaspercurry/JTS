@@ -66,6 +66,9 @@ STUB_SCRIPT = textwrap.dedent(
         sys.exit(1)
 
     signal.signal(signal.SIGINT, handle_sigint)
+    ready_file = os.environ.get("SEAT_LEVEL_STUB_READY_FILE")
+    if ready_file:
+        open(ready_file, "w").close()
     time.sleep(float(os.environ.get("SEAT_LEVEL_STUB_DELAY_S", "5.0")))
     print(json.dumps({"reference_volume_db": -12.3, "measured_db_spl": 77.4,
                        "restored": True, "detail": "converged"}))
@@ -186,19 +189,21 @@ def test_start_refuses_second_start_while_running(
 
 
 def test_stop_sends_sigint_and_reports_refused(
-    stub_cli: Path, monkeypatch: pytest.MonkeyPatch
+    stub_cli: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    ready_file = tmp_path / "sigint-ready"
+    monkeypatch.setenv("SEAT_LEVEL_STUB_READY_FILE", str(ready_file))
     monkeypatch.setenv("SEAT_LEVEL_STUB_DELAY_S", "5.0")
     monkeypatch.setattr(seat_level, "SEAT_LEVEL_CLI", str(stub_cli))
     session = seat_level._SeatLevelSession()
     session.start(target_db_spl=78.0, calibration_file="/dev/null")
     _wait_until(lambda: session.status()["state"] == "running")
-    # Give the stub's interpreter time to install its SIGINT handler before
-    # stopping it -- the real CLI has the same startup window, but main()'s
-    # own outer `except KeyboardInterrupt` covers it there (nothing was
-    # claimed yet, so "restored" reports nothing to restore); this stub has
-    # no such second layer, so the test avoids the race instead.
-    time.sleep(0.5)
+    # The stub writes the marker right after it installs its SIGINT handler
+    # (#5812). The real CLI has the same startup window, but main()'s own
+    # outer `except KeyboardInterrupt` covers it there (nothing was claimed
+    # yet, so "restored" reports nothing to restore); this stub has no such
+    # second layer, so the test waits for the marker.
+    _wait_until(lambda: ready_file.exists())
 
     stop_result = session.stop()
     assert stop_result["status"] == "stopping"
@@ -228,12 +233,14 @@ def test_force_stop_reports_written_sentence_not_raw_stderr(
     real 5s default.
     """
     script = tmp_path / "stubborn-seat-level"
+    ready_file = tmp_path / "sigign-ready"
     script.write_text(
         textwrap.dedent(
-            """\
+            f"""\
             #!/usr/bin/env python3
             import signal, sys, time
             signal.signal(signal.SIGINT, signal.SIG_IGN)
+            open({str(ready_file)!r}, "w").close()
             sys.stderr.write("simulated hang, ignoring SIGINT\\n")
             time.sleep(30)
             """
@@ -246,11 +253,10 @@ def test_force_stop_reports_written_sentence_not_raw_stderr(
     session = seat_level._SeatLevelSession()
     session.start(target_db_spl=78.0, calibration_file="/dev/null")
     _wait_until(lambda: session.status()["state"] == "running")
-    # Same startup-window race as test_stop_sends_sigint_and_reports_refused:
-    # give the stub's interpreter time to install its SIG_IGN before the
-    # SIGINT lands, or Python's default handler exits it well within the
-    # 0.2s timeout and the escalation this test pins never happens.
-    time.sleep(0.5)
+    # Same startup window as test_stop_sends_sigint_and_reports_refused: until
+    # the stub's SIG_IGN is in place, Python's default handler exits it well
+    # within the 0.2s timeout and the escalation this test pins never happens.
+    _wait_until(lambda: ready_file.exists())
 
     stop_result = session.stop()
     assert stop_result["status"] == "stopping"

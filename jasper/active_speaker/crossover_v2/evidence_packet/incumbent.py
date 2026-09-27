@@ -15,10 +15,10 @@ from jasper.active_speaker.baseline_profile import (
     profile_driver_corrections,
     profile_linearization,
 )
-from jasper.json_fields import finite_float
+from jasper.json_fields import as_mapping, finite_float
 
 from ..round_inputs import recent_round_sessions, round_artifact_dir
-from .offline_reads import _absence, _mapping, _read_json
+from .offline_reads import absence, read_json
 
 
 def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
@@ -37,10 +37,10 @@ def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, st
     profile = load_applied_baseline_profile_state(path)
     if profile is not None:
         return profile, ""
-    raw, reason = _read_json(path)
+    raw, reason = read_json(path)
     if reason:
         return None, reason
-    document = _mapping(raw)
+    document = as_mapping(raw)
     return None, (
         "the file is not an applied baseline profile this install can read "
         f"(kind={document.get('kind')!r}, "
@@ -49,10 +49,10 @@ def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, st
     )
 
 
-def _read_candidate(round_dir: Path) -> dict[str, Any]:
+def read_candidate(round_dir: Path) -> Mapping[str, Any]:
     """One round's ``candidate.json`` as a plain mapping, without revalidation."""
-    raw, _reason = _read_json(round_dir / "candidate.json")
-    return _mapping(raw)
+    raw, _reason = read_json(round_dir / "candidate.json")
+    return as_mapping(raw)
 
 #: How many rounds of structural history are carried.
 STRUCTURAL_HISTORY_MAX_ROUNDS = 8
@@ -91,12 +91,12 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
     ABSOLUTE per-role ``inverted`` flags would put two rows in two frames on
     any speaker whose draft declares an inverted branch.
     """
-    linearization = _mapping(candidate.get("linearization"))
-    alignment = _mapping(candidate.get("alignment"))
-    analysis = _mapping(candidate.get("analysis"))
+    linearization = as_mapping(candidate.get("linearization"))
+    alignment = as_mapping(candidate.get("alignment"))
+    analysis = as_mapping(candidate.get("analysis"))
     region = next(
         iter(
-            _mapping(candidate.get("source_preset")).get("crossover_regions") or ()
+            as_mapping(candidate.get("source_preset")).get("crossover_regions") or ()
         ),
         None,
     )
@@ -105,13 +105,13 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
         "trim_db": (
             {
                 str(role): float(value)
-                for role, value in _mapping(
+                for role, value in as_mapping(
                     candidate.get("role_attenuations_db")
                 ).items()
                 if finite_float(value) is not None
             },
             {
-                str(role): bool(_mapping(entry).get("trim_pinned") is True)
+                str(role): bool(as_mapping(entry).get("trim_pinned") is True)
                 for role, entry in linearization.items()
             },
         ),
@@ -125,7 +125,7 @@ def _structural_axes_of(candidate: Mapping[str, Any]) -> dict[str, dict[str, Any
             ),
         ),
         "crossover_fc_hz": (
-            finite_float(_mapping(region).get("fc_hz")), None,
+            finite_float(as_mapping(region).get("fc_hz")), None,
         ),
     }
     return {
@@ -149,8 +149,8 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
         round_dir, _reason = round_artifact_dir(bundle_dir)
         if round_dir is None:
             continue
-        candidate = _read_candidate(round_dir)
-        if _mapping(candidate.get("analysis")).get("measurement_status") == "unmeasured":
+        candidate = read_candidate(round_dir)
+        if as_mapping(candidate.get("analysis")).get("measurement_status") == "unmeasured":
             continue
         axes = _structural_axes_of(candidate)
         # Emptiness, not falsiness: a committed delay of exactly 0.0 µs and a
@@ -194,21 +194,13 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
 
 
 def _incumbent_block(
-    receipt: dict[str, Any],
-    reason: str,
     profile: dict[str, Any] | None,
     profile_reason: str,
     state: Mapping[str, Any],
     statefile_path: Path | None,
 ) -> dict[str, Any]:
-    """What the speaker is PLAYING — three records, two questions.
-
-    The BLEND correction is recorded in two places and reported side by side
-    rather than reconciled: the receipt's
-    ``round_measurements.blend.incumbent`` (what the round said it derived
-    from) and the applied profile's ``blend_correction`` (what the graph
-    carried). They should agree, and reconciling them is a judgement this
-    module does not make.
+    """What the speaker is PLAYING: the applied profile's ``blend_correction``
+    (what the graph carried).
 
     ``linearization`` is the same question asked of the other prescription
     class, read through
@@ -234,12 +226,9 @@ def _incumbent_block(
     bank time and not the reading machine's own state. ``None`` (no statefile
     supplied) reads as unknown, not as agreement.
 
-    ``trim`` is a fourth record, LEVEL rather than shape: see
-    :func:`_incumbent_trim_block`.
+    ``trim`` answers LEVEL rather than shape: see :func:`_incumbent_trim_block`.
     """
 
-    blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
-    from_receipt = blend.get("incumbent")
     # ``profile_blend_correction`` and not an attribute read: it owns the same
     # snapshot-first authority rule ``profile_linearization`` owns, and it
     # keeps ``None`` (no readable profile) apart from ``()`` (a profile that
@@ -248,19 +237,14 @@ def _incumbent_block(
     linearization = profile_linearization(profile)
     trim = _incumbent_trim_block(profile, state)
     return {
-        "from_round_receipt": (
-            from_receipt
-            if from_receipt is not None
-            else _absence(reason, False, "round_measurements.blend.incumbent")
-        ),
         "from_applied_profile": (
             list(from_profile)
             if from_profile is not None
             # ``profile_blend_correction`` returns ``()`` for a profile that
             # applied no blend, so ``None`` beside a READABLE profile can only
             # be a malformed record — a different fact from a missing one, and
-            # ``_absence``'s bare ``field_null`` would spell them the same.
-            else _absence(
+            # ``absence``'s bare ``field_null`` would spell them the same.
+            else absence(
                 profile_reason
                 or "the profile is readable but its blend_correction is not a list",
                 False,
@@ -271,13 +255,13 @@ def _incumbent_block(
             {
                 "candidate_fingerprint": profile.get("candidate_fingerprint"),
                 "applied_at": profile.get("applied_at"),
-                "config_sha256": _mapping(profile.get("config")).get("sha256"),
+                "config_sha256": as_mapping(profile.get("config")).get("sha256"),
                 "applied_profile_displacement": (
                     applied_profile_displacement(
                         profile, statefile_path=statefile_path
                     )
                     if statefile_path is not None
-                    else _absence(
+                    else absence(
                         "no CamillaDSP statefile was supplied",
                         False,
                         "camilla_statefile",
@@ -290,7 +274,7 @@ def _incumbent_block(
                 ),
             }
             if profile
-            else _absence(profile_reason, False, "applied_baseline_profile")
+            else absence(profile_reason, False, "applied_baseline_profile")
         ),
         "note": (
             "a prescription is a TOTAL, not a delta: prescribe the whole "
@@ -310,7 +294,7 @@ def _incumbent_block(
                     if isinstance(role, str) and role.strip()
                 }
                 if profile
-                else _absence(
+                else absence(
                     profile_reason, False, "applied_baseline_profile.linearization"
                 )
             ),
@@ -351,14 +335,14 @@ def _incumbent_trim_block(
     """
 
     applied = profile_driver_corrections(profile)
-    candidate = _mapping(state.get("candidate"))
-    resolved = _mapping(candidate.get("trims_db"))
-    pinned = _mapping(candidate.get("trims_pinned"))
+    candidate = as_mapping(state.get("candidate"))
+    resolved = as_mapping(candidate.get("trims_db"))
+    pinned = as_mapping(candidate.get("trims_pinned"))
     out: dict[str, dict[str, Any]] = {}
     for role in sorted(set(applied) | set(resolved)):
-        applied_db = finite_float(_mapping(applied.get(role)).get("gain_db"))
+        applied_db = finite_float(as_mapping(applied.get(role)).get("gain_db"))
         resolved_db = (
-            finite_float(_mapping(pinned[role]).get("displaced_db"))
+            finite_float(as_mapping(pinned[role]).get("displaced_db"))
             if role in pinned
             else finite_float(resolved.get(role))
         )

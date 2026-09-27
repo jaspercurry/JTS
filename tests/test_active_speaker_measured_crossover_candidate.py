@@ -385,11 +385,10 @@ def test_a_candidate_refuses_to_carry_a_non_finite_fit_cost():
     ``linearization``.
 
     Asserted as the PROPERTY rather than against one mechanism, because two
-    independent layers enforce it and either alone would satisfy a
-    single-mechanism test: ``null_walk.DspPredecessor`` freezes the state, and
-    ``evidence_identity._freeze_json`` freezes the fingerprint payload, and both
-    refuse a non-finite float. Verified by mutation — relaxing either one on its
-    own leaves this green, and relaxing BOTH is what turns it red.
+    layers enforce it: ``null_walk.DspPredecessor`` freezes the state and
+    ``evidence_identity.json_fingerprint`` freezes the fingerprint payload, both
+    through ``json_fields.freeze_json``, which refuses a non-finite float
+    (verified by mutation: relaxing it turns this red).
 
     Pinned because a reader downstream leans on it (#2357). The sweep reduces
     this mapping to one figure with ``worst_headroom_cost_db``, whose own

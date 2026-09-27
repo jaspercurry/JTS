@@ -64,7 +64,7 @@ AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/usr/bin/test -e /run/j
 # back to the resolver, because withdrawing the management network is what
 # strands a deploy riding ncm.usb0.
 MANAGEMENT_TRANSPORT_MARKER="${JASPER_USBGADGET_MANAGEMENT_TRANSPORT_MARKER:-/run/jasper-output-hardware/management-transport.ok}"
-HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
+HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.cli.usb_port_role --require-management-transport}"
 # Read directly, not through their Python readers: this is an
 # ExecCondition/ExecStartPre path (ADR-0226).
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"

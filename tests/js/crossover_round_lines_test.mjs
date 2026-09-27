@@ -13,8 +13,7 @@ let env = {capture: null, round_choices: [choice], round_lines: []};
 const {elements, render, refresh, runAction} = await crossoverMainModule({
   ids: [...CROSSOVER_IDS, ...['lines', 'choice', 'select', 'summary', 'start'].map(id => `crossover-round-${id}`)],
   extraStubs: {window: {location: {search: '?program=rear'}},
-    getJSON: async url => {requested.push(url); return env;}, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return postResponse;},
-    renderCloud: () => {}, redrawCloudChart: () => {}},
+    getJSON: async url => {requested.push(url); return env;}, postJSON: async (endpoint, body) => {posted.push({endpoint, body}); return postResponse;}},
   exportNames: ['render', 'refresh', 'runAction'],
 });
 await refresh();

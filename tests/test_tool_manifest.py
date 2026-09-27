@@ -4,7 +4,7 @@
 
 """Slice 3 — the derived manifest is no-loss over every shipped tool.
 
-`Tool.to_manifest_entry()` / `ToolRegistry.to_manifest()` build a stable,
+`Tool.to_manifest_entry()` builds a stable,
 provider-neutral record straight from existing Tool fields. This pins:
 field-by-field equality with the source Tool, deterministic `providers`
 ordering (frozenset has none), and that the manifest is in registration
@@ -14,7 +14,7 @@ serializers.
 from __future__ import annotations
 
 from jasper.tools import MANIFEST_SCHEMA_VERSION, ToolRegistry
-from tests._tool_pack_contract import full_registry
+from tests._tool_pack_contract import full_registry, manifest_by_name
 
 SELECTED_LLM_DESCRIPTION_TOOLS = {
     "get_current_time",
@@ -33,16 +33,16 @@ def _full_registry() -> ToolRegistry:
     return full_registry()
 
 
-def test_manifest_covers_every_tool_in_order():
+def test_each_registered_tool_has_matching_manifest_name():
     reg = _full_registry()
-    manifest = reg.to_manifest()
+    manifest = list(manifest_by_name(reg).values())
     assert len(manifest) == len(reg.tools) == 30
     assert [e["name"] for e in manifest] == list(reg.tools.keys())
 
 
 def test_manifest_entries_are_no_loss():
     reg = _full_registry()
-    by_name = {e["name"]: e for e in reg.to_manifest()}
+    by_name = manifest_by_name(reg)
 
     for name, t in reg.tools.items():
         entry = by_name[name]
@@ -65,7 +65,7 @@ def test_no_tool_enum_declares_empty_string():
     function_declarations[...].parameters.properties[...].enum contains "".
     Optional fields must be expressed by omitting them (not required), never
     by an empty-string enum member."""
-    for entry in _full_registry().to_manifest():
+    for entry in manifest_by_name(_full_registry()).values():
         for prop_name, prop_schema in entry["input_schema"].get(
             "properties", {},
         ).items():
@@ -76,7 +76,7 @@ def test_no_tool_enum_declares_empty_string():
 
 def test_manifest_uses_short_model_descriptions_for_selected_real_tools():
     reg = _full_registry()
-    by_name = {e["name"]: e for e in reg.to_manifest()}
+    by_name = manifest_by_name(reg)
 
     for name in SELECTED_LLM_DESCRIPTION_TOOLS:
         t = reg.get(name)
@@ -98,7 +98,7 @@ def test_manifest_providers_are_sorted_deterministically():
 
     reg = ToolRegistry()
     reg.register(restricted)
-    entry = reg.to_manifest()[0]
+    entry = next(iter(reg.tools.values())).to_manifest_entry()
     assert entry["compatibility"]["providers"] == ["gemini", "grok", "openai"]
 
 
@@ -112,7 +112,7 @@ def test_manifest_providers_none_for_universal_tool():
 
     reg = ToolRegistry()
     reg.register(universal)
-    entry = reg.to_manifest()[0]
+    entry = next(iter(reg.tools.values())).to_manifest_entry()
     assert entry["compatibility"]["providers"] is None
 
 
@@ -120,14 +120,14 @@ def test_transit_tools_carry_city_and_mode_labels():
     """The transit city is a label on the tool (not a CityPack toggle) —
     the catalog will filter/sort on these. Declared order is preserved.
     See docs/extensibility.md."""
-    by_name = {e["name"]: e for e in _full_registry().to_manifest()}
+    by_name = manifest_by_name(_full_registry())
     assert by_name["get_subway_arrivals"]["labels"] == ["transit", "nyc", "subway"]
     assert by_name["get_bus_arrivals"]["labels"] == ["transit", "nyc", "bus"]
     assert by_name["get_citibike_status"]["labels"] == ["transit", "nyc", "bikeshare"]
 
 
 def test_travel_routes_tool_carries_travel_labels():
-    by_name = {e["name"]: e for e in _full_registry().to_manifest()}
+    by_name = manifest_by_name(_full_registry())
     assert by_name["get_travel_routes"]["labels"] == [
         "travel", "directions", "transit", "google-routes",
     ]
@@ -143,4 +143,4 @@ def test_unlabeled_tool_emits_empty_labels():
 
     reg = ToolRegistry()
     reg.register(plain)
-    assert reg.to_manifest()[0]["labels"] == []
+    assert next(iter(reg.tools.values())).to_manifest_entry()["labels"] == []

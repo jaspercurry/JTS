@@ -35,7 +35,14 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from jasper.audio_measurement.program_analysis.response import _alignment_delay_grid
+from jasper.audio_measurement.program_analysis.response import (
+    _aligned_branch_tf,
+    _alignment_delay_grid,
+    _gate_floor_hz,
+    _ripple_db,
+    _select_alignment_pair,
+    _select_summed_alignment_pair,
+)
 from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
 from jasper.active_speaker.crossover_v2.planning import analysis_json
@@ -54,7 +61,7 @@ from jasper.audio_measurement.alignment import (
     gcc_phat,
 )
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.frame_fit import fit_frame
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
@@ -81,7 +88,6 @@ from jasper.audio_measurement.comparison_bands import (
 )
 from jasper.audio_measurement.program_analysis import alignment_pairs, dispatch
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, DriverResponse, SummedAlignmentReference
-from jasper.audio_measurement.program_analysis.response import _select_summed_alignment_pair
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
@@ -113,31 +119,17 @@ from jasper.audio_measurement.program_analysis import (
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
     RIPPLE_TRIM_MIN_DB,
-
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
     PilotObservation,
-    _aligned_branch_tf,
-    _ambient_from_capture,
-    _band_average_db,
-    _band_exclusive_pieces,
-    _build_candidate,
-    _complex_tf,
-    _compose_configured_path_ir,
-    _deconvolve_window,
-    _gate_floor_hz,
-    _global_offset,
-    _locate_segments,
-    _n_fft_for,
-    _peak_dbfs,
-    _ripple_db,
-    _select_alignment_pair,
-    _snr_floor_ok,
-    _solve_gain_plan,
-    _sweep_occurrence_index,
+    deconvolve_window,
+    locate_global_offset,
+    locate_segments,
+    n_fft_for,
+    clears_snr_floor,
     ABSOLUTE_NO_FC,
     ABSOLUTE_NO_TARGET,
     ABSOLUTE_NO_TRUSTED_BAND,
@@ -153,11 +145,15 @@ from jasper.audio_measurement.program_analysis import (
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
+from jasper.audio_measurement.program_analysis.check import _ambient_from_capture, _band_exclusive_pieces, _solve_gain_plan
+from jasper.audio_measurement.program_analysis.dispatch import _build_candidate, _compose_configured_path_ir
+from jasper.audio_measurement.program_analysis.drift import _sweep_occurrence_index
+from jasper.audio_measurement.program_analysis.signals import _band_average_db, _complex_tf, _peak_dbfs
 from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
     crossover_response_complex,
     radiating_band_hz,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (
@@ -1019,7 +1015,7 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     """Fail closed: a raw noise report with no raw capture to pair it against
     yields NO verdict, never a cross-domain one.
 
-    `_driver_response`'s ambient argument is optional and its raw-capture
+    `driver_response`'s ambient argument is optional and its raw-capture
     argument is too, so nothing but this rule stops the two sides of the
     subtraction from drifting back apart. The deconvolved arm below is the
     other half: a report that says it IS deconvolved still reads the transfer
@@ -1030,13 +1026,13 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
         {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
     ]}
 
-    unpaired = program_analysis._driver_response(
+    unpaired = program_analysis.driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=raw_report,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
     )
     assert unpaired.snr is None
 
-    deconvolved = program_analysis._driver_response(
+    deconvolved = program_analysis.driver_response(
         "woofer", ir, SR, calibration=None,
         ambient_report={**raw_report, "domain": "deconvolved"},
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
@@ -1049,7 +1045,7 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     # A segment that is present but degenerate — a capture truncated before
     # this sweep — reaches "not measured" by the other spelling: a block that
     # says `unknown` over zero bands, never a number.
-    degenerate = program_analysis._driver_response(
+    degenerate = program_analysis.driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=raw_report,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=np.zeros(0),
     )
@@ -1071,7 +1067,7 @@ def test_diagnostic_summary_names_the_band_behind_each_driver_snr_pair():
     ambient = {"schema_version": 1, "domain": "deconvolved", "bands": [
         {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
     ]}
-    resp = program_analysis._driver_response(
+    resp = program_analysis.driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=ambient,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
     )
@@ -1179,7 +1175,7 @@ def test_raw_sweep_segment_clamps_instead_of_raising(
         sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
     seg = prog.segment("sweep_w")
-    got = program_analysis._raw_sweep_segment(np.zeros(capture_len), seg, anchor)
+    got = program_analysis.response._raw_sweep_segment(np.zeros(capture_len), seg, anchor)
     assert got.size == expected, label
 
 
@@ -1195,7 +1191,7 @@ def test_raw_sweep_segment_returns_the_whole_scheduled_segment():
     )
     seg = prog.segment("sweep_w")
     full = np.zeros(seg.n_samples + 200)
-    assert program_analysis._raw_sweep_segment(full, seg, 100).size == seg.n_samples
+    assert program_analysis.response._raw_sweep_segment(full, seg, 100).size == seg.n_samples
 
 
 def test_measure_no_drift_delay_is_tight():
@@ -1506,8 +1502,8 @@ def test_integer_locate_lobe_hop_on_a_clean_capture_is_not_a_desync():
         else loc
         for loc in res.locations
     ]
-    clean = program_analysis._estimate_drift(prog, cap, SR, res.locations)
-    hopped = program_analysis._estimate_drift(prog, cap, SR, hopped_locations)
+    clean = program_analysis.estimate_drift(prog, cap, SR, res.locations)
+    hopped = program_analysis.estimate_drift(prog, cap, SR, hopped_locations)
 
     # The defect is reproduced: read off the integer locate, those same
     # locations land squarely in the banked 2.00-3.13 band and trip the gate.
@@ -1726,7 +1722,7 @@ def test_diagnostic_summary_SAYS_the_ceiling_cap_in_words_not_only_an_enum():
 def test_driver_response_prices_the_gate_over_the_band_it_actually_drove():
     """E5's eval-band correction, at the seam that supplies the band.
 
-    ``_driver_response`` threads the segment's own sweep bounds into the
+    ``driver_response`` threads the segment's own sweep bounds into the
     delta. Evaluating a high-passed branch from its trusted floor instead —
     where it has no output — is what over-reported 4.045 dB against an
     honest 1.368 dB on the banked corpus.
@@ -1855,7 +1851,7 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
     # The fit now measures positions out of the capture itself (sub-sample,
     # so it can gate), which is why the capture is an argument and the fit
     # rides back as a third return value.
-    step, after, _fit = program_analysis._locate_discontinuity(
+    step, after, _fit = program_analysis.drift._locate_discontinuity(
         prog, spliced, sweep_locs
     )
     if expect_unresolved:
@@ -2046,8 +2042,8 @@ def _alignment_capture(sweep_count, eps, *, noise=0.0):
         tweeter_ir=_band_impulse(200 + tau_true, 300.0, 20000.0, 0.7),
         epsilon=eps, noise=noise,
     )
-    offset, *_ = _global_offset(prog, cap, SR)
-    irs = {seg.segment_id: _deconvolve_window(
+    offset, *_ = locate_global_offset(prog, cap, SR)
+    irs = {seg.segment_id: deconvolve_window(
         cap, seg, offset + seg.start_sample, SR, epsilon=eps,
     ) for seg in sweeps[:sweep_count]}
     return prog, cap, offset, irs, -tau_true / SR * 1e6
@@ -2179,8 +2175,8 @@ def test_adjacent_alignment_uses_available_snaps(monkeypatch, missing):
 @pytest.mark.parametrize("missing", [("sweep_w",), ("sweep_t",), ("sweep_w", "sweep_t")])
 def test_measure_deconvolves_primaries_even_when_not_located(monkeypatch, missing):
     prog, cap, _, irs, _ = _alignment_capture(6, 0.0)
-    locate = program_analysis.dispatch._locate_segments
-    deconvolve = program_analysis.dispatch._deconvolve_window
+    locate = program_analysis.dispatch.locate_segments
+    deconvolve = program_analysis.dispatch.deconvolve_window
     calls = []
 
     def located(*args):
@@ -2190,8 +2186,8 @@ def test_measure_deconvolves_primaries_even_when_not_located(monkeypatch, missin
         calls.append(segment.segment_id)
         return deconvolve(capture, segment, *args, **kwargs)
 
-    monkeypatch.setattr(program_analysis.dispatch, "_locate_segments", located)
-    monkeypatch.setattr(program_analysis.dispatch, "_deconvolve_window", recorded)
+    monkeypatch.setattr(program_analysis.dispatch, "locate_segments", located)
+    monkeypatch.setattr(program_analysis.dispatch, "deconvolve_window", recorded)
     result = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
     assert sorted(calls) == sorted(irs)
     assert result.alignment.status == ALIGNMENT_OK
@@ -3737,7 +3733,7 @@ def test_check_ambient_window_clips_on_a_late_capture_never_slides_onto_the_beep
     exactly the lost head), and what it measures must still be the room —
     the -70 dBFS floor, not the -18 dBFS beep sitting immediately after the
     window's scheduled end. Computing ``end`` from the clamped start instead
-    reads this same fixture ~40 dB hot, which poisons `_snr_floor_ok` AND the
+    reads this same fixture ~40 dB hot, which poisons `clears_snr_floor` AND the
     gain solve that reads the same report.
     """
     prog = _check_ambient_program()
@@ -3815,7 +3811,7 @@ def test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_eviden
     estimating a floor from a couple of hundred samples.
 
     The degradation is fail-closed and DISCLOSED on both consumers of the
-    report: `_snr_floor_ok` refuses (a missing floor is not a passing floor),
+    report: `clears_snr_floor` refuses (a missing floor is not a passing floor),
     and the gain solve reaches its `GAIN_BOUND_NO_AMBIENT_EVIDENCE` bound
     rather than solving against a fabricated number. This is the honest
     direction — the pre-#1818 code answered instead with a window that had
@@ -3831,7 +3827,7 @@ def test_check_ambient_below_the_usable_fraction_degrades_to_disclosed_no_eviden
 
     assert samples is None
     assert report["bands"] == []
-    assert _snr_floor_ok(report, -10.5, [(150.0, 4000.0)]) is False
+    assert clears_snr_floor(report, -10.5, [(150.0, 4000.0)]) is False
 
     # End-to-end, through the real offset recovery: the whole CHECK analysis
     # reaches the disclosed no-evidence bound rather than a solved gain.
@@ -4020,11 +4016,11 @@ def test_measure_level_solve_falls_back_for_a_band_the_report_cannot_reach():
 
 
 def test_ambient_rows_in_band_skips_rows_it_cannot_read():
-    """`_ambient_rows_in_band` is fed by more than one report producer (see
+    """`ambient_rows_in_band` is fed by more than one report producer (see
     `snr_policy.unwrap_noise_report`'s legacy bare-band shape), so a row it
     cannot read must cost it that row's evidence — never raise inside CHECK's
     accept path."""
-    rows = program_analysis._ambient_rows_in_band(
+    rows = program_analysis.ambient_rows_in_band(
         (150.0, 1200.0),
         [
             {"band_id": "upper_bass", "band_hz": [160.0, 350.0], "level_dbfs": -60.0},
@@ -4384,8 +4380,8 @@ def _check_rumble_capture(rumble_hz: tuple[float, ...], rumble_amp: float, *, se
 def _old_peak_delta(prog, capture, role: str) -> float:
     """The OLD (pre-fix) full-band-peak linearity delta, on the SAME located
     windows the new estimator uses — a direct old-vs-new comparison."""
-    global_offset, _first, stimuli, _amb = _global_offset(prog, capture, SR)
-    locations = _locate_segments(prog, capture, SR, global_offset, stimuli)
+    global_offset, _first, stimuli, _amb = locate_global_offset(prog, capture, SR)
+    locations = locate_segments(prog, capture, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     lo_seg = prog.segment(f"pilot_{role}_lo")
     hi_seg = prog.segment(f"pilot_{role}_hi")
@@ -4556,7 +4552,7 @@ def test_pilot_linearity_aggregate_is_tri_state():
             linearity_ok=linearity_ok, channel_map_ok=True,
         )
 
-    aggregate = program_analysis._aggregate_linearity_ok
+    aggregate = program_analysis.check._aggregate_linearity_ok
     assert aggregate([]) is None
     assert aggregate([_pilot("w", True), _pilot("t", True)]) is True
     assert aggregate([_pilot("w", True), _pilot("t", None)]) is None
@@ -4628,8 +4624,8 @@ def test_channel_map_survives_concurrent_room_rumble():
 
     # OLD math, reimplemented inline: >50% of the tweeter pilot's TOTAL
     # spectral energy must land in its own declared band. It does not.
-    global_offset, _first, stimuli, _amb = _global_offset(chk, full_cap, SR)
-    locations = _locate_segments(chk, full_cap, SR, global_offset, stimuli)
+    global_offset, _first, stimuli, _amb = locate_global_offset(chk, full_cap, SR)
+    locations = locate_segments(chk, full_cap, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     hi_seg = chk.segment("pilot_tweeter_hi")
     hi_loc = by_id["pilot_tweeter_hi"]
@@ -4647,7 +4643,7 @@ def test_channel_map_fails_when_one_driver_never_played():
 
     This is the case that protects a household, and it is the one the
     band-relative rise test was built for: the WORKING driver anchors
-    `_global_offset`, so every segment locates correctly and the ambient
+    `locate_global_offset`, so every segment locates correctly and the ambient
     window is real. The silent role's own band then shows ~0 dB of rise over
     that ambient and fails TARGET, while the working role clears it by a wide
     margin.
@@ -4748,12 +4744,12 @@ def _isolation_pilot(
         (other_band, cross_rise_db),
     )
     for band, rise_db in commands:
-        want = program_analysis._band_rms_dbfs(ambient, SR, *band) + rise_db
+        want = program_analysis.check._band_rms_dbfs(ambient, SR, *band) + rise_db
         content = fftconvolve(
             rng.normal(0.0, 1.0, seg.n_samples),
             _deep_plant(_MASK_DELAY, band[0], band[1], 1.0),
         )[: seg.n_samples]
-        have = program_analysis._band_rms_dbfs(content, SR, *band)
+        have = program_analysis.check._band_rms_dbfs(content, SR, *band)
         out = out + content * 10.0 ** ((want - have) / 20.0)
     return out
 
@@ -4770,7 +4766,7 @@ def _isolation_case(role: str, target_rise_db: float, cross_rise_db: float, seed
         seg, other_band, ambient,
         target_rise_db=target_rise_db, cross_rise_db=cross_rise_db, seed=seed + 1,
     )
-    return program_analysis._channel_map_ok(
+    return program_analysis.check._channel_map_ok(
         pilot, SR, seg, ambient_samples=ambient, other_bands=(other_band,),
     )
 
@@ -4967,7 +4963,7 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
 
     def _run(cross_rise: float):
         monkeypatch.setattr(program_analysis.check, "_band_rms_dbfs", _script(cross_rise))
-        return program_analysis._channel_map_ok(
+        return program_analysis.check._channel_map_ok(
             pilot, SR, seg, ambient_samples=ambient, other_bands=(other,),
         )
 
@@ -5085,13 +5081,13 @@ def test_channel_map_fallback_pass_is_unknown_and_fail_is_a_finding():
     in_band = fftconvolve(noise, _band_impulse(0, 150.0, 1200.0, 1.0))[: seg.n_samples]
     out_of_band = fftconvolve(noise, _band_impulse(0, 4000.0, 20000.0, 1.0))[: seg.n_samples]
 
-    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+    ok, target_rise, cross_rise = program_analysis.check._channel_map_ok(
         in_band, SR, seg, ambient_samples=None,
     )
     assert ok is None                       # cleared the fraction — not evidence
     assert target_rise is None and cross_rise is None
 
-    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+    ok, target_rise, cross_rise = program_analysis.check._channel_map_ok(
         out_of_band, SR, seg, ambient_samples=None,
     )
     assert ok is False                      # missed its own band — a finding
@@ -5131,7 +5127,7 @@ def test_degraded_miswire_still_names_the_wiring_not_the_room():
     """The fallback's FAIL is the only wiring evidence a lost window leaves.
 
     Both miswire shapes that destroy offset recovery outright — a swapped
-    pair, and a silent ANCHOR driver (`_global_offset` anchors on
+    pair, and a silent ANCHOR driver (`locate_global_offset` anchors on
     ``pilot_woofer_lo``) — take the fallback with no ambient window at all.
     Their surviving role misses its own declared band, so the fallback fails
     and the session verdict stays an explicit ``False``, which
@@ -5170,7 +5166,7 @@ def test_channel_map_aggregate_is_tri_state():
     ``channel_map_mismatch``: a hard stop telling a household to rewire its
     speaker, decided on evidence nobody took.
     """
-    aggregate = program_analysis._aggregate_tri_state_ok
+    aggregate = program_analysis.check._aggregate_tri_state_ok
     assert aggregate([]) is None
     assert aggregate([True, True]) is True
     assert aggregate([True, None]) is None
@@ -5287,6 +5283,28 @@ def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
     expected = 20 * np.log10(np.abs(0.5 + 0.2 * np.exp(-2j * np.pi * response.freqs_hz[bass] * 0.120)))
     assert response.magnitude_db[bass] == pytest.approx(expected, abs=0.5)
     assert np.ptp(response.magnitude_db[bass]) > 5
+
+
+@pytest.mark.parametrize("geometry,bound_ms,source", [
+    (None, 7.0, gating.SEARCH_BOUND_DEFAULT),
+    (MeasurementGeometry(declared_first_bounce_s=0.009), 9.0, gating.SEARCH_BOUND_DECLARED),
+    (MeasurementGeometry(declared_first_bounce_s=0.0003), 0.3, gating.SEARCH_BOUND_DECLARED),
+])
+def test_a_take_searches_for_a_reflection_as_far_as_the_declared_rooms_first_bounce(geometry, bound_ms, source):
+    """A declared room's first bounce at 9 ms gates a take with no earlier
+    reflection at 9 ms; with no room declared it gates at 7 ms, and a bounce
+    too early for the search to look still ends the window there. The gate
+    says which bound it searched to and where that came from (#3665 item 10)."""
+    prog = build_verify_program(FC_HZ, sweep_band_hz=(20, 20000), sweep_s=1.5)
+    ir = np.zeros(SR // 4)
+    ir[200] = 0.5
+    cap = np.concatenate([np.zeros(800), fftconvolve(render_program_pcm(prog)[:, 0], ir), np.zeros(5000)])
+    cap += np.random.default_rng(5).normal(0.0, 1e-8, cap.size)
+
+    gate = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors(), geometry=geometry).summed_response.gating
+
+    assert (gate["window_ms"], gate["floor_source"], gate["search_bound_ms"], gate["search_bound_source"]) == (
+        pytest.approx(bound_ms, abs=0.01), gating.FLOOR_SEARCH_BOUND, pytest.approx(bound_ms), source)
 
 
 def test_a_one_driver_take_under_the_near_field_exemption_reads_every_sweep_ungated():
@@ -5779,7 +5797,7 @@ def test_verify_tracking_notch_exclusion_reduces_max_through_the_pipeline():
 # (`IR_PRE_MS` + `IR_POST_MS`), so a 15 cm desk-bounce reflection at the mic
 # position was baked into the predicted sum (a spurious ~1125 Hz null) even
 # though (2) VERIFY's own measured sum is adaptively reflection-gated
-# (`_driver_response`) and never had that reflection to begin with — and the
+# (`driver_response`) and never had that reflection to begin with — and the
 # VERIFY tracking comparator's band never clamped to that adaptive gate's own
 # validity floor (`gating.f_valid_floor_hz`), so sub-validity bins decided the
 # verdict. Fix 1 (validity-floor clamp) and Fix 2 (gating-consistent
@@ -5834,12 +5852,12 @@ def _reflection_fixture(fc_hz: float, *, peak: int = 300, n: int = 8192):
         reflection_delay_s=0.70e-3, reflection_amp=1.0, n=n,
     )
     tweeter_ir = _reflection_branch(peak, 300.0, 20000.0, 0.7, n=n)
-    return woofer_ir, tweeter_ir, _n_fft_for(woofer_ir, tweeter_ir)
+    return woofer_ir, tweeter_ir, n_fft_for(woofer_ir, tweeter_ir)
 
 
 def test_aligned_branch_tf_applies_the_same_adaptive_gate_as_driver_response():
     """Fix 2, isolated: ``_aligned_branch_tf`` must reflection-gate exactly
-    like ``_driver_response`` does, not use the fixed 65 ms window alone."""
+    like ``driver_response`` does, not use the fixed 65 ms window alone."""
     fc_hz = 2000.0
     woofer_ir, _tweeter_ir, n_fft = _reflection_fixture(fc_hz)
 
@@ -6008,7 +6026,7 @@ def test_build_candidate_raises_when_validity_floor_consumes_whole_band():
         reflection_delay_s=1.5e-3, reflection_amp=1.0,  # floor ~ 1/0.0015 = 667 Hz > 200 Hz
     )
     tweeter_ir = _reflection_branch(300, 100.0, 500.0, 0.7)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     alignment = AlignmentEstimate(
         delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
         polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
@@ -6061,14 +6079,14 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
     fc_hz = 2000.0
     woofer_ir = _band_impulse(300, 500.0, 6000.0, 1.0)
     tweeter_ir = _band_impulse(300, 300.0, 20000.0, 0.7)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     alignment = AlignmentEstimate(
         delay_us=0.0, raw_delay_us=0.0, parallax_us=0.0,
         polarity="normal", polarity_sign=1, polarity_agrees_with_sum=True,
         confidence=0.9, status=ALIGNMENT_OK,
     )
     seen_lo_hi = []
-    real_ripple_db = program_analysis._ripple_db
+    real_ripple_db = program_analysis.response._ripple_db
 
     def _spy_ripple_db(freqs, magnitude, lo, hi):
         seen_lo_hi.append((lo, hi))
@@ -6300,7 +6318,7 @@ def test_build_candidate_refuses_a_tweeter_swept_above_fc():
     catch-all classifies as ``internal_error``."""
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     with pytest.raises(ValueError, match="does not reach Fc"):
         _build_candidate(
             woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
@@ -6546,7 +6564,7 @@ def test_build_candidate_applies_ripple_optimal_trim_with_band_average_evidence(
     ``test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band``."""
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     candidate, _pred = _build_candidate(
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
         _candidate_alignment(), None, **_straddling_sweeps(fc_hz),
@@ -6582,7 +6600,7 @@ def test_build_candidate_skips_the_ripple_polish_on_a_one_sided_band(caplog):
     caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     candidate, _pred = _build_candidate(
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
         _candidate_alignment(), None, **_one_sided_sweeps(fc_hz),
@@ -6606,7 +6624,7 @@ def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
     caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     _candidate, _pred = _build_candidate(
         woofer_ir, tweeter_ir, SR, n_fft, fc_hz, "woofer", "tweeter",
         _candidate_alignment(), None, **_one_sided_sweeps(fc_hz),
@@ -6616,6 +6634,23 @@ def test_build_candidate_logs_the_level_match_frame_ledger(caplog):
     assert fields["tweeter_band_hz"] == "(2000.0, 4000.0)"
     assert "level_w_db" in fields
     assert "level_t_db" in fields
+
+
+@pytest.mark.parametrize("geometry,woofer_band_hz", [
+    (None, "(250.0, 500.0)"),
+    (MeasurementGeometry(declared_first_bounce_s=0.003), "(333.3, 500.0)"),
+])
+def test_the_sum_prediction_gates_each_branch_as_far_as_its_take(caplog, geometry, woofer_band_hz):
+    """The prediction's branches search for a reflection as far as the take's
+    own gate, so a declared room's 3 ms first bounce floors the level match's
+    woofer band at 1/3 ms (#3665 item 10)."""
+    caplog.set_level(logging.INFO, logger="jasper.audio_measurement.program_analysis")
+    woofer_ir, tweeter_ir = _lr_pair_irs(500.0, order=4)
+    _build_candidate(
+        woofer_ir, tweeter_ir, SR, n_fft_for(woofer_ir, tweeter_ir), 500.0, "woofer", "tweeter",
+        _candidate_alignment(), None, **_one_sided_sweeps(500.0), geometry=geometry,
+    )
+    assert event_fields(caplog, "program_analysis.branch_level_match")["woofer_band_hz"] == woofer_band_hz
 
 
 @pytest.mark.parametrize("excursion_db", [-4.0, 4.0])
@@ -6653,7 +6688,7 @@ def test_build_candidate_rejects_a_polish_the_level_gate_could_not_grade(
     assert abs(excursion_db) > REALIZED_LEVEL_MATCH_TOLERANCE_DB
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     monkeypatch.setattr(
         program_analysis.dispatch,
         "solve_ripple_optimal_trim",
@@ -6696,7 +6731,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
     assert abs(excursion_db) < REALIZED_LEVEL_MATCH_TOLERANCE_DB
     fc_hz = 2000.0
     woofer_ir, tweeter_ir = _lr_pair_irs(fc_hz, order=4)
-    n_fft = _n_fft_for(woofer_ir, tweeter_ir)
+    n_fft = n_fft_for(woofer_ir, tweeter_ir)
     monkeypatch.setattr(
         program_analysis.dispatch,
         "solve_ripple_optimal_trim",
@@ -6717,7 +6752,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
 
 # drive-gain invariance — the frame every MEASURE consumer works in
 #
-# ``_deconvolve_window`` builds its deconvolution reference with
+# ``deconvolve_window`` builds its deconvolution reference with
 # ``segment_stimulus(segment)``, which regenerates the sweep at
 # ``amplitude_dbfs=segment.gain_db`` — so the reference carries that segment's
 # own PROGRAMMED digital gain. The inversion in
@@ -6949,10 +6984,10 @@ def _cdhorn_run5_analysis(monkeypatch):
     )
     capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
     offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
-    real_global_offset = program_analysis._global_offset
+    real_global_offset = program_analysis.locate_global_offset
     monkeypatch.setattr(
         program_analysis.dispatch,
-        "_global_offset",
+        "locate_global_offset",
         lambda prog, cap, rate: (offset, *real_global_offset(prog, cap, rate)[1:]),
     )
     analysis = analyze_program_capture(
@@ -6995,7 +7030,7 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     constant and cancels in the difference).
 
     Also pins the premise of the diagnosis: ``_aligned_branch_tf`` (the trim
-    path) and ``_driver_response`` (the fit path) return byte-identical
+    path) and ``driver_response`` (the fit path) return byte-identical
     transfer functions — the "reference mismatch between the two paths"
     hypothesis was REFUTED, and no future change should quietly introduce
     one."""
@@ -7011,10 +7046,10 @@ def test_level_match_frame_agrees_with_the_fit_frame_on_the_jts3_corpus(monkeypa
     irs = {}
     for role, seg_id in (("woofer", "sweep_w"), ("tweeter", "sweep_t")):
         segment = program.segment(seg_id)
-        irs[role] = _deconvolve_window(
+        irs[role] = deconvolve_window(
             capture, segment, offset + segment.start_sample, SR, epsilon=epsilon,
         )[0]
-    n_fft = _n_fft_for(irs["woofer"], irs["tweeter"])
+    n_fft = n_fft_for(irs["woofer"], irs["tweeter"])
     for role, ir in irs.items():
         _f, tf, _gate = _aligned_branch_tf(ir, SR, n_fft, calibration=calibration)
         # BYTE-identical, not merely close, and complex — the refuted claim was

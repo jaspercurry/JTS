@@ -44,6 +44,7 @@ from jasper.install_profile import (
     install_profile_has_capability,
     read_install_profile,
 )
+from jasper import volume_process, wake_ports
 from jasper.log_event import log_event
 from jasper.active_speaker.audition import recover_web_audition
 from jasper.camilla import primary_controller
@@ -109,8 +110,6 @@ def _serve_forever(server, label: str) -> None:
 
 def _wake_corpus_ports_from_env() -> dict[str, int]:
     """Resolve wake-corpus UDP ports for the combined jasper-web unit."""
-    from jasper import wake_ports
-
     return wake_ports.build_ports(
         aec_on_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_ON_PORT",
@@ -392,14 +391,12 @@ def main() -> int:
     configure_logging()
     # `/sound/eq/` and `/sound/` apply generated DSP configs from this process, so
     # their graph swaps need a canonical target to release the swap duck to.
-    from jasper.volume_process import install_env_canonical_target_provider
+    volume_process.install_env_canonical_target_provider()
 
-    install_env_canonical_target_provider()
-
-    # Port assignments mirror deploy/nginx/*.conf and deploy/jasper-web*.socket
+    # Port assignments mirror deploy/nginx/*.conf and deploy/systemd/jasper-web*.socket
     # (no per-wizard CLI). The registry above is the local source of truth
     # for this host: adding a wizard should add one WizardSpec, one
-    # factory, and one ListenStream in deploy/jasper-web.socket.
+    # factory, and one ListenStream in deploy/systemd/jasper-web.socket.
     #
     # With socket activation, we still bind these *logically* via the
     # .socket unit's ListenStream= directives; the per-port match below

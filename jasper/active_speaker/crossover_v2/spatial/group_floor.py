@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # --------------------------------------------------------------------------- #
-# geometry-retry ceiling (#2291 Phase 5c-ii)
+# geometry-retry ceiling (#2291)
 # --------------------------------------------------------------------------- #
 
 # How many wider-spread RETAKES of the group's last position the

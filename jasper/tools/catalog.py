@@ -36,12 +36,8 @@ from typing import Any, Iterable
 
 from ..atomic_io import atomic_write_text
 from ..log_event import log_event
-# Path, schema version, and pack-payload assembly live in the LIGHT read-side
-# module so the socket-activated /assistant/tools/ wizard can use them without
-# importing jasper.tools. The heavy bake-side writer here reuses the same
-# three so the baked /run/jasper/tools.json and the wizard's re-derived view
-# can't drift (they were two copies that already had).
-from ..tool_catalog_view import (
+# The wizard shares these without importing the tool factories.
+from .tool_catalog_view import (
     CATALOG_SCHEMA_VERSION,
     DEFAULT_CATALOG_PATH,
     build_pack_payloads,

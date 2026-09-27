@@ -10,13 +10,14 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from jasper.json_fields import as_mapping
+
 from ..feature_classification import (
     LAB_ROW_FIELDS,
     LAB_ROW_NOT_AN_UNCERTAINTY,
     LAB_ROW_UNCERTAINTY,
     read_feature_verdicts,
 )
-from ..journey import PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from ..prescription_contract import CONTRACT_COMMAND
 from ..round_inputs import RoundInputs, view_path
 
@@ -32,22 +33,6 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
-#: The views that filed into a round's own evidence before ADR-0346; a round
-#: banked then may still carry their outputs there.
-LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
-
-#: The three phases a finding set was banked under, each at its own
-#: ``findings_{phase}.json``: the two cloud-group closes and the level-frame
-#: gate's own MEASURE-phase set. No writer remains; reading them keeps the
-#: packet's shape, and so a banked round's fingerprint, unchanged (#5668).
-_FINDING_PHASES = (PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
-
-#: The phases whose banked set came from carve-out promotion, which read only
-#: the cloud group's ``echo_band_hz``: a feature outside that band could not
-#: become a finding in one. The MEASURE set was the level-frame gate's own and
-#: carried the band of the record it came from.
-_ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
-
 #: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
 #: ``**/`` also admits older pulled rings with a directory per phase. Both
 #: :func:`~.feature_classifier.load_round_captures` and
@@ -55,7 +40,7 @@ _ECHO_BAND_PHASES = (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY)
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 
-def _read_json(path: Path) -> tuple[Any, str]:
+def read_json(path: Path) -> tuple[Any, str]:
     """One artifact, or the reason it is absent or unreadable."""
     if not path.exists():
         return None, "source_absent"
@@ -67,11 +52,7 @@ def _read_json(path: Path) -> tuple[Any, str]:
         return None, f"not valid JSON: {exc.msg}"
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
+def absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     """Which of the two absences this is, said explicitly.
 
     ``source_absent`` when the artifact never arrived, ``field_null`` when it
@@ -85,7 +66,7 @@ def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     return {}
 
 
-def _copy_allowed(
+def copy_allowed(
     raw: Any, allowed: tuple[str, ...]
 ) -> tuple[dict[str, Any], list[str]]:
     """Named fields through, and the names of everything held back.
@@ -101,7 +82,7 @@ def _copy_allowed(
     return kept, withheld
 
 
-def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
+def exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     """One copied value as exact JSON, naming any column that was not.
 
     Two inputs legitimately carry ``NaN``: a classification row (the instrument
@@ -134,11 +115,11 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
         return None
     if isinstance(value, dict):
         return {
-            key: _exact_json_value(item, column, non_finite)
+            key: exact_json_value(item, column, non_finite)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_exact_json_value(item, column, non_finite) for item in value]
+        return [exact_json_value(item, column, non_finite) for item in value]
     return value
 
 
@@ -163,7 +144,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
     the uncertainty declarations the artifact does not carry.
 
-    The packet does not compute it, unlike the cross-seat spread: reading H2/H3
+    The packet does not compute it: reading H2/H3
     means re-opening every banked capture WAV and re-deconvolving it at a
     pre-guard wide enough for the harmonic images to exist, and this module
     publishes ``privacy.raw_audio_excluded``. Absence is ordinary and reported.
@@ -173,8 +154,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
             "available": False,
             "status": "not_evaluated",
             # NEVER the bare read reason: a file that PARSED into a non-object
-            # carries the empty string, and the honest list drops any entry
-            # whose reason is falsy.
+            # carries the empty string.
             "reason": reason or (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
@@ -218,7 +198,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
             ),
             "n_roles": 0,
         }
-    captures = _mapping(raw.get("captures"))
+    captures = as_mapping(raw.get("captures"))
     return {
         "available": True,
         "artifact_schema_version": raw.get("artifact_schema_version"),
@@ -230,13 +210,13 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         # round from one where all four passed, and a reader given only the
         # survivors could not tell them apart.
         "captures": captures,
-        "program": _mapping(raw.get("program")),
+        "program": as_mapping(raw.get("program")),
         # Whether a microphone calibration was applied, under which sign
         # convention, and from which banked calibration id. Load-bearing rather
         # than housekeeping: an uncalibrated read carries the microphone's own
         # response inside every ratio, and a file read under the wrong sign
         # moves every magnitude without moving one timing diagnostic.
-        "calibration": _mapping(raw.get("calibration")),
+        "calibration": as_mapping(raw.get("calibration")),
         "source": HARMONICS_ARTIFACT,
         "uncertainty": CONTRACT_COMMAND,
         "note": (
@@ -280,7 +260,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     columns that merely LOOK like uncertainties are not — ``gate_slack`` most
     of all, a dB bar beside a dB reading rather than an error bar on it.
     """
-    absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
+    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
         return {
             "available": False,
@@ -300,10 +280,10 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     for entry in banked if isinstance(banked, list) else []:
         if not isinstance(entry, dict):
             continue
-        kept, dropped = _copy_allowed(entry, LAB_ROW_FIELDS)
+        kept, dropped = copy_allowed(entry, LAB_ROW_FIELDS)
         withheld.update(dropped)
         lab_rows.append({
-            column: _exact_json_value(value, column, non_finite)
+            column: exact_json_value(value, column, non_finite)
             for column, value in kept.items()
         })
     return {
@@ -339,77 +319,11 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def derived_view_path(beside: Path, evidence_dir: Path | None, name: str) -> tuple[Path, bool]:
-    """Where a view's artifact is read, and whether that is a legacy copy.
-
-    ``beside`` the round, where the view files it; failing that, for one of
-    :data:`LEGACY_EVIDENCE_VIEWS`, the copy a round banked before ADR-0346
-    filed in its evidence (``evidence_dir``). The packet and ``inventory``
-    both find a round's views through here.
-    """
-    filed = evidence_dir / name if evidence_dir is not None and name in LEGACY_EVIDENCE_VIEWS else None
-    if filed is not None and filed.exists() and not beside.exists():
-        return filed, True
-    return beside, False
-
-
-def _derived_views_block(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
-    """The classification and H2/H3 views, read where
-    :func:`derived_view_path` finds them. ``legacy_view_files_in_evidence``
-    says one came from a copy inside the round's evidence (``round_dir``)."""
-    reads = {name: derived_view_path(view_path(inputs, name), round_dir, name) for name in LEGACY_EVIDENCE_VIEWS}
+def _derived_views_block(inputs: RoundInputs) -> dict[str, Any]:
+    """The classification and H2/H3 views, read beside the round."""
     return {
-        "legacy_view_files_in_evidence": any(legacy for _, legacy in reads.values()),
-        "feature_classification": _classification_block(*_read_json(reads[CLASSIFICATION_ARTIFACT][0])),
-        "harmonics": _harmonics_block(*_read_json(reads[HARMONICS_ARTIFACT][0])),
-    }
-
-
-def _findings_block(round_dir: Path, cloud: dict[str, Any]) -> dict[str, Any]:
-    """Every phase's banked finding set, keyed by phase, and the band bounding
-    the two that are scanned for.
-
-    ``present`` carries the distinction ``produced_by`` exists for: a banked
-    set with an empty ``findings`` list RAN and promoted nothing. What its
-    ABSENCE means is per phase — the cloud closes bank a set either way, while
-    the level-frame gate banks one only when it promotes — and ``reason``
-    separates a set banked here that this install could not read.
-
-    ``echo_band_hz`` is the round's resolved echo-detector window and
-    ``echo_band_bounds`` the phases it bounds (:data:`_ECHO_BAND_PHASES`), so
-    an empty set is not read as a clean bill outside that band.
-    """
-    phases: dict[str, Any] = {}
-    counts: dict[str, Any] = {}
-    field_descriptions: dict[str, Any] = {}
-    for phase in _FINDING_PHASES:
-        raw, reason = _read_json(round_dir / f"findings_{phase}.json")
-        document = _mapping(raw)
-        present = isinstance(raw, dict)
-        if raw is not None and not present:
-            reason = f"parsed as {type(raw).__name__}, not as a JSON object"
-        rows = document.get("findings")
-        rows = rows if isinstance(rows, list) else []
-        phases[phase] = {
-            "present": present,
-            "produced_by": document.get("produced_by"),
-            "reason": reason,
-            "findings": rows,
-        }
-        counts[phase] = len(rows) if present else None
-        # Per-SCHEMA and identical in every set, so one copy rather than three.
-        field_descriptions = field_descriptions or _mapping(
-            document.get("field_descriptions")
-        )
-    return {
-        "summary": {
-            "phases_present": [
-                phase for phase in _FINDING_PHASES if phases[phase]["present"]
-            ],
-            "finding_count": counts,
-            "echo_band_hz": cloud.get("echo_band_hz"),
-            "echo_band_bounds": list(_ECHO_BAND_PHASES),
-        },
-        "phases": phases,
-        "field_descriptions": field_descriptions,
+        "feature_classification": _classification_block(
+            *read_json(view_path(inputs, CLASSIFICATION_ARTIFACT))
+        ),
+        "harmonics": _harmonics_block(*read_json(view_path(inputs, HARMONICS_ARTIFACT))),
     }

@@ -21,30 +21,20 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    CLASSIFICATION_ARTIFACT,
-    DERIVED_VIEWS,
-    HARMONICS_ARTIFACT,
     NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
     REPEAT_FLOOR_UNUSABLE,
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
-    packet_feature_classifications,
     round_artifact_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_KINDS,
     UNCERTAINTY_RANDOM,
     UNCERTAINTY_SYSTEMATIC,
-    UNCERTAINTY_UNSEPARATED,
 )
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
-    PHASE_LATERAL,
-    PHASE_MEASURE,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_evidence import (
     ITERATION_PLATEAU_DB,
     MEASURED_BENEFIT_MARGIN_DB,
@@ -56,78 +46,25 @@ from jasper.active_speaker.repeat_floor import (
 )
 
 from tests.test_crossover_v2_blend_prescription import _bundle
-from tests.test_crossover_v2_driver_prescription import _classification
-from tests.test_crossover_v2_harmonic_evidence import _artifact as _harmonics
 
 
-@pytest.mark.parametrize("overrides, digest, fingerprint", [
-    ({}, "d6a58fea7ad891a1e56766cacca1b25d0da610ad8ff733aa5336aa0660fefb0d",
-     "fea129f873d0633096444dbf1b43cf11dbe1fd808ba6cca92f97508c3505c234"),
-    ({"dip_at": [None, 1000.0, 1200.0, None], "position_over": {
-        "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-    }}, "a892f19b0f7e88c6f5103a0995770a40f09027d9175675e3d62390acbc10e8d4",
-     "17fc8241a791e3538be11ec62310f41c4f78367897a461f249401e0f39985920"),
-    ({"cloud_over": {"positions": {}}},
-     "bf32c8023835510fd044879c0a1528e7c14899d512420f8b148cf499450fdd40",
-     "df70ffe061d0237adabfe144da9225d9ada2b1e8aaa4a78bed73f571d51907cb"),
-], ids=["default", "gate-and-seat-spread", "positions-absent"])
-def test_packet_json_bytes(tmp_path, overrides, digest, fingerprint):
+def test_packet_json_bytes(tmp_path):
     # A plain-box packet carries no rear contract (report H R3).
-    session, _ = _bundle(tmp_path, **overrides)
-    packet = build_crossover_evidence_packet(session)
-    assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == digest
-    assert packet["packet_fingerprint"] == fingerprint
-
-
-def test_a_round_that_filed_view_outputs_in_its_evidence_keeps_its_fingerprint(tmp_path):
-    """Views once wrote their outputs into the round's evidence, and a
-    candidate judged then bound the packet those files were part of. That
-    round keeps that fingerprint (pinned from the code that filed them), and
-    the gate still reads its classification."""
     session, _ = _bundle(tmp_path)
-    round_dir, _ = round_artifact_dir(session)
-    assert round_dir is not None
-    (round_dir / CLASSIFICATION_ARTIFACT).write_text(json.dumps(_classification()))
-    (round_dir / HARMONICS_ARTIFACT).write_text(json.dumps(_harmonics()))
-
     packet = build_crossover_evidence_packet(session)
-
-    assert packet["packet_fingerprint"] == "1d7c083d7877bd93af45bb9e4ae9e32297166a4b3b8d2ba373505c47cc3a53be"
-    views = packet[DERIVED_VIEWS]
-    assert views["legacy_view_files_in_evidence"] is True
-    assert views["harmonics"]["available"] is True
-    assert len(packet_feature_classifications(packet) or ()) == len(_classification()["rows"])
+    assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
+        "5fdd7086889d61f9e9c26035577dd0d0c269211312ea872972982d1aef4b90df")
+    assert packet["packet_fingerprint"] == "7f35fb0c9562341097f6fa88ffdbec4d81e33c6e2cb3a992df03a64039d10c37"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     components = packet["accuracy_budget"]["components"]
-    assert set(components) == {
-        "cross_seat_position_spread",
-        "in_capture_repeat_floor",
-        "gate_leakage",
-        "mic_calibration_tier",
-    }
-    # UNCERTAINTY_KINDS is the closed random/systematic set and deliberately
-    # excludes UNSEPARATED (the substrate rule's third, non-poolable label).
-    valid_kinds = UNCERTAINTY_KINDS | {UNCERTAINTY_UNSEPARATED}
+    assert set(components) == {"in_capture_repeat_floor", "mic_calibration_tier"}
     for name, entry in components.items():
-        assert entry["kind"] in valid_kinds, name
+        assert entry["kind"] in UNCERTAINTY_KINDS, name
         assert isinstance(entry["available"], bool), name
-
-
-def test_cross_seat_component_points_at_the_positions_block_it_mirrors(tmp_path):
-    """The default fixture's 4 onax/offax positions give cross_seat_sigma a
-    real reading; this component juxtaposes it rather than re-embedding it."""
-    session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
-    entry = packet["accuracy_budget"]["components"]["cross_seat_position_spread"]
-    assert entry["kind"] == UNCERTAINTY_UNSEPARATED
-    assert entry["available"] is True
-    assert entry["n_seats"] == packet["positions"]["cross_seat_sigma"]["n_seats"]
-    assert entry["reason"] == ""
-    assert "per_bin_sigma_db" not in entry
 
 
 AGGREGATE = "shipped_linear_pool_db"
@@ -241,28 +178,6 @@ def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
         CLAIM_FLOOR_P95_MULTIPLE * p95
     )
     assert entry["thresholds"]["plateau_db"] == pytest.approx(p95)
-
-
-def test_gate_leakage_is_absent_when_no_capture_carries_a_gate_number(tmp_path):
-    session, _ = _bundle(tmp_path)
-    packet = build_crossover_evidence_packet(session)
-    entry = packet["accuracy_budget"]["components"]["gate_leakage"]
-    assert entry["kind"] == UNCERTAINTY_SYSTEMATIC
-    assert entry["available"] is False
-    assert entry["reason"]
-
-
-def test_gate_leakage_is_available_when_a_position_carries_the_reading(tmp_path):
-    session, _ = _bundle(
-        tmp_path,
-        position_over={
-            "gate_moved_rms_db": 0.31, "gate_reflection_delay_ms": 2.4,
-        },
-    )
-    packet = build_crossover_evidence_packet(session)
-    entry = packet["accuracy_budget"]["components"]["gate_leakage"]
-    assert entry["available"] is True
-    assert entry["reason"] == ""
 
 
 def test_mic_calibration_tier_reads_absent_with_no_banked_candidate(tmp_path):
@@ -646,85 +561,6 @@ def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
     assert block["reason"] == "source_absent"
 
 
-def _bank_finding_set(round_dir: Path, phase: str, *, findings: list[Any]) -> None:
-    """One phase's banked set — the keys the packet reads out of one."""
-    (round_dir / f"findings_{phase}.json").write_text(json.dumps({
-        "produced_by": f"test.{phase}",
-        "findings": findings,
-        "field_descriptions": {"finding": {"mechanism": "prose"}},
-    }))
-
-
-def test_the_packet_reads_a_finding_set_from_every_phase_that_banks_one(tmp_path):
-    """Three phases bank findings; a reader of one alone loses the other two.
-
-    The M7 level-frame finding is banked under ``measure`` and the carve-out
-    sets under the two cloud closes, so a packet that opened only
-    ``cloud_verify`` could not see a level-frame disagreement at all.
-    """
-    session, _ = _bundle(tmp_path)
-    round_dir, _ = round_artifact_dir(session)
-    assert round_dir is not None
-    _bank_finding_set(round_dir, PHASE_MEASURE, findings=[{"mechanism": "M7"}])
-    _bank_finding_set(
-        round_dir, PHASE_CLOUD_MEASURE, findings=[{"mechanism": "M2"}],
-    )
-
-    block = build_crossover_evidence_packet(session)["findings"]
-
-    # Scalar-first: the summary lands before either per-phase list.
-    assert list(block) == ["summary", "phases", "field_descriptions"]
-    assert set(block["phases"]) == {
-        PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY,
-    }
-    assert block["summary"]["finding_count"] == {
-        PHASE_MEASURE: 1, PHASE_CLOUD_MEASURE: 1, PHASE_CLOUD_VERIFY: 0,
-    }
-    assert block["phases"][PHASE_MEASURE]["findings"] == [{"mechanism": "M7"}]
-
-
-def test_a_finding_set_that_ran_and_found_nothing_is_not_one_that_never_ran(
-    tmp_path,
-):
-    """``present``/``produced_by`` per phase — the distinction ``produced_by``
-    exists for. The fixture banks an empty cloud-verify set and nothing else."""
-    session, _ = _bundle(tmp_path)
-    round_dir, _ = round_artifact_dir(session)
-    assert round_dir is not None
-
-    phases = build_crossover_evidence_packet(session)["findings"]["phases"]
-    assert phases[PHASE_CLOUD_VERIFY]["present"] is True
-    assert phases[PHASE_CLOUD_VERIFY]["produced_by"]
-    assert phases[PHASE_CLOUD_VERIFY]["reason"] == ""
-    assert phases[PHASE_MEASURE]["present"] is False
-    assert phases[PHASE_MEASURE]["produced_by"] is None
-    assert phases[PHASE_MEASURE]["reason"] == "source_absent"
-
-    (round_dir / f"findings_{PHASE_CLOUD_VERIFY}.json").unlink()
-    unbanked = build_crossover_evidence_packet(session)["findings"]
-    assert unbanked["summary"]["phases_present"] == []
-    assert unbanked["summary"]["finding_count"] == {
-        PHASE_MEASURE: None, PHASE_CLOUD_MEASURE: None, PHASE_CLOUD_VERIFY: None,
-    }
-
-    # The third absence: a set IS banked and this install cannot read it.
-    (round_dir / f"findings_{PHASE_CLOUD_MEASURE}.json").write_text("[]")
-    unreadable = build_crossover_evidence_packet(session)["findings"]["phases"]
-    assert unreadable[PHASE_CLOUD_MEASURE]["present"] is False
-    assert unreadable[PHASE_CLOUD_MEASURE]["reason"] != "source_absent"
-
-
-def test_the_findings_block_publishes_the_band_that_bounds_the_finding_set(
-    tmp_path,
-):
-    """Carve-out promotion reads the echo band only, so nothing below it can
-    ever be a finding in those two sets; the packet publishes the resolved band
-    and names which sets it bounds."""
-    session, _ = _bundle(tmp_path, cloud_over={"echo_band_hz": [4000.0, 16000.0]})
-    summary = build_crossover_evidence_packet(session)["findings"]["summary"]
-    assert summary["echo_band_hz"] == [4000.0, 16000.0]
-    # The level-frame set is not scanned FOR, so the band does not bound it.
-    assert summary["echo_band_bounds"] == [PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY]
 def test_a_nan_incumbent_gain_serializes_to_null_not_a_bare_nan_token(tmp_path):
     """A non-finite applied gain must not leak an invalid ``NaN`` JSON token."""
     from jasper.active_speaker.baseline_profile import (
@@ -760,13 +596,10 @@ def test_a_nan_incumbent_gain_serializes_to_null_not_a_bare_nan_token(tmp_path):
 @pytest.mark.parametrize("capture_id", ["cap_TESTONLY", "capture-B", None])
 def test_explicit_state_only_supplies_claims_for_its_capture(tmp_path, capture_id):
     session, state_path = _bundle(tmp_path, state={
-        "session_id": capture_id, "verify": {"outcome": "pass"},
-        "evidence": {"calibration": {"calibration_id": "cal-A"}},
+        "session_id": capture_id, "evidence": {"calibration": {"calibration_id": "cal-A"}},
     })
     packet = build_crossover_evidence_packet(session, state_path=state_path)
-    assert packet["verify"]["available"] is (capture_id == "cap_TESTONLY")
     assert bool(packet["identity"]["calibration"]) is (capture_id == "cap_TESTONLY")
-    assert packet["positions"]["available"] is True
 
 
 def test_a_banked_draft_with_garbage_topology_keeps_the_packet_readable(tmp_path):

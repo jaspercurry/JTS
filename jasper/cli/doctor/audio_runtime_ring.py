@@ -25,7 +25,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, PROBE_FRAMES, run
 from .audio_runtime_camilla import evidence_statefile
-from .audio_runtime_fanin import _requires_roleful_graph
+from .audio_runtime_fanin import requires_roleful_graph
 from .audio_runtime_outputd import outputd_reconciled_env
 from ...service_units import FANIN_SERVICE
 
@@ -266,10 +266,6 @@ def check_content_transport_coherence() -> CheckResult:
       bails at startup with ``RestartPreventExitStatus=78``, so that rung reads
       PERSISTED evidence: ``check_outputd_service`` returns the systemd failure
       first and never reaches the contradiction.
-
-    KEYED ON THE BRIDGE, not on ``JASPER_FANIN_CAMILLA_COUPLING``: under
-    ADR-0100 that file selects nothing, while the bridge
-    (``rust/jasper-outputd/src/config.rs``) decides what outputd reads.
 
     TWO TERMS, NOT THREE, on the first two rungs: a ``writer_alive:false``
     conjunct would make them never fire. outputd publishes that reader-reported
@@ -1078,7 +1074,7 @@ def check_ring_conf_floor_render() -> CheckResult:
         "`jasper-fanin-coupling-reconcile shm_ring` — that first step works on "
         "a mid-commission box, re-staging the all-muted startup anchor when no "
         "applied baseline is saved yet."
-        if _requires_roleful_graph()
+        if requires_roleful_graph()
         else ""
     )
     if floor is None:

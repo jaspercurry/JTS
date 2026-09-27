@@ -12,12 +12,14 @@ import math
 import wave
 
 import numpy as np
+import yaml
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ, band_ladder_name
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
 from jasper.json_fields import sha256_file
 
+from ..graph_safety import view_from_yaml_dict
 from .derivation import ArtifactHeader, derive_offline_render_config
 from .render import DEPLOYED_PROCESSING_PRECISION, RenderBounds, render_config, resolve_render_binary
 
@@ -25,26 +27,31 @@ DSP_REPLAY_SCHEMA = "jts_dsp_replay/1"
 DSP_LEVELS_SCHEMA = "jts_dsp_levels/1"
 
 
-def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float, bass_reference_db: float) -> dict:
-    if any(not math.isfinite(value) or not -120 <= value <= 0 for value in (main_db, bass_reference_db)):
+def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float) -> dict:
+    """A graph with an Aux1 fader (the pre-ADR-0359 shape) refuses
+    ``dsp_replay_fader_invalid``."""
+    if not math.isfinite(main_db) or not -120 <= main_db <= 0:
         raise ValueError("dsp_replay_fader_invalid")
     with wave.open(str(stimulus), "rb") as wav:
         header = ArtifactHeader(wav.getframerate(), wav.getnchannels(), 8 * wav.getsampwidth())
         duration_s = wav.getnframes() / wav.getframerate()
-    out.mkdir(parents=True, exist_ok=True)
     raw, config = out.resolve() / "output.f64le", out.resolve() / "render.yml"
     derived = derive_offline_render_config(graph.read_text(), roles=None,
         capture_filename=str(stimulus.resolve()), capture_header=header,
         playback_filename=str(raw), processing_precision=DEPLOYED_PROCESSING_PRECISION)
+    if any(filter_.params.get("fader") == "Aux1" for filter_ in
+           view_from_yaml_dict(yaml.safe_load(derived.yaml_text)).filters.values()):
+        raise ValueError("dsp_replay_fader_invalid")
+    out.mkdir(parents=True, exist_ok=True)
     config.write_text(derived.yaml_text)
     binary = resolve_render_binary()
     invocation = render_config(binary.path, config, output_path=raw,
         bounds=RenderBounds(timeout_s=max(30, duration_s * 2), rlimit_as_bytes=384 * 1024**2,
                             rlimit_cpu_s=max(30, math.ceil(duration_s * 2)), nice=10),
-        fader_db=main_db, loudness_fader_db=bass_reference_db)
+        fader_db=main_db)
     return {"schema": DSP_REPLAY_SCHEMA, "graph": str(graph), "graph_sha256": sha256_file(graph),
             "stimulus": str(stimulus), "stimulus_sha256": sha256_file(stimulus),
-            "main_db": main_db, "bass_reference_db": bass_reference_db,
+            "main_db": main_db,
             "sample_rate_hz": derived.sample_rate_hz, "channels": derived.playback_channels,
             "output": str(raw), "binary": binary.identity_artifact(), "render": asdict(invocation),
             "derivation": derived.receipt,
@@ -66,7 +73,7 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
     named_bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in bands]
     return {"schema": DSP_LEVELS_SCHEMA, "output_sha256": manifest["render"]["output_sha256"],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],
-            "main_db": manifest["main_db"], "bass_reference_db": manifest["bass_reference_db"],
+            "main_db": manifest["main_db"],
             "window_s": [first / rate, last / rate], "window": "rectangular",
             "channels": [{"channel": channel, "ladder": band_ladder_name(bands), "bands": band_levels_dbfs(data[first:last, channel], rate, named_bands, window="rectangular")}
                          for channel in range(channels)]}

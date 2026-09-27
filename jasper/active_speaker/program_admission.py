@@ -170,10 +170,6 @@ class ProgramAdmission:
     def allowed(self) -> bool:
         return not self.refusals
 
-    @property
-    def fingerprint(self) -> str:
-        return json_fingerprint(self.to_dict())
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": 1,
@@ -558,8 +554,8 @@ def _segment_admission(
         execution_allowed=prepared.execution_allowed,
         refusals=tuple(reason.value for reason in prepared.refusals),
         refusal_detail={code.value: {"requested": value, "limit": limit}
-                        for code, value, limit, outside in request_limit_rows(prepared.request, prepared.limits)
-                        if outside},
+                        for code, value, limit, passed in request_limit_rows(prepared.request, prepared.limits)
+                        if not passed},
     )
 
 

@@ -31,7 +31,7 @@ from tests.crossover_v2_fixtures import (
 def test_measure_priors_carry_the_ambient_report_check_measured():
     """#1830 — MEASURE grades its per-driver SNR against CHECK's room floor.
 
-    ``_driver_response`` computes the SNR verdict only when it is handed an
+    ``driver_response`` computes the SNR verdict only when it is handed an
     ambient report, and ``_measure_priors`` used to build priors without one —
     so ``DriverResponse.snr`` was ``None`` on every v2 session ever run while
     the evidence to compute it sat in the same session's ``check.json``.

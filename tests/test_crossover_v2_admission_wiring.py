@@ -14,12 +14,10 @@ wiring mistake would actually show up.
 
 import pytest
 
-from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import admission
-from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
@@ -57,61 +55,12 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
 
     monkeypatch.setattr(
         flow._admission, "assess_begin",
-        lambda **_: admission.BeginDecision(
-            admission.ADMIT,
-            spends_extra=True,
-            initiator=admission.ATTEMPT_INITIATOR_HOUSEHOLD,
-        ),
+        lambda **_: admission.BeginDecision(admission.ADMIT),
     )
 
     with pytest.raises(contracts.CrossoverV2FlowError) as excinfo:
         c.authorize_begin(1, 2)
     assert isinstance(excinfo.value.__cause__, admission.AttemptOverspendError)
-
-
-def _exhausted_non_retriable(code: str):
-    """A conductor at index 1 whose meter is spent AND whose last rejection is
-    a condition no further take can clear — the state the precedence turns on."""
-    c = _conductor(FakeSeams())
-    slot = c._slot_of_index(1)
-    c._slot_attempts[slot] = admission.SlotAttempts(
-        admitted=1 + admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-        by_household=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    )
-    c._last_reason[slot] = code
-    return c
-
-
-@pytest.mark.parametrize("code", sorted(refusal_copy.NON_RETRIABLE_CODES))
-def test_a_non_retriable_code_outranks_a_spent_meter(code):
-    """Which of two true conditions the household is told about.
-
-    ``assess_begin`` asks "is the last rejection non-retriable?" BEFORE "are the
-    extras gone?", and when BOTH hold the answer changes what a household reads:
-    the condition's own sentence ("You stopped the measurement…") rather than
-    the exhaustion sentence ("JTS measured this spot 4 times… and still could
-    not get a clean read"). The second would be false comfort — it says try
-    harder about a condition another take cannot clear.
-
-    **The refusal CODE is identical in both orders**, which is why the ordering
-    survived every count-based check: ``last_reason`` supplies it either way.
-    The sentence is the only observable, so the sentence is what this anchors
-    on — the DECLARED registry rendering, not the output of the function under
-    test. Swapping the two branches reddens every row here.
-
-    This replaces an evidence claim that did not hold: the slice's original
-    mutation row reported this ordering RED, and it was not — the discriminating
-    state above never occurs in the suite, so nothing pinned it until now.
-    """
-    c = _exhausted_non_retriable(code)
-
-    with pytest.raises(CaptureBeginRefused) as excinfo:
-        c.authorize_begin(1, 9)
-
-    spec = refusal_copy.REASON_REGISTRY[code]
-    assert excinfo.value.code == code
-    assert excinfo.value.user_message == refusal_copy.reason_message(code, spec)
-    assert "JTS measured this spot" not in excinfo.value.user_message
 
 
 def test_every_begin_decision_kind_is_handled(caplog):
@@ -187,17 +136,13 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
     )
 
     def ask(**kw):
-        base = dict(
-            ledger=None, last_reason=None, non_retriable=frozenset({"stopped"}),
-            default_code="locate_failed",
-        )
+        base = dict(ledger=None, default_code="locate_failed")
         return admission.assess_begin(**{**base, **kw}).kind
 
     produced = {
         ask(),                                                    # free first take
         ask(ledger=admission.SlotAttempts(admitted=1)),           # spends an extra
-        ask(ledger=admission.SlotAttempts(admitted=1), last_reason="stopped"),
-        ask(ledger=spent, last_reason="other"),
+        ask(ledger=spent),
     }
 
     assert produced == set(admission.DECISION_KINDS)
@@ -226,76 +171,16 @@ def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, c
 
 
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
-    """``assess_begin``'s precondition, asserted against the pure function.
-
-    Deliberately the one test in this module NOT written against
-    ``authorize_begin`` — because the production wiring cannot reach the branch
-    it pins, which is exactly why the branch needed a test before #2291 Phase
-    5c-iii could be trusted not to delete it as dead code.
-
-    "No attempts yet" is expressible two ways: no ledger at all, or a ledger
-    that exists with ``admitted == 0``. The flow only ever produces the first
-    spelling — it holds one :class:`~...admission.SlotAttempts` per slot and
-    reaches it through ``setdefault``, which returns the existing entry, so a
-    zero-attempt ledger is never handed back. That is a property of one caller.
-    ``assess_begin`` is a public pure function, and any caller may construct a
-    fresh ledger and ask.
-
-    Both spellings must mean the same thing: ADMIT, free. Were the
-    ``not ledger.admitted`` half dropped as unreachable, this call would fall
-    through to the extras arithmetic and charge a household's very first
-    attempt at a position — spending one of ``MAX_EXTRA_ATTEMPTS_PER_POSITION``
-    before the planned capture has happened at all.
-    """
-    fresh = admission.SlotAttempts()
-    assert fresh.admitted == 0
+    """A pose's first take is admitted even with no retries, whether the ledger is absent or fresh."""
+    fresh = admission.SlotAttempts(retries_per_pose=0)
 
     from_fresh_ledger = admission.assess_begin(
         ledger=fresh,
-        last_reason=None,
-        non_retriable=frozenset(),
         default_code="unused",
     )
     from_no_ledger = admission.assess_begin(
         ledger=None,
-        last_reason=None,
-        non_retriable=frozenset(),
         default_code="unused",
     )
 
-    assert from_fresh_ledger.kind == admission.ADMIT
-    assert from_fresh_ledger.spends_extra is False
-    # The two spellings of "no attempts yet" are the same decision, field for
-    # field — including the initiator, which must not be attributed to anyone.
-    assert from_fresh_ledger == from_no_ledger
-
-
-def _lateral_conductor(fakes):
-    return _conductor(fakes, index_phase_map=capture_plan.build_v2_cloud_index_phase_map(
-        include_lateral=True,
-    ))
-
-
-@pytest.mark.parametrize("unresolved,retained,reads", [
-    (False, False, ["unresolved", "retained"]),
-    (False, True, ["unresolved", "retained"]),
-    (True, False, ["unresolved"]),
-    (True, True, ["unresolved"]),
-])
-def test_the_spent_slot_outcome_tells_left_out_from_kept(monkeypatch, unresolved, retained, reads):
-    conductor = _lateral_conductor(FakeSeams())
-    seen = []
-
-    class Membership:
-        def __init__(self, name, present):
-            self.name, self.present = name, present
-
-        def __contains__(self, index):
-            seen.append(self.name)
-            assert index == 3
-            return self.present
-
-    conductor._group_unresolved[PHASE_LATERAL] = Membership("unresolved", unresolved)
-    monkeypatch.setattr(conductor, "_retained_group_indexes", lambda phase: Membership("retained", retained))
-    conductor._spent_slot_outcome(PHASE_LATERAL, 3)
-    assert seen == reads
+    assert from_fresh_ledger == from_no_ledger == admission.BeginDecision(admission.ADMIT)

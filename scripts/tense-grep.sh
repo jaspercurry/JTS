@@ -160,9 +160,7 @@ if (( all_mode )); then
     exit 0
 fi
 
-# Default scope: files changed on the current branch. Everything below
-# is the original changed-files sweep, unchanged — a no-arg invocation
-# must produce byte-identical output to before `--all` existed.
+# Default scope: files changed on the current branch.
 merge_base="$(git merge-base origin/main HEAD 2>/dev/null)" || {
     echo "tense-grep: no merge base with origin/main found — skipping" >&2
     exit 0

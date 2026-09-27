@@ -77,13 +77,13 @@ def duck_release_target_db(
     reference_db: float,
     current_db: float | None,
     depth_db: float,
-    entry_db: float | None = None,
+    entry_db: float,
 ) -> float:
     """Where a releasing duck lands the fader (ADR-0004); ``depth_db`` is this
-    holder's own attenuation."""
+    holder's own attenuation and ``entry_db`` the fader before it ducked."""
     reference = float(reference_db)
     if current_db is None:
-        return reference if entry_db is None else min(reference, float(entry_db))
+        return min(reference, float(entry_db))
     return min(reference, float(current_db) + abs(float(depth_db)))
 
 

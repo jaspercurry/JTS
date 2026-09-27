@@ -30,7 +30,7 @@ use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, sanitize_tts_gain_db, AssistantGainDecision, AssistantLoudness,
     GainRamp, MIN_TTS_GAIN_DB,
 };
-use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
+use jasper_tts_protocol::VolumeContext;
 
 /// The playout facts captured when an assistant segment finishes rendering,
 /// needed to complete its learned quiet-room reference: the decision, the
@@ -71,17 +71,7 @@ pub struct AssistantSource {
 
 struct AssistantSegment {
     id: SegmentId,
-    /// The TTS wire's own samples, kept at the width the wire declared.
-    ///
-    /// Deliberately NOT promoted at enqueue: a queued reply can be seconds
-    /// long, and widening an S16 payload here would double the queue's resident
-    /// bytes under `mlockall` for no resolution gain — nothing between the
-    /// socket and here touches the samples. The widen happens once per sample
-    /// at the gain application in `read_period_into`, which is the first stage
-    /// that produces a spine sample at all. A box whose wire is already wide
-    /// (`AUDIO32`) queues `Vec<i32>` and has nothing to widen; that box pays the
-    /// doubled bytes because its samples genuinely carry them.
-    samples: TtsAudioSamples,
+    samples: Vec<ProgramSample>,
     cursor_samples: usize,
     /// Loudness-decided gain for this segment before any live adjustment.
     base_gain_db: f32,
@@ -92,7 +82,7 @@ struct AssistantSegment {
     peak_cap_linear: f32,
     /// The gain decision, used to compute the live re-gain residual for an
     /// absolute volume change since the segment started. `None` on the legacy
-    /// GAIN+AUDIO path (no live tracking).
+    /// GAIN+AUDIO32 path (no live tracking).
     decision: Option<Arc<AssistantGainDecision>>,
     /// Whether this segment may train the learned quiet-room reference (true
     /// only for Assistant-kind segments — cues/chirps never learn).
@@ -128,7 +118,7 @@ impl AssistantSource {
     pub fn enqueue_segment(
         &mut self,
         id: SegmentId,
-        samples: impl Into<TtsAudioSamples>,
+        samples: Vec<ProgramSample>,
         base_gain_db: f32,
         peak_cap_gain_db: f32,
         decision: Option<Arc<AssistantGainDecision>>,
@@ -136,7 +126,7 @@ impl AssistantSource {
     ) {
         self.segments.push_back(AssistantSegment {
             id,
-            samples: samples.into(),
+            samples,
             cursor_samples: 0,
             base_gain_db,
             peak_cap_gain_db,
@@ -158,11 +148,6 @@ impl AssistantSource {
     /// this call, so `muted` and the live residual are constant across the
     /// period; only the ramp advances per frame, exactly as fan-in's
     /// `mix_period` does.
-    ///
-    /// `out` is at the program spine's width: each S16 wire sample is widened and
-    /// gained in one step (`apply_gain` on the widened value, in f64), so the
-    /// gained result carries the full spine resolution instead of being rounded
-    /// back to an S16 grid before the mix.
     pub fn read_period_into(
         &mut self,
         out: &mut [ProgramSample],
@@ -230,14 +215,7 @@ impl AssistantSource {
                     return;
                 };
                 for (channel, slot) in frame.iter_mut().enumerate() {
-                    // Promote the wire sample into the spine, THEN gain it in
-                    // f64. Gaining first at i16 and widening after would round
-                    // every gained sample onto the S16 grid — the requantization
-                    // the wide spine exists to remove. `spine_sample` is
-                    // `widen_i16_to_i32` for an S16 payload (the shipped path,
-                    // unchanged) and the identity for an S32 one.
-                    let wide = front.samples.spine_sample(front.cursor_samples + channel);
-                    *slot = apply_gain(wide, gain);
+                    *slot = apply_gain(front.samples[front.cursor_samples + channel], gain);
                 }
                 front.cursor_samples += channels;
                 // Reference-completion telemetry: remember the effective gain

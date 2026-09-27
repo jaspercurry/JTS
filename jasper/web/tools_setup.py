@@ -11,10 +11,9 @@ the user turns it on, the detail page surfaces the setup wizard.
 
 This page READS the catalog jasper-voice wrote at /run/jasper/tools.json
 and writes tool UI state to /var/lib/jasper/tool_state.env plus prompt
-overrides to /var/lib/jasper/tool_prompt_overrides.json. It does NOT
-import jasper.tools / build the registry — the socket-activated wizard
-stays light (the transit lazy-import lesson); it uses jasper.tool_catalog_view
-(json + tool_state only) to read + overlay.
+overrides to /var/lib/jasper/tool_prompt_overrides.json. The light
+jasper.tools.tool_catalog_view reader keeps the tool factories out of this
+socket-activated wizard.
 
 Toggle stages, Apply commits — two-step on purpose:
   * POST /toggle just writes staged tool UI state. It does NOT restart voice:
@@ -60,12 +59,14 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypeVar
 
+from ..platform import systemd
+from .. import atomic_io
 from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
-from ..tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
-from ..tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
-from ..tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
-from ..tool_state import read_tool_state, write_tool_state
+from ..tools.tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
+from ..tools.tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
+from ..tools.tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view
+from ..tools.tool_state import read_tool_state, write_tool_state
 from ._common import (
     RestartOutcome,
     RouteTable,
@@ -155,9 +156,8 @@ def _read_apply_ts(path: str) -> float:
 
 
 def _write_apply_ts(path: str, ts: float) -> None:
-    from ..atomic_io import atomic_write_text
     try:
-        atomic_write_text(path, f"{ts:.3f}\n", mode=0o644)
+        atomic_io.atomic_write_text(path, f"{ts:.3f}\n", mode=0o644)
     except OSError as e:  # best-effort — the cap degrades open, never blocks
         logger.warning("could not write apply timestamp %s: %s", path, e)
 
@@ -765,7 +765,6 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build the tools wizard server. `target` is a socket / (host, port)
     tuple / int port per systemd.make_http_server's contract."""
-    from ..platform import systemd
     if apply_ts_path is None:
         apply_ts_path = os.path.join(os.path.dirname(state_path), "tools_apply.ts")
     return systemd.make_http_server(

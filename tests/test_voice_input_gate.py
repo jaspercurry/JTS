@@ -388,7 +388,7 @@ def test_check_mic_capture_reports_expected_idle_when_marked(
 ) -> None:
     from jasper.cli.doctor import audio
 
-    monkeypatch.setattr(audio, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(audio, "parked_follower_result", lambda _label: None)
     marker = tmp_path / "voice-input-absent"
     marker.write_text(f"reason={MIC_ABSENT_NO_LOCAL_OR_ACCESSORY}\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))

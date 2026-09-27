@@ -9,6 +9,7 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
+from dataclasses import replace
 import errno
 import json
 import re
@@ -26,9 +27,12 @@ from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
-from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
+from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
+from jasper.cli import crossover_prescriber
 from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
@@ -64,6 +68,8 @@ from jasper.active_speaker.round_bank import (
 )
 
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round, bank_seat_round
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_crossover_v2_driver_prescription import _draft
 
 
 def _live_session(tmp_path: Path, *, state: str = "applied") -> tuple[Path, Path]:
@@ -201,7 +207,7 @@ def test_a_round_its_bookkeeping_refuses_leaves_no_half_built_round(tmp_path):
     session_dir, state_path = _live_session(tmp_path)
     write_manifest(session_dir, program="close/woofer")
 
-    with pytest.raises(measurement_programs.UnknownProgramError):
+    with pytest.raises(measurement_programs.UnknownPresetError):
         bank_round(session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path)
 
     assert not any((tmp_path / "campaigns").iterdir())
@@ -279,13 +285,15 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
     assert packet["entry_baseline"]["available"] is True
-    assert packet["identity"]["calibration"] == (calibration if snapshot else {})
-    assert packet["verify"]["available"] is False
     assert ("state.json" in banked.provenance["missing"]) is not snapshot
+
+    def banked_calibration():
+        state = round_inputs(banked.path).state_path
+        return json.loads(state.read_text())["evidence"]["calibration"] if state else {}
+
+    assert banked_calibration() == (calibration if snapshot else {})
     (banked.path / "state.json").write_text(state_path.read_text())
-    reread = load_banked_round(banked.path).packet
-    assert reread["identity"]["calibration"] == (calibration if snapshot else {})
-    assert reread["verify"]["available"] is False
+    assert banked_calibration() == (calibration if snapshot else {})
 
 SR = 48000
 
@@ -405,7 +413,7 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
-    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
+    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/axis", "run_id": session.name}))
     monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
@@ -474,7 +482,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
         state = None
         for group in groups:
             records = []
-            for index, pose in enumerate(measurement_programs.program("rear", "seat").poses):
+            for index, pose in enumerate(measurement_programs.preset("rear/seat").poses):
                 record_id = asyncio.run(bank(
                     f"{group['set_id']}-{index}", candidate=group["capture_basis"]["candidate_id"],
                     phase="lateral", measurement_purpose="rear", gating_applied=False,
@@ -527,7 +535,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
     for view, _, _ in bookkeeping_views(purpose)
 ])
 def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
-    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir, _flat_curve
+    from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir
 
     monkeypatch.chdir(tmp_path)
     if purpose == "bass":
@@ -539,10 +547,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         if view == "room-grade":
             assert run_bookkeeping("room", target)["status"] == "written"
     else:
-        target = _make_round_dir(tmp_path, "run", position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("offax", _flat_curve(offset_db=-3)),
-        }, position_degrees={"cloud_verify_02": 0, "cloud_verify_04": 20})
+        target = _make_round_dir(tmp_path, "run", baseline=True)
         write_manifest(target, program=purpose)
     answer = run_bookkeeping(view, target)
     assert answer["status"] == "written", answer
@@ -628,6 +633,57 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
              "## Artifacts", "## Tools", "Fingerprint:")
     positions = [next(i for i, line in enumerate(index) if line.startswith(head)) for head in heads]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize("stored_evidence", [True, False], ids=["stored", "banked-before-stored"])
+def test_a_round_answers_with_the_fingerprint_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
+    """A round banked beside it later moves what a rebuild reads (ADR-0371)."""
+    session, state = _live_session(tmp_path)
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
+    path = banked.path / "packet.json"
+    packet = json.loads(path.read_text())
+    if stored_evidence:
+        monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", Mock(side_effect=AssertionError))
+    else:
+        path.write_text(json.dumps({key: value for key, value in packet.items() if key != EVIDENCE_KEY}))
+    later = bank_measure_round(tmp_path / "campaigns", name="r2-later")
+    artifacts, _ = round_artifact_dir(round_inputs(later).session_dir)
+    (artifacts / "candidate.json").write_text(json.dumps({"alignment": {"delay_us": 125.0}}))
+
+    assert crossover_prescriber.main(["status", str(banked.path)]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["packet_fingerprint"] == packet["packet_fingerprint"] is not None
+    if stored_evidence:
+        assert status["contracts"] == packet[EVIDENCE_KEY]["contracts"]
+
+
+@pytest.mark.parametrize("named_by", ["bank", "bundle"])
+@pytest.mark.parametrize("verb", ["status", "judge"])
+@pytest.mark.parametrize("stale", [False, True], ids=["current", "stale"])
+def test_a_banked_round_says_whether_its_stored_contracts_are_current(tmp_path, capsys, stale, verb, named_by):
+    """A contract code change can move the contracts from the ones the bank stored (ADR-0371)."""
+    session, state = _live_session(tmp_path)
+    draft = tmp_path / "design-draft.json"
+    draft.write_text(json.dumps(_draft()))
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, design_draft_path=draft)
+    path = banked.path / "packet.json"
+    packet = json.loads(path.read_text())
+    now = packet[EVIDENCE_KEY]["contracts"]
+    if stale:
+        packet[EVIDENCE_KEY]["contracts"] = {**now, next(iter(now)): "0" * 64}
+        path.write_text(json.dumps(packet))
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    document = tmp_path / "prescription.json"
+    document.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                    "rationale": "none", "sections": {}}))
+    named = banked.path if named_by == "bank" else round_inputs(banked.path).session_dir
+    argv = ["status", str(named)] if verb == "status" else [
+        "judge", str(document), "--round", str(named), "--root", str(root)]
+
+    assert crossover_prescriber.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["packet_contracts"] == {
+        "contract_current": not stale, "stored": packet[EVIDENCE_KEY]["contracts"], "now": now}
 
 
 @pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])
@@ -726,8 +782,8 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     write_manifest(bundle, program=purpose, groups=[group])
     mark_state(bundle, "applied")
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
-    deconvolve = Mock(wraps=gate_sweep._deconvolve_window)
-    monkeypatch.setattr(gate_sweep, "_deconvolve_window", deconvolve)
+    deconvolve = Mock(wraps=gate_sweep.deconvolve_window)
+    monkeypatch.setattr(gate_sweep, "deconvolve_window", deconvolve)
     banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping,
                         **_ssot(tmp_path, present=False))
     assert deconvolve.call_count == 1

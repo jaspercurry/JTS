@@ -391,7 +391,7 @@ def test_session_status_surfaces_usage_tracking_degraded():
     assert degraded.session_status()["usage_tracking_degraded"] is True
 
 
-def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
+def test_session_status_reports_the_fanin_duck():
     from types import SimpleNamespace
 
     from jasper.voice_daemon import FanInDucker
@@ -403,9 +403,7 @@ def test_session_status_distinguishes_fanin_duck_from_camilla_lock():
     ducker._ducked = True
     wl = wake_loop_for_tests(ducker=ducker)
 
-    status = wl.session_status()
-    assert status["duck_active"] is True
-    assert status["camilla_volume_locked"] is False
+    assert wl.session_status()["duck_active"] is True
 
 
 def test_capture_gap_resets_wake_history_and_reports_input_age():

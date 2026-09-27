@@ -15,7 +15,7 @@ from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.audio_measurement.program import build_measure_program, RoleBand
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from tests.crossover_v2_fixtures import _measure_analysis
 from tests.engine_twin import FakeSeams, FakeRecords
 from tests.test_plan_run import _run_gated, _walk, AnsweredGate

@@ -4,20 +4,22 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import re
 import stat as stat_module
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.mic_identity import MIC_TIERS
+from jasper.cli import _vendor_calibration as vendor
 from tests._log_events import event_fields
 
 
@@ -171,7 +173,7 @@ def test_dayton_fetch_posts_form_and_follows_calibration_link():
         assert req == "https://support.daytonaudio.com/files/umm6_abc123.txt"
         return b"20 -1\n100 0\n1000 1\n"
 
-    text, source = calibration.fetch_dayton_calibration_text(
+    text, source = vendor.fetch_dayton_calibration_text(
         vendor_model="UMM-6",
         serial="ABC123",
         opener=fake_open,
@@ -211,7 +213,7 @@ def test_dayton_fetch_follows_query_param_download_link():
         assert "CalibrationFileName=cmm31555.txt" in req
         return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
 
-    text, source = calibration.fetch_dayton_calibration_text(
+    text, source = vendor.fetch_dayton_calibration_text(
         vendor_model="iMM-6",
         serial="cmm31555",
         opener=fake_open,
@@ -221,28 +223,38 @@ def test_dayton_fetch_follows_query_param_download_link():
     assert len(calls) == 2
 
 
-def test_dayton_fetch_never_follows_non_http_links():
-    """SSRF/LFI guard: a non-http(s) link in the (external) vendor response
-    must never be fetched. urljoin lets an absolute href override the scheme,
-    so without the guard a file:// link would be opened by the Pi's web
-    process.
-    """
-    followed: list[str] = []
+def test_the_vendor_opener_refuses_a_redirect_off_its_own_https_host():
+    """A redirect is followed only where a page's link would be: over https to
+    the host that sent it. Cleartext is refused, and its target never asked."""
+    reached: list[str] = []
 
-    def fake_open(req, timeout):
-        if isinstance(req, urllib.request.Request):
-            # Only link is a file:// URL whose path ends in a cal suffix.
-            return b'<html><a href="file:///etc/passwd.txt">x</a></html>'
-        followed.append(req)
-        return b"20 -1\n100 0\n1000 1\n"
+    class Redirecting(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the stdlib's name
+            if self.path == "/cal.txt":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/moved.txt")
+                self.end_headers()
+                return
+            reached.append(self.path)
+            body = b"20 -1\n100 0\n1000 1\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-    with pytest.raises(calibration.CalibrationUpstreamError):
-        calibration.fetch_dayton_calibration_text(
-            vendor_model="iMM-6",
-            serial="cmm31555",
-            opener=fake_open,
-        )
-    assert followed == []  # the file:// link was never opened
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(vendor.CalibrationLinkRefused):
+            vendor._default_urlopen(f"http://127.0.0.1:{server.server_port}/cal.txt", 5.0)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert reached == []
 
 
 def test_minidsp_fetch_uses_serial_url_candidates():
@@ -255,7 +267,7 @@ def test_minidsp_fetch_uses_serial_url_candidates():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    text, source = calibration.fetch_minidsp_calibration_text(
+    text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         opener=fake_open,
@@ -275,7 +287,7 @@ def test_minidsp_fetch_prefers_90deg_file_when_requested():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    _text, source = calibration.fetch_minidsp_calibration_text(
+    _text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         orientation="90deg",
@@ -301,7 +313,7 @@ def test_minidsp_requests_carry_a_non_default_user_agent():
             return b"20 -1\n100 0\n1000 1\n"
         raise OSError("not found")
 
-    calibration.fetch_minidsp_calibration_text(
+    vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-1",
         serial="700-1234",
         opener=fake_open,
@@ -320,7 +332,7 @@ def test_minidsp_umik2_candidates_try_scripts_endpoints_first():
     Scripts endpoints must be probed first, with one legacy /images/ dir kept
     only as a trailing fallback.
     """
-    urls = calibration._minidsp_candidate_urls(
+    urls = vendor._minidsp_candidate_urls(
         "umik-2", "810-1234", orientation="unknown",
     )
     assert urls == [
@@ -332,7 +344,7 @@ def test_minidsp_umik2_candidates_try_scripts_endpoints_first():
 
 
 def test_minidsp_umik2_candidates_respect_orientation_priority():
-    urls = calibration._minidsp_candidate_urls(
+    urls = vendor._minidsp_candidate_urls(
         "umik-2", "810-1234", orientation="90deg",
     )
     assert urls[0] == (
@@ -350,7 +362,7 @@ def test_minidsp_umik2_fetch_uses_scripts_endpoint():
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    text, source = calibration.fetch_minidsp_calibration_text(
+    text, source = vendor.fetch_minidsp_calibration_text(
         vendor_model="umik-2",
         serial="810-1234",
         opener=fake_open,
@@ -379,8 +391,8 @@ def test_minidsp_umik2_fetch_rejects_http_200_error_page():
             return error_page
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    with pytest.raises(calibration.CalibrationNotFoundError):
-        calibration.fetch_minidsp_calibration_text(
+    with pytest.raises(vendor.CalibrationNotFoundError):
+        vendor.fetch_minidsp_calibration_text(
             vendor_model="umik-2",
             serial="810-1234",
             opener=fake_open,
@@ -393,7 +405,7 @@ def test_fetch_vendor_calibration_stores_known_mic_record(tmp_path: Path):
     def fake_open(req, timeout):
         return b"20 -1\n100 0\n1000 1\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1",
         serial="700-1234",
         root=tmp_path,
@@ -422,7 +434,7 @@ def test_fetch_vendor_calibration_stamps_0deg_from_the_winning_url(tmp_path: Pat
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert record.source.endswith("/7001234.txt")
@@ -438,7 +450,7 @@ def test_fetch_vendor_calibration_stamps_90deg_from_the_winning_url(tmp_path: Pa
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert record.source.endswith("_90deg.txt")
@@ -458,7 +470,7 @@ def test_fetch_vendor_calibration_stamps_real_orientation_regardless_of_hint(
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1",
         serial="700-1234",
         orientation="unknown",  # the phone flow's literal default
@@ -476,7 +488,7 @@ def test_fetch_vendor_calibration_dayton_orientation_unaffected(tmp_path: Path):
     def fake_open(req, timeout):
         return b"20 -1\n100 0\n1000 1\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="ABC123", root=tmp_path, opener=fake_open,
     )
     assert record.provider == "dayton_audio"
@@ -583,12 +595,12 @@ def test_fetch_vendor_calibration_reuses_stored_record(tmp_path: Path):
             )
         return b"*1000Hz\t-38.2\n\n20.00\t-0.1\n1000\t0.0\n20000\t-2.5\n"
 
-    r1 = calibration.fetch_vendor_calibration(
+    r1 = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
     )
     after_first = calls["n"]
     assert after_first > 0  # first lookup hit the vendor
-    r2 = calibration.fetch_vendor_calibration(
+    r2 = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="cmm31555", root=tmp_path, opener=fake_open,
     )
     assert calls["n"] == after_first  # repeat lookup did NOT hit the vendor
@@ -662,7 +674,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
             return b"20 -1\n100 0\n1000 1\n"
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
 
-    first = calibration.fetch_vendor_calibration(
+    first = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=fake_open,
     )
     assert first.orientation == "90deg"
@@ -672,7 +684,7 @@ def test_fetch_vendor_calibration_cache_hit_survives_unknown_hint_across_calls(
     def boom(req, timeout):
         raise AssertionError("must not re-fetch from the vendor on a cache hit")
 
-    second = calibration.fetch_vendor_calibration(
+    second = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik1", serial="700-1234", root=tmp_path, opener=boom,
     )
     assert second.orientation == "90deg"
@@ -768,7 +780,7 @@ def test_vendor_fetched_umik_is_stored_as_the_negated_response(tmp_path: Path):
     def fake_open(req, timeout):
         return UMIK_0DEG_CAL.encode("utf-8")
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="minidsp_umik2", serial="810-8494", root=tmp_path,
         opener=fake_open,
     )
@@ -779,8 +791,7 @@ def test_vendor_fetched_umik_is_stored_as_the_negated_response(tmp_path: Path):
     # the mic is 2.45 dB DOWN at 20 kHz, so the correction ADDS 2.45 dB back.
     assert record.curve.freqs_hz[-1] == 20000.0
     assert record.curve.correction_db[-1] == pytest.approx(2.45)
-    # ... and the file itself is kept verbatim, so the repair path below can
-    # always re-derive from it.
+    # ... and the file itself is kept verbatim.
     assert Path(record.raw_path).read_text() == UMIK_0DEG_CAL
 
 
@@ -793,15 +804,13 @@ def test_vendor_fetched_dayton_is_also_stored_as_a_response_curve(tmp_path: Path
     says a cal file holds the meter/microphone's response and REW subtracts
     it, with no per-vendor sign switch. If a real Dayton file ever
     contradicts that, the registry edit (SUPPORTED_MODELS) fixes future
-    fetches, and already-stored records need a NEW opposite-direction
-    migration — `migrate_stored_sign_conventions` only runs
-    correction -> response, and the vendor cache serves stored records ahead
-    of a re-fetch.
+    fetches, and already-stored records need their own migration: the vendor
+    cache serves stored records ahead of a re-fetch.
     """
     def fake_open(req, timeout):
         return b"20 -1\n1000 0\n20000 2\n"
 
-    record = calibration.fetch_vendor_calibration(
+    record = vendor.fetch_vendor_calibration(
         model_key="dayton_imm6", serial="ABC123", root=tmp_path,
         opener=fake_open,
     )
@@ -888,276 +897,6 @@ def test_no_repo_caller_leaves_the_calibration_sign_convention_implicit():
                     f"{path.relative_to(repo)}:{call.lineno} in {node.name}()"
                 )
     assert offenders == []
-
-
-def _store_wrong_convention_vendor_record(
-    root: Path, *, text: str = UMIK_0DEG_CAL,
-) -> calibration.CalibrationRecord:
-    """A record exactly as the pre-fix build wrote it: a vendor file stored
-    under `sign_convention="correction"`, values verbatim."""
-    return calibration.store_calibration(
-        text=text,
-        provider="minidsp",
-        model="minidsp_umik2",
-        label="miniDSP UMIK-2",
-        source="https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt",
-        serial="810-8494",
-        orientation="0deg",
-        sign_convention="correction",
-        root=root,
-    )
-
-
-def test_migration_rederives_a_wrong_vendor_record_from_its_raw_file(
-    tmp_path: Path,
-):
-    record = _store_wrong_convention_vendor_record(tmp_path)
-    assert record.curve.correction_db == pytest.approx(UMIK_0DEG_FILE_DB)
-    raw_before = Path(record.raw_path).read_text()
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["migrated_rederived"] == 1
-    assert counts["migrated_negated"] == 0
-    fixed = calibration.load_calibration_record(
-        record.calibration_id, root=tmp_path,
-    )
-    assert fixed.sign_convention == "response"
-    assert fixed.curve.correction_db == pytest.approx(UMIK_0DEG_CORRECTION_DB)
-    # Identity is preserved: same record, same file, same serial binding, so
-    # the household's remembered mic still resolves afterwards.
-    assert fixed.calibration_id == record.calibration_id
-    assert fixed.file_sha256 == record.file_sha256
-    assert fixed.serial_hash == record.serial_hash
-    assert fixed.orientation == "0deg"
-    assert fixed.point_count == len(UMIK_0DEG_FILE_DB)
-    assert Path(record.raw_path).read_text() == raw_before
-    assert (Path(record.metadata_path).stat().st_mode & 0o777) == 0o640
-
-
-def test_migration_never_double_negates_an_already_correct_record(
-    tmp_path: Path,
-):
-    """The hazard the migration is keyed on the stored field to avoid."""
-    def fake_open(req, timeout):
-        return UMIK_0DEG_CAL.encode("utf-8")
-
-    record = calibration.fetch_vendor_calibration(  # a fixed-build record
-        model_key="minidsp_umik2", serial="810-8494", root=tmp_path,
-        opener=fake_open,
-    )
-    before = Path(record.metadata_path).read_text()
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts == {
-        "scanned": 1,
-        "migrated_rederived": 0,
-        "migrated_negated": 0,
-        "already_response": 1,
-        "skipped_not_vendor": 0,
-        "unreadable": 0,
-        "write_failed": 0,
-    }
-    assert Path(record.metadata_path).read_text() == before
-
-
-def test_migration_is_idempotent(tmp_path: Path):
-    record = _store_wrong_convention_vendor_record(tmp_path)
-
-    first = calibration.migrate_stored_sign_conventions(root=tmp_path)
-    after_first = Path(record.metadata_path).read_text()
-    second = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert first["migrated_rederived"] == 1
-    assert second["migrated_rederived"] == 0
-    assert second["already_response"] == 1
-    assert Path(record.metadata_path).read_text() == after_first
-
-
-def test_migration_leaves_a_household_upload_alone(tmp_path: Path):
-    """A manual upload's convention is the household's own declaration about
-    a file JTS never saw. Not ours to overrule, even when it says
-    "correction" -- which is exactly what the old UI default wrote."""
-    record = calibration.store_calibration(
-        text=UMIK_0DEG_CAL,
-        provider="manual_upload",
-        model="other",
-        label="Other calibrated mic",
-        source="uploaded:mycal.txt",
-        sign_convention="correction",
-        root=tmp_path,
-    )
-    before = Path(record.metadata_path).read_text()
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["skipped_not_vendor"] == 1
-    assert counts["migrated_rederived"] == 0
-    assert Path(record.metadata_path).read_text() == before
-
-
-def test_migration_negates_in_place_when_the_raw_file_is_gone(tmp_path: Path):
-    """Re-fetch is impossible -- the raw serial is deliberately never
-    persisted -- so a record whose text is missing is repaired by negating
-    the curve, which is the same number the re-derivation would produce."""
-    record = _store_wrong_convention_vendor_record(tmp_path)
-    Path(record.raw_path).unlink()
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["migrated_negated"] == 1
-    assert counts["migrated_rederived"] == 0
-    fixed = calibration.load_calibration_record(
-        record.calibration_id, root=tmp_path,
-    )
-    assert fixed.sign_convention == "response"
-    assert fixed.curve.correction_db == pytest.approx(UMIK_0DEG_CORRECTION_DB)
-
-
-def test_migration_ignores_a_raw_file_that_is_not_the_recorded_one(
-    tmp_path: Path,
-):
-    """The raw file is trusted only while its hash still matches the record.
-    A replaced file is not evidence about this record, so the migration falls
-    back to negating the curve it actually has."""
-    record = _store_wrong_convention_vendor_record(tmp_path)
-    Path(record.raw_path).write_text("20 5\n1000 0\n20000 5\n")
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["migrated_negated"] == 1
-    fixed = calibration.load_calibration_record(
-        record.calibration_id, root=tmp_path,
-    )
-    assert fixed.curve.correction_db == pytest.approx(UMIK_0DEG_CORRECTION_DB)
-
-
-def test_migration_skips_a_corrupt_record_without_dropping_the_others(
-    tmp_path: Path,
-):
-    good = _store_wrong_convention_vendor_record(tmp_path)
-    bad_dir = tmp_path / "minidsp" / "minidsp_umik1"
-    bad_dir.mkdir(parents=True, exist_ok=True)
-    (bad_dir / "minidsp-minidsp_umik1-deadbeef.json").write_text("{not json")
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["unreadable"] == 1
-    assert counts["migrated_rederived"] == 1
-    fixed = calibration.load_calibration_record(
-        good.calibration_id, root=tmp_path,
-    )
-    assert fixed.sign_convention == "response"
-
-
-def test_migration_on_an_empty_store_is_a_no_op(tmp_path: Path):
-    counts = calibration.migrate_stored_sign_conventions(
-        root=tmp_path / "never-created",
-    )
-    assert counts["scanned"] == 0
-
-
-def test_migration_repairs_a_three_column_file_the_same_way_on_both_paths(
-    tmp_path: Path,
-) -> None:
-    """The re-derive path and the negate fallback must land the same curve.
-    A vendor file's third column is read past on both, so a record repaired
-    from raw text and one repaired from the stored curve alone agree."""
-    three_column = "20 -1 5\n1000 0 -10\n20000 2 30\n"
-
-    for drop_raw in (False, True):
-        root = tmp_path / f"raw_dropped_{drop_raw}"
-        record = _store_wrong_convention_vendor_record(root, text=three_column)
-        assert record.curve.freqs_hz == [20.0, 1000.0, 20000.0]
-        if drop_raw:
-            Path(record.raw_path).unlink()
-
-        counts = calibration.migrate_stored_sign_conventions(root=root)
-
-        assert counts["migrated_negated" if drop_raw else "migrated_rederived"] == 1
-        fixed = calibration.load_calibration_record(
-            record.calibration_id, root=root,
-        )
-        assert fixed.curve.correction_db == pytest.approx([1.0, 0.0, -2.0])
-        assert fixed.curve.freqs_hz == [20.0, 1000.0, 20000.0]
-
-
-def test_migration_write_is_atomic_and_preserves_owner_and_mode(tmp_path: Path):
-    """A crash mid-write must leave the OLD record, not a truncated one: a
-    torn record reads as corrupt forever and silently costs the household its
-    remembered mic. The replacement also carries the original's uid/gid/mode,
-    so the repair cannot lock a (future non-root) daemon out of its records.
-    """
-    record = _store_wrong_convention_vendor_record(tmp_path)
-    meta = Path(record.metadata_path)
-    before = meta.read_text()
-    before_stat = meta.stat()
-
-    from jasper import atomic_io
-
-    with mock.patch.object(
-        atomic_io.os, "replace", side_effect=OSError("disk full"),
-    ) as replaced:
-        counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert replaced.called
-    assert counts["write_failed"] == 1
-    assert counts["migrated_rederived"] == 0
-    # The record survived the failed write intact, and no temp file was left.
-    assert meta.read_text() == before
-    assert list(meta.parent.glob("*.tmp")) == []
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-    assert counts["migrated_rederived"] == 1
-    after_stat = meta.stat()
-    assert stat_module.S_IMODE(after_stat.st_mode) == stat_module.S_IMODE(
-        before_stat.st_mode
-    )
-    assert (after_stat.st_uid, after_stat.st_gid) == (
-        before_stat.st_uid, before_stat.st_gid,
-    )
-
-
-def test_migration_reads_the_configured_root_not_only_the_default(
-    tmp_path: Path, monkeypatch,
-):
-    """The wizard resolves its store through JASPER_CORRECTION_CALIBRATION_DIR.
-    A migration that ignored the override would scan an empty default
-    directory and report scanned=0 — success-shaped, and wrong."""
-    record = _store_wrong_convention_vendor_record(tmp_path)
-    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
-
-    counts = calibration.migrate_stored_sign_conventions()  # no explicit root
-
-    assert counts["migrated_rederived"] == 1
-    fixed = calibration.load_calibration_record(
-        record.calibration_id, root=tmp_path,
-    )
-    assert fixed.sign_convention == "response"
-
-
-def test_migration_scope_is_keyed_on_provider_and_model(tmp_path: Path):
-    """A record whose (provider, model) pair is not a registered
-    response-curve entry is out of scope, even under a vendor provider
-    directory — so a future per-model split inside one provider cannot drag
-    its siblings along."""
-    record = calibration.store_calibration(
-        text=UMIK_0DEG_CAL,
-        provider="minidsp",
-        model="minidsp_umik9_unregistered",
-        label="Not in the registry",
-        source="https://www.minidsp.com/scripts/umik2cal/umik.php/8108494.txt",
-        serial="810-8494",
-        sign_convention="correction",
-        root=tmp_path,
-    )
-    before = Path(record.metadata_path).read_text()
-
-    counts = calibration.migrate_stored_sign_conventions(root=tmp_path)
-
-    assert counts["skipped_not_vendor"] == 1
-    assert Path(record.metadata_path).read_text() == before
 
 
 @pytest.mark.parametrize("find", [

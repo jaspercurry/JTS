@@ -12,18 +12,16 @@ feature evidence.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import math
-import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
+from jasper import json_fields
+from jasper.json_fields import canonical_json_bytes, freeze_json, require_sha256_hex
 
-_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 ACTIVE_RAW_NORMALIZATION_DOMAIN = "camilladsp_active_raw"
 ACTIVE_RAW_NORMALIZATION_ALGORITHM_ID = "jts_active_raw_canonical_json"
 ACTIVE_RAW_NORMALIZATION_ALGORITHM_VERSION = "1"
@@ -39,54 +37,14 @@ def _text(value: Any, *, field_name: str) -> str:
     return value
 
 
-def _sha256(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise EvidenceIdentityError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
-    return value
-
-
-def _freeze_json(value: Any, *, field_name: str, path: str = "$") -> Any:
-    if value is None or type(value) in {bool, int, str}:
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise EvidenceIdentityError(f"{field_name} contains a non-finite number")
-        return value
-    if isinstance(value, Mapping):
-        frozen: dict[str, Any] = {}
-        for key, nested in value.items():
-            if type(key) is not str:
-                raise EvidenceIdentityError(
-                    f"{field_name} contains a non-string key at {path}"
-                )
-            frozen[key] = _freeze_json(
-                nested,
-                field_name=field_name,
-                path=f"{path}.{key}",
-            )
-        return frozen
-    if type(value) is list:
-        return [
-            _freeze_json(nested, field_name=field_name, path=f"{path}[{index}]")
-            for index, nested in enumerate(value)
-        ]
-    raise EvidenceIdentityError(f"{field_name} contains a non-JSON value at {path}")
-
-
 def json_fingerprint(value: Mapping[str, Any], *, field_name: str = "payload") -> str:
     """Canonicalize one exact JSON object and return its SHA-256."""
 
     if not isinstance(value, Mapping) or not value:
         raise EvidenceIdentityError(f"{field_name} must be a non-empty mapping")
-    canonical = json.dumps(
-        _freeze_json(value, field_name=field_name),
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
+    return json_fields.json_fingerprint(
+        freeze_json(value, field=field_name, error=EvidenceIdentityError)
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
@@ -119,7 +77,7 @@ class ArtifactIdentity(FingerprintedRecord):
             raise EvidenceIdentityError(
                 "relative_path must be a normalized bundle-relative POSIX path"
             )
-        digest = _sha256(self.sha256, field_name="sha256")
+        digest = require_sha256_hex(self.sha256, field="sha256", error=EvidenceIdentityError)
         if type(self.byte_size) is not int or self.byte_size < 0:
             raise EvidenceIdentityError("byte_size must be a non-negative integer")
         object.__setattr__(self, "bundle_kind", bundle_kind)
@@ -184,13 +142,7 @@ class NormalizedActiveRawIdentity(FingerprintedRecord):
             frozen = DspPredecessor(normalized_active_raw)
         except NullWalkError as exc:
             raise EvidenceIdentityError(str(exc)) from exc
-        active_raw = frozen.state
-        active_raw_json = json.dumps(
-            active_raw,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
+        active_raw_json = canonical_json_bytes(frozen.state).decode("ascii")
         object.__setattr__(self, "normalization_domain", normalization_domain)
         object.__setattr__(
             self,

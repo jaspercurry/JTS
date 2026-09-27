@@ -24,9 +24,6 @@ from jasper.active_speaker.branch_chain import (
     _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
-    CrossoverSection,
-    _GRID_EDGE_HI_HZ,
-    _GRID_EDGE_LO_HZ,
     _PEAK_EPS_DB,
     _evaluation_grid,
     branch_chain_peak,
@@ -37,21 +34,20 @@ from jasper.active_speaker.branch_chain import (
     confirmed_protection_sections,
     crossover_response_complex,
     crossover_response_db,
-    far_field_ceiling_hz,
     headroom_charge_db,
     radiating_band_hz,
-    recommended_distance,
     rear_branch_sum_headroom_db,
     rear_stage_chain_response,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # The runtime re-proof's own float slack, imported rather than restated so the
 # migration corpus asserts the condition the contract actually applies.
 from jasper.active_speaker.graph.active_verifier import (
-    _LINEARIZATION_BOOST_EPS_DB as _RUNTIME_BOOST_EPS_DB,
+    _CHARGED_PEAK_EPS_DB as _RUNTIME_BOOST_EPS_DB,
 )
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+from jasper.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
 from tests.test_rear_output_foundation import _rear_document
 
 # --------------------------------------------------------------------------- #
@@ -451,8 +447,8 @@ def test_the_grid_spans_the_whole_domain_the_peak_is_taken_over():
     sampling has to reach both domain edges, because appending the edges
     themselves bounds a monotonic shelf's asymptote and nothing else.
     """
-    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(_GRID_EDGE_LO_HZ)
-    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(_GRID_EDGE_HI_HZ)
+    assert float(CHAIN_GRID_HZ[0]) == pytest.approx(EVALUABLE_HZ_MIN)
+    assert float(CHAIN_GRID_HZ[-1]) == pytest.approx(EVALUABLE_HZ_MAX)
     assert branch_chain_peak_db(
         (_peaking(60.0, 2.0, 5.0),)
     ) == pytest.approx(5.0, abs=0.05)
@@ -484,14 +480,14 @@ def test_the_background_resolution_is_never_coarser_than_it_was():
         pytest.param(
             (_peaking(20_000.0, 0.5, 3.0),) * 5 + (_peaking(18_182.0, 1.0, -8.0),) * 3,
             (CrossoverSection(1600.0, 4, highpass=True),),
-            (15_000.0, _GRID_EDGE_HI_HZ),
+            (15_000.0, EVALUABLE_HZ_MAX),
             0.8596,
             id="ultrasonic",
         ),
         pytest.param(
             (_peaking(20.0, 0.5, 3.0),) * 5 + (_peaking(22.0, 1.0, -8.0),) * 3,
             (CrossoverSection(1600.0, 4, highpass=False),),
-            (_GRID_EDGE_LO_HZ, 60.0),
+            (EVALUABLE_HZ_MIN, 60.0),
             1.4733,
             id="subsonic",
         ),
@@ -527,7 +523,7 @@ def test_a_cascade_peaking_outside_the_audio_band_is_charged_for_it(
 
 
 def test_a_filter_centred_in_the_nyquist_sliver_is_read_at_its_full_gain():
-    """The 4.8 Hz between ``_GRID_EDGE_HI_HZ`` and Nyquist is a place a filter
+    """The 4.8 Hz between ``EVALUABLE_HZ_MAX`` and Nyquist is a place a filter
     can SIT, and the background grid's top is not a bound on that.
 
     The bilinear prewarp compresses frequency without bound approaching
@@ -539,12 +535,12 @@ def test_a_filter_centred_in_the_nyquist_sliver_is_read_at_its_full_gain():
     """
     sliver = (_peaking(23_999.0, 8.0, 12.0),)
 
-    assert _GRID_EDGE_HI_HZ < 23_999.0 < 0.5 * RESPONSE_SAMPLE_RATE_HZ
+    assert EVALUABLE_HZ_MAX < 23_999.0 < 0.5 * RESPONSE_SAMPLE_RATE_HZ
     assert branch_chain_peak_db(sliver) == pytest.approx(12.0, abs=1e-6)
     # ...and the edge sample alone is the under-read this closes, so the pin
     # cannot pass by the grid happening to be dense up there.
     assert float(np.max(20.0 * np.log10(np.abs(
-        chain_response(sliver, np.asarray([_GRID_EDGE_HI_HZ]))
+        chain_response(sliver, np.asarray([EVALUABLE_HZ_MAX]))
     )))) < 0.05
 
 
@@ -638,12 +634,12 @@ def _background_only_read_db(filters) -> float:
         freq for entry in filters
         if 0.0 < (freq := float(entry["freq"])) < 0.5 * RESPONSE_SAMPLE_RATE_HZ
     )
-    extra = [_GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ, *centres]
+    extra = [EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX, *centres]
     extra.extend(math.sqrt(a * b) for a, b in zip(centres, centres[1:]))
     grid = np.unique(np.concatenate([
         np.geomspace(
-            _GRID_EDGE_LO_HZ, _GRID_EDGE_HI_HZ,
-            round(48 * math.log2(_GRID_EDGE_HI_HZ / _GRID_EDGE_LO_HZ)) + 1,
+            EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX,
+            round(48 * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN)) + 1,
         ),
         np.asarray(extra, dtype=np.float64),
     ]))
@@ -749,17 +745,13 @@ def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
     A migration bound stated only as "moved less than the margin" is therefore
     not the condition, and a corpus asserting it would call this class safe.
     """
-    from jasper.active_speaker.graph.active_verifier import (
-        _LINEARIZATION_BOOST_EPS_DB,
-    )
-
     just_under = _PEAK_EPS_DB - 0.002
     just_over = _PEAK_EPS_DB + 0.0001
 
     assert headroom_charge_db(just_under) == 0.0
     # A chain charged nothing has NEGATIVE room: any reading above unity at all
     # is already past its own allowance plus the slack.
-    assert headroom_charge_db(just_under) + _LINEARIZATION_BOOST_EPS_DB < just_under
+    assert headroom_charge_db(just_under) + _RUNTIME_BOOST_EPS_DB < just_under
     # One ten-thousandth of a dB higher and the step pays the whole margin.
     assert headroom_charge_db(just_over) - just_over == pytest.approx(
         HEADROOM_MARGIN_DB
@@ -983,8 +975,8 @@ def test_a_rails_legal_pair_near_nyquist_still_under_reads_past_the_margin():
 @pytest.mark.parametrize(
     ("filters", "sweep_hz"),
     [
-        pytest.param(_ULTRASONIC_CASCADE, (15_000.0, _GRID_EDGE_HI_HZ), id="ultrasonic"),
-        pytest.param(_SUBSONIC_CASCADE, (_GRID_EDGE_LO_HZ, 60.0), id="subsonic"),
+        pytest.param(_ULTRASONIC_CASCADE, (15_000.0, EVALUABLE_HZ_MAX), id="ultrasonic"),
+        pytest.param(_SUBSONIC_CASCADE, (EVALUABLE_HZ_MIN, 60.0), id="subsonic"),
     ],
 )
 def test_the_two_cascades_are_knowingly_refused_and_recovered_by_re_emit(
@@ -1180,43 +1172,6 @@ def test_the_model_is_the_butterworth_biquad_cascade_the_graph_realizes(
         freqs, (CrossoverSection(fc_hz, order, highpass=highpass),)
     )
     assert float(np.max(np.abs(actual_db - expected_db))) < 1e-9
-
-
-# --------------------------------------------------------------------------- #
-# piston geometry: where a close reference stands (#3501)
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "diameter_in, fc_hz, expected_in",
-    [(5.5, 2500.0, 12.4), (12.0, 500.0, 25.3), (2.5, 2500.0, 5.3)],
-)
-def test_recommended_distance_lands_where_the_issue_says(
-    diameter_in, fc_hz, expected_in
-):
-    record = recommended_distance(diameter_in * 0.0254, fc_hz)
-    assert record["distance_in"] == pytest.approx(expected_in, abs=0.1)
-    assert record["distance_m"] == pytest.approx(
-        record["far_field_term_m"] + record["margin_term_m"]
-    )
-    assert record["far_field_ceiling_hz"] > record["band_top_hz"]
-    # The margin is the dominant term at every anchor; the far-field distance
-    # is the correction on top, which is why both are published separately.
-    assert record["margin_term_m"] > record["far_field_term_m"]
-    # A tolerance is a MAGNITUDE, never a signed gain to apply.
-    assert record["placement_tolerance_db"] > 0.0
-
-
-def test_the_far_field_criterion_is_a_ceiling_not_a_floor():
-    """A close mic is near-field at HIGH frequencies, never at low ones: the
-    Rayleigh distance grows with frequency, so solving it for f bounds above."""
-    near = far_field_ceiling_hz(0.1397, 0.30)
-    far = far_field_ceiling_hz(0.1397, 1.00)
-    assert far > near
-    # Twice the aperture radius is four times the Rayleigh distance.
-    assert far_field_ceiling_hz(2.0 * 0.1397, 1.00) == pytest.approx(0.25 * far)
-    with pytest.raises(ValueError):
-        far_field_ceiling_hz(0.0, 1.00)
 
 
 def _chain(**overrides) -> dict:

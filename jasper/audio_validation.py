@@ -2,16 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Live audio readiness checks, evidence builders, and snapshot CLI."""
+"""Live audio readiness and evidence."""
 
 from __future__ import annotations
 
-import argparse
-import json
 import logging
 import os
 import socket
-import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +17,7 @@ from typing import Any, Mapping
 from . import audio_validation_artifacts as artifacts
 from .audio_profile_state import (
     AEC_MODE_ENV,
+    PROFILE_XVF_CHIP_AEC as CHIP_AEC_PROFILE,
     AEC_MODE_FILE_ENV,
     DEFAULT_AEC_MODE_PATH,
     MicProbe,
@@ -54,10 +52,8 @@ from .platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,
     read_status_socket_or_none,
 )
-from .logging_setup import configure_logging
 
 
-CHIP_AEC_PROFILE = "xvf_chip_aec"
 DAC8X_OUTPUTD_STABILITY_PROFILE = "hifiberry_dac8x_outputd_stability"
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
@@ -768,7 +764,6 @@ def _outputd_reference_health_check(
     sequence_delta = _counter_delta(before, after, "mix", "reference_sequence")
     dac_frames_delta = _counter_delta(before, after, "dac", "frames_written")
     dac_xrun_delta = _counter_delta(before, after, "dac", "xrun_count")
-    content_xrun_delta = _counter_delta(before, after, "content", "xrun_count")
     clipped_delta = _counter_delta(before, after, "mix", "clipped_samples")
     progress_age_ms = _nested_int(after, "watchdog", "last_progress_age_ms")
     observed = {
@@ -779,11 +774,10 @@ def _outputd_reference_health_check(
         "reference_sequence_delta": sequence_delta,
         "dac_frames_written_delta": dac_frames_delta,
         "dac_xrun_delta": dac_xrun_delta,
-        "content_xrun_delta": content_xrun_delta,
         "clipped_samples_delta": clipped_delta,
         "last_progress_age_ms": progress_age_ms,
     }
-    if (dac_xrun_delta or 0) > 0 or (content_xrun_delta or 0) > 0:
+    if (dac_xrun_delta or 0) > 0:
         return _check(
             "fail",
             summary="outputd reported xruns during the validation window.",
@@ -1472,61 +1466,3 @@ def build_chip_aec_hardware_validation_artifact(
         notes=notes,
         errors=tuple(errors),
     )
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Write a bounded audio readiness snapshot artifact.",
-    )
-    parser.add_argument(
-        "--profile",
-        default=CHIP_AEC_PROFILE,
-        choices=(CHIP_AEC_PROFILE,),
-        help="Audio profile to snapshot.",
-    )
-    parser.add_argument(
-        "--directory",
-        type=Path,
-        default=None,
-        help="Artifact directory (default: /var/lib/jasper/audio-validation).",
-    )
-    parser.add_argument(
-        "--stdout",
-        action="store_true",
-        help="Also print the full artifact JSON to stdout.",
-    )
-    args = parser.parse_args(argv)
-
-    configure_logging(fmt="%(message)s")
-    artifact = build_chip_aec_readiness_artifact(profile=args.profile)
-    directory = args.directory or artifacts.artifact_directory()
-    try:
-        path = artifacts.write_artifact(artifact, directory=directory)
-        latest_path = artifacts.write_latest_pointer(artifact, directory=directory)
-    except OSError as e:
-        log_event(
-            logger,
-            "audio_validation.write_failed",
-            profile=artifact.profile,
-            status=artifact.status,
-            error=str(e),
-            level=logging.ERROR,
-        )
-        return 1
-    log_event(
-        logger,
-        "audio_validation.snapshot",
-        profile=artifact.profile,
-        status=artifact.status,
-        recommendation=artifact.recommendation,
-        path=path,
-        latest=latest_path,
-    )
-    if args.stdout:
-        json.dump(artifact.to_dict(), sys.stdout, indent=2, sort_keys=True)
-        sys.stdout.write("\n")
-    return 0 if artifact.status != "fail" else 1
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

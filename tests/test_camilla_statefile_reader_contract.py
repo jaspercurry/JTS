@@ -9,7 +9,7 @@ override over the shipped default statefile path, and
 ``jasper.active_speaker.environment`` the ``config_path:`` parse. Three private
 readers each held their own copy of all three facts —
 ``jasper.cli.doctor.correction``'s
-``_parse_camilla_statefile_config_path`` / ``_active_camilla_config_path``,
+``_parse_camilla_statefile_config_path`` / ``active_camilla_config_path``,
 ``jasper.audio_runtime_plan``'s ``_active_camilla_config_path_from_statefile``,
 and ``jasper.multiroom.leader_config``'s ``active_leader_pipe_path`` — so a box
 could be told three different things about which graph is loaded.
@@ -72,7 +72,7 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
 ) -> None:
     """One statefile on disk; four readers; one answer.
 
-    The doctor helper (``_active_camilla_config_path``, which ``doctor.active_speaker``,
+    The doctor helper (``active_camilla_config_path``, which ``doctor.active_speaker``,
     ``doctor.audio_runtime_camilla``, and ``doctor.grouping`` import), the runtime plan,
     the bonded-leader pipe probe, and the canonical reader all read the SAME
     ``JASPER_CAMILLA_STATEFILE`` fixture here. Break the shared parse or the
@@ -105,7 +105,7 @@ def test_every_folded_reader_resolves_one_statefile_fixture_identically(
     # instead of stopping at whichever happens to be checked first.
     assert {
         "environment (canonical)": env_mod.read_camilla_statefile_config_path(),
-        "doctor": doctor_correction._active_camilla_config_path(),
+        "doctor": doctor_correction.active_camilla_config_path(),
         "runtime plan": plan.camilla_config_hash,
         "leader pipe": leader_config.active_leader_pipe_path(),
     } == {
@@ -139,7 +139,7 @@ def test_doctor_delegates_to_the_canonical_reader(
         doctor_correction, "read_camilla_statefile_config_path", fake_reader
     )
 
-    assert doctor_correction._active_camilla_config_path() == (
+    assert doctor_correction.active_camilla_config_path() == (
         Path("/fake/sf.yml"),
         "/from/canonical/reader.yml",
     )

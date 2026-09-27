@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from jasper.speaker_layout import measurement_target_name
 
@@ -56,6 +56,18 @@ def round_verdict(facts: Mapping[str, Any], verdict: str) -> str:
     return "" if facts.get("poses") and not facts.get("status") else verdict
 
 
+def level_mismatch_lines(findings: Iterable[Mapping[str, Any]] | None) -> list[str]:
+    """Each placement where drivers of one size play apart for the same drive (#5714)."""
+    lines = []
+    for finding in findings or ():
+        levels = finding["unit_drive_db_spl"]
+        quiet, loud = min(levels, key=levels.__getitem__), max(levels, key=levels.__getitem__)
+        lines.append(f"Level mismatch: {pose_name({**finding['pose'], 'driver': quiet})} plays "
+                     f"{round(finding['spread_db'], 1):g} dB under the {measurement_target_name(loud)} for the same "
+                     "drive. Drivers of one size should match: check the wiring and amplifier channel of each.")
+    return lines
+
+
 def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool = False) -> list[str]:
     """``pending`` is the open placement hold, or whether one is open."""
     from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
@@ -63,7 +75,8 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
     lines = []
     if facts.get("status") in {"complete", "partial", "cancelled", "failed", "stopped"}:
         lines = [measured_line(facts.get("takes", 0), facts.get("retakes", 0)),
-                 f"Not measured: {_count(facts.get('not_measured', 0), 'planned measurement')}."]
+                 f"Not measured: {_count(facts.get('not_measured', 0), 'planned measurement')}.",
+                 *level_mismatch_lines(facts.get("level_mismatches"))]
         if facts.get("packet_error"):
             lines.append("The round packet could not be saved. Run jasper-round wait to try again.")
         return lines
@@ -96,6 +109,7 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
         lines.append(line)
     if facts.get("level_raise_dbfs") is not None:
         lines.append(f"Raising the measurement level to {round(facts['level_raise_dbfs'], 1):g} dBFS.")
+    lines += level_mismatch_lines(facts.get("level_mismatches"))
     return lines + ([PLACE_MICROPHONE] if pending and not facts.get("pose") else [])
 
 
@@ -103,7 +117,7 @@ def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
     """The ended round's counts, from the manifest ``wait`` reprints once banked."""
     takes = [t for group in document.get("sets", ()) for t in group["takes"]]
     return {"takes": len({t["take_id"] for t in takes if t["selected"]}),
-            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1}),
+            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1 and not t.get("replay")}),
             "not_measured": len(document.get("not_measured", ()))}
 
 
@@ -116,10 +130,13 @@ def measured_line(count: int, retakes: int = 0) -> str:
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
-    from .crossover_v2.refusal_copy import refusal_copy_for  # lazy: keeps the CLI parser numpy-free
+    from .crossover_v2.refusal_copy import channel_map_failed_roles, refusal_copy_for  # lazy: keeps the CLI parser numpy-free
+    from .run_manifest import driver_level_mismatches  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
     counts = take_counts(manifest)
+    failed_roles = channel_map_failed_roles(*((t.get("quality") or {}).get("evidence") or {}
+                                              for g in manifest.get("sets", ()) for t in g["takes"]))
     lines = [measured_line(counts["takes"], counts["retakes"])]
     poses = list(dict.fromkeys(pose_name(t["pose"]) for t in takes if t.get("pose")))
     if poses:
@@ -132,9 +149,10 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
         name = pose_name(json.loads(pose))
         count_label = f" ({len(reasons)} planned measurements)" if len(reasons) > 1 else ""
         prefix = "Waived" if set(reasons) == {"complete_requested"} else "Not measured"
-        details = " ".join(refusal_copy_for(reason)[0] for reason in dict.fromkeys(reasons)
+        details = " ".join(refusal_copy_for(reason, failed_roles=failed_roles)[0] for reason in dict.fromkeys(reasons)
                            if reason != "complete_requested")
         lines.append(f"{prefix}: {name}{count_label}. {details}".rstrip())
+    lines += level_mismatch_lines(driver_level_mismatches(manifest))
     lines += list(dict.fromkeys(f"Unqualified band ({t['role']}): below {t['trusted_floor_hz']:g} Hz."
                                for t in takes if t.get("trusted_floor_hz") is not None))
     lines += [str(line) for line in packet.get("disclosures", ())]

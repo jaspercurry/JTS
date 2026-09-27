@@ -34,11 +34,11 @@ class BlendPrescriptionRefused(ValueError):
         self.evidence: Mapping[str, Any] = dict(evidence or {})
 
 
-def _refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
+def refuse(reason: str, detail: str, **evidence: Any) -> NoReturn:
     raise BlendPrescriptionRefused(reason, detail, evidence=evidence or None)
 
 
-def _finite_number(value: Any, *, reason: str, field: str) -> float:
+def finite_number(value: Any, *, reason: str, field: str) -> float:
     """One numeric field, strictly — no coercion, ever.
 
     ``bool`` is refused because it is an ``int`` and ``gain=True`` would read as
@@ -46,7 +46,7 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
     :func:`~.blend_correction.blend_filters_from_mapping` refuses both.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _refuse(reason, f"{field} must be a number, got {type(value).__name__}")
+        refuse(reason, f"{field} must be a number, got {type(value).__name__}")
     try:
         number = float(value)
     except OverflowError:
@@ -54,13 +54,13 @@ def _finite_number(value: Any, *, reason: str, field: str) -> float:
         # the isinstance check, and `float()` raises rather than returning inf.
         # Refusing here keeps it inside the closed vocabulary instead of
         # escaping the gate as an OverflowError.
-        _refuse(reason, f"{field} is too large to be a filter coefficient")
+        refuse(reason, f"{field} is too large to be a filter coefficient")
     if not math.isfinite(number):
-        _refuse(reason, f"{field} must be finite, got {number!r}")
+        refuse(reason, f"{field} must be finite, got {number!r}")
     return number
 
 
-def _prescriber(raw: Any) -> tuple[str, str]:
+def read_prescriber(raw: Any) -> tuple[str, str]:
     if not isinstance(raw, Mapping):
         return "", ""
     values: list[str] = []
@@ -70,13 +70,13 @@ def _prescriber(raw: Any) -> tuple[str, str]:
     return values[0], values[1]
 
 
-def _read_artifacts(value: Any) -> tuple[str, ...]:
+def read_artifacts(value: Any) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
     return tuple(entry.strip() for entry in value if isinstance(entry, str) and entry.strip())
 
 
-def _rationale(raw: Any, *, reason: str) -> tuple[str, int]:
+def read_rationale(raw: Any, *, reason: str) -> tuple[str, int]:
     """The prescriber's own words, banked to the ceiling, and what was dropped.
 
     Truncates rather than refusing (ADR-0207), counting the loss onto
@@ -85,7 +85,7 @@ def _rationale(raw: Any, *, reason: str) -> tuple[str, int]:
     if raw is None:
         return "", 0
     if not isinstance(raw, str):
-        _refuse(
+        refuse(
             reason,
             f"rationale must be text, got {type(raw).__name__}",
         )

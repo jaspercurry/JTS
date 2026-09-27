@@ -391,16 +391,17 @@ def test_a_failed_restore_retains_the_entry_graph_for_retry(tmp_path, failure):
 
 
 def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tmp_path):
-    """Two branch pairs on ONE candidate are two graphs: the pair is part of the
-    variant identity, so a session running both does not serve the first take's
-    graph to the second."""
+    """Two branch pairs, or two sets of cleared layers, on ONE candidate are two
+    graphs: both are part of the variant identity, so a session running both
+    does not serve the first take's graph to the second (ADR-0370)."""
     from tests.test_active_speaker_program_admission import CARDIOID_TAKE, CROSSOVER_TAKE
 
     emitted = []
 
-    def emit_scoped(scope, candidate_id, branch_channels):
-        emitted.append((scope, candidate_id, dict(branch_channels)))
-        return f"scope: {scope}\ncandidate: {candidate_id}\nbranches: {sorted(branch_channels)}\n"
+    def emit_scoped(scope, candidate_id, branch_channels, cleared_layers):
+        emitted.append((scope, candidate_id, dict(branch_channels), cleared_layers))
+        return (f"scope: {scope}\ncandidate: {candidate_id}\nbranches: {sorted(branch_channels)}\n"
+                f"cleared: {list(cleared_layers)}\n")
 
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path, emit_scoped=emit_scoped)
@@ -414,16 +415,17 @@ def test_scoped_graphs_have_distinct_cached_identities_and_one_entry_snapshot(tm
     with pytest.raises(SessionGraphError):
         graph.select_scope("candidate", "a", CROSSOVER_TAKE)
     scopes = [
-        ("drivers", "", {}), ("candidate", "base-speaker", {}), ("candidate", "base-room", {}),
-        ("candidate", "a", {}), ("candidate", "b", {}),
-        ("candidate_branches", "a", CROSSOVER_TAKE), ("candidate_branches", "a", CARDIOID_TAKE),
-        ("timing", "a", {}),
+        ("drivers", "", {}, ()), ("candidate", "base-speaker", {}, ()), ("candidate", "base-room", {}, ()),
+        ("candidate", "a", {}, ()), ("candidate", "a", {}, ("room_correction",)),
+        ("candidate", "a", {}, ("room_correction", "bass_extension")), ("candidate", "b", {}, ()),
+        ("candidate_branches", "a", CROSSOVER_TAKE, ()), ("candidate_branches", "a", CARDIOID_TAKE, ()),
+        ("timing", "a", {}, ()),
     ]
     fingerprints = {}
-    for scope, candidate_id, branches in scopes * 2:
-        graph.select_scope(scope, candidate_id, branches)
+    for scope, candidate_id, branches, cleared in scopes * 2:
+        graph.select_scope(scope, candidate_id, branches, cleared)
         fingerprint = asyncio.run(graph.install())
-        key = (scope, candidate_id, tuple(sorted(branches)))
+        key = (scope, candidate_id, tuple(sorted(branches)), cleared)
         assert fingerprint == fingerprints.setdefault(key, fingerprint)
         assert graph.installed_graph_yaml() == cam.live
         emitted_graph = yaml.safe_load(graph.graph_yaml())

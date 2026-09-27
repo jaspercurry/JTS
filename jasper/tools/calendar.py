@@ -115,27 +115,21 @@ def _list_events_sync(service, *, time_min: datetime, time_max: datetime) -> lis
     return list(resp.get("items") or [])
 
 
-def make_calendar_tools(
-    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
-):
-    """Build the calendar voice tools. Returns an empty list if the
-    daemon doesn't have Google clients configured (no CLIENT_ID/SECRET
-    or no accounts) — caller `_build_registry` checks this so the
-    tools never appear to the model when they couldn't function.
+async def _calendar_events(service, account: str, start: datetime, end: datetime, scope: str, monitor) -> dict:
+    try:
+        items = await asyncio.to_thread(
+            _list_events_sync, service, time_min=start, time_max=end,
+        )
+    except Exception as e:  # noqa: BLE001
+        return api_error("calendar", account, e)
+    events = [_serialise_event(it) for it in items]
+    if events and monitor is not None:
+        # Arm home_assistant's consequential-action confirmation window because calendar summary and location are untrusted third-party text.
+        monitor.mark()
+    return {"ok": True, "account": account, "scope": scope, "count": len(events), "events": events}
 
-    `setup_url` is surfaced (as the `setup_url` field, and named in the
-    `error` sentence) when no account is linked or credentials need a
-    re-link.
 
-    Invite titles/locations are attacker-controllable third-party text
-    (someone else's calendar invite), so each event's summary + location is
-    fenced via `fence_untrusted` (baseline, same as gmail), and `monitor`
-    (an `UntrustedContentMonitor`, optional) is stamped whenever a call
-    returns events — arming the consequential-action confirmation window in
-    the home_assistant tool (the load-bearing control)."""
-    if clients is None:
-        return []
-
+def _make_calendar_today_summary(clients: "GoogleClients", setup_url: str, monitor):
     @tool(
         log_payload=False,
         labels=("productivity", "google", "calendar"),
@@ -179,24 +173,14 @@ def make_calendar_tools(
         end_of_day = datetime.combine(
             now.date(), time(23, 59, 59), tzinfo=now.tzinfo,
         )
-        try:
-            items = await asyncio.to_thread(
-                _list_events_sync,
-                service, time_min=now, time_max=end_of_day,
-            )
-        except Exception as e:  # noqa: BLE001
-            return api_error("calendar", canonical, e)
-        events = [_serialise_event(it) for it in items]
-        if events and monitor is not None:
-            monitor.mark()
-        return {
-            "ok": True,
-            "account": canonical,
-            "scope": "today",
-            "count": len(events),
-            "events": events,
-        }
+        return await _calendar_events(
+            service, canonical, now, end_of_day, "today", monitor,
+        )
 
+    return calendar_today_summary
+
+
+def _make_calendar_upcoming(clients: "GoogleClients", setup_url: str, monitor):
     @tool(
         log_payload=False,
         labels=("productivity", "google", "calendar"),
@@ -240,25 +224,22 @@ def make_calendar_tools(
             return no_credentials_error(canonical, setup_url)
         now = datetime.now().astimezone()
         cutoff = now + timedelta(hours=window_hours)
-        try:
-            items = await asyncio.to_thread(
-                _list_events_sync,
-                service, time_min=now, time_max=cutoff,
-            )
-        except Exception as e:  # noqa: BLE001
-            return api_error("calendar", canonical, e)
-        events = [_serialise_event(it) for it in items]
-        if events and monitor is not None:
-            monitor.mark()
-        return {
-            "ok": True,
-            "account": canonical,
-            "scope": f"next_{window_hours}h",
-            "count": len(events),
-            "events": events,
-        }
+        return await _calendar_events(
+            service, canonical, now, cutoff, f"next_{window_hours}h", monitor,
+        )
 
-    return [calendar_today_summary, calendar_upcoming]
+    return calendar_upcoming
+
+
+def make_calendar_tools(
+    clients: "GoogleClients | None", setup_url: str = "", *, monitor=None,
+):
+    if clients is None:
+        return []
+    return [
+        _make_calendar_today_summary(clients, setup_url, monitor),
+        _make_calendar_upcoming(clients, setup_url, monitor),
+    ]
 
 
 __all__ = ["make_calendar_tools"]

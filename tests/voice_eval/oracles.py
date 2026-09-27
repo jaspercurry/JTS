@@ -120,9 +120,9 @@ async def subway_arrivals(
 
     `direction` is "N" (north / uptown / Manhattan-bound at 9 Av) or
     "S" (south / downtown / Coney-Island-bound at 9 Av) — matching
-    the chip's vocabulary in `jasper/subway.py`.
+    the chip's vocabulary in `jasper/transit/subway.py`.
 
-    Uses Subway Now (the same primary source `jasper.subway` uses)
+    Uses Subway Now (the same primary source `jasper.transit.subway` uses)
     so direct comparison to the tool's response shape is meaningful.
     For an end-to-end *independent* oracle (different API path), call
     MTA's GTFS-RT protobuf directly — left for V2 if Subway Now
@@ -175,7 +175,7 @@ async def citibike_status(
     per-station `{ebikes, classic_bikes, docks, is_renting,
     is_installed}` for each saved station.
 
-    Independent from the daemon code path (no `jasper.citibike`
+    Independent from the daemon code path (no `jasper.transit.citibike`
     cache, no `CitiBikeClient`, no provider). The tool's response is
     compared to this dict to catch any adapter / cache / parsing
     divergence.

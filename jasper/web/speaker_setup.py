@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from ..platform import systemd
 from ..identity.speaker_name import (
     DEFAULT_SPEAKER_NAME,
     MAX_SPEAKER_NAME_CHARS,
@@ -40,6 +41,7 @@ from ..atomic_io import atomic_write_text
 from ..env_load import SPEAKER_NAME_ENV_PATH
 from ..identity.reader import resolve_hostname
 from ..control.restart_broker import manage_units
+from ..net import control_advert
 from ..log_event import log_event
 from ..identity.speaker_name_discovery import NameConflict, find_name_conflicts
 from ..source_intent import kick_source_reconcile
@@ -301,7 +303,7 @@ def _apply_name(name: str, *, name_changed: bool) -> bool:
     _write_bluez_main_conf_name(name)
     bluetooth_alias_applied = False
     try:
-        from ..bluetooth.adapter import set_alias as set_bluetooth_alias
+        from ..bluetooth.adapter import set_alias as set_bluetooth_alias  # lazy: optional dbus-next
 
         asyncio.run(set_bluetooth_alias(name))
         bluetooth_alias_applied = True
@@ -317,9 +319,7 @@ def _apply_name(name: str, *, name_changed: bool) -> bool:
         )
 
     try:
-        from ..net.control_advert import render_control_advert
-
-        ok = render_control_advert(name)
+        ok = control_advert.render_control_advert(name)
         log_event(
             logger,
             "speaker_name.avahi",
@@ -545,7 +545,5 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(target, *, state_path: str = SPEAKER_NAME_ENV_PATH) -> ThreadingHTTPServer:
-    from ..platform import systemd
-
     cfg = {"state_path": state_path}
     return systemd.make_http_server(target, _make_handler(cfg))

@@ -35,7 +35,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable
 
 from jasper.log_event import log_event
 from .. import flight_recorder
@@ -266,38 +266,22 @@ async def _with_coordinator(
     *,
     camilla_host: str,
     camilla_port: int,
-    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
     return await _volume_ops.with_coordinator(
         op,
         camilla_host=camilla_host,
         camilla_port=camilla_port,
-        duck_active_probe=duck_active_probe,
-    )
-
-
-def _make_duck_active_probe(
-    voice_socket_path: str,
-) -> Callable[[], Awaitable[Optional[bool]]]:
-    return _volume_ops.make_duck_active_probe(
-        voice_socket_path,
-        voice_socket_command=_voice_socket_command,
     )
 
 
 class VolumeOps:
     """The volume operations one handler class serves.
 
-    Each mutating op runs on a fresh coordinator (`_with_coordinator`) and
-    they share one duck-active probe, which is stateless (it only closes
-    over the voice socket path). `get` reads the persisted state without
-    building a coordinator or actuators.
+    Each mutating op runs on a fresh coordinator (`_with_coordinator`). `get`
+    reads the persisted state without building a coordinator or actuators.
     """
 
-    def __init__(
-        self, camilla_host: str, camilla_port: int, voice_socket_path: str,
-    ) -> None:
-        self._duck_active_probe = _make_duck_active_probe(voice_socket_path)
+    def __init__(self, camilla_host: str, camilla_port: int) -> None:
         self._camilla_host = camilla_host
         self._camilla_port = camilla_port
 
@@ -305,7 +289,6 @@ class VolumeOps:
         return await _with_coordinator(
             op,
             camilla_host=self._camilla_host, camilla_port=self._camilla_port,
-            duck_active_probe=self._duck_active_probe,
         )
 
     async def set(self, percent: int) -> VolumeState:
@@ -698,7 +681,7 @@ def _make_handler(
         _sampler = sampler
         _state_response_cache = state_response_cache
         _voice_socket_path = voice_socket_path
-        _volume = VolumeOps(camilla_host, camilla_port, voice_socket_path)
+        _volume = VolumeOps(camilla_host, camilla_port)
 
     return Handler
 

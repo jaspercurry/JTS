@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.subway.
+"""Unit tests for jasper.transit.subway.
 
 Covers:
   - Pure helpers (station loading, direction aliases, feed URL mapping).
@@ -29,7 +29,7 @@ import base64
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from jasper.subway import (
+from jasper.transit.subway import (
     ARRIVAL_LIMIT,
     SubwayClient,
     _GTFSRealtimeFeed,

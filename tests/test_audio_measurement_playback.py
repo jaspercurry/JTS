@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_measurement import playback
+from jasper.audio_measurement.admission import playback
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from tests._log_events import event_fields, event_records
 
@@ -66,7 +66,7 @@ async def test_play_wav_uses_stable_argv_and_returns_completion(
         return _ExitedProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
+    caplog.set_level(logging.INFO, logger=playback.logger.name)
 
     result = await playback.play_wav(
         wav_path,
@@ -246,7 +246,7 @@ async def test_verified_wav_open_cancellation_survives_late_close_failure(
 
     monkeypatch.setattr(playback, "_open_verified_wav_source", delayed_open)
     monkeypatch.setattr(playback._VerifiedWavSource, "close", close_then_fail)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
+    caplog.set_level(logging.INFO, logger=playback.logger.name)
     task = asyncio.create_task(consume())
     assert await asyncio.to_thread(started.wait, 5)
     task.cancel()
@@ -284,7 +284,7 @@ async def test_verified_wav_close_failure_preserves_active_body_error(
         raise OSError("snapshot close failed")
 
     monkeypatch.setattr(playback._VerifiedWavSource, "close", close_then_fail)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
+    caplog.set_level(logging.INFO, logger=playback.logger.name)
 
     with pytest.raises(RuntimeError) as caught:
         async with playback.verified_wav_source(tmp_path, artifact):
@@ -359,7 +359,7 @@ async def test_verified_wav_internal_parse_cleanup_preserves_invalid_wav(
 
     monkeypatch.setattr(playback.os, "dup", observed_dup)
     monkeypatch.setattr(playback.os, "close", close_then_fail)
-    caplog.set_level(logging.INFO, logger=playback.__name__)
+    caplog.set_level(logging.INFO, logger=playback.logger.name)
 
     with pytest.raises(playback.WavSourceError) as caught:
         async with playback.verified_wav_source(tmp_path, artifact):
@@ -494,7 +494,7 @@ async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
     monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
-    caplog.set_level(logging.WARNING, logger=playback.__name__)
+    caplog.set_level(logging.WARNING, logger=playback.logger.name)
 
     with pytest.raises(playback.PlaybackError) as caught:
         await asyncio.wait_for(
@@ -588,7 +588,7 @@ async def test_play_wav_startup_failure_is_typed(
         raise FileNotFoundError("aplay missing")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    caplog.set_level(logging.WARNING, logger=playback.__name__)
+    caplog.set_level(logging.WARNING, logger=playback.logger.name)
 
     with pytest.raises(playback.PlaybackError) as caught:
         await playback.play_wav(
@@ -671,7 +671,7 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
     # The import graph, in a fresh interpreter: this module must never be the
     # thing that drags the DSP controller into a measurement process.
     probe = (
-        "import sys, jasper.audio_measurement.playback;"
+        "import sys, jasper.audio_measurement.admission.playback;"
         "print('jasper.camilla' in sys.modules)"
     )
     out = subprocess.check_output(

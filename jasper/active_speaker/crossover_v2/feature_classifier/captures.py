@@ -139,7 +139,7 @@ class RoundCapture:
     #: curves. ``None`` when the sidecar banks none, which refuses the window
     #: LADDER for the round rather than substituting a declared band: the
     #: un-intersected band priced a tweeter from 357 Hz where it has no output
-    #: and over-reported by 3x (E5, #1969).
+    #: and over-reported by 3x (#1969).
     radiated_band_hz: tuple[float, float] | None = None
 
 

@@ -151,7 +151,7 @@ jasper-aec-sweep-config = "jasper.cli.aec_sweep_config:main"
 jasper-xvf-profile = "jasper.cli.xvf_profile:main"
 jasper-xvf-firmware-update = "jasper.cli.xvf_firmware_update:main"
 jasper-enhanced-aec-install = "jasper.cli.enhanced_aec_install:main"
-jasper-audio-validate = "jasper.audio_validation:main"
+jasper-audio-validate = "jasper.cli.audio_validate:main"
 jasper-audio-hw-validate = "jasper.cli.audio_hw_validate:hardware_main"
 jasper-route-latency-harness = "jasper.cli.route_latency_harness:main"
 jasper-audio-config = "jasper.cli.audio_config:main"
@@ -276,6 +276,7 @@ files = ["jasper"]
 exclude = ["^jasper/turntable/vendor/"]
 ignore_missing_imports = true
 show_error_codes = true
+check_untyped_defs = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
@@ -312,14 +313,12 @@ module = [
     "jasper.active_speaker.startup_load",
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
-    # calibration and peq: latent type debt kept on the baseline, not fixed
-    # inside a relocation.
-    "jasper.audio_measurement.calibration",
+    # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
     "jasper.bluetooth.scan",
     "jasper.camilla",
-    "jasper.citibike",
+    "jasper.transit.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
     "jasper.cli.doctor.aec",
@@ -342,7 +341,7 @@ module = [
     "jasper.peering.daemon",
     "jasper.spotify_router",
     "jasper.spotify_routing",
-    "jasper.subway",
+    "jasper.transit.subway",
     "jasper.tools.catalog",
     "jasper.tools.packs",
     "jasper.tools.spotify",
@@ -356,7 +355,6 @@ module = [
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.wake_corpus.recording_backend",
     "jasper.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",
@@ -400,10 +398,24 @@ containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
   "cli : turntable : web",
-  "usage_writer",
-  "accounts : aec_ready : bus : citibike : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : subway : timers : tool_catalog_view : tool_prompt_overrides : tool_state : usage : vad : wake : wake_events : wake_models : weather",
+  # Kept above volume_process so multiroom can rank between them later (#4719).
+  "output_topology_runtime",
+  "volume_observers",
+  "volume_process",
+  # Ranked above aec: transitively imports aec.bridge_engines via assistant_loudness/cues/config/voice/audio_profile_state (#4719).
+  "volume_coordinator",
+  "volume_reconcile",
+  "volume_carrier",
+  "aec : usage_writer",
+  "accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
   "audio_runtime_settings",
-  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : volume_diagnostics",
+  "ring_conf",
+  "output_topology_observation",
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
+  "output_topology_store",
+  "output_topology",
+  # Own layer, not usb_mic's, so local_sources can rank above it later without pulling in usb_mic (#4719).
+  "output_hardware",
   "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
   "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
   "audio_measurement : audio_validation_artifacts : bass_extension : model_downloads : volume_owner",
@@ -411,12 +423,10 @@ layers = [
   "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
 ]
 exhaustive = true
+# Not yet ranked; the ratchet order is tracked in #4719.
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  # aec transitively imports jasper.usb_mic, whose chain reaches cli/web; aec
-  # ranks when usb_mic does.
-  "aec",
   "assistant_loudness",
   "assistant_volume",
   "attribution",
@@ -452,23 +462,10 @@ exhaustive_ignores = [
   "multiroom",
   "mux",
   "oauth_redirect",
-  # Hardware still reaches cli.usb_port_role through audio_hardware.usb_port_role.
-  "output_hardware",
-  # Topology still reaches cli through output_hardware.
-  "output_topology",
-  # Store consumes the held schema and hardware owners above.
-  "output_topology_store",
-  # Observation consumes output_hardware and active_speaker.output_contract,
-  # which still reach cli. Rank it after that upward dependency is removed.
-  "output_topology_observation",
-  "output_topology_runtime",
   "outputd_failure_reconcile_state",
   "peering",
   "renderer",
   "ring_assets",
-  # fanin_coupling -> active_speaker.output_contract -> output_topology -> cli;
-  # ring_conf ranks when its geometry constants no longer import that chain.
-  "ring_conf",
   "sound",
   "source_intent",
   "source_state",
@@ -478,16 +475,14 @@ exhaustive_ignores = [
   "transport_coherence",
   "tts_playout",
   "tts_routing",
-  "usb_mic",
   "usbsink",
   "voice",
   "voice_daemon",
-  "volume_coordinator", "volume_handoff",  # volume_curve -> sound -> cli; rank after that chain is cut.
   "volume_curve",
   "volume_echo",
-  "volume_observers",
+  "volume_handoff",
+  "volume_measurement_gate",
   "volume_persistence",
-  "volume_process",
   "volume_push_sources",
   "volume_scales",
   "volume_state",

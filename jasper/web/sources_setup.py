@@ -46,6 +46,7 @@ import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..platform import systemd
 from ..local_sources import status as source_status
 from ..log_event import log_event
 from ..music_sources import MUSIC_SOURCE_SPECS
@@ -344,5 +345,4 @@ def make_server(target) -> ThreadingHTTPServer:
     """Used by jasper.web.__main__ to colocate this server with the
     other settings wizards inside one process. `target` is a
     socket/tuple/int per systemd.make_http_server's contract."""
-    from ..platform import systemd
     return systemd.make_http_server(target, _make_handler())

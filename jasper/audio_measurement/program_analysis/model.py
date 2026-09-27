@@ -247,7 +247,7 @@ def sweep_band_crest_factor_db(
     f1, f2 = float(sweep_hz[0]), float(sweep_hz[1])
     if not (hi > lo > 0.0 and f2 > f1 > 0.0):
         # No overlap, or a degenerate band — no occupancy term to compute.
-        # `_ambient_rows_in_band` only yields overlapping rows, so this is
+        # `ambient_rows_in_band` only yields overlapping rows, so this is
         # defense against a malformed band, not a live path.
         return SWEEP_PEAK_TO_RMS_DB
     return SWEEP_PEAK_TO_RMS_DB + 10.0 * math.log10(
@@ -323,9 +323,9 @@ CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 # invert it by tens of dB. Set at double `CHANNEL_MAP_TARGET_RISE_DB +
 # CHANNEL_MAP_MIN_ISOLATION_DB` (the discriminator's own two hardware-derived
 # margins stacked): comfortably above any hardware-measured wiring effect,
-# comfortably below the 77 dB gap the 2026-08-16 incident measured (+10 dB
-# commanded, -67 dB captured). NOT gated on pilot SNR validity -- the
-# incident's own SNR reading was itself corrupted by the same wrong window,
+# comfortably below the 77 dB gap a mis-anchored capture once measured (+10 dB
+# commanded, -67 dB captured). NOT gated on pilot SNR validity -- that
+# capture's own SNR reading was itself corrupted by the same wrong window,
 # so waiting on it would blind this exact case. PROVISIONAL.
 DELTA_IMPLAUSIBLE_GAP_DB = 2.0 * (CHANNEL_MAP_TARGET_RISE_DB + CHANNEL_MAP_MIN_ISOLATION_DB)
 
@@ -369,6 +369,10 @@ class MeasurementGeometry:
     #: :mod:`~jasper.audio_measurement.gating`'s exemption words
     #: (``SEAT_EXEMPT``) analyzes it ungated and says so in its gating block.
     gate_exempt_reason: str | None = None
+    #: The declared room's first bounce at this capture's distance, in seconds:
+    #: the gate searches for a reflection up to it, and to
+    #: ``gating.SEARCH_T_MAX_MS`` with no room declared (#3665 item 10).
+    declared_first_bounce_s: float | None = None
     position_deg: float | None = None
     vertical_deg: float | None = None
 
@@ -774,8 +778,8 @@ class PilotObservation:
     a gap no real wiring can produce, so CHECK's ladder reads it as
     mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``
     (unlike ``linearity_ok``): a gap this size means one of the two readings
-    floored while the other did not, and the 2026-08-16 incident's own
-    ``snr_valid`` was itself an artifact of the wrong window being read.
+    floored while the other did not, and a floored reading's own
+    ``snr_valid`` can itself be an artifact of the wrong window being read.
     """
 
     role: str
@@ -984,7 +988,7 @@ class ProgramAnalysis:
     # Any pilot's `PilotObservation.delta_implausible` (#2647) -- set ONLY by
     # `_analyze_check`, a second, independent signal alongside
     # `anchor_ambiguous` that this capture's timeline is not trustworthy. Never
-    # written by `_global_offset`/`_resolve_anchor`, so this field has exactly
+    # written by `locate_global_offset`/`_resolve_anchor`, so this field has exactly
     # one writer. ``False`` default: implausible by construction otherwise.
     delta_implausible: bool = False
     # Passthrough of MeasurementPriors.mic_calibrated, set at the same site
@@ -993,3 +997,5 @@ class ProgramAnalysis:
     # dBFS, one driver's located sweeps in their band, one reading per gain
     # (ADR-0364). Set only by `analyze_program_capture`; empty unless one driver swept.
     stimulus_levels: tuple[LevelReading, ...] = ()
+    # dB, VERIFY only: see `response._sweep_over_ambient_db`. ``None`` without an ambient window.
+    sweep_over_ambient_db: float | None = None

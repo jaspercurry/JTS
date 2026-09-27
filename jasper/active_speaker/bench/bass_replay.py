@@ -19,7 +19,7 @@ from .replay import replay_graph, replay_levels
 
 
 def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
-                bass_reference_db: float, descriptor: Mapping, channels: tuple[int, ...],
+                descriptor: Mapping, channels: tuple[int, ...],
                 preset: ActiveSpeakerPreset | None = None) -> dict:
     settings = as_dynamic_bass_descriptor(descriptor)
     source = yaml.safe_load(graph.read_text())
@@ -39,9 +39,8 @@ def replay_bass(graph: Path, stimulus: Path, out: Path, *, main_db: float,
         stage.mkdir(exist_ok=True)
         stage_graph = stage / 'graph.yml'
         stage_graph.write_text(yaml.safe_dump(payload, sort_keys=False))
-        stages[name] = replay_graph(stage_graph, stimulus, stage, main_db=main_db,
-                                    bass_reference_db=bass_reference_db)
-    actual = replay_graph(graph, stimulus, out, main_db=main_db, bass_reference_db=bass_reference_db)
+        stages[name] = replay_graph(stage_graph, stimulus, stage, main_db=main_db)
+    actual = replay_graph(graph, stimulus, out, main_db=main_db)
     return {**actual, 'bass_attribution': {'descriptor': settings.payload(), 'channels': list(channels),
         'stages': stages,
         'scope': 'Native file comparisons at final output, with downstream limiters retained. '
@@ -77,5 +76,5 @@ def bass_replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, floa
                          'ladder': channel['ladder'], 'bands': bands})
     return {**readings['delivered'], 'channels': channels, 'bass_attribution': {
         'descriptor': attribution['descriptor'], 'scope': attribution['scope'],
-        'stages': {name: {key: reading[key] for key in ('output_sha256', 'graph_sha256', 'bass_reference_db')}
+        'stages': {name: {key: reading[key] for key in ('output_sha256', 'graph_sha256')}
                    for name, reading in readings.items()}}}

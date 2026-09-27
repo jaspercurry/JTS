@@ -81,7 +81,7 @@ def _ambient_from_capture(
     not the clamped start — sliding forward would read whatever the
     schedule put AFTER the window (on the shipped CHECK program, the
     courtesy beep) as if it were room floor, 39.5 dB hot on a 0.6 s late
-    start. That number feeds BOTH `_snr_floor_ok` and `_solve_gain_plan`.
+    start. That number feeds BOTH `clears_snr_floor` and `_solve_gain_plan`.
 
     Below :data:`AMBIENT_MIN_USABLE_FRACTION` of the window this degrades
     the same honest way `_pilot_ambient_samples` does: ``None`` samples
@@ -259,8 +259,8 @@ def _pilot_observations(
     wiring can produce -- CHECK's ladder reads that as mis-anchoring
     evidence rather than a `channel_map_mismatch` wiring finding, belt to
     the near-tie guard's suspenders (`anchor_ambiguous`). Deliberately NOT
-    gated on `snr_valid`: the 2026-08-16 incident's own low-SNR reading was
-    itself an artifact of the wrong window being read.
+    gated on `snr_valid`: a low-SNR reading can itself be an artifact of the
+    wrong window being read.
     """
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
@@ -315,9 +315,9 @@ def _pilot_observations(
         # readings floored (fell at/below ambient) while the other did not,
         # which is either a mis-anchored window or a room too noisy to trust
         # either way -- both route to the same retriable finding, never the
-        # wiring hard stop. The 2026-08-16 incident's own low-SNR reading
-        # (10.6 dB, itself an artifact of the wrong window) is why this must
-        # not wait on the SNR gate the way `linearity_ok` does.
+        # wiring hard stop. A low-SNR reading (as low as 10.6 dB, itself an
+        # artifact of the wrong window) is why this must not wait on the SNR
+        # gate the way `linearity_ok` does.
         delta_implausible = abs(captured_delta - programmed_delta) > DELTA_IMPLAUSIBLE_GAP_DB
 
         # Gain-solve reference: full-band peak, NOT the ambient-subtracted level.
@@ -428,8 +428,9 @@ def _channel_map_ok(
     2. CROSS: did every OTHER driver's band stay at least
        ``CHANNEL_MAP_MIN_ISOLATION_DB`` below this driver's own rise (the
        ISOLATION RATIO)? Guards ABNORMAL CROSS-BAND ENERGY (bleed, skirt,
-       nonlinearity) — not the mis-wire discriminator, which rung 1
-       catches. A ratio rather than an additive bound because honest
+       nonlinearity). TARGET (rung 1) catches a dead, missing, or bridged
+       channel, not a swap under a realistic rolloff — that gap is #2800
+       (parked). A ratio rather than an additive bound because honest
        cross-band content sits at a roughly fixed RELATIVE level (see
        ``CHANNEL_MAP_MIN_ISOLATION_DB``'s derivation). Judged only once the
        CROSS band itself rose ``CHANNEL_MAP_TARGET_RISE_DB`` — the bar a
@@ -513,7 +514,7 @@ def _bands_overlap(
     return hi_a > lo_b and lo_a < hi_b
 
 
-def _ambient_rows_in_band(
+def ambient_rows_in_band(
     band_hz: tuple[float, float],
     ambient_bands: Sequence[Any],
 ) -> list[tuple[float, float, float]]:
@@ -605,7 +606,7 @@ def _solve_role_gain(
     The result is clamped by ``flat_target_gain_db``: this solve can only
     make MEASURE quieter than the level-only figure, never louder.
     """
-    rows = _ambient_rows_in_band(band_hz, ambient_bands) if band_hz else []
+    rows = ambient_rows_in_band(band_hz, ambient_bands) if band_hz else []
     if not rows:
         # Disclosed fallback: no ambient evidence to solve against.
         return RoleGainSolve(
@@ -739,7 +740,7 @@ def _solve_gain_plan(
     # Deliberately judged at `target_capture_dbfs`, NOT the solved level —
     # this is the room-quality gate ("is this room quiet enough at all"),
     # a different question from the per-driver solve above.
-    snr_floor_ok = _snr_floor_ok(
+    snr_floor_ok = clears_snr_floor(
         ambient_report, target,
         [solve.band_hz for solve in solves.values() if solve.band_hz is not None],
     )
@@ -798,7 +799,7 @@ def alignment_snr_gain_adjustment(
     return adjusted, evidence
 
 
-def _snr_floor_ok(
+def clears_snr_floor(
     ambient_report: Mapping[str, Any], target_capture_dbfs: float,
     pilot_bands_hz: Sequence[tuple[float, float]],
 ) -> bool:
@@ -807,5 +808,5 @@ def _snr_floor_ok(
     if not bands:
         return False
     worst = max((level for band in pilot_bands_hz
-                 for _lo, _hi, level in _ambient_rows_in_band(band, bands)), default=None)
+                 for _lo, _hi, level in ambient_rows_in_band(band, bands)), default=None)
     return worst is not None and (target_capture_dbfs - worst) >= DRIVER.snr_ok_db

@@ -19,6 +19,7 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.json_fields import as_mapping
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
+from jasper.multiroom.config import is_active_member, load_config
 
 from .candidate_bank import load_applied_candidate
 from .crossover_contract import (
@@ -57,8 +58,6 @@ _PROGRAM_BAKE_SOURCE = (
 
 def _grouped_active_runtime() -> bool:
     """Fresh Active-owned scope fact for both bonded leaders and followers."""
-
-    from jasper.multiroom.config import is_active_member, load_config
 
     return is_active_member(load_config())
 
@@ -104,7 +103,7 @@ def _commissioning_transport(topology: Any) -> str | None:
     ``None`` or duck-typed topology raises a class no sibling derivation does,
     and an observability field must never stop ``/system/snapshot`` answering.
     """
-    from .playback_route import resolve_active_playback_device
+    from .playback_route import resolve_active_playback_device  # lazy: test_active_speaker_setup_status patches playback_route
 
     try:
         device, _source = resolve_active_playback_device(topology)
@@ -247,17 +246,24 @@ def _applied_layer_a_binding(
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: graph compilation imports NumPy
     from jasper.sound.settings import saved_sound_layers  # lazy: household EQ imports NumPy
 
-    unavailable = {
-        "status": "unverifiable",
-        "matches": False,
-        "expected_fingerprint": None,
-        "loaded_fingerprint": None,
-        "differences": [],
-    }
+    def _payload(
+        status: str,
+        expected: str | None = None,
+        loaded: str | None = None,
+        differences: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "status": status,
+            "matches": status == "current",
+            "expected_fingerprint": expected,
+            "loaded_fingerprint": loaded,
+            "differences": differences or [],
+        }
+
     if not isinstance(applied_profile, Mapping) or (
         active_config_text is None and not active_config_path
     ):
-        return unavailable
+        return _payload("unverifiable")
     try:
         loaded_yaml = (
             active_config_text
@@ -273,13 +279,7 @@ def _applied_layer_a_binding(
             _grouped_active_runtime()
             or f"Source: {_PROGRAM_BAKE_SOURCE}" in loaded_yaml
         ):
-            return {
-                "status": "distributed_active_unsupported",
-                "matches": False,
-                "expected_fingerprint": None,
-                "loaded_fingerprint": None,
-                "differences": [],
-            }
+            return _payload("distributed_active_unsupported")
         playback_device = parse_camilla_devices_config(loaded_yaml)["playback_device"]
         declaration = load_tuning_declaration(topology, playback_device=playback_device)
         candidate = candidate_from_applied_profile(topology, applied_profile,
@@ -294,14 +294,8 @@ def _applied_layer_a_binding(
             [] if matches else _layer_a_differences(expected_yaml, loaded_yaml)
         )
     except (*_READINESS_DERIVATION_ERRORS, CandidateBankRefusal):
-        return unavailable
-    return {
-        "status": "current" if matches else "mismatch",
-        "matches": matches,
-        "expected_fingerprint": expected,
-        "loaded_fingerprint": loaded,
-        "differences": differences,
-    }
+        return _payload("unverifiable")
+    return _payload("current" if matches else "mismatch", expected, loaded, differences)
 
 
 def read_active_speaker_setup_status(

@@ -5,31 +5,22 @@
 from __future__ import annotations
 
 
-import numpy as np
 import pytest
 
 
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
     _PHASE_STEP,
-    _per_band_flatness_lines,
     build_crossover_envelope_v2,
-    compact_cloud_status,
-)
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
-    PHASE_LATERAL,
 )
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.audio_measurement.timing_verification import timing_verification
 from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
     reason_message,
-    verify_inconclusive_message,
 )
-from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.round_copy import RUN_ENDED, round_lines
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
@@ -90,9 +81,9 @@ def _every_screen_envelope() -> dict[str, dict]:
     }
 
 
-def test_schema_8_and_v2_step_tuple():
+def test_schema_version_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 17
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -137,7 +128,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = _build_envelope_logged(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 17
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
     assert env["flow"] == "v2"
 
 
@@ -262,7 +253,6 @@ def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
     assert env["alternate_actions"] == []
     assert env["terminal_status"] == terminal
     assert env["capture"] is None
-    assert all(env[key] is None for key in ("candidate_review", "prediction", "cloud", "cloud_chart", "round"))
 
 
 @pytest.mark.parametrize("previous_failure", [None, {"code": "user_stopped"}])
@@ -302,20 +292,6 @@ def test_verify_phase_screen():
     assert _step_statuses(env)["verify"] == "active"
 
 
-def test_verify_phase_express_discloses_before_tuning_flatness_from_measure_cloud():
-    """B1 fix (adversarial review of PR #1780): express's pre-apply cloud has
-    already closed by the time this screen renders (it walks BEFORE VERIFY),
-    so its flatness/carve-out disclosure is available here too, not just on
-    the done screen — read from CLOUD_MEASURE (express's only cloud), never
-    CLOUD_VERIFY (which express never produces)."""
-    env = build_crossover_envelope_v2(_status(
-        phase="verify", tier="express", cloud=_cloud_measure_flatness_status(),
-    ))
-    details = env["expert_details"]
-    assert details, "express's VERIFY screen must not sit on unread measure-block data"
-    assert any("Measured before tuning:" in line for line in details)
-
-
 def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     """A crash-hydrated active plan surfaces NO unresolved payload but still
     needs draining — the screen must key on needs_recovery alone."""
@@ -327,152 +303,16 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     assert env["screen"] == "awaiting_plan"
 
 
-def _cloud_measure_flatness_status(*, carve_outs=None, **overrides):
-    flatness = {
-        "max_db": -4.85, "max_hz": 11480.0, "max_band_hz": [8000.0, 16000.0],
-        # The frame the deviation is stated against (#1857) — every banked
-        # gauge carries it, so the fixtures do too.
-        "reference_band_hz": [250.0, 8000.0],
-        "tolerance_db": 2.5, "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
-        "evaluable": True, "passed": False,
-    }
-    flatness.update(overrides)
-    return {
-        PHASE_CLOUD_MEASURE: {
-            "geometry_locked": False, "thin_evidence": False,
-            "geometry_guidance": "", "spec_bands": [], "overall_within_target": False,
-            "excluded_interval_count": 3, "flatness": flatness,
-            "carve_outs": carve_outs or [],
-        },
-    }
+@pytest.mark.parametrize("code", [REASON_LOCATE_FAILED, REASON_VERIFY_INCONCLUSIVE])
+def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code):
+    """A state file from an older build may still carry the retired evidence keys."""
+    env = build_crossover_envelope_v2(_status(
+        applied=False,
+        failure={"code": code, "pilot_heard": True},
+        verify={"gate": {"reflection_measured": True}},
+    ))
 
-
-def test_compact_cloud_status_reports_positions_accepted_from_the_durable_block():
-    """The scoped first step: a household whose walk failed partway through
-    should see how much was banked, not just that the group did not close.
-    ``positions`` is the durable ``_cloud_summary``'s own key (the surviving
-    take per position); the count is real evidence already on disk, only
-    never surfaced."""
-    compact = compact_cloud_status({
-        PHASE_CLOUD_VERIFY: {
-            "geometry": {}, "pipeline": {},
-            "positions": [{"position_id": f"cloud_verify_0{i}"} for i in range(4)],
-        },
-    })
-    assert compact[PHASE_CLOUD_VERIFY]["positions_accepted"] == 4
-
-
-def test_state_projection_does_not_inherit_the_per_position_block() -> None:
-    """``compact_cloud_status`` is a shape-scoped projection: a consumer that
-    reads ``cloud`` alone (the doctor) must never have to parse or skip
-    curve-shaped data. Members on the pipeline result must not leak into it."""
-    pipeline = {"available": True, "spec": {}, "positions": [{"curve": {"freqs_hz": [1.0]}}]}
-    compact = compact_cloud_status({PHASE_CLOUD_VERIFY: {"pipeline": pipeline, "geometry": {}}})
-
-    assert compact is not None
-    assert "positions" not in (compact.get(PHASE_CLOUD_VERIFY) or {})
-
-
-@pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_CLOUD_VERIFY])
-def test_compact_cloud_status_never_fabricates_a_required_count(phase):
-    result = compact_cloud_status({phase: {"geometry": {}, "pipeline": {}}})
-    assert result[phase]["positions_required"] is None
-
-
-def test_per_band_lines_uniformly_flat_shows_no_alarm():
-    """Edge case: nothing wrong anywhere. The new line still renders (every
-    band IS evaluable) but shows nothing alarming — three passes, ~0 dB —
-    confirming the disclosure does not manufacture a false impression of
-    trouble where the pointer already reports none."""
-    freqs = np.geomspace(250.0, 16_000.0, 1500)
-    report = evaluate_flat_spec(freqs, np.zeros_like(freqs), None)
-    spec_bands = [
-        {
-            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "within_target": b.within_target,
-            "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
-        }
-        for b in report.bands
-    ]
-    lines = _per_band_flatness_lines(spec_bands)
-    assert len(lines) == 1
-    assert "+0.00 dB (within" in lines[0]
-    assert "fail" not in lines[0]
-
-
-def test_per_band_lines_single_band_defect_leaves_the_others_quiet():
-    """Edge case: only the top band is out of spec; woofer and tweeter are
-    genuinely flat. The per-band line shows two clean passes and one real
-    failure — the ordinary, non-misattribution case, which this disclosure
-    must render just as plainly as the drag case above."""
-    freqs = np.geomspace(250.0, 16_000.0, 1500)
-    curve = np.where(freqs >= 8000.0, -6.0, 0.0)
-    report = evaluate_flat_spec(freqs, curve, None)
-    spec_bands = [
-        {
-            "f_lo_hz": b.f_lo_hz, "f_hi_hz": b.f_hi_hz, "within_target": b.within_target,
-            "max_deviation_db": b.max_deviation_db, "tolerance_db": b.tolerance_db,
-        }
-        for b in report.bands
-    ]
-    line = _per_band_flatness_lines(spec_bands)[0]
-    assert "250–2000 Hz +0.00 dB (within" in line
-    assert "8000–16000 Hz -6.00 dB (3.5 dB outside" in line
-
-
-def test_per_band_lines_both_bands_failing_shows_both():
-    """Edge case named in #1857's own remedy: BOTH the woofer and tweeter
-    genuinely out of spec (not one dragging the other) — the per-band line
-    must show both failures, not collapse to the single pointer."""
-    spec_bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": False,
-         "max_deviation_db": 3.0, "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": False,
-         "max_deviation_db": -4.5, "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": True,
-         "max_deviation_db": 1.0, "tolerance_db": 2.5},
-    ]
-    line = _per_band_flatness_lines(spec_bands)[0]
-    assert "250–2000 Hz +3.00 dB (1.5 dB outside" in line
-    assert "2000–8000 Hz -4.50 dB (2.5 dB outside" in line
-    assert "8000–16000 Hz +1.00 dB (within" in line
-
-
-def test_per_band_lines_skips_unevaluable_bands_without_fabricating():
-    """A band with no surviving evidence (``within_target`` is ``None``, not a
-    bool) contributes no line — the same "unevaluable is not a fabricated
-    verdict" rule ``BandResult`` itself follows — rather than printing a
-    fake 0 dB reading for a band nothing measured."""
-    spec_bands = [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": None,
-         "max_deviation_db": None, "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": False,
-         "max_deviation_db": -4.5, "tolerance_db": 2.0},
-    ]
-    line = _per_band_flatness_lines(spec_bands)[0]
-    assert "250–2000 Hz" not in line
-    assert "2000–8000 Hz -4.50 dB (2.5 dB outside" in line
-
-
-def test_per_band_lines_empty_or_malformed_input_renders_nothing():
-    """No fabricated line when there is nothing to disclose — mirrors every
-    other honesty rule in this module (``[]``, never an empty-looking
-    sentence)."""
-    assert _per_band_flatness_lines([]) == []
-    assert _per_band_flatness_lines(None) == []
-    assert _per_band_flatness_lines("not a list") == []
-    assert _per_band_flatness_lines([{"within_target": None}, "not a mapping"]) == []
-
-
-def test_the_registry_holds_the_cause_unknown_rendering_not_a_literal():
-    """SSOT: the sentence has ONE writer, and the registry entry is that
-    writer's cause-unknown output rather than a second copy of the words that
-    could drift from it. Any reader of REASON_REGISTRY therefore gets copy that
-    is true, not copy that guesses."""
-    assert (
-        REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
-        == verify_inconclusive_message(None)
-    )
-    assert "reflection" not in REASON_REGISTRY[REASON_VERIFY_INCONCLUSIVE].message
+    assert env["verdict_text"] == REASON_REGISTRY[code].message
 
 
 def test_no_registry_sentence_names_undo():
@@ -494,20 +334,6 @@ def test_every_registry_code_renders_without_error(code, template):
     assert env["verdict_text"]
 
 
-_PRIOR_SESSION_CLOUD = {
-    "cloud_measure": {
-        "geometry": {"verdict": "ok"},
-        "positions": [["mark", 1]],
-        "pipeline": {"spec": {"bands": [{"name": "handoff", "max_deviation_db": 6.66,
-                                         "tolerance_db": 3.0, "within_target": False}]}},
-        "session_id": "cap_dead_session",
-    },
-}
-
-
-    # Not the terminal screen's actions.
-
-
 @pytest.mark.parametrize("phase,screen", [
     ("measure", "measure"),
     ("verify", "verify"),
@@ -515,13 +341,11 @@ _PRIOR_SESSION_CLOUD = {
 ])
 def test_live_session_phase_screen_is_untouched(phase, screen):
     """No regression to the live path: a session the household is inside
-    renders the screen it renders today, numbers and all."""
+    renders the screen it renders today."""
     env = build_crossover_envelope_v2(_status(
-        phase=phase, session_id="cap_live", applied=phase.endswith("verify"),
-        cloud=_PRIOR_SESSION_CLOUD, tier="full",
+        phase=phase, session_id="cap_live", applied=phase.endswith("verify"), tier="full",
     ))
     assert env["screen"] == screen
-    assert env["cloud"] == _PRIOR_SESSION_CLOUD
     assert env["nudges"] == []
 
 

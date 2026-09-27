@@ -35,22 +35,24 @@ _publish_failure_warned = False
 
 Bridge = Callable[[], Awaitable[None]]
 Publish = Callable[[], None]
-# The one bridge that supervises sub-tasks of its own reports them through
-# this: the supervisor calls it once with its publish hook and merges the live
-# mapping it gets back into that bridge's status entry, so every publish
-# carries the sub-task health next to the supervisor's own restarts/last_error.
+# A bridge with live state of its own (the HID bridge's readers, a mic
+# adapter's link) reports it through this: the supervisor calls it once with
+# its publish hook and merges the live mapping it gets back into that bridge's
+# status entry, so every publish carries it next to restarts/last_error.
 Detail = Callable[[Publish], Mapping[str, Any]]
 
 
 def _publish(health: Mapping[str, Any], status_path: str | os.PathLike) -> None:
     global _publish_failure_warned
     try:
-        # 0640 + the parent's group: jasper-control (Group=jasper) reads it.
+        # 0640 + the parent's group: jasper-voice and jasper-control
+        # (Group=jasper) read it.
         atomic_write_json(status_path, {"bridges": health}, mode=0o640)
     except OSError as exc:
-        # Fail-soft — an unwritable /run costs observability, never a bridge.
-        # One WARNING per process (a missing RuntimeDirectory is a deploy bug
-        # worth seeing once), then quiet: this runs on every restart.
+        # Fail-soft for the bridges, which keep running; jasper-voice then
+        # reads every accessory mic as not ready and refuses its holds with
+        # the cue. One WARNING per process (a missing RuntimeDirectory is a
+        # deploy bug worth seeing once), then quiet: this runs on every restart.
         log_event(
             logger,
             "accessory.status_publish_failed",
@@ -104,7 +106,7 @@ async def supervise(
     *,
     backoff_sec: float = RESTART_BACKOFF_SEC,
     status_path: str | os.PathLike = STATUS_PATH,
-    detail: tuple[str, Detail] | None = None,
+    details: Mapping[str, Detail] | None = None,
 ) -> None:
     """Run every bridge until cancelled, restarting each one independently."""
 
@@ -115,8 +117,7 @@ async def supervise(
     def publish() -> None:
         _publish(health, status_path)
 
-    if detail is not None:
-        name, hook = detail
+    for name, hook in (details or {}).items():
         health[name].update(hook(publish))
     publish()
     tasks = [

@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared fixtures for the ``test_control_server*`` modules.
-
-One HTTP server fixture per stubbed collaborator, the fake volume
-coordinator, and the urllib request helpers. The two autouse fixtures
-isolate household-secret and output-topology state; every consuming
-module imports both.
-"""
+"""Shared control-server fixtures."""
 
 from __future__ import annotations
 
@@ -20,6 +14,8 @@ import urllib.error
 from http.server import ThreadingHTTPServer
 
 import pytest
+
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S
 
 from jasper.control.server import _make_handler
 from jasper.volume_state import VolumeState
@@ -332,7 +328,7 @@ def _maybe_json(raw: bytes) -> dict:
 def _get(url: str, *, headers: dict[str, str] | None = None) -> tuple[int, dict]:
     req = urllib.request.Request(url, headers=headers or {}, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
@@ -353,7 +349,7 @@ def _post(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
@@ -372,7 +368,7 @@ def _post_raw(
         url, data=data, headers=req_headers, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
@@ -387,5 +383,9 @@ def _grouping_test_setup(monkeypatch, tmp_path):
 
     monkeypatch.setattr(srv_mod, "GROUPING_ENV_FILE", str(env))
     monkeypatch.setattr(srv_mod.subprocess, "Popen", _recording_popen(popens))
-    srv_mod._reset_grouping_reconciler_kick_coalescer_for_tests()
+    coalescer = srv_mod._grouping_reconciler_kick_coalescer
+    with coalescer._lock:
+        if coalescer._trailing_handle is not None:
+            coalescer._trailing_handle.cancel()
+        coalescer._trailing_handle = coalescer._last_kick_at = None
     return env, popens

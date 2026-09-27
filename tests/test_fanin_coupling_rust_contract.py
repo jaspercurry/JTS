@@ -6,7 +6,7 @@
 
 The Rust ``RingWriter`` writes the fan-in -> Camilla SHM ring (Ring A) and the
 Python emitter describes it as a CamillaDSP ioplug capture. If the ring path, env
-names, slot bounds, or coupling token diverge, fan-in writes a ring nobody reads
+names, slot bounds, or wire format diverge, fan-in writes a ring nobody reads
 or the daemon and the emitted/armed config disagree on the transport.
 """
 from __future__ import annotations
@@ -16,9 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin_coupling import (
-    COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
@@ -97,35 +95,6 @@ def _call_sites(fn: str, code: str) -> int:
     fix.
     """
     return len(re.findall(rf"(?<!\w){re.escape(fn)}\(", code))
-
-
-def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
-    """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
-
-    Ring A is the daemon's only transport (ADR-0100), so this key SELECTS
-    nothing on either side; Python no longer writes it at all and sweeps a
-    persisted value off migrating boxes
-    (``coupling_reconcile._LEGACY_FANIN_COUPLING_ENV``). Rust still has to serve
-    what the fleet can legitimately present and refuse the rest (that refusal
-    half is pinned behaviorally in-crate by
-    `only_a_ring_declaration_or_none_is_served`).
-
-    UNSET is a first-class served state and this is the row the sweep depends
-    on: once the key is gone, every box presents ``None`` and must start.
-
-    Shape-level on purpose: it complements the in-crate behavioral pin rather
-    than restating it, and what can drift across the language boundary is the
-    accept-set's MEMBERSHIP, which is what this reads.
-    """
-    text = _config_rs_text()
-    assert f'"{_LEGACY_FANIN_COUPLING_ENV}"' in text, (
-        f"Rust must still read {_LEGACY_FANIN_COUPLING_ENV} to refuse a value "
-        "it cannot serve"
-    )
-    assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
-        "the Rust accept arm must serve the undeclared key (None), a cleared "
-        f"key (empty), and the {COUPLING_SHM_RING!r} token — all three in one arm"
-    )
 
 
 def test_shm_ring_env_var_names_and_defaults_agree():
@@ -246,17 +215,7 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
 
 
 def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
-    # SF-1: the JASPER_FANIN_RING_SLOTS normalizer is a declared must-agree axis.
-    # BOTH sides fail loud on a present out-of-range value — no silent clamp,
-    # per repo doctrine. Otherwise a future arm script that resolved slots via the
-    # Python resolver could write an N-slot ioplug conf.d geometry while the
-    # daemon refuses to start on the same env (split-brain, fail-closed but
-    # maximally confusing on-Pi). This pins the exact agreed behavior:
-    #   unset      -> the same default (2) on both sides
-    #   2 and 16   -> accepted on both sides
-    #   17 (and other out-of-range) -> rejected on both sides
 
-    # Python side (runs live).
     assert resolve_ring_slots(None) == DEFAULT_FANIN_RING_SLOTS
     assert resolve_ring_slots(str(RING_SLOTS_MIN)) == RING_SLOTS_MIN
     assert resolve_ring_slots(str(RING_SLOTS_MAX)) == RING_SLOTS_MAX
@@ -264,12 +223,6 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
         with pytest.raises(ValueError):
             resolve_ring_slots(str(bad))
 
-    # Rust side (source pin — the crate does not build on macOS). The daemon
-    # bails on the same range with the same bound constants, and its from_env
-    # fail-loud is exercised by the Rust unit test in the CI rust job.
-    # jasper-fanin re-exports the ring crate's own bounds rather than
-    # restating them, so the values are pinned at their real source
-    # (jasper-ring) and fanin's re-export is pinned separately.
     text = _config_rs_text()
     assert ring_abi()["min_n_slots"] == RING_SLOTS_MIN, (
         "jasper_ring::MIN_N_SLOTS must match the Python RING_SLOTS_MIN bound"
@@ -277,28 +230,18 @@ def test_shm_ring_slots_out_of_range_fails_loud_on_both_sides():
     assert ring_abi()["max_n_slots"] == RING_SLOTS_MAX, (
         "jasper_ring::MAX_N_SLOTS must match the Python RING_SLOTS_MAX bound"
     )
-    # The out-of-range guard returns an Err, it does NOT clamp.
     opener = "if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {"
     assert opener in text, (
         "Rust must range-check JASPER_FANIN_RING_SLOTS against the shared bounds"
     )
-    # Slice to the block's own closing brace, NOT to the first `}` in the body:
-    # the guard's message is a format string, so `{}` placeholders sit inside it
-    # and a first-`}` split truncates the block mid-literal (it silently read
-    # only 2 lines once the guard grew past its placeholders).
+    # Format placeholders contain braces; match the guard's closing line.
     body = text.split(opener, 1)[1]
-    guard, sep, _ = body.partition("\n        }\n")
+    guard, sep, _ = body.partition("\n    }\n")
     assert sep, "could not find the ring-slots guard's closing brace"
-    # Containment: the slice must stop at THIS guard and not run on into the
-    # next one. Without this, an over-capturing slice would satisfy every
-    # assertion below using text that belongs to the adjacent slot-shear guard,
-    # and the ring-slots guard could be gutted while the test stayed green.
     assert "must be a whole multiple" not in guard, (
         "the ring-slots guard slice over-captured into the adjacent "
         "slot-shear guard — the assertions below would pass on the wrong block"
     )
-    # Fail-loud is the promise; the spelling is not. `anyhow::bail!` and
-    # `return Err(anyhow::anyhow!(...))` both satisfy it.
     assert "anyhow::bail!" in guard or "return Err(anyhow::anyhow!(" in guard, (
         "Rust out-of-range ring slots must FAIL LOUD (bail!/return Err), not clamp"
     )

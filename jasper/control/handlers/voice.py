@@ -156,13 +156,13 @@ class VoiceRoutes(ControlHandlerMixin):
         if result is None:
             return
         # Result codes from voice_daemon's manual_session_*:
-        #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING /
+        #   OK / BUSY / CAP / PAUSED / MUTED / MEASURING / NOT_READY /
         #   NO_SESSION / ALREADY_ENDED / UNKNOWN_SOURCE / NO_ROOM_MIC / ERROR
         # Map non-OK outcomes to non-2xx so remote and automation
         # callers receive an actionable status.
         http_status = 200
         if result.get("result") not in ("OK", "ALREADY_ENDED", None):
-            if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING"):
+            if result.get("result") in ("CAP", "PAUSED", "MUTED", "MEASURING", "NOT_READY"):
                 http_status = 503
             elif result.get("result") in ("BUSY", "NO_SESSION"):
                 http_status = 409

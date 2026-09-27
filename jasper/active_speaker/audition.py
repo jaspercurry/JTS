@@ -143,7 +143,7 @@ def audition_summary() -> dict[str, Any] | None:
 
 def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) -> str:
     # float(), not just a bound check: a numpy scalar passes every comparison and
-    # then the YAML dumper cannot represent it (met on jts3, 2026-09-21).
+    # then the YAML dumper cannot represent it.
     trim_db = float(trim_db)
     if not 0.0 <= trim_db <= MAX_COMPARE_TRIM_DB:
         raise ValueError("compare trim is outside its attenuation range")
@@ -176,7 +176,7 @@ def _refuse_if_graph_is_claimed() -> None:
     nothing and swaps the graph out from under a running capture.
     """
 
-    from jasper.active_speaker.session_volume_plan import live_measurement_session
+    from jasper.active_speaker.session_volume_plan import live_measurement_session  # lazy: import cost — jasper-control and jasper-web load this module
     from jasper.active_speaker.startup_load import load_commission_load_state  # lazy: the load transaction imports the graph proof
 
     refusal = live_measurement_session(action="auditioning")
@@ -233,7 +233,7 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
     disclosure so the owner knows the A/B is not level-matched.
     """
 
-    from jasper.active_speaker.baseline_profile import (
+    from jasper.active_speaker.baseline_profile import (  # lazy: import cost — jasper-control and jasper-web load this module
         profile_blend_correction,
         profile_linearization,
         profile_program_headroom_db,
@@ -256,7 +256,7 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
 
 async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None:
     """Write through the controller's admission door, with ADR-0211 routing."""
-    from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
+    from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live  # lazy: keeps NumPy out of jasper-control and jasper-web
 
     plan = await plan_live_edit_for(cam, yaml_text)
     token = AUDITION_WRITE.set(True)
@@ -370,16 +370,16 @@ async def start_audition(
             cam=cam, state_path=state_path, play_cue=play_cue
         )
 
-    from jasper.active_speaker.baseline_profile import (
+    from jasper.active_speaker.baseline_profile import (  # lazy: import cost — jasper-control and jasper-web load this module
         applied_profile_displacement,
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.runtime_contract import (  # lazy: import cost — jasper-control and jasper-web load this module
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         desired_graph_approved,
         prove_desired_graph,
     )
-    from jasper.dsp_apply import dsp_writer_lock
+    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
     from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
 
     _refuse_if_graph_is_claimed()
@@ -510,7 +510,7 @@ async def stop_audition(
     worst possible reading of a corrupt byte.
     """
 
-    from jasper.dsp_apply import dsp_writer_lock
+    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
 
     if not audition_state_path(state_path).exists():
         return {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}

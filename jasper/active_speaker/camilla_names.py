@@ -26,6 +26,14 @@ def driver_limiter_name(role: str) -> str:
     return f"as_{name_token(role)}_startup_limiter"
 
 
+def driver_mute_name(role: str) -> str:
+    return f"as_{name_token(role)}_startup_mute"
+
+
+def program_protection_name(role: str, index: int) -> str:
+    return f"as_{name_token(role)}_program_protection_{index}"
+
+
 def driver_baseline_gain_name(role: str) -> str:
     return f"as_{name_token(role)}_baseline_gain"
 
@@ -56,6 +64,18 @@ def sub_baseline_limiter_name() -> str:
 
 def sub_startup_limiter_name() -> str:
     return "as_sub_startup_limiter"
+
+
+def sub_startup_mute_name() -> str:
+    return "as_sub_startup_mute"
+
+
+def room_peq_name(index: int) -> str:
+    return f"room_peq_{index}"
+
+
+def blend_correction_name(index: int) -> str:
+    return f"as_blend_{index}"
 
 
 def bass_management_hp_name(role: str) -> str:

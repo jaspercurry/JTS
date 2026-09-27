@@ -34,6 +34,7 @@ from jasper.local_sources import (
     local_source_park_units,
 )
 from jasper.multiroom import reconcile as reconcile_mod
+from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 
 from tests._log_events import event_fields, parse_event
 
@@ -1544,6 +1545,7 @@ def test_extended_exec_ceilings_are_per_unit_and_per_verb():
     assert set(restart_broker._EXTENDED_EXEC_TIMEOUT_CEILING_SEC) == {
         (restart_broker._SOURCE_INTENT_RECONCILE_UNIT, "start"),
         (restart_broker._CAMILLA_UNIT, "start"),
+        (USB_COUPLING_UNIT, "start"),
     }
 
     def clamp(unit, verb, *, no_block=False, units=None):
@@ -1551,6 +1553,10 @@ def test_extended_exec_ceilings_are_per_unit_and_per_verb():
             9999, verb=verb, units=units or [unit], no_block=no_block
         )
 
+    # The /system USB-latency apply waits out the coupling pass it starts.
+    assert clamp(USB_COUPLING_UNIT, "start") == unit_action_timeout_sec(
+        USB_COUPLING_UNIT, "start"
+    )
     ordinary = restart_broker._EXEC_TIMEOUT_CEILING_SEC
     camilla = restart_broker._CAMILLA_UNIT
     # The exempt shape passes through; every neighbouring shape does not.

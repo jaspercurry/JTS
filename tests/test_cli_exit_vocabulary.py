@@ -47,7 +47,6 @@ from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from tests.test_cli_close_reference import _compare_argv as close_compare_argv, _round as capture_round
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
@@ -326,11 +325,6 @@ def _compare_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["compare", str(a_bundle), str(b_bundle), "--a-take", a_doc["take_id"], "--b-take", b_doc["take_id"]]
 
 
-def _close_reference_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
-    rounds = (capture_round(root / "far", 1.0), capture_round(root / "close", 0.30, take_ids=("verify_02_a01",)))
-    return close_compare_argv(rounds, root / "close_reference.json")
-
-
 def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     rate = 48000
     tone = np.sin(2 * np.pi * 60 * np.arange(rate) / rate)
@@ -339,7 +333,7 @@ def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     manifest = root / "dsp_replay.json"
     manifest.write_text(json.dumps({
         "schema": DSP_REPLAY_SCHEMA, "render": {"output_sha256": sha256_file(raw)}, "sample_rate_hz": rate,
-        "channels": 2, "graph_sha256": "graph", "stimulus_sha256": "stimulus", "main_db": -20, "bass_reference_db": -20,
+        "channels": 2, "graph_sha256": "graph", "stimulus_sha256": "stimulus", "main_db": -20,
     }))
     return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
 
@@ -349,7 +343,7 @@ def _nearfield_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
     takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)]
-    write_manifest(bundle, program="nearfield/woofer", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+    write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
     return ["nearfield", str(bundle)]
 
 
@@ -455,7 +449,6 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
     "bass-fit-table": _ViewRun(
         _bass_run_argv, frozenset({"reference_band_hz"}),
         recorded=lambda p, a: all(table["reference_band_hz"] == p["reference_band_hz"] for table in a["tables"])),
-    "rear": "a banked rear batch is covered in test_round_views_rear_cli",
     "dsp-replay": "rendering needs the native DSP binary",
     "dsp-levels": _ViewRun(
         _dsp_levels_argv, frozenset({"window_s"}), frozenset(), lambda p, a: p["window_s"] == a["window_s"]),
@@ -465,10 +458,6 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
     "room-grade": _ViewRun(
         _on_fixture_round(_room_grade_argv), frozenset({"calibration_id"}), frozenset({"round_id", "set_id"}),
         lambda p, a: p["calibration_id"] == _applied_calibration((a["evidence"] or {}).get("basis") or {})),
-    "close-reference": _ViewRun(
-        _close_reference_argv, frozenset({"window_ms", "smoothing_fraction", "far_m", "close_m", "fc_hz", "at_hz"}),
-        frozenset({"round_id", "take_ids"}),
-        lambda p, a: p["window_ms"]["far"] == a["close_reference"]["frame"]["far_gate_ms"]),
     "room": _ViewRun(
         _on_fixture_round(lambda r: ["room", str(r.seat)]), frozenset({"calibration_id"}),
         _ROUND_SET_TAKES | {"candidate_id"},
@@ -479,7 +468,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         lambda p, a: p["step_us"] == a["landscape"]["spec"]["step_us"]),
     "inventory": _ViewRun(_on_fixture_round(lambda r: ["inventory", str(r.measured)])),
     "nearfield": _ViewRun(
-        _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_band_hz", "step_tolerance_db"}),
+        _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_tolerance_db", "level_mismatch_db"}),
         frozenset({"take_ids"}),
         lambda p, a: p["step_tolerance_db"] == a["parameters"]["step_tolerance_db"]),
 }

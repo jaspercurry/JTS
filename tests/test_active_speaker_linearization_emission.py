@@ -34,7 +34,12 @@ from jasper.active_speaker.baseline_profile import (
 )
 from jasper.biquad import SHELF_Q, PeqFilter
 from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, boost_headroom_by_role, linearization_headroom_db
-from jasper.active_speaker.camilla_names import driver_linearization_peak_name, driver_linearization_shelf_name, driver_linearization_taper_name
+from jasper.active_speaker import program_headroom
+from jasper.active_speaker.camilla_names import (
+    blend_correction_name, driver_linearization_peak_name, driver_linearization_shelf_name,
+    driver_linearization_taper_name, room_peq_name,
+)
+from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -45,7 +50,10 @@ from jasper.active_speaker.runtime_contract import (
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_crossover_v2_driver_prescription import BRANCH_CONTEXT, _boost
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear, _rear_document
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
+from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.branch_chain import branch_headroom_db
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 
@@ -832,91 +840,182 @@ def test_linearized_baseline_reproves_as_approved_active_runtime():
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
-def test_boosted_baseline_reproves_as_approved_active_runtime():
-    """PR-L5: a boost the emitter itself absorbed re-proves as approved. The
-    graph carries its own evidence — the ``active_baseline_headroom`` gain the
-    boost was paid for with — so the proof stays self-contained, exactly as
-    ``_consume_linearization_chain`` promises."""
-    topology = _active_topology("mono", "active_2_way")
+def _dumped(text: str, payload: dict) -> str:
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+
+def _edited(text: str, *edits: tuple[str, str, float]) -> str:
+    """``text`` with each ``(filter, parameter, value)`` written into its YAML."""
+    payload = yaml.safe_load(text)
+    for name, field, value in edits:
+        payload["filters"][name]["parameters"][field] = value
+    return _dumped(text, payload)
+
+
+_TWEETER_1 = driver_linearization_peak_name("tweeter", 1)
+_WOOFER_1 = driver_linearization_peak_name("woofer", 1)
+_TWEETER_BOOSTS = {"linearization": {"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]}}
+_TRIMMED_BOOST = {
+    "linearization": {"tweeter": [_peak(6000.0, 4.0)]},
+    "corrections": {"tweeter": {"gain_db": -3.0}},
+}
+_ROOM_BOOST = (PeqFilter(freq=120.0, q=1.0, gain=8.0),)
+
+
+@pytest.mark.parametrize(("emit_kwargs", "edits", "refused"), [
+    pytest.param(_TWEETER_BOOSTS, (), False, id="boosts-paid-for"),
+    pytest.param(_TWEETER_BOOSTS, ((_TWEETER_1, "gain", 8.0),), True, id="boost-past-its-charge"),
+    pytest.param(
+        _TWEETER_BOOSTS,
+        ((_TWEETER_1, "gain", 4.0), (driver_linearization_peak_name("tweeter", 2), "gain", 4.0)),
+        True, id="boosts-stacked-past-their-charge",
+    ),
+    pytest.param(
+        {"linearization": {"tweeter": [_peak(3400.0, -1.5)]}}, ((_TWEETER_1, "gain", 0.5),),
+        True, id="boost-on-a-graph-charged-nothing",
+    ),
+    pytest.param(
+        {"linearization": {"woofer": [_peak(6000.0, 6.0)]}}, (), False,
+        id="boost-its-own-crossover-removes",
+    ),
+    pytest.param(
+        {"linearization": {"woofer": [_peak(6000.0, 6.0)]}}, ((_WOOFER_1, "freq", 400.0),),
+        True, id="that-boost-moved-into-the-passband",
+    ),
+    pytest.param(_TRIMMED_BOOST, (), False, id="boost-paid-by-its-branch-trim"),
+    pytest.param(
+        _TRIMMED_BOOST, (("as_tweeter_baseline_gain", "gain", 0.0),), True,
+        id="that-branch-trim-removed",
+    ),
+    pytest.param(
+        {"room_peqs": _ROOM_BOOST, "linearization": {"tweeter": [_peak(6000.0, 3.0)]}}, (),
+        False, id="room-and-linearization-boosts-paid-for",
+    ),
+    pytest.param(
+        {"room_peqs": _ROOM_BOOST}, ((room_peq_name(1), "gain", 10.0),), True,
+        id="room-boost-past-its-charge",
+    ),
+    pytest.param(
+        {"room_peqs": _ROOM_BOOST, "linearization": {"woofer": [_peak(120.0, -1.0)]}},
+        ((_WOOFER_1, "gain", 5.0),), True, id="boost-on-top-of-the-room-boost",
+    ),
+    pytest.param(
+        {"room_peqs": _ROOM_BOOST, "linearization": {"tweeter": [_peak(3400.0, -1.5)]}},
+        ((_TWEETER_1, "gain", 5.0),), False, id="boost-where-the-room-boost-never-plays",
+    ),
+    pytest.param(
+        {"blend_correction": [_peak(2000.0, -2.0, q=1.0)]},
+        ((blend_correction_name(1), "gain", 2.0),), True, id="blend-cut-turned-into-a-boost",
+    ),
+    pytest.param(
+        {"room_peqs": _ROOM_BOOST}, ((room_peq_name(1), "type", "LinkwitzTransform"),), True,
+        id="a-filter-the-evaluator-cannot-model",
+    ),
+])
+def test_reproof_refuses_exactly_a_program_above_unity(emit_kwargs, edits, refused):
+    """With its own headroom gain applied, the graph as emitted must not lift
+    any output above unity on the grid (#5909). Boosts and cuts net wherever
+    they meet in series, and the refusal is the numeric code alone."""
     text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+        _preset(), playback_device=ACTIVE_PCM, **emit_kwargs,
     )
-    graph = classify_camilla_graph(topology=topology, text=text)
-    assert graph.allowed is True, graph.issues
-    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=_edited(text, *edits),
+    )
+    assert graph.allowed is not refused
+    assert [issue["code"] for issue in graph.issues] == (
+        [LINEARIZATION_HEADROOM_UNPROVEN_CODE] if refused else []
+    )
 
 
-def test_reproof_blocks_boost_beyond_the_absorbed_headroom():
-    """The boost proof's teeth: a boost tampered UP past what the graph's own
-    headroom gain paid for would drive the chain past unity, and fails closed.
-    Tampered on a graph that legitimately carries absorbed boost, so what is
-    being caught is the EXCESS, not the presence of boost."""
-    topology = _active_topology("mono", "active_2_way")
+def test_a_room_boost_behind_the_headroom_gain_is_refused():
+    """The steps between the headroom gain and the split ride uncharged as
+    preference EQ (ADR-0121), so the room layer must run ahead of the gain."""
     text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+        _preset(), playback_device=ACTIVE_PCM, room_peqs=_ROOM_BOOST,
     )
     payload = yaml.safe_load(text)
-    # The realized peak of two non-overlapping bells is the taller one, plus
-    # the margin — 4.108, not the 4.5 their sum would have charged (#1808).
-    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-4.1165, abs=1e-3)
-    name = driver_linearization_peak_name("tweeter", 1)
-    payload["filters"][name]["parameters"]["gain"] = 8.0  # total 9.5 > 4.5
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
-
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
-
-
-def test_reproof_blocks_boost_stacked_within_per_filter_cap_but_over_allowance():
-    """Per-branch TOTAL, not per-filter maximum. Two boosts each individually
-    inside the allowance can still add past it in one chain — which is the
-    whole reason the emitter absorbs the sum."""
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6000.0, 3.0), _peak(9000.0, 1.5)]},
+    pipeline = payload["pipeline"]
+    room = next(step for step in pipeline if room_peq_name(1) in step.get("names", ()))
+    pipeline.remove(room)
+    pipeline.insert(1 + next(
+        index for index, step in enumerate(pipeline)
+        if "active_baseline_headroom" in step.get("names", ())
+    ), room)
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=_dumped(text, payload),
     )
-    payload = yaml.safe_load(text)
-    for i, gain in ((1, 4.0), (2, 4.0)):  # 8.0 total vs a 4.5 allowance
-        payload["filters"][driver_linearization_peak_name("tweeter", i)][
-            "parameters"
-        ]["gain"] = gain
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
-
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
+    assert [issue["code"] for issue in graph.issues] == [
+        "active_baseline_program_layer_behind_headroom"
+    ]
 
 
-@pytest.mark.parametrize("bad_gain", [2.0, 0.5])
-def test_reproof_blocks_tampered_positive_gain_linearization_filter(bad_gain):
-    """The graph_safety keystone: a positive-gain linearization filter
-    tampered directly into the YAML (simulating a corrupted statefile, since
-    the emitter itself can never produce one) must fail closed at re-proof.
-
-    PR-L5 made the rail "boost within the graph's own absorbed headroom"
-    rather than "no boost at all", and this test still passes UNCHANGED —
-    which is the point. A cut-only correction absorbs nothing, so its
-    allowance is 0.0 and any tampered-in boost is still refused. The allowance
-    can only grow when the same emit that placed a boost also paid for it."""
-    topology = _active_topology("mono", "active_2_way")
-    preset = _preset()
-    text = emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(3400.0, -1.5)]},
+@pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.1, True)])
+def test_a_cardioid_graph_proves_its_rear_stage_by_number(lift_db, refused):
+    """The rear stage's evaluated peak is part of the charge (ADR-0324), so a
+    headroom gain lifted past it refuses with no boost anywhere else."""
+    _, topology, text = _cardioid_baseline()
+    headroom = yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    graph = _classify_rear(
+        topology, _edited(text, ("active_baseline_headroom", "gain", headroom + lift_db)),
+        document=_rear_document(),
     )
-    payload = yaml.safe_load(text)
-    name = driver_linearization_peak_name("tweeter", 1)
-    payload["filters"][name]["parameters"]["gain"] = bad_gain
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    assert [issue["code"] for issue in graph.issues] == (
+        [LINEARIZATION_HEADROOM_UNPROVEN_CODE] if refused else []
+    )
 
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
+
+class _Evaluated(Exception):
+    pass
+
+
+_CD_CUTS = {"linearization": {"tweeter": [_lowshelf(), _peak(6000.0, -5.0), _taper()]}}
+
+
+@pytest.mark.parametrize(("layout", "emit_kwargs", "edit", "evaluated"), [
+    pytest.param("mono", _CD_CUTS, None, False, id="cuts-and-a-mono-sum"),
+    pytest.param(
+        "stereo",
+        {**_CD_CUTS, "room_peqs": (PeqFilter(freq=120.0, q=1.0, gain=-4.0),),
+         "blend_correction": [_peak(2000.0, -2.0, q=1.0)]},
+        None, False, id="cuts-on-every-layer",
+    ),
+    pytest.param(
+        "mono", _CD_CUTS, lambda graph: graph["filters"][_TWEETER_1]["parameters"].update(gain=0.5),
+        True, id="a-boosting-biquad",
+    ),
+    pytest.param(
+        "mono", _CD_CUTS,
+        lambda graph: graph["filters"][driver_linearization_shelf_name("tweeter")]["parameters"].update(q=1.0),
+        True, id="a-resonant-cut-shelf",
+    ),
+    pytest.param(
+        "mono", {},
+        lambda graph: graph["mixers"]["split_active_2way"]["mapping"][0]["sources"][0].update(gain=0.0),
+        True, id="a-mixer-summing-past-unity",
+    ),
+])
+def test_only_a_graph_that_can_exceed_unity_is_evaluated(
+    monkeypatch, layout, emit_kwargs, edit, evaluated,
+):
+    """Numpy-free on a cut-only graph (ADR-0226): with no boosting biquad, no
+    resonant section and no mixer summing past unity, the peak is at most 0 dB
+    and nothing is evaluated."""
+    def evaluate(*_args, **_kwargs):
+        raise _Evaluated
+
+    monkeypatch.setattr(program_headroom, "complex_channel_transfer", evaluate)
+    payload = yaml.safe_load(emit_active_speaker_baseline_config(
+        _preset(layout), playback_device=ACTIVE_PCM, **emit_kwargs,
+    ))
+    if edit is not None:
+        edit(payload)
+    if evaluated:
+        with pytest.raises(_Evaluated):
+            program_headroom.program_peak(payload, charged=True)
+    else:
+        assert program_headroom.program_peak(payload, charged=True)[:2] == (0.0, None)
 
 
 def test_reproof_blocks_tampered_wrong_biquad_subtype():
@@ -931,8 +1030,7 @@ def test_reproof_blocks_tampered_wrong_biquad_subtype():
     payload = yaml.safe_load(text)
     name = driver_linearization_peak_name("tweeter", 1)
     payload["filters"][name]["parameters"]["type"] = "Highshelf"
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
@@ -962,8 +1060,7 @@ def test_reproof_blocks_reversed_shelf_and_peak_order():
             break
     else:
         raise AssertionError("no pipeline step for channel 1")
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
@@ -988,8 +1085,7 @@ def test_reproof_allows_unrelated_filter_name_between_crossover_and_tail():
     for step in payload["pipeline"]:
         if step.get("channels") == [1]:
             step["names"].insert(1, "as_tweeter_mystery")
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
@@ -998,56 +1094,6 @@ def test_reproof_allows_unrelated_filter_name_between_crossover_and_tail():
 # --------------------------------------------------------------------------- #
 # adversarial-review regressions (round 2)
 # --------------------------------------------------------------------------- #
-
-
-def test_room_peq_boost_is_not_spendable_as_linearization_headroom():
-    """**S1 regression.** ``active_baseline_headroom`` absorbs room-correction
-    boost AND linearization boost. Reading its whole magnitude as the
-    linearization allowance let a tampered linearization filter spend headroom
-    already committed to the room PEQs — the two together could then clip while
-    the graph proved safe.
-
-    Here the emitted linearization is CUT-ONLY, so linearization's own share of
-    the headroom is zero; the 8 dB of room boost sitting in the same gain must
-    not license a tampered +5 dB linearization filter.
-    """
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        room_peqs=(PeqFilter(freq=120.0, q=1.0, gain=8.0),),
-        linearization={"tweeter": [_peak(3400.0, -1.5)]},
-    )
-    payload = yaml.safe_load(text)
-    # The graph really does carry 8 dB of absorbed room boost…
-    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-8.0, abs=1e-3)
-    # …and none of it is linearization's to spend.
-    payload["filters"][driver_linearization_peak_name("tweeter", 1)][
-        "parameters"
-    ]["gain"] = 5.0
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
-
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
-
-
-def test_linearization_boost_beside_room_peq_boost_still_proves():
-    """The control: when the emitter charged for BOTH, both are covered and the
-    graph proves — the fix attributes the share, it does not forbid coexistence."""
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        room_peqs=(PeqFilter(freq=120.0, q=1.0, gain=8.0),),
-        linearization={"tweeter": [_peak(6000.0, 3.0)]},
-    )
-    payload = yaml.safe_load(text)
-    # 8 dB of room boost + the linearization branch's own realized peak
-    # (3 dB of bell, less a hair of the tweeter's high-pass at 6 kHz) + margin.
-    assert payload["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-11.9641, abs=1e-3)
-    graph = classify_camilla_graph(topology=topology, text=text)
-    assert graph.allowed is True, graph.issues
 
 
 def test_runaway_program_headroom_is_refused():
@@ -1070,35 +1116,8 @@ def test_a_generous_program_headroom_still_emits():
     assert _headroom_gain_db(text) == pytest.approx(-10.606, abs=1e-3)
 
 
-def test_the_production_emit_path_uses_the_default_baseline_headroom():
-    """The boost proof subtracts the module DEFAULT ``BASELINE_HEADROOM_DB``
-    where the emitter adds a CALLER-SUPPLIED ``baseline_headroom_db`` (0..40).
-    They agree only because every production emit path takes the default — so
-    that coincidence is pinned here rather than left to be discovered.
-
-    A caller passing a non-default value would make the allowance generous by
-    exactly that amount (never tight — the same direction as the documented
-    ``output_trim_db`` slack), and this is what catches it.
-    """
-    import inspect
-
-    from jasper.active_speaker.camilla_yaml import (
-        BASELINE_HEADROOM_DB, emit_active_speaker_baseline_config,
-    )
-
-    assert BASELINE_HEADROOM_DB == 0.0
-    signature = inspect.signature(emit_active_speaker_baseline_config)
-    assert (
-        signature.parameters["baseline_headroom_db"].default == BASELINE_HEADROOM_DB
-    )
-    # …and a default emit really does put nothing but the correction's own
-    # charge into the gain the proof reads.
-    text = emit_active_speaker_baseline_config(_preset(), playback_device=ACTIVE_PCM)
-    assert _headroom_gain_db(text) == pytest.approx(0.0)
-
-
 # --------------------------------------------------------------------------- #
-# the charge and the proof read one chain (#1808)
+# the charge reads the emitted branch chain (#1808)
 # --------------------------------------------------------------------------- #
 
 
@@ -1140,73 +1159,8 @@ def test_the_charge_credits_the_branch_trim():
     assert trimmed == pytest.approx(untrimmed + 1.5, abs=1e-3)
 
 
-def test_a_stopband_boost_proves_against_a_graph_that_charged_nothing_for_it():
-    """The proof follows the charge. A boost the crossover fully removes is
-    charged 0.0, so the graph carries no allowance for it — and it must still
-    re-prove, because the quantity being proved is the CHAIN's peak, not the
-    filter's gain. Under the retired sum rule this graph would have refused
-    itself."""
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"woofer": [_peak(6000.0, 6.0)]},
-    )
-    assert _headroom_gain_db(text) == pytest.approx(0.0, abs=1e-3)
-    graph = classify_camilla_graph(topology=topology, text=text)
-    assert graph.allowed is True, graph.issues
-
-
-def test_reproof_blocks_a_tampered_boost_moved_into_the_passband():
-    """…and the same filter moved where the crossover does NOT remove it is
-    refused, on a graph whose headroom never paid for it. The freedom the peak
-    rule grants is exactly "attenuation the graph provably applies", nothing
-    else."""
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"woofer": [_peak(6000.0, 6.0)]},
-    )
-    payload = yaml.safe_load(text)
-    payload["filters"][driver_linearization_peak_name("woofer", 1)][
-        "parameters"
-    ]["freq"] = 400.0
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
-
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
-
-
-def test_reproof_blocks_a_tampered_branch_trim_that_removes_the_attenuation():
-    """The trim is credited, so it is also proved. Tampering the branch gain
-    back to unity on a graph whose charge counted that attenuation must fail
-    closed — otherwise crediting the trim would be a way to spend headroom
-    twice."""
-    topology = _active_topology("mono", "active_2_way")
-    text = emit_active_speaker_baseline_config(
-        _preset(), playback_device=ACTIVE_PCM,
-        linearization={"tweeter": [_peak(6000.0, 4.0)]},
-        corrections={"tweeter": {"gain_db": -3.0}},
-    )
-    assert classify_camilla_graph(topology=topology, text=text).allowed is True
-    payload = yaml.safe_load(text)
-    payload["filters"]["as_tweeter_baseline_gain"]["parameters"]["gain"] = 0.0
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
-
-    graph = classify_camilla_graph(topology=topology, text=tampered)
-    assert graph.allowed is False
-
-
-def test_the_emitter_and_the_prover_read_the_same_chain():
-    """One number, two readers. The emitter's charge and the contract's
-    allowance are the same quantity over the same three terms — if they ever
-    disagreed by more than the proof's float slack, a graph correct by
-    construction would refuse itself on hardware."""
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, branch_headroom_db,
-    )
-
+def test_the_charge_is_the_emitted_branch_chains_peak_plus_the_margin():
+    """``crossover ⊗ linearization ⊗ trim``, read off the graph's own crossover."""
     filters = [_peak(6000.0, 4.0), _peak(9000.0, 2.0)]
     text = emit_active_speaker_baseline_config(
         _preset(), playback_device=ACTIVE_PCM,

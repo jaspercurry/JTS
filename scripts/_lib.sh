@@ -124,10 +124,19 @@ fi
 export PI_USER="${PI_USER:-pi}"
 unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
 
-# ServerAlive keepalives bound a severed transport to a ~60s ssh error.
-# See issue #2340.
-# shellcheck disable=SC2034 # consumed by the scripts that source this lib
-SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+# ServerAlive keepalives bound a severed transport to a ~60s ssh error
+# (issue #2340). ssh keeps the FIRST value of a repeated -o, so a caller
+# that overrides one of these puts its own -o before the array.
+SSH_BATCH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+
+ssh_remote() {
+    ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"
+}
+
+die() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
 
 # Print the Python executable for repository-bound laptop tooling.
 # Precedence is the effective PYTHON value (one executable token/path),
@@ -202,8 +211,7 @@ cleanup_remote_capture() {
     esac
     local remote_capture_q
     printf -v remote_capture_q '%q' "$remote_dir"
-    ssh "${PI_USER}@${PI_HOST}" "sudo rm -rf -- ${remote_capture_q}" \
-        >/dev/null 2>&1 \
+    ssh_remote "sudo rm -rf -- ${remote_capture_q}" >/dev/null 2>&1 \
         || echo "WARN: could not remove remote capture directory $remote_dir" >&2
 }
 
@@ -249,8 +257,7 @@ sleep "$warmup"
 printf "\n  %s\n\n" "$cue"
 sleep "$duration"
 echo "Capture done."'
-    printf '%s\n' "$program" \
-        | ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "sudo bash -s $(quote_args "$@")"
+    printf '%s\n' "$program" | ssh_remote "sudo bash -s $(quote_args "$@")"
 }
 
 # remote_env_file_set_cmd FILE KEY VALUE FILE_MODE DIR_MODE
@@ -612,9 +619,9 @@ oom_unit_is_production() {
 # ── USB gadget management-network deploy advisory ────────────────────────
 #
 # deploy-to-pi.sh warns (never blocks) when PI_HOST resolves inside the USB
-# gadget's management subnet. Issue #2340 (2026-08-11 U2 deploy):
-# install.sh rebuilds the composite USB gadget mid-install, which tears
-# down ncm.usb0 out from under a deploy whose own ssh session is riding
+# gadget's management subnet (issue #2340): install.sh rebuilds the
+# composite USB gadget mid-install, which tears down ncm.usb0 out from
+# under a deploy whose own ssh session is riding
 # that same link — the transport dies with no FIN while the install
 # itself keeps going and succeeds on the Pi, which reads as a wedged
 # deploy that actually landed. These are the pure classification helpers;
@@ -699,9 +706,7 @@ ipv4_in_cidr() {
 ssh_host_key_changed_advice() {
     local target="$1" text="${2-}" host="${1##*@}"
     if [[ $# -lt 2 ]]; then
-        text="$(ssh -o BatchMode=yes -o ConnectTimeout=5 \
-            -o StrictHostKeyChecking=accept-new "$target" true 2>&1 >/dev/null \
-            || true)"
+        text="$(ssh "${SSH_BATCH_OPTS[@]}" "$target" true 2>&1 >/dev/null || true)"
     fi
     [[ "$text" == *"REMOTE HOST IDENTIFICATION HAS CHANGED"* ]] || return 1
     cat >&2 <<EOF

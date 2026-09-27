@@ -5,14 +5,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
+from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
 from jasper.json_fields import finite_float
+from jasper.speaker_layout import measurement_target_parts
+from ..measurement_programs import POSE_KIND_SEAT, gate_exemption
 from .measure_spec import CANDIDATE_SCOPES
+from .spatial import MARK_DISTANCE_M, analysis_curve_records
 
 
 def _finite(value: Any) -> Any:
@@ -31,14 +37,24 @@ def _finite(value: Any) -> Any:
     return value
 
 
-def analysis_blocks(analysis: Any) -> dict[str, Any]:
+def banks_curves(record: Mapping[str, Any]) -> bool:
+    """Whether a take keeps its analysed curves on its record (ADR-0373): a
+    room, bass or rear take, which the capture reads ungated, as a decode of
+    its recording does."""
+    return gate_exemption(record.get("measurement_purpose")) == SEAT_EXEMPT
+
+
+def analysis_blocks(analysis: Any, program: ExcitationProgram, record: Mapping[str, Any]) -> dict[str, Any]:
     """What one analysis leaves on its banked take, beside its provenance.
 
-    The evidence packet's ``capture_snr`` block publishes the SNR columns of
+    A take that :func:`banks_curves` keeps its analysed ``curves``, which
+    ``analyzed_measurements`` reads instead of decoding its recording. The
+    evidence packet's ``capture_snr`` block publishes the SNR columns of
     ``diagnostic``, and the distortion view gates its replay against it.
     """
     branch = getattr(analysis, "branch_diagnostic", None)
     return {
+        **({"curves": analysis_curve_records(analysis, program)} if banks_curves(record) else {}),
         "diagnostic": _finite(analysis_diagnostic_summary(analysis)),
         **({"branch_diagnostic": branch} if branch else {}),
     }
@@ -61,6 +77,27 @@ def analysis_provenance(
         "stimulus_dbfs": max((float(segment.gain_db) for segment in stimuli or program.stimulus_segments()), default=None),
         "mark_distance_m": float(geometry.mic_distance_m) if geometry is not None else None,
     }
+
+
+def take_distance_m(kind: str | None, distance_m: float | None) -> float | None:
+    """How far a take's microphone sits from its pose's reference: a seat
+    states no distance; any other pose that states none sits at the mark."""
+    return None if kind == POSE_KIND_SEAT else MARK_DISTANCE_M if distance_m is None else float(distance_m)
+
+
+def take_trusted_band(
+    *, purpose: str | None, kind: str | None, distance_m: float | None, driver: str,
+    roles: Sequence[str], diameters_mm_by_role: Mapping[str, float], room: DeclaredGeometry | None,
+) -> TrustedBand:
+    """The band a take trusts, from its pose, the drivers that played (its
+    ``driver`` alone, or every one of ``roles``) and the declared room
+    (ADR-0366 §3), at :func:`take_distance_m`."""
+    distance = take_distance_m(kind, distance_m)
+    played = (measurement_target_parts(driver)[0],) if driver else tuple(roles)
+    return trusted_band(
+        distance_m=distance, driver=driver, room=room,
+        gated=gate_exemption(purpose, driver=driver, distance_m=distance) is None,
+        diameters_mm=tuple(diameters_mm_by_role.get(role) for role in played))
 
 
 def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> dict[str, Any]:

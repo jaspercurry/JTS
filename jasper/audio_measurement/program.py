@@ -21,8 +21,6 @@ joins ``KNOWN_AUDIBLE_KINDS`` since it is real audible content.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import math
 from dataclasses import dataclass, replace
@@ -32,13 +30,15 @@ from typing import Any, Mapping, Sequence
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.sweep import (
     SweepMeta,
     phase_closing_duration_s,
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as PROGRAM_SAMPLE_RATE_HZ
+from jasper.json_fields import json_fingerprint
 from jasper.log_event import log_event
 
 from .deconv import required_pre_guard_s
@@ -48,9 +48,6 @@ logger = logging.getLogger(__name__)
 
 PROGRAM_SCHEMA_VERSION = 1
 PROGRAM_KIND = "jts_excitation_program"
-
-# Fixed program sample rate — matches CamillaDSP / the sweep kernel.
-PROGRAM_SAMPLE_RATE_HZ = 48_000
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
 # — string VALUES must match between the two, NAMES must stay
@@ -76,7 +73,7 @@ KNOWN_AUDIBLE_KINDS = STIMULUS_KINDS | frozenset({KIND_COURTESY_TONE})
 AMBIENT_SEGMENT_ID = "ambient"
 
 # [150 Hz, 23 kHz] (design §5.2); upper edge pinned equal to
-# test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ (PR-A, #1668) by a test.
+# test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ (#1668) by a test.
 MEASURE_SWEEP_F_LO_HZ = 150.0
 MEASURE_SWEEP_F_HI_HZ = 23_000.0
 MEASURE_SWEEP_BAND_HZ = (MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
@@ -412,11 +409,7 @@ def _program_id(
         "segments": [_canonical_segment(s) for s in segments],
         "total_samples": total_samples,
     }
-    blob = json.dumps(
-        payload, allow_nan=False, ensure_ascii=True,
-        separators=(",", ":"), sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(blob).hexdigest()
+    return json_fingerprint(payload)
 
 
 def _finalize(

@@ -31,5 +31,4 @@ PATTERN='event=|wake detected|turn ended|source transition|preempting|active sou
 remote_cmd="$(quote_args journalctl --output=short-iso -f --since "$SINCE" -u 'jasper-*') \
     | $(quote_args grep --line-buffered -E "$PATTERN")"
 
-exec ssh "${SSH_BATCH_OPTS[@]}" -o ConnectTimeout=5 \
-    "${PI_USER}@${PI_HOST}" "${remote_cmd}"
+exec ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "${remote_cmd}"

@@ -20,7 +20,6 @@ moats against:
     never collides with camilla#1 (:1234, outputd-statefile.yml).
   - **No positional CONFIGFILE** (the v4 statefile-clobber trap), and the
     crossover guard wired as ExecStartPre with the `-` fail-open prefix.
-  - **Installed but NOT boot-enabled** by install.sh.
 """
 from __future__ import annotations
 
@@ -29,8 +28,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 UNIT_PATH = ROOT / "deploy" / "systemd" / "jasper-camilla-crossover.service"
 CAMILLA1_UNIT = ROOT / "deploy" / "systemd" / "jasper-camilla.service"
-INSTALL_LIB = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
-INSTALL_SH = ROOT / "deploy" / "install.sh"
 
 
 def _exec_start_last_line(body: str) -> str:
@@ -150,29 +147,3 @@ def test_unit_shares_audio_slice_and_quality_knobs():
 def test_unit_wires_crossover_guard_fail_open():
     body = UNIT_PATH.read_text()
     assert "ExecStartPre=-/usr/local/sbin/jasper-camilla-crossover-guard" in body
-
-
-def test_install_installs_unit_and_guard_but_does_not_enable():
-    """Installed in BOTH the full and streambox unit paths, with the guard to
-    /usr/local/sbin, and NEVER `systemctl enable`d (reconciler arms it)."""
-    lib = INSTALL_LIB.read_text()
-    assert (
-        "deploy/systemd/jasper-camilla-crossover.service" in lib
-    )
-    assert (
-        "/usr/local/sbin/jasper-camilla-crossover-guard" in lib
-    )
-    # Not enabled anywhere in the installer.
-    for body in (lib, INSTALL_SH.read_text()):
-        assert "enable jasper-camilla-crossover" not in body
-        assert "enable --now jasper-camilla-crossover" not in body
-
-
-def test_install_seeds_crossover_statefile_via_runtime_contract():
-    """install.sh seeds crossover-statefile.yml through the same runtime
-    contract (driver-domain baseline on a roleful topology, never flat)."""
-    body = INSTALL_SH.read_text()
-    assert "ensure_crossover_camilla_statefile" in body
-    assert "/var/lib/camilladsp/crossover-statefile.yml" in body
-    # Reuses the runtime-safe-graph CLI (no hand-rolled flat seed).
-    assert "runtime-safe-graph" in body

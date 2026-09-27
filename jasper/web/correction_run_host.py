@@ -8,7 +8,7 @@ from jasper.active_speaker.program_failure import classify_program_failure
 
 from jasper.web import correction_crossover_v2_volume as v2volume
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import asyncio
 import logging
 from pathlib import Path
@@ -21,7 +21,9 @@ from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
-from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, enrich_capture_record
+from jasper.active_speaker.crossover_v2.capture_provenance import (
+    analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_band,
+)
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
@@ -29,6 +31,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
@@ -62,8 +65,10 @@ def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> di
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        provenance: Any = None,
                        check_target_capture_dbfs: float | None = None,
-                       capture_indexes: tuple[int, ...] = ()) -> tuple[Any, Any]:
+                       capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
+    roles = tuple(band.role for band in conductor.roles_bands)
+    diameters = context.radiating_diameter_mm_by_role if context is not None else {}
     index = 0
     phase = ""
     answer: Any = None
@@ -72,25 +77,45 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         index = record.get("capture_index", record["index"])
         return capture_indexes[index - 1] if capture_indexes else index
 
+    def declared_room(record: Any) -> tuple[float | None, dict[str, Any] | None]:
+        """The take's first bounce in the declared room, which bounds its gate
+        (#3665 item 10), and the band it banks (ADR-0366 §3), from one read."""
+        kind, distance_m = record.get("pose_kind"), record.get("mark_distance_m")
+        try:
+            room = load_declared_geometry()
+            band = asdict(take_trusted_band(
+                purpose=record.get("measurement_purpose"), kind=kind, distance_m=distance_m,
+                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_role=diameters, room=room))
+            return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), band
+        except (OSError, ValueError) as exc:
+            # The take gates to the default bound and banks no band; its reader states one.
+            log_event(logger, "correction.take_band_not_banked", level=logging.WARNING,
+                      take_id=record["take_id"], error_type=type(exc).__name__)
+            return None, None
+
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         captured = provenance.take() if provenance is not None else None
         record = manifest.capture_record(record)
+        first_bounce_s, band = declared_room(record)
         program = getattr(capture, "program", None) or record.get("program")
         fields: dict[str, Any] = {}
         result: Any = KeyError("program")
         if program is not None:
             try:
                 phase = conductor.phase_of_index(index_of(record))
-                result = analyze_capture({**record, "program": program}, capture)
-                fields = evidence.get("capture_provenance", {}).get(phase, {})
+                played = ExcitationProgram.from_dict(program)
+                result = analyze_capture(record, played, capture, first_bounce_s)
+                fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
+                          **analysis_blocks(result, played, record)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         else:
-            fields = {**fields, **analysis_blocks(result),
-                      **_kept_impulses(records, record["take_id"], result, capture)}
+            fields = {**fields, **_kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
+        if band is not None:
+            fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),
@@ -106,7 +131,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     records.enrich, records.after_bank = enrich, after_bank
 
-    def analyze_capture(record: Any, capture: Any) -> Any:
+    def analyze_capture(record: Any, program: ExcitationProgram, capture: Any, first_bounce_s: float | None) -> Any:
         index = index_of(record)
         phase = conductor.phase_of_index(index)
         priors = (conductor.check_priors() if phase == PHASE_CHECK else
@@ -115,8 +140,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
         analysis = conductor.analyze(
-            ExcitationProgram.from_dict(record["program"]), capture, priors,
-            conductor.capture_geometry(phase, index), phase=phase,
+            program, capture, priors,
+            replace(conductor.capture_geometry(phase, index), declared_first_bounce_s=first_bounce_s), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),
@@ -182,7 +207,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, provenance=provenance,
-                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes)
+                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes,
+                                          context=context)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(device, evidence_store, spl_monitor=door.spl_monitor)
@@ -228,6 +254,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                                        aborts={}, save_ladder=packet.update_schedule)
             if signals.stop.is_set() or signals.complete.is_set():
                 manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
+                manifest.failed_roles = results[-1].failed_roles if results else ()
             return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
         except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
             classified = classify_program_failure(exc)

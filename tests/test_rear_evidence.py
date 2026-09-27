@@ -26,8 +26,6 @@ from tests.test_seat_figures import COVERAGE_HZ, FREQS_HZ
     ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
     ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
-    ('jasper.active_speaker.crossover_v2.close_reference', ('REFUSE_', 'UNRESOLVED_', 'VERDICT_')),
-    ('jasper.active_speaker.crossover_v2.evidence_packet.positions', 'REASON_'),
     ('jasper.active_speaker.round_verdicts', 'REASON_'),
     ('jasper.active_speaker.round_view_artifacts', 'REASON_'),
     ('jasper.cli.round_views._common', 'REASON_'),

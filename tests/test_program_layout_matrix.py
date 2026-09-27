@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.angle_capture import LevelPolicy, request_for_program
+from jasper.active_speaker.angle_capture import LevelPolicy, request_for_preset
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for
@@ -19,7 +19,7 @@ from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence,
 )
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, load_programs, prescription_sections, programs_for_topology, run_program, trial_program,
+    RUNNABLE_PROGRAMS, load_presets, prescription_sections, programs_for_topology, run_preset, trial_preset,
 )
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.preflight import preflight
@@ -35,28 +35,24 @@ from tests.test_preflight import ready_facts
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 
 LAYOUTS = ('one_way_passive', 'two_way_active', 'three_way_active', 'cardioid')
-ROWS = {f'{name}/{size}': row for (name, size), row in load_programs().items()
-        if row.purpose in RUNNABLE_PROGRAMS}
+# Every preset at every layout it offers.
+ROWS = {f'{preset_id} {layout}': run_preset(preset_id, layout) for preset_id, row in load_presets().items()
+        if row.purpose in RUNNABLE_PROGRAMS for layout in row.layouts}
 LEVEL_DB = -23.0
 SENSITIVITIES = {'woofer': 84.0, 'tweeter': 109.2, 'mid': 90.0, 'full_range': 87.0}
+_REAR = {'rear/express', 'rear/seat', 'rear/pair'}
 PLAN_REFUSALS = {
-    layout: dict.fromkeys(rows, 'walk_branch_pair_undeclared') for layout, rows in {
-        'one_way_passive': {'branches/express', 'front_rear/express'},
-        'two_way_active': {'front_rear/express'},
-        'three_way_active': {'branches/express', 'front_rear/express'},
+    layout: {row: 'walk_branch_pair_undeclared' for row in ROWS if row.split()[0] in presets}
+    for layout, presets in {
+        'one_way_passive': {'branches/express', 'front_rear/express', *_REAR},
+        'two_way_active': {'front_rear/express', *_REAR},
+        'three_way_active': {'branches/express', 'front_rear/express', *_REAR},
         'cardioid': set(),
     }.items()
 }
-for layout in LAYOUTS[:-1]:
-    PLAN_REFUSALS[layout].update(dict.fromkeys(
-        ('rear/express', 'rear/seat', 'rear/wide', 'rear/behind', 'rear/pair', 'rear/pair_mark', 'rear/pair_behind'),
-        'walk_branch_pair_undeclared',
-    ))
 # Three-way per-driver programs refuse at plan time (#5396).
-PLAN_REFUSALS['three_way_active'].update(dict.fromkeys(
-    ('speaker/mark', 'baseline/express', 'baseline/full', 'tournament/express', 'tournament/full'),
-    'walk_layout_unsupported_for_per_driver_programs',
-))
+PLAN_REFUSALS['three_way_active'].update({row: 'walk_layout_unsupported_for_per_driver_programs' for row in ROWS
+                                          if row.split()[0] in ('speaker/mark', 'tournament/express')})
 
 
 @pytest.fixture(scope='module', params=LAYOUTS)
@@ -104,7 +100,7 @@ def speaker(request, tmp_path_factory):
 
 
 def _outcome(speaker, selected, candidates, mover=None):
-    request = request_for_program(
+    request = request_for_preset(
         selected, mover=mover or selected.mover or 'human', level=LevelPolicy(level_db=LEVEL_DB), candidates=candidates,
     )
     report = preflight(request, ready_facts(
@@ -157,7 +153,7 @@ def test_every_program_on_every_layout(speaker, row):
     if ROWS[row].purpose == 'rear':
         assert ('rear' in programs_for_topology(speaker.topology)) == (speaker.name == 'cardioid')
     code = PLAN_REFUSALS[speaker.name].get(row)
-    selected, fingerprint = run_program(ROWS[row].purpose, row), speaker.candidate.fingerprint
+    selected, fingerprint = ROWS[row], speaker.candidate.fingerprint
     candidates = ((fingerprint,) if selected.regime == 'branches' else
                   ('base', fingerprint) if selected.purpose == 'rear' else ())
     assert _outcome(speaker, selected, candidates) == ({('plan_refused', code)} if code else {('pass',)})
@@ -165,13 +161,16 @@ def test_every_program_on_every_layout(speaker, row):
 
 @pytest.mark.parametrize('speaker', ['cardioid'], indirect=True)
 @pytest.mark.parametrize('mover,trials', [
-    (None, {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/axis', 'room': 'room/seat'}),
-    ('arm', {'speaker': 'speaker/mark', 'rear': 'rear/express', 'bass': 'bass/axis', 'room': 'room/arm'}),
-    ('human', {'speaker': 'speaker/mark', 'rear': 'rear/seat', 'bass': 'bass/nearfield', 'room': 'room/seat'}),
+    (None, {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),
+            'bass': ('bass/axis', 'bass_axis'), 'room': ('room/seat', 'seat_express')}),
+    ('arm', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/express', 'rear_express'),
+             'bass': ('bass/axis', 'bass_axis'), 'room': ('room/seat', 'room_quick')}),
+    ('human', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),
+               'bass': ('bass/axis', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
 ], ids=('default', 'arm', 'human'))
 @pytest.mark.parametrize('program', RUNNABLE_PROGRAMS)
 def test_a_document_trials_its_own_program_through_the_composer(speaker, program, mover, trials):
     """A document of each program trials base against it at that program's layout for the mover (#5632)."""
-    selected = trial_program(prescription_sections(program), mover)
-    assert selected is not None and f'{selected.program_id}/{selected.size}' == trials[program]
+    selected = trial_preset(prescription_sections(program), mover)
+    assert selected is not None and (selected.preset, selected.layout) == trials[program]
     assert _outcome(speaker, selected, ('base', speaker.candidate.fingerprint), mover) == {('pass',)}

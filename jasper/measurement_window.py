@@ -81,6 +81,10 @@ _window_active = False
 class MeasurementWindowError(RuntimeError):
     """A precondition failed or isolation could not be proven/restored."""
 
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 def _measurement_gate_held(
     payload: object,
@@ -116,11 +120,13 @@ async def _acquire_measurement_gate(
         asyncio.TimeoutError,
     ) as exc:
         raise MeasurementWindowError(
-            f"Could not isolate the measurement lane: {exc}"
+            f"Could not isolate the measurement lane: {exc}",
+            reason="gate_acquire_failed",
         ) from exc
     if not _measurement_gate_held(payload, gate_owner=gate_owner):
         raise MeasurementWindowError(
-            "Mux did not confirm the isolated measurement lane."
+            "Mux did not confirm the isolated measurement lane.",
+            reason="gate_not_confirmed",
         )
     log_event(
         logger,
@@ -204,7 +210,8 @@ async def _release_measurement_gate(
         level=logging.ERROR,
     )
     raise MeasurementWindowError(
-        f"Could not release the isolated measurement lane: {last_error}"
+        f"Could not release the isolated measurement lane: {last_error}",
+        reason="gate_release_failed",
     )
 
 
@@ -264,7 +271,8 @@ async def _acquire_measurement_hold(owner: str) -> bool:
     if status == 409:
         raise MeasurementWindowError(
             payload.get("error")
-            or "a measurement is already in progress on this speaker"
+            or "a measurement is already in progress on this speaker",
+            reason="measurement_in_progress",
         )
     if status < 200 or status >= 300:
         logger.warning(
@@ -371,7 +379,8 @@ async def _check_no_active_voice_session(
     except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(
-                f"Could not verify voice is idle: {e}"
+                f"Could not verify voice is idle: {e}",
+                reason="voice_status_unavailable",
             ) from e
         logger.info(
             "voice daemon not reachable for STATUS check (%s) — "
@@ -382,17 +391,20 @@ async def _check_no_active_voice_session(
     except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(
-                f"Could not verify voice is idle: {e}"
+                f"Could not verify voice is idle: {e}",
+                reason="voice_status_unavailable",
             ) from e
         raise
     if require_voice_pause and status.get("state") not in {"WAKE", "SESSION"}:
         raise MeasurementWindowError(
-            "Voice STATUS did not provide a trustworthy WAKE/SESSION state."
+            "Voice STATUS did not provide a trustworthy WAKE/SESSION state.",
+            reason="voice_status_invalid",
         )
     if status.get("state") == "SESSION":
         raise MeasurementWindowError(
             "Voice session is currently active. End it (or wait for it "
-            "to end) before starting a measurement."
+            "to end) before starting a measurement.",
+            reason="voice_session_active",
         )
 
 
@@ -424,10 +436,10 @@ async def _refresh_measurement_hold(gate_owner: str, hold_ours: asyncio.Event) -
 
 
 def _abort_window(
-    owner_task: "asyncio.Task[Any] | None", message: str,
+    owner_task: "asyncio.Task[Any] | None", message: str, *, reason: str,
 ) -> MeasurementWindowError:
     """Cancel the task that entered the window; the error it must raise."""
-    error = MeasurementWindowError(message)
+    error = MeasurementWindowError(message, reason=reason)
     if owner_task is not None:
         owner_task.cancel()
     return error
@@ -453,6 +465,7 @@ async def _refresh_measurement_gate_lease(
                     "the sweep was stopped before household music "
                     "could re-enter the mix. Check System status "
                     "and try again.",
+                    reason="gate_lease_lost",
                 )
             delay = MEASUREMENT_LEASE_RETRY_SEC
         else:
@@ -488,7 +501,7 @@ async def _refresh_voice_lease(
         ) as exc:
             logger.warning("measurement lease refresh failed: %s", exc)
             if require_voice_pause:
-                return _abort_window(owner_task, _VOICE_LEASE_LOST)
+                return _abort_window(owner_task, _VOICE_LEASE_LOST, reason="voice_lease_lost")
             delay = MEASUREMENT_LEASE_RETRY_SEC
             continue
         renewal_ok = (
@@ -499,7 +512,7 @@ async def _refresh_voice_lease(
         if not renewal_ok:
             logger.warning("measurement lease refresh returned non-ok: %s", renewal)
             if require_voice_pause:
-                return _abort_window(owner_task, _VOICE_LEASE_LOST)
+                return _abort_window(owner_task, _VOICE_LEASE_LOST, reason="voice_lease_lost")
             delay = MEASUREMENT_LEASE_RETRY_SEC
         else:
             delay = MEASUREMENT_LEASE_REFRESH_SEC
@@ -523,7 +536,8 @@ async def _pause_voice(
             if require_voice_pause and drained is not True:
                 raise MeasurementWindowError(
                     "Voice pause was armed, but the daemon did not "
-                    "prove prior assistant audio drained."
+                    "prove prior assistant audio drained.",
+                    reason="voice_pause_failed",
                 )
             lease_task = asyncio.create_task(
                 _refresh_voice_lease(voice_socket_path, require_voice_pause, owner_task)
@@ -538,7 +552,8 @@ async def _pause_voice(
         if require_voice_pause:
             raise MeasurementWindowError(
                 "Voice daemon refused MEASURE_PAUSE: "
-                f"{resp.get('result', 'missing result')}."
+                f"{resp.get('result', 'missing result')}.",
+                reason="voice_pause_failed",
             )
         logger.warning(
             "MEASURE_PAUSE returned non-ok: %s — proceeding "
@@ -549,7 +564,8 @@ async def _pause_voice(
     except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(
-                f"Could not pause voice for measurement: {e}"
+                f"Could not pause voice for measurement: {e}",
+                reason="voice_pause_failed",
             ) from e
         logger.warning(
             "voice_daemon MEASURE_PAUSE failed (%s) — proceeding "
@@ -560,7 +576,8 @@ async def _pause_voice(
     except (RuntimeError, ValueError, TypeError, UnicodeError) as e:
         if require_voice_pause:
             raise MeasurementWindowError(
-                f"Could not pause voice for measurement: {e}"
+                f"Could not pause voice for measurement: {e}",
+                reason="voice_pause_failed",
             ) from e
         raise
     return None
@@ -611,12 +628,14 @@ async def measurement_window(
     global _window_active
     if require_voice_pause and skip_voice_pause:
         raise MeasurementWindowError(
-            "strict voice isolation cannot be combined with skip_voice_pause"
+            "strict voice isolation cannot be combined with skip_voice_pause",
+            reason="voice_pause_required",
         )
     if _window_active:
         raise MeasurementWindowError(
             "a measurement is already in progress; wait for the current "
-            "sweep to finish or reset before starting another"
+            "sweep to finish or reset before starting another",
+            reason="measurement_in_progress",
         )
     _window_active = True
 

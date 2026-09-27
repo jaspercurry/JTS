@@ -182,7 +182,7 @@ def test_the_snapshot_reads_the_journey_and_not_a_constructor_echo():
     conductor._journey.accept(PHASE_CHECK, 1)
     snapshot = conductor.snapshot()
     assert snapshot.accepted_phases == (PHASE_CHECK, PHASE_MEASURE)
-    assert snapshot.session_phases == conductor.session_phases
+    assert snapshot.session_phases == conductor._journey.plan.phases
     assert snapshot.applied is False
 
     applied = _conductor(index_phase_map=dict(VERIFY_ONLY_MAP), applied=True)
@@ -195,14 +195,15 @@ def test_session_phases_and_post_apply_verifies_are_public_reads():
     stage1 = _conductor(
         index_phase_map=dict(STAGE1_MAP), post_apply_verifies=True
     )
-    assert stage1.session_phases == JourneyPlan.from_index_map(STAGE1_MAP).phases
-    assert PHASE_VERIFY not in stage1.session_phases
+    stage1_phases = stage1.snapshot().session_phases
+    assert stage1_phases == JourneyPlan.from_index_map(STAGE1_MAP).phases
+    assert PHASE_VERIFY not in stage1_phases
     assert stage1.post_apply_verifies is True
     assert _conductor(index_phase_map=dict(STAGE1_MAP)).post_apply_verifies is False
 
 
 def test_a_conductor_with_no_index_map_walks_the_three_entry_default():
-    assert _conductor().session_phases == (
+    assert _conductor().snapshot().session_phases == (
         PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY
     )
 
@@ -541,60 +542,6 @@ def test_the_retyping_guard_sees_a_planted_literal(tmp_path):
     assert len(found) == 1
     assert "_retyping_probe.py:1" in found[0]
     assert "RESULT_KEEP_PREVIOUS" in found[0]
-
-
-def test_the_envelope_renderer_never_re_types_a_code_it_could_import():
-    """#2662's G3: the domain renderer imports the vocabulary it renders.
-
-    ``crossover_envelope_v2`` may not import ``jasper.web`` (the rule above),
-    and the four ``RESULT_*`` codes lived there — so it spelled all four by
-    hand in twelve places, with nothing holding the two sets equal. The codes
-    moved to ``verification`` where the renderer can import them; this stops
-    the next one from being re-typed instead.
-
-    **One guarded value is skipped, and the skip is only as alive as its
-    reason.** ``RESULT_INCONCLUSIVE`` and the host's ``GRADE_INCONCLUSIVE``
-    are both ``"inconclusive"`` while answering different questions about the
-    same round — what the result WAS, versus whether the check finished. The
-    renderer legitimately compares a grade state against the second, so a bare
-    ``"inconclusive"`` cannot be attributed to one of the two by its value.
-    The assertion below fails if the collision ever ends, which is when this
-    skip should be deleted rather than inherited.
-    """
-
-    from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE
-    from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE
-
-    assert GRADE_INCONCLUSIVE == RESULT_INCONCLUSIVE, (
-        "the value collision this skip exists for has ended — delete the skip"
-    )
-    owners = _guarded_vocabulary()
-    del owners[RESULT_INCONCLUSIVE]
-
-    renderer = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "active_speaker" / "crossover_envelope_v2.py"
-    )
-    assert _retyped_vocabulary(renderer, owners) == []
-
-
-def test_the_journey_holds_no_dsp_no_filesystem_and_no_rendering():
-    """Phase 4's explicit boundary: bookkeeping only."""
-
-    module = (
-        Path(__file__).resolve().parents[1]
-        / "jasper" / "active_speaker" / "crossover_v2" / "journey.py"
-    )
-    tree = ast.parse(module.read_text(), filename=str(module))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported |= {alias.name for alias in node.names}
-        elif isinstance(node, ast.ImportFrom):
-            imported.add(node.module or "")
-    # Nothing numeric, nothing on disk, nothing that journals: the journey
-    # derives, and its callers measure, persist, and narrate.
-    assert imported == {"__future__", "dataclasses", "types", "typing"}
 
 
 def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():

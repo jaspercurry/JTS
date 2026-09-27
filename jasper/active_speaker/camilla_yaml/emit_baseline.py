@@ -5,23 +5,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_VOLUME_LIMIT_DB,
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
+from jasper.camilla_emit import emit_devices_block
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
+from ..camilla_names import blend_correction_name, room_peq_name
 from ..graph_safety import view_from_yaml_dict
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .decorate_dynamic_bass import _dynamic_bass_graph, _with_dynamic_bass
 from .decorate_protection import _add_baseline_protection
 from .decorate_rear import (
@@ -40,10 +40,8 @@ from .devices import (
 from .document import _atomic_write_text, _reserialize_keeping_header, logger
 from .filters import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
-    _blend_correction_name,
     _emit_baseline_filter_definitions,
     linearization_slot,
-    _room_peq_name,
     _validated_blend_correction,
     _validated_driver_corrections,
     _validated_linearization,
@@ -54,7 +52,6 @@ from .gates import (
     _assert_tweeter_crossover_honours_declared_floor,
     _assert_tweeter_outputs_protected,
     _assert_view_tweeters_protected,
-    _assert_volume_limit,
 )
 from .ledger import BASELINE_HEADROOM_DB
 from .pipeline import _emit_baseline_pipeline, _emit_split_mixer
@@ -72,7 +69,6 @@ def emit_active_speaker_baseline_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     room_peqs: Sequence[PeqFilter] = (),
@@ -150,14 +146,12 @@ def emit_active_speaker_baseline_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
     limiter_clip_limit_db = _finite_float(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
     output_trim_db = _finite_float(output_trim_db, "output_trim_db")
-    _assert_volume_limit(volume_limit_db)
     if baseline_headroom_db < 0 or baseline_headroom_db > 40:
         raise ActiveSpeakerConfigError("baseline_headroom_db must be between 0 and 40")
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
@@ -196,11 +190,11 @@ def emit_active_speaker_baseline_config(
     mixer_yaml = _emit_split_mixer(preset, apply_region_polarity=False)
     pipeline_yaml = _emit_baseline_pipeline(
         preset,
-        room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
+        room_peq_names=[room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in emitted_preference_filters],
         linearization=safe_linearization,
         blend_correction_names=[
-            _blend_correction_name(i)
+            blend_correction_name(i)
             for i in range(1, len(safe_blend_correction) + 1)
         ],
     )
@@ -209,16 +203,16 @@ def emit_active_speaker_baseline_config(
     )
     metadata_comments = [f"# preset_id={preset.preset_id}"]
     metadata_yaml = "\n".join(metadata_comments)
-    capture_yaml = f"""  capture:
-    type: Alsa
-    channels: 2
-    device: "{capture_device}"
-    format: {capture_format}"""
 
     if enable_rate_adjust is None:
         enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
-    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
-    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
+    devices_yaml = emit_devices_block(
+        samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
+        target_level=target_level, enable_rate_adjust=enable_rate_adjust,
+        capture_channels=2, capture_device=capture_device, capture_format=capture_format,
+        playback_channels=output_count, playback_target=playback_device,
+        playback_format=playback_format,
+    )
     yaml = f"""---
 # Auto-generated active-speaker baseline config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config
@@ -227,19 +221,7 @@ def emit_active_speaker_baseline_config(
 # are not startup-muted, per-driver correction gain is non-positive, and the
 # software volume ceiling remains non-positive.
 
-devices:
-  samplerate: {sample_rate}
-  chunksize: {chunksize}
-  queuelimit: {queuelimit}
-  target_level: {target_level}
-  volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: {enable_rate_adjust_yaml}
-{capture_yaml}
-  playback:
-    type: Alsa
-    channels: {output_count}
-    device: "{playback_device}"
-    format: {playback_format}
+{devices_yaml}
 
 filters:
 {filter_yaml}

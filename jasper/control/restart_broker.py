@@ -105,6 +105,8 @@ from jasper.service_units import (
 from jasper.source_intent_units import (
     RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT,
     RECONCILE_BROKER_TIMEOUT_SECONDS as _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+    USB_COUPLING_UNIT,
+    unit_action_timeout_sec,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,11 +141,7 @@ MANAGED_UNITS = frozenset({
     CAMILLA_SERVICE,
     OUTPUTD_SERVICE,
     # jasper.fanin.coupling_reconcile restarts fan-in to apply a coupling or
-    # USB-combo flip. Caught on jts 2026-06-27 (then via the since-deleted
-    # adaptive output-buffer arm): the restart was rejected ("not in allowlist")
-    # because fan-in had never been broker-restarted before — the unit tests
-    # mocked the broker so they never hit this. Keep in lockstep with the
-    # polkit grant.
+    # USB-combo flip; keep this allowlist in step with the polkit grant.
     FANIN_SERVICE,
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
     # /system/diagnostics card — the non-root jasper-control `systemctl start`s
@@ -187,11 +185,10 @@ START_ONLY_UNITS = frozenset({
     AUDIO_HARDWARE_RECONCILE_UNIT,
     # Root oneshot that resolves the fan-in coupling + USB low-latency combo
     # (jasper.fanin.coupling_auto). Normally runs at boot/deploy, but the
-    # /sources/ USB-audio toggle (jasper-web, non-root) starts it right after
-    # an enable/disable so the combo arms/disarms immediately instead of only
-    # at the next reboot. Start-only: jasper-web may kick a reconcile pass, not
+    # /system USB-latency apply (jasper-control, non-root) starts it so the
+    # saved mode lands now. Start-only: a client may kick a reconcile pass, not
     # stop/restart the reconciler (mirrors jasper-wifi-scan-repair).
-    "jasper-fanin-coupling-auto.service",
+    USB_COUPLING_UNIT,
     # Root oneshot that persists /sources enable/disable intent
     # (jasper.source_intent). enable/disable is manage-unit-files, which the
     # non-root broker deliberately cannot run (can't be unit-scoped; systemctl
@@ -254,7 +251,7 @@ POWER_VERBS = frozenset({"reboot", "poweroff"})
 
 # Each client leg waits past the exec bound so the broker can return a verdict.
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
-# Ordinary broker actions retain the original hard ceiling.  The sole extended
+# Ordinary broker actions retain the original hard ceiling.  One extended
 # shape is a blocking start of exactly the source-intent coordinator: its
 # finite systemd bound covers all four sources, bounded owner barriers,
 # failed-unit resets, and fail-closed cleanup, and this root boundary must
@@ -273,9 +270,9 @@ _SOURCE_INTENT_RECONCILE_UNIT = SOURCE_INTENT_RECONCILE_UNIT
 _CAMILLA_UNIT = CAMILLA_SERVICE
 # jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
-# that oneshot in full. Measured on jts4 (Pi Zero 2 W, 2026-08-21): the
-# reconciler took 25.5-26.0 s inside camilla restarts of 30.307 / 28.675 /
-# 28.723 s. Its caller derives its bound from the reconciler's declared 50 s
+# that oneshot in full. On jts4 (Pi Zero 2 W), the reconciler took
+# 25.5-26.0 s inside 28.675-30.307 s camilla restarts. Its caller derives
+# its bound from the reconciler's declared 50 s
 # ceiling plus camilla's own 90 s plus a margin; clamping that back to the
 # ordinary 120 s here would re-create exactly the false timeout the derived
 # bound exists to remove. Mirrors
@@ -288,6 +285,7 @@ _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 236.0
 _EXTENDED_EXEC_TIMEOUT_CEILING_SEC: dict[tuple[str, str], float] = {
     (_SOURCE_INTENT_RECONCILE_UNIT, "start"): _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
     (_CAMILLA_UNIT, "start"): _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC,
+    (USB_COUPLING_UNIT, "start"): unit_action_timeout_sec(USB_COUPLING_UNIT, "start"),
 }
 _CLIENT_SOCKET_MARGIN_SEC = 5.0    # client waits this much past the exec bound
 _MAX_REQUEST_BYTES = 4096

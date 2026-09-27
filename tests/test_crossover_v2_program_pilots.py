@@ -15,7 +15,7 @@ import pytest
 from scipy.signal import fftconvolve, resample_poly
 
 from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     KIND_COURTESY_TONE,
@@ -50,13 +50,13 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry,
     MeasurementPriors,
     SegmentLocation,
-    _global_offset,
-    _locate_segments,
-    _pilot_ambient_samples,
-    _verify_capture_integrity,
+    locate_global_offset,
+    locate_segments,
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
+from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
+from jasper.audio_measurement.program_analysis.check import _pilot_ambient_samples
 from tests._log_events import event_fields, event_records
 
 SR = 48_000
@@ -494,7 +494,7 @@ def test_measure_predicted_sum_travels_for_verify():
 #
 # The prelude adds a longer pre-roll ahead of everything ``_synthesize``
 # already convolves/captures; these pins confirm the relative-offset locate
-# math (``_global_offset``/``_locate_segments``) absorbs it exactly the way
+# math (``locate_global_offset``/``locate_segments``) absorbs it exactly the way
 # it already absorbed sweep-composition PR-A lengthening MEASURE, and that
 # every downstream gate (linearity, drift/glitch, candidate build) reaches
 # the SAME verdict on the SAME underlying capture with or without it.
@@ -518,7 +518,7 @@ def test_measure_courtesy_prelude_sweep_residuals_match_no_prelude_capture():
     """The longer pre-roll must not degrade sweep-locate precision at all: on
     an otherwise-identical synthetic capture (same noise seed), every located
     sweep's residual-from-schedule and confidence are the SAME with or
-    without the prelude -- the relative-offset locate math (``_global_offset``
+    without the prelude -- the relative-offset locate math (``locate_global_offset``
     anchors on the first REAL stimulus either way) fully absorbs the extra
     pre-roll rather than merely tolerating it."""
     plain = _measure_program(courtesy_prelude=False)
@@ -526,22 +526,22 @@ def test_measure_courtesy_prelude_sweep_residuals_match_no_prelude_capture():
     cap_plain = _synthesize(plain, seed=7)
     cap_prelude = _synthesize(prelude, seed=7)
 
-    off_plain, _first_plain, stim_plain, _amb = _global_offset(plain, cap_plain, SR)
+    off_plain, _first_plain, stim_plain, _amb = locate_global_offset(plain, cap_plain, SR)
     locs_plain = {
         loc.segment_id: loc
-        for loc in _locate_segments(plain, cap_plain, SR, off_plain, stim_plain)
+        for loc in locate_segments(plain, cap_plain, SR, off_plain, stim_plain)
     }
-    off_prelude, _first_prelude, stim_prelude, _amb = _global_offset(prelude, cap_prelude, SR)
+    off_prelude, _first_prelude, stim_prelude, _amb = locate_global_offset(prelude, cap_prelude, SR)
     locs_prelude = {
         loc.segment_id: loc
-        for loc in _locate_segments(prelude, cap_prelude, SR, off_prelude, stim_prelude)
+        for loc in locate_segments(prelude, cap_prelude, SR, off_prelude, stim_prelude)
     }
     for seg_id in ("sweep_w", "sweep_t", "sweep_w_rep", "sweep_t_rep", "sweep_w_rep2", "sweep_t_rep2"):
         plain_loc = locs_plain[seg_id]
         prelude_loc = locs_prelude[seg_id]
         # rel=1e-4: the two captures differ in overall array length (the
         # prelude's extra 3.6 s), so the downsample/resample step inside
-        # ``_global_offset`` can round a few ULPs differently -- this is
+        # ``locate_global_offset`` can round a few ULPs differently -- this is
         # floating-point noise, not a locate-precision regression, so the
         # tolerance is loose enough to absorb it while still being far
         # tighter than any value that would indicate a real behavior change.
@@ -554,12 +554,12 @@ def test_measure_courtesy_prelude_sweep_residuals_match_no_prelude_capture():
 
 def test_measure_courtesy_prelude_tone_segments_located_like_silence():
     """The tone segments themselves are recorded exactly like a silence
-    segment in ``_locate_segments`` -- no search, residual 0, confidence 1 --
+    segment in ``locate_segments`` -- no search, residual 0, confidence 1 --
     because they are never in STIMULUS_KINDS."""
     prog = _measure_program(courtesy_prelude=True)
     cap = _synthesize(prog)
-    global_offset, _first, stimuli, _amb = _global_offset(prog, cap, SR)
-    locations = _locate_segments(prog, cap, SR, global_offset, stimuli)
+    global_offset, _first, stimuli, _amb = locate_global_offset(prog, cap, SR)
+    locations = locate_segments(prog, cap, SR, global_offset, stimuli)
     by_id = {loc.segment_id: loc for loc in locations}
     for seg_id in ("courtesy_tone_ch0", "courtesy_tone_ch1"):
         loc = by_id[seg_id]
@@ -570,13 +570,13 @@ def test_measure_courtesy_prelude_tone_segments_located_like_silence():
 
 
 def test_measure_courtesy_prelude_first_stimulus_is_still_the_leading_pilot():
-    """``_global_offset`` must keep correlating against the first REAL
+    """``locate_global_offset`` must keep correlating against the first REAL
     stimulus (the leading pilot), never the tone -- confirmed indirectly: the
     reported global offset lands the pilot at (or very near) its own
     scheduled position once the correlation is resolved."""
     prog = _measure_program(courtesy_prelude=True)
     cap = _synthesize(prog)
-    global_offset, first, _stimuli, _amb = _global_offset(prog, cap, SR)
+    global_offset, first, _stimuli, _amb = locate_global_offset(prog, cap, SR)
     assert first.segment_id == "pilot_woofer_lo"
     assert first.kind == KIND_PILOT
 
@@ -726,7 +726,7 @@ def test_verify_analysis_always_carries_an_integrity_record():
 
 
 def test_measure_analysis_carries_no_verify_integrity_record():
-    """Scope: MEASURE keeps ``_estimate_drift`` as its glitch owner. A record
+    """Scope: MEASURE keeps ``estimate_drift`` as its glitch owner. A record
     here would be a second answer to one question."""
     prog = _measure_program()
     res = analyze_program_capture(

@@ -16,8 +16,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, LEGACY_EVIDENCE_VIEWS
+from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
@@ -55,30 +54,21 @@ GRID = np.geomspace(280.0, 16000.0, 90)
 REFERENCE_DB = -20.0
 
 
-def _flat_curve(*, offset_db: float = 0.0, ripple_db: float = 0.0) -> np.ndarray:
-    """A curve at ``REFERENCE_DB + offset_db``, with optional deterministic
-    ripple (a single +ripple_db bump at bin 10, -ripple_db at bin 40) so a
-    test can tell a perfectly-flat golden case apart from a rippled one."""
-    curve = np.full(GRID.shape, REFERENCE_DB + offset_db, dtype=float)
+def _flat_curve(*, ripple_db: float = 0.0) -> np.ndarray:
+    """A curve at ``REFERENCE_DB``, with optional deterministic ripple (a
+    single +ripple_db bump at bin 10, -ripple_db at bin 40) so a test can tell
+    a perfectly-flat golden case apart from a rippled one."""
+    curve = np.full(GRID.shape, REFERENCE_DB, dtype=float)
     if ripple_db:
         curve[10] += ripple_db
         curve[40] -= ripple_db
     return curve
 
 
-def _make_round_dir(
-    tmp_path: Path,
-    name: str,
-    *,
-    position_curves: dict[str, tuple[str, np.ndarray]],
-    position_degrees: dict[str, float] | None = None,
-) -> Path:
+def _make_round_dir(tmp_path: Path, name: str, *, baseline: bool = False) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
     produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/``.
-
-    ``position_curves`` maps ``position_id -> (role, magnitude_db)``; the
-    combined curve is their power mean, graded by the real evaluator.
-    """
+    ``baseline`` banks an entry-baseline take, the one curve its packet carries."""
     round_dir = tmp_path / name
     session_dir = round_dir / "bundle" / "sess1"
     capture_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
@@ -99,47 +89,8 @@ def _make_round_dir(
     (capture_dir / "round_receipt.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_round_receipt", "schema_version": 2, "round_id": "r1",
     }))
-    stack = np.vstack([curve for _role, curve in position_curves.values()])
-    combined_db = 10.0 * np.log10(np.mean(10.0 ** (stack / 10.0), axis=0))
-    # ``position_deg`` is present only for the seats the caller named, exactly
-    # as the real writer behaves: the packet's row filter drops a key whose
-    # value is None, so a seat with no commanded bearing — and every seat of a
-    # round banked before the 2026-08-24 geometry writer — carries no key at
-    # all rather than a null.
-    degrees = position_degrees or {}
-    positions = [
-        {
-            "position_id": position_id, "index": index, "attempt": 1,
-            "role": role, "take_id": "", "magnitude_db": curve.tolist(),
-            **({"position_deg": degrees[position_id]} if position_id in degrees else {}),
-        }
-        for index, (position_id, (role, curve)) in enumerate(position_curves.items(), start=2)
-    ]
-    cloud = {
-        "kind": "jts_crossover_v2_cloud_evidence", "schema_version": 1,
-        "trusted_floor_hz": None, "validity_floor_hz": None,
-        "curve": {"freqs_hz": GRID.tolist(), "magnitude_db": combined_db.tolist()},
-        "flatness": {"evaluable": True, "n_bins": len(GRID), "n_excluded": 0, "rms_db": 0.0},
-        "spec": evaluate_flat_spec(
-            GRID, combined_db, np.zeros(GRID.shape, dtype=bool), smoothing_fraction=12,
-        ).to_dict(),
-        "merged_excluded_bands_hz": [], "screen_excluded_bands_hz": [],
-        "null_registry": {"classification": "insufficient_evidence", "nulls": []},
-        "null_registry_crossover_region": {"classification": "insufficient_evidence"},
-        "carve_outs": [], "geometry": {"reason": "thin_evidence", "n_positions": len(positions)},
-        "positions": {
-            "available": True, "schema": "jts_attribution_position_evidence/1",
-            "curve_grid": {
-                "freqs_hz": GRID.tolist(), "fractional_octave": 12,
-                "smoothing_fraction": 12, "floor_hz": None, "floor_source": None,
-            },
-            "positions": positions,
-        },
-    }
-    (capture_dir / "cloud_verify.json").write_text(json.dumps(cloud))
-    (capture_dir / "findings_cloud_verify.json").write_text(json.dumps({
-        "findings": [], "field_descriptions": {},
-    }))
+    if baseline:
+        _bank_entry_baseline_take(round_dir, magnitude_db=_flat_curve())
     write_manifest(round_dir)
     return round_dir
 
@@ -160,13 +111,7 @@ def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
     that cannot be re-derived from the paths, which of the two shapes was
     found, is disclosed rather than inferred.
     """
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("offax", _flat_curve()),
-        },
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
     session_dir = round_dir / "bundle" / "sess1"
 
     loaded = load_banked_round(session_dir if live else round_dir)
@@ -174,7 +119,6 @@ def test_a_round_loads_from_its_banked_tree_or_from_the_live_bundle(
     assert loaded.inputs.banked is not live
     assert loaded.inputs.session_dir == session_dir
     assert loaded.session_dir == session_dir
-    assert loaded.report is not None and loaded.report.bands  # a real, rehydrated report
 
 
 def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
@@ -189,9 +133,8 @@ def test_a_live_bundle_takes_the_flow_state_only_when_it_names_that_session(
     ``session_id`` against the capture directory the bundle filed its round
     artifacts under.
     """
-    curves = {"cloud_verify_02": ("onax", _flat_curve())}
-    mine = _make_round_dir(tmp_path, "r1", position_curves=curves) / "bundle" / "sess1"
-    other = _make_round_dir(tmp_path, "r2", position_curves=curves) / "bundle" / "sess1"
+    mine = _make_round_dir(tmp_path, "r1") / "bundle" / "sess1"
+    other = _make_round_dir(tmp_path, "r2") / "bundle" / "sess1"
     capture = other / "evidence/v1/artifacts/crossover_v2"
     (capture / "cap1").rename(capture / "cap2")
     state = tmp_path / "flow-state.json"
@@ -214,9 +157,7 @@ def test_a_directory_of_neither_shape_refuses(tmp_path):
 
 
 def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
     (round_dir / "bundle" / "second_session").mkdir()
     with pytest.raises(RoundViewsError, match="expected exactly one"):
         load_banked_round(round_dir)
@@ -225,9 +166,7 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
 def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     """The side file reaches the packet exactly as applied-profile.json does:
     present, the accuracy budget's repeat-floor component is available."""
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
     component = "in_capture_repeat_floor"
     absent = load_banked_round(round_dir)
     assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
@@ -247,9 +186,7 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
 def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
     assert cli.main(["entry", str(round_dir)]) == 0
 
     assert cli.main(["inventory", str(round_dir)]) == 0
@@ -275,17 +212,13 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     assert Path(missing["path"]).is_file()
 
     # A view whose subcommand takes MORE than this round says so, and places
-    # this round in the slot that writes the artifact beside it. What is left
-    # in brackets is what no inventory of one round can fill, and running it
-    # without that round argparse rejects.
-    multi = rows["close_reference.json"]
+    # this round in its own slot. What is left in brackets is what no
+    # inventory of one round can fill.
+    multi = rows["repeatability.json"]
     assert shlex.split(multi["produced_by"]) == [
-        "jasper-round-views", "close-reference", "--far-round", str(round_dir),
-        "--close-round", "<other-round>", "--close-m", "<distance-m>",
+        "jasper-round-views", "repeat", str(round_dir), "<other-round>",
     ]
     assert multi["producer_needs_more_than_this_round"] is True
-    with pytest.raises(SystemExit):
-        cli.main(["close-reference", "--far-round", str(round_dir)])
 
     assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
         f"jasper-round-views classify-features {round_dir}"
@@ -312,52 +245,16 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     )
 
 
-def test_inventory_finds_a_legacy_rounds_view_outputs_where_the_packet_does(tmp_path):
-    """A round banked before views filed beside it (ADR-0346) holds their
-    outputs in its evidence. Inventory finds them where the packet does —
-    present, and marked legacy — so no one re-runs a view to replace a file
-    the gate still reads; a copy filed beside the round then wins in both."""
-    from jasper.cli import round_views as cli
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    evidence = round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1"
-    for name in LEGACY_EVIDENCE_VIEWS:
-        (evidence / name).write_text("{}")
-
-    def rows() -> dict[str, dict[str, Any]]:
-        assert cli.main(["inventory", str(round_dir)]) == 0
-        return {row["artifact"]: row for row in json.loads((round_dir / "inventory.json").read_text())["artifacts"]}
-
-    legacy = rows()
-    for name in LEGACY_EVIDENCE_VIEWS:
-        assert (legacy[name]["present"], legacy[name]["legacy_view_file_in_evidence"], legacy[name]["path"]) == (
-            True, True, str(evidence / name))
-    assert legacy[FREQUENCY_VIEW_FILENAME]["legacy_view_file_in_evidence"] is False
-    assert load_banked_round(round_dir).packet[DERIVED_VIEWS]["legacy_view_files_in_evidence"] is True
-
-    for name in LEGACY_EVIDENCE_VIEWS:
-        (round_dir / name).write_text("{}")
-    beside = rows()
-    for name in LEGACY_EVIDENCE_VIEWS:
-        assert (beside[name]["present"], beside[name]["legacy_view_file_in_evidence"], beside[name]["path"]) == (
-            True, False, str(round_dir / name))
-    assert load_banked_round(round_dir).packet[DERIVED_VIEWS]["legacy_view_files_in_evidence"] is False
-
-
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
     rc = main(["frequency", str(round_dir)])
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
     assert payload["schema"] == "jts_frequency_view/1"
-    assert payload["runs"][0]["series"][0]["kind"] == "average"
+    assert payload["runs"][0]["series"][0]["kind"] == "entry_baseline"
 
 
 def test_cli_frequency_accepts_a_standalone_analysis_document(tmp_path):
@@ -403,9 +300,7 @@ def test_cli_reports_the_write_exit_when_the_view_cannot_be_written(tmp_path, ca
     places, and neither is a traceback out of the writer."""
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
 
     rc = cli.main([
         "entry", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
@@ -427,9 +322,7 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
     """
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
 
     def _strict(*_args, **_kwargs):
         raise ValueError("Out of range float values are not JSON compliant")
@@ -454,9 +347,7 @@ def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
     """
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
     read = cli._common.load_banked_round
 
     def _without_the_block(path):
@@ -488,14 +379,13 @@ def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
     """
     from jasper.cli.round_views import main
 
-    curves = {"cloud_verify_02": ("onax", _flat_curve())}
-    round_dir = _make_round_dir(tmp_path, "r1", position_curves=curves)
+    round_dir = _make_round_dir(tmp_path, "r1")
     banked_bundle = round_dir / "bundle" / "sess1"
     # The on-speaker shape: /var/lib/jasper/active_speaker/sessions/<id>.
     sessions = tmp_path / "daemon" / "sessions"
     sessions.mkdir(parents=True)
     live = sessions / "live-1"
-    (_make_round_dir(tmp_path / "other", "r2", position_curves=curves)
+    (_make_round_dir(tmp_path / "other", "r2")
      / "bundle" / "sess1").rename(live)
     here = tmp_path / "cwd"
     here.mkdir()
@@ -564,10 +454,7 @@ def _bank_entry_baseline_take(
 
 
 def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
     _bank_entry_baseline_take(round_dir, **kwargs)
     write_manifest(round_dir)
     return round_dir
@@ -600,13 +487,8 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
 
 
 def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
-    """Both verbs the campaign hit, through ``main`` and the real argv.
-
-    ``frequency`` was refused by the same loader gate and for the same wrong
-    reason: its own projector already renders an entry-baseline series from a
-    packet with no positions, so nothing but the gate stood between a stage-1
-    round and its curve.
-    """
+    """Both verbs the campaign hit, through ``main`` and the real argv: the
+    frequency view draws the round's entry baseline beside its measured takes."""
     from jasper.cli import round_views as cli
 
     round_dir = bank_measure_round(tmp_path)
@@ -618,17 +500,17 @@ def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, caps
 
     assert cli.main(["frequency", str(round_dir)]) == 0
     view = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
-    assert [s["kind"] for s in view["runs"][0]["series"]] == ["entry_baseline"]
+    kinds = [s["kind"] for s in view["runs"][0]["series"]]
+    assert kinds[0] == "entry_baseline" and set(kinds[1:]) == {"measurement"}
 
 
 def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
     """The door's whole contract: it CONSUMES the grading, never repeats it.
 
     Asserted against an independent ``evaluate_flat_spec`` call on the same
-    inputs — the take's own curve and mask, in the round's own frame — so the
-    door cannot pass by returning plausible numbers of its own. Field-for-field
-    on the report, not a spot check: a door that graded the right curve in the
-    WRONG frame would agree on the bands and disagree on the reference.
+    inputs — the take's own curve and mask, in no frame — so the door cannot
+    pass by returning plausible numbers of its own. Field-for-field on the
+    report, not a spot check.
     """
     curve = _flat_curve(ripple_db=3.0)
     banked = load_banked_round(_round_with_entry_baseline(tmp_path, magnitude_db=curve))
@@ -637,48 +519,9 @@ def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
 
     assert grade.available is True
     assert grade.reason == ""
-    expected = evaluate_flat_spec(
-        GRID, curve, np.zeros(GRID.shape, dtype=bool),
-        smoothing_fraction=banked.report.smoothing_fraction,
-        trusted_floor_hz=banked.report.trusted_floor_hz,
-        trusted_ceiling_hz=banked.report.trusted_ceiling_hz,
-    )
+    expected = evaluate_flat_spec(GRID, curve, np.zeros(GRID.shape, dtype=bool), smoothing_fraction=0)
     assert grade.report is not None
     assert grade.report.to_dict() == expected.to_dict()
-
-
-def test_a_re_grade_reads_the_rounds_room_floor_back_instead_of_re_deriving_it(
-    tmp_path,
-):
-    """#3502 — a re-evaluation states the ROUND's room floor, never its own.
-
-    This door grades a stored take in the round's own frame. The room floor is
-    part of that frame: the round pooled it from the seats it actually
-    measured, and a floor recomputed at this door would be a second opinion
-    about one room, stated over a curve that never saw it. So it is read off
-    the banked report — provenance included, because a floor that arrived here
-    as ``declared_geometry`` may not print as measured downstream.
-    """
-    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
-    banked_path = next(round_dir.glob("bundle/*/evidence/v1/artifacts/**/cloud_verify.json"))
-    cloud = json.loads(banked_path.read_text())
-    cloud["spec"]["entanglement_floor_hz"] = 610.0
-    cloud["spec"]["entanglement_floor_source"] = "declared_geometry"
-    banked_path.write_text(json.dumps(cloud))
-    banked = load_banked_round(round_dir)
-    assert banked.report is not None
-    assert banked.report.entanglement_floor_hz == 610.0
-
-    report = entry_state_grade(banked).report
-
-    assert report is not None
-    assert report.entanglement_floor_hz == banked.report.entanglement_floor_hz
-    assert report.entanglement_floor_source == banked.report.entanglement_floor_source
-    # It MARKS and does not clamp: the graded edges are the round's, untouched.
-    assert [b.graded_lo_hz for b in report.bands] == [
-        b.graded_lo_hz for b in banked.report.bands
-    ]
-    assert any(b.room_entangled_below_hz == 610.0 for b in report.bands)
 
 
 def test_the_entry_grade_carries_a_per_band_table(tmp_path):
@@ -787,10 +630,7 @@ def test_a_round_that_banked_no_entry_baseline_says_so_with_a_reason(tmp_path):
     NAMED reason with no report beside it — never an empty table that reads as
     a clean bill of health.
     """
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
 
     grade = entry_state_grade(load_banked_round(round_dir))
 
@@ -847,10 +687,7 @@ def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
     """
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
+    round_dir = _make_round_dir(tmp_path, "r1")
 
     assert cli.main(["entry", str(round_dir)]) == 0
 
@@ -963,13 +800,7 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
 ):
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(
-        tmp_path, "r1",
-        position_curves={
-            "cloud_verify_02": ("onax", _flat_curve()),
-            "cloud_verify_04": ("offax", _flat_curve(ripple_db=1.0)),
-        },
-    )
+    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
 
     assert cli.main([*shlex.split(view), str(round_dir)]) == cli.EXIT_OK
 
@@ -1212,9 +1043,7 @@ def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
 def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
     from jasper.cli.round_views import main, build_parser
 
-    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", position_curves={
-        "seat": ("onax", _flat_curve()),
-    })
+    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", baseline=True)
     assert main(["inventory", str(round_dir)]) == 0
     rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
     command = shlex.split(rows[FREQUENCY_VIEW_FILENAME]["next_command"])

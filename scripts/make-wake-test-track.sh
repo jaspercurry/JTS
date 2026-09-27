@@ -37,14 +37,10 @@ OUT_LOCAL="$REPO_ROOT/logs/wake-test-track/${SLUG}"
 REMOTE_OUT="/tmp/wake-test-track-${SLUG}"
 mkdir -p "$OUT_LOCAL"
 
-if [[ ! -f "$LOCAL_PY" ]]; then
-    echo "ERROR: $LOCAL_PY missing — repo state corrupted?" >&2
-    exit 1
-fi
+[[ -f "$LOCAL_PY" ]] || die "ERROR: $LOCAL_PY missing — repo state corrupted?"
 
 scp -q "$LOCAL_PY" "${PI_USER}@${PI_HOST}:/tmp/_make_wake_test_track.py"
-ssh "${PI_USER}@${PI_HOST}" \
-    "sudo /opt/jasper/.venv/bin/python /tmp/_make_wake_test_track.py \
+ssh_remote "sudo /opt/jasper/.venv/bin/python /tmp/_make_wake_test_track.py \
         --reps ${REPS} --gap-sec ${GAP_SEC} \
         --word '${PHRASE}' --out-dir '${REMOTE_OUT}'"
 

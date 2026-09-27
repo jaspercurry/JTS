@@ -71,7 +71,7 @@ SYSTEM_INSTRUCTION = (
     "matching tool without asking for confirmation.\n"
     # The "home_assistant tool isn't available → tell the user
     # smart-home isn't set up + don't misroute to other tools" guard
-    # lives in _build_system_instruction's HA addendum (only added
+    # lives in build_system_instruction's HA addendum (only added
     # when ha_configured=False) with the hostname-aware URL. Keeping
     # the guidance there rather than here keeps the static prompt
     # the same length whether HA is configured or not.
@@ -211,7 +211,7 @@ _PROVIDER_AUGMENTATION: dict[str, str] = {
 }
 
 
-def _build_system_instruction(
+def build_system_instruction(
     location: str = "",
     *,
     google_accounts: list[str] | None = None,
@@ -315,16 +315,11 @@ def _build_system_instruction(
             "check or look it up; the data source is genuinely absent."
         )
     if not ha_configured:
-        # Same conditional pattern as transit above. Critical that the
-        # model also DOES NOT call any other tool in this case — we've
-        # observed (May 22 voice log) the model misrouting "turn on the
-        # bedroom lights" to get_current_time + get_now_playing when no
-        # home_assistant tool exists. The "do not call any other tool"
-        # clause prevents that misroute. The specific URL with the
-        # configured hostname lets the user actually find the wizard
-        # — multi-speaker households on the same LAN have
-        # jts2.local / jts3.local hostnames, so hardcoding "jts.local"
-        # would point the wrong way.
+        # Without Home Assistant, unrelated tools cannot control devices. The
+        # configured hostname must lead to this speaker's setup page.
+        # The "do not call any other tool" clause is load-bearing: the model
+        # has misrouted these requests to get_current_time / get_now_playing
+        # without it.
         addendum += (
             " Home Assistant smart-home control isn't set up on this "
             "speaker yet — no home_assistant tool is available. If the "

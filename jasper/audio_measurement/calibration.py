@@ -4,37 +4,32 @@
 
 """Measurement-microphone calibration registry and parser.
 
-Two input paths -- known-vendor serial lookup and a bring-your-own uploaded
+Two input paths -- a vendor file fetched by serial
+(:mod:`jasper.cli._vendor_calibration`) and a bring-your-own uploaded
 REW/HouseCurve-style text curve -- normalize into ``correction_db``: an
 additive dB offset applied to the measured response before target
 normalization.
 
 The quirk that matters is the SIGN. A measurement mic's calibration file states
 the microphone's own *response*, so the correction is its negation; the
-per-vendor declaration is in ``SUPPORTED_MODELS``. Records written before
-2026-07-27 stored vendor files under the opposite claim, and
-``migrate_stored_sign_conventions`` repairs them in place on deploy.
+per-vendor declaration is in ``SUPPORTED_MODELS``.
 """
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import logging
 import os
 import re
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 import numpy as np
 
 from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import finite_float
+from jasper.json_fields import finite_float, sha256_text
 
 # The model registry -- SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
 # measurement_mic_usb_ids, mic_tier_for_model -- lives in the numpy-free leaf
@@ -177,18 +172,6 @@ class CalibrationRecord:
         )
 
 
-class CalibrationLookupError(RuntimeError):
-    """Raised when a vendor lookup did not return a usable cal file."""
-
-
-class CalibrationNotFoundError(CalibrationLookupError):
-    """Vendor lookup completed but no calibration exists for the serial."""
-
-
-class CalibrationUpstreamError(CalibrationLookupError):
-    """Vendor lookup could not be completed because the provider failed."""
-
-
 def serial_hash(serial: str | None) -> str | None:
     if not serial:
         return None
@@ -196,10 +179,6 @@ def serial_hash(serial: str | None) -> str | None:
     if not normalized:
         return None
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _public_source(source: str) -> str:
@@ -221,6 +200,11 @@ _NUMBER_RE = re.compile(
 )
 
 
+#: A tag anywhere makes the text a page: markup is never a calibration file,
+#: however many of its lines open with a number (a CSS keyframe does).
+_MARKUP_RE = re.compile(r"<[A-Za-z!/]")
+
+
 def parse_calibration_text(
     text: str,
     *,
@@ -238,6 +222,8 @@ def parse_calibration_text(
         raise ValueError(
             "sign_convention must be 'correction' or 'response'"
         )
+    if _MARKUP_RE.search(text):
+        raise ValueError("calibration file is markup, not a curve")
 
     rows: list[tuple[float, float]] = []
     for raw_line in text.splitlines():
@@ -485,7 +471,7 @@ def store_calibration(
     root: Path = DEFAULT_CALIBRATION_DIR,
 ) -> CalibrationRecord:
     curve = parse_calibration_text(text, sign_convention=sign_convention)
-    file_hash = _sha256_text(text)
+    file_hash = sha256_text(text)
     serial_hash_value = serial_hash(serial)
     calibration_id = _record_id(
         provider=provider,
@@ -538,205 +524,6 @@ def load_calibration_record(
         raise FileNotFoundError(f"calibration not found: {calibration_id}")
     data = json.loads(matches[0].read_text())
     return CalibrationRecord.from_dict(data)
-
-
-UrlOpen = Callable[[urllib.request.Request | str, float], bytes]
-
-
-def _default_urlopen(req: urllib.request.Request | str, timeout: float) -> bytes:
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
-
-
-def _decode_body(body: bytes) -> str:
-    return body.decode("utf-8", errors="replace")
-
-
-def _looks_like_calibration(text: str) -> bool:
-    try:
-        parse_calibration_text(text)
-    except ValueError:
-        return False
-    return True
-
-
-_CALIBRATION_SUFFIXES = (".txt", ".cal", ".frd", ".csv", ".omm")
-
-
-def _extract_links(base_url: str, text: str) -> list[str]:
-    links: list[str] = []
-    for raw in re.findall(r"""href=["']([^"']+)["']""", text, flags=re.I):
-        href = html.unescape(raw)
-        resolved = urllib.parse.urljoin(base_url, href)
-        # Only ever follow http(s): urljoin lets an absolute href override the
-        # scheme, so a `file://…txt` or `http://127.0.0.1…txt` link in the
-        # external vendor response would otherwise be an SSRF/LFI sink. A
-        # cross-host CDN file is still https, so legitimate hosting still works.
-        if urllib.parse.urlsplit(resolved).scheme not in ("http", "https"):
-            continue
-        split = urllib.parse.urlsplit(href.lower())
-        # The calibration filename can live in the URL path (…/abc.txt) or, as
-        # Dayton's tool does, only in a query parameter
-        # (…/Download?CalibrationFileName=abc.txt&…), so both are checked.
-        candidates = [split.path]
-        candidates.extend(value for _key, value in urllib.parse.parse_qsl(split.query))
-        if any(c.endswith(_CALIBRATION_SUFFIXES) for c in candidates):
-            links.append(resolved)
-    return links
-
-
-def fetch_dayton_calibration_text(
-    *,
-    vendor_model: str,
-    serial: str,
-    opener: UrlOpen | None = None,
-    timeout: float = 15.0,
-) -> tuple[str, str]:
-    """Fetch a Dayton Audio mic calibration file.
-
-    Dayton's public tool is a regular form POST; a page response is scraped for
-    calibration-file links, and a direct text-file response works too.
-    """
-    opener = opener or _default_urlopen
-    url = "https://support.daytonaudio.com/MicrophoneCalibrationTool"
-    data = urllib.parse.urlencode({
-        "Microphone": vendor_model,
-        "SerialNumber": serial.strip(),
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "JTS correction calibration lookup",
-        },
-        method="POST",
-    )
-    try:
-        body = opener(req, timeout)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise CalibrationUpstreamError(f"Dayton lookup failed: {e}") from e
-    text = _decode_body(body)
-    if "Unable To find a Calibration File" in text:
-        raise CalibrationNotFoundError(
-            f"Dayton did not find {vendor_model} serial {serial.strip()}"
-        )
-    if _looks_like_calibration(text):
-        return text, url
-    for link in _extract_links(url, text):
-        try:
-            linked = _decode_body(opener(link, timeout))
-        except (urllib.error.URLError, TimeoutError, OSError):
-            continue
-        if _looks_like_calibration(linked):
-            return linked, link
-    raise CalibrationUpstreamError(
-        "Dayton lookup did not return a parseable calibration file"
-    )
-
-
-def _minidsp_candidate_urls(
-    vendor_model: str,
-    serial: str,
-    *,
-    orientation: str = "unknown",
-) -> list[str]:
-    digits = re.sub(r"[^0-9]", "", serial)
-    if not digits:
-        return []
-    # UMIK ships 0-degree + 90-degree files. Default to 0-degree for two-channel
-    # room correction, with the other orientation as a fallback candidate.
-    if vendor_model == "umik-1":
-        suffixes = (
-            [f"{digits}_90deg.txt", f"{digits}.txt"]
-            if orientation == "90deg"
-            else [f"{digits}.txt", f"{digits}_90deg.txt"]
-        )
-        # The legacy UMIK-1 direct path is /images/umik/<sn>.txt; keep
-        # model-specific folders as secondary probes for site drift.
-        dirs = [
-            "https://www.minidsp.com/images/umik/",
-            "https://www.minidsp.com/images/umik/Umik-1/",
-            "https://www.minidsp.com/images/umik/UMIK-1/",
-        ]
-        return [base + suffix for base in dirs for suffix in suffixes]
-
-    # UMIK-2 serves calibration files through per-orientation PHP scripts, each
-    # of which accepts only its own suffix: umik.php ONLY "<serial>.txt"
-    # (0-degree), umik90.php ONLY "<serial>_90deg.txt" (90-degree). Crossing the
-    # pairing returns HTTP 200 with an error page rather than a 404, so the
-    # pairing avoids a wasted round-trip. Verified live 2026-07-15 against a real
-    # UMIK-2; the legacy /images/umik... family is dead (404 for every serial),
-    # one dir kept below as drift insurance.
-    scripts = [
-        ("https://www.minidsp.com/scripts/umik2cal/umik.php/", f"{digits}.txt"),
-        (
-            "https://www.minidsp.com/scripts/umik2cal/umik90.php/",
-            f"{digits}_90deg.txt",
-        ),
-    ]
-    if orientation == "90deg":
-        scripts.reverse()
-    legacy_suffixes = (
-        [f"{digits}_90deg.txt", f"{digits}.txt"]
-        if orientation == "90deg"
-        else [f"{digits}.txt", f"{digits}_90deg.txt"]
-    )
-    return [base + suffix for base, suffix in scripts] + [
-        "https://www.minidsp.com/images/umik/" + suffix
-        for suffix in legacy_suffixes
-    ]
-
-
-def fetch_minidsp_calibration_text(
-    *,
-    vendor_model: str,
-    serial: str,
-    orientation: str = "unknown",
-    opener: UrlOpen | None = None,
-    timeout: float = 15.0,
-) -> tuple[str, str]:
-    """Fetch a miniDSP UMIK calibration file by serial.
-
-    The known static URL families are tried first, falling back to an actionable
-    error if none returns a parseable file.
-    """
-    opener = opener or _default_urlopen
-    errors: list[str] = []
-    saw_not_found = False
-    candidates = _minidsp_candidate_urls(
-        vendor_model, serial, orientation=orientation,
-    )
-    if not candidates:
-        raise ValueError("miniDSP serial must contain digits")
-    for url in candidates:
-        # miniDSP blanket-blocks urllib's default "Python-urllib/x.y" User-Agent
-        # site-wide (verified live 2026-07-15: 403, not the real 404), so every
-        # request needs an explicit non-default header.
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "JTS correction calibration lookup"},
-        )
-        try:
-            text = _decode_body(opener(req, timeout))
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                saw_not_found = True
-            else:
-                errors.append(f"HTTP {e.code}")
-            continue
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            errors.append(str(e))
-            continue
-        if _looks_like_calibration(text):
-            return text, url
-    detail = f" ({'; '.join(errors[:2])})" if errors else ""
-    if saw_not_found and not errors:
-        raise CalibrationNotFoundError(
-            "miniDSP did not find a calibration file for that serial"
-        )
-    raise CalibrationUpstreamError(
-        "miniDSP lookup did not return a parseable calibration file" + detail
-    )
 
 
 def _stored_records(paths: Iterable[Path]) -> Iterator[CalibrationRecord]:
@@ -808,262 +595,15 @@ def find_stored_calibration_by_content_hash(
     return max(matches, key=lambda rec: rec.fetched_at, default=None)
 
 
-def fetch_vendor_calibration(
-    *,
-    model_key: str,
-    serial: str,
-    orientation: str = "unknown",
-    root: Path = DEFAULT_CALIBRATION_DIR,
-    opener: UrlOpen | None = None,
-) -> CalibrationRecord:
-    if model_key not in SUPPORTED_MODELS:
-        raise ValueError(f"unsupported calibration model: {model_key}")
-    if not serial.strip():
-        raise ValueError("serial number is required")
-    spec = SUPPORTED_MODELS[model_key]
-    provider = spec["provider"]
-    vendor_model = spec["vendor_model"]
-    # serial_hash, never the raw serial — the serial identifies a user's
-    # hardware and is treated as private metadata everywhere else.
-    log_serial_hash = serial_hash(serial)
-    # Re-use a previously-stored calibration for this serial so a repeat lookup
-    # never depends on the vendor being reachable.
-    cached = find_stored_calibration(
-        provider=provider, model_key=model_key, serial=serial,
-        orientation=orientation, root=root,
-    )
-    if cached is not None:
-        log_event(
-            logger,
-            "correction_calibration_lookup",
-            provider=provider,
-            model=model_key,
-            serial_hash=log_serial_hash,
-            outcome="cache_hit",
-            point_count=cached.point_count,
-        )
-        return cached
-    try:
-        if provider == "dayton_audio":
-            text, source = fetch_dayton_calibration_text(
-                vendor_model=vendor_model,
-                serial=serial,
-                opener=opener,
-            )
-        elif provider == "minidsp":
-            text, source = fetch_minidsp_calibration_text(
-                vendor_model=vendor_model,
-                serial=serial,
-                orientation=orientation,
-                opener=opener,
-            )
-            # Stamp the orientation the vendor ACTUALLY served, not the
-            # pre-fetch hint: every miniDSP candidate URL ends in exactly one of
-            # "<serial>.txt" (0-degree) or "<serial>_90deg.txt" (90-degree), so
-            # the winning `source` URL is ground truth.
-            orientation = "90deg" if source.endswith("_90deg.txt") else "0deg"
-        else:
-            raise ValueError(f"no fetcher for provider: {provider}")
-        record = store_calibration(
-            text=text,
-            provider=provider,
-            model=model_key,
-            label=spec["label"],
-            source=source,
-            serial=serial,
-            orientation=orientation,
-            # Vendor files are RESPONSE curves; the correction is the negation.
-            # The vendor owns this quirk, so the registry states it.
-            sign_convention=str(
-                spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION
-            ),
-            root=root,
-        )
-    except CalibrationNotFoundError:
-        log_event(
-            logger,
-            "correction_calibration_lookup",
-            provider=provider,
-            model=model_key,
-            serial_hash=log_serial_hash,
-            outcome="not_found",
-        )
-        raise
-    except CalibrationUpstreamError as e:
-        log_event(
-            logger,
-            "correction_calibration_lookup",
-            provider=provider,
-            model=model_key,
-            serial_hash=log_serial_hash,
-            outcome="upstream_error",
-            detail=repr(str(e)),
-            level=logging.WARNING,
-        )
-        raise
-    log_event(
-        logger,
-        "correction_calibration_lookup",
-        provider=provider,
-        model=model_key,
-        serial_hash=log_serial_hash,
-        outcome="ok",
-        point_count=record.point_count,
-    )
-    return record
-
-
-def _models_expecting_response() -> set[tuple[str, str]]:
-    """``(provider, model)`` pairs the registry declares to be response curves.
-
-    Keyed on the pair, not the provider alone: a provider can hold models that
-    disagree, and a provider-level key would silently drag a sibling along.
-    """
-    return {
-        (str(spec["provider"]), model_key)
-        for model_key, spec in SUPPORTED_MODELS.items()
-        if str(spec.get("sign_convention") or DEFAULT_SIGN_CONVENTION) == "response"
-    }
-
-
 def configured_calibration_root() -> Path:
     """The calibration store this speaker actually uses.
 
     ``DEFAULT_CALIBRATION_DIR`` is only the default: the measurement daemon
-    resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``. A migration
-    that ignored the override would read an empty directory and report
-    ``scanned=0`` -- success-shaped, and wrong.
+    resolves its root through ``JASPER_CORRECTION_CALIBRATION_DIR``, and a
+    reader that ignored the override would scan an empty directory.
     """
     return Path(
         os.environ.get(
             "JASPER_CORRECTION_CALIBRATION_DIR", str(DEFAULT_CALIBRATION_DIR),
         )
     )
-
-
-def migrate_stored_sign_conventions(
-    *, root: Path | None = None,
-) -> dict[str, int]:
-    """Repair vendor-fetched records stored under the wrong sign convention.
-
-    Until 2026-07-27 ``fetch_vendor_calibration`` stored every vendor file as
-    ``sign_convention="correction"``, so ``correction_db`` held the mic's
-    response un-negated and the pipeline added what it should have subtracted.
-    Run from ``install.sh`` on every deploy; idempotent.
-
-    * Keyed on the stored convention FIELD, never on the numbers: only a record
-      still claiming ``"correction"`` is touched, so a curve can never be
-      double-negated back to the bug.
-    * Vendor records only, keyed on ``(provider, model)``. A ``manual_upload``
-      record carries the household's OWN declaration and is not ours to
-      overrule.
-    * Re-derived from the retained raw file when its SHA-256 still matches the
-      record's ``file_sha256``; otherwise negated in place, which is the same
-      number. Re-fetching is impossible: only ``serial_hash`` is persisted.
-    * Phase is untouched -- it passes through unchanged under both conventions.
-
-    ONE direction only (``correction`` -> ``response``); a reversal needs its
-    own opposite-direction migration, not a re-run of this one. ``root``
-    defaults to :func:`configured_calibration_root`. Returns per-outcome counts
-    and never raises for one bad record.
-    """
-    root = configured_calibration_root() if root is None else root
-    vendor_models = _models_expecting_response()
-    counts = {
-        "scanned": 0,
-        "migrated_rederived": 0,
-        "migrated_negated": 0,
-        "already_response": 0,
-        "skipped_not_vendor": 0,
-        "unreadable": 0,
-        "write_failed": 0,
-    }
-    for path in sorted(root.glob("*/*/*.json")):
-        counts["scanned"] += 1
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            counts["unreadable"] += 1
-            continue
-        if not isinstance(data, dict):
-            counts["unreadable"] += 1
-            continue
-        provider = str(data.get("provider") or "")
-        model = str(data.get("model") or "")
-        if (provider, model) not in vendor_models:
-            counts["skipped_not_vendor"] += 1
-            continue
-        # Absent reads as "correction": that is what every reader of a
-        # legacy record already resolves it to (CalibrationRecord.from_dict).
-        stored = str(data.get("sign_convention") or "correction")
-        if stored != "correction":
-            counts["already_response"] += 1
-            continue
-
-        raw_text: str | None = None
-        try:
-            candidate = path.with_suffix(".txt").read_text()
-        except OSError:
-            candidate = None
-        if candidate is not None and _sha256_text(candidate) == str(
-            data.get("file_sha256") or ""
-        ):
-            raw_text = candidate
-
-        try:
-            if raw_text is not None:
-                curve = parse_calibration_text(
-                    raw_text, sign_convention="response",
-                )
-                method = "rederived"
-            else:
-                stored_curve = CalibrationCurve.from_dict(data.get("curve"))
-                curve = CalibrationCurve(
-                    freqs_hz=list(stored_curve.freqs_hz),
-                    correction_db=[-db for db in stored_curve.correction_db],
-                )
-                method = "negated"
-        except (ValueError, TypeError):
-            counts["unreadable"] += 1
-            continue
-
-        data["curve"] = curve.to_dict()
-        data["sign_convention"] = "response"
-        data["point_count"] = len(curve.freqs_hz)
-        try:
-            # Atomic and stat-preserving: a crash mid-migration must leave the
-            # OLD record rather than a truncated one, and `preserve_target_stat`
-            # keeps the existing owner/mode so this root-run repair cannot
-            # re-own a file a de-rooted jasper-correction-web must write.
-            atomic_write_text(
-                path,
-                json.dumps(data, indent=2),
-                preserve_target_stat=True,
-            )
-        except OSError:
-            counts["write_failed"] += 1
-            continue
-        counts[f"migrated_{method}"] += 1
-        # WARNING, not INFO: a one-time migration MUTATING household measurement
-        # state, and the deploy transcript is where an operator looks. Bounded by
-        # the one or two mic records a household owns, so it cannot spam.
-        log_event(
-            logger,
-            "correction_calibration_sign_migrated",
-            level=logging.WARNING,
-            provider=provider,
-            model=model,
-            calibration_id=str(data.get("calibration_id") or ""),
-            method=method,
-            point_count=len(curve.freqs_hz),
-        )
-
-    migrated = counts["migrated_rederived"] + counts["migrated_negated"]
-    if migrated or counts["unreadable"] or counts["write_failed"]:
-        log_event(
-            logger,
-            "correction_calibration_sign_migration",
-            level=logging.WARNING,
-            **counts,
-        )
-    return counts

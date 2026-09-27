@@ -28,6 +28,7 @@ from typing import Any
 
 from jasper.atomic_io import atomic_write_text
 from jasper.env_load import parse_bool_value
+from jasper.json_fields import canonical_json_bytes
 from jasper.log_event import log_event
 
 
@@ -243,11 +244,7 @@ def _canonical_variant_payload(
 
 
 def _config_hash(variants: tuple[Aec3SweepVariant, ...]) -> str:
-    payload = json.dumps(
-        _canonical_variant_payload(variants),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    payload = canonical_json_bytes(_canonical_variant_payload(variants))
     return hashlib.sha256(payload).hexdigest()[:12]
 
 

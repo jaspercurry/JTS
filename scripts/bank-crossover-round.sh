@@ -51,15 +51,11 @@ cat > "$DEST/provenance.json" <<EOF
 EOF
 echo "provenance -> $DEST/provenance.json (host=$PI_HOST user=$PI_USER banked_at=$UTC_NOW)" >&2
 
-remote() {
-    ssh "${SSH_BATCH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "$@"
-}
-
 echo "Banking crossover-v2 round from ${PI_USER}@${PI_HOST} -> ${DEST}/" >&2
 
 bundle_ok=0
 bundle_status="no session bundles found on the Pi"
-BUNDLE="${2:-$(remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")}"
+BUNDLE="${2:-$(ssh_remote "sudo ls -t /var/lib/jasper/active_speaker/sessions 2>/dev/null | head -1")}"
 if [[ -n "$BUNDLE" && ! "$BUNDLE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
     echo "bundle: invalid session ID" >&2
     exit 3
@@ -67,7 +63,7 @@ fi
 if [[ -n "$BUNDLE" ]]; then
     mkdir -p "$DEST/bundle"
     # tar may stop at its end marker before the sender finishes archive padding.
-    if remote "sudo tar -C /var/lib/jasper/active_speaker/sessions -cf - '$BUNDLE'" \
+    if ssh_remote "sudo tar -C /var/lib/jasper/active_speaker/sessions -cf - '$BUNDLE'" \
             | { tar -C "$DEST/bundle" -xf - && cat > /dev/null; }; then
         bundle_ok=1
         bundle_status="ok ($BUNDLE)"
@@ -81,7 +77,7 @@ else
 fi
 
 # Resolve the state after the bundle pull, so a later live state cannot label it.
-remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/null" \
+ssh_remote "sudo cat /var/lib/jasper/active_speaker_crossover_v2_state.json 2>/dev/null" \
     > "$DEST/.current-state.json"
 state_status="unavailable"
 python_bin="${PYTHON:-$REPO_ROOT/.venv/bin/python}"
@@ -118,7 +114,7 @@ echo "state: $state_status" >&2
 # Prints the status line the summary shows.
 pull_optional() {  # <label> <remote-path> <local-name>
     local label="$1" src="$2" name="$3" bytes
-    if remote "sudo cat $src 2>/dev/null" > "$DEST/$name" && [[ -s "$DEST/$name" ]]; then
+    if ssh_remote "sudo cat $src 2>/dev/null" > "$DEST/$name" && [[ -s "$DEST/$name" ]]; then
         bytes="$(wc -c < "$DEST/$name")"
         echo "$label -> $DEST/$name ($bytes bytes)" >&2
         echo "ok ($bytes bytes)"
@@ -179,7 +175,7 @@ journal_ok_count=0
 mkdir -p "$DEST/journal"
 for u in "${units[@]}"; do
     out="$DEST/journal/${u}.log"
-    if remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
+    if ssh_remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
             | redact_jasper_diagnostics > "$out"; then
         journal_ok_count=$((journal_ok_count + 1))
         echo "  journal/${u}.log: $(wc -l < "$out") lines" >&2
@@ -193,7 +189,7 @@ for u in "${units[@]}"; do
     combined_flags+=(-u "$u")
 done
 combined_ok="failed"
-if remote "journalctl --since '$SINCE' --no-pager --output=short-iso ${combined_flags[*]} 2>/dev/null" \
+if ssh_remote "journalctl --since '$SINCE' --no-pager --output=short-iso ${combined_flags[*]} 2>/dev/null" \
         | redact_jasper_diagnostics > "$DEST/journal/combined.log"; then
     combined_ok="ok"
     echo "  journal/combined.log: $(wc -l < "$DEST/journal/combined.log") lines" >&2
@@ -206,7 +202,7 @@ journal_status="${journal_ok_count}/${#units[@]} unit logs, combined=${combined_
 # --------------------------------------------------------------------- #
 # 5. Power diagnostics.
 # --------------------------------------------------------------------- #
-remote 'vcgencmd get_throttled 2>&1; \
+ssh_remote 'vcgencmd get_throttled 2>&1; \
     echo -n "dmesg under-voltage: "; sudo dmesg -T 2>/dev/null | grep -ci "under-voltage"; \
     echo -n "journal under-voltage: "; sudo journalctl -b 0 --no-pager 2>/dev/null | grep -ci "under-voltage"' \
     | tee "$DEST/power.txt" | sed 's/^/  power: /' >&2

@@ -30,33 +30,22 @@ def test_normalise_strips_articles_and_punctuation():
     assert normalise("A Hard Day's Night") == normalise("Hard Day s Night")
 
 
-def test_match_track_exact_match():
-    airplay = {"title": "Hey Jude", "artist": "The Beatles"}
-    spotify = _spotify("Hey Jude", "The Beatles")
-    assert _match_track(airplay, spotify) is True
-
-
-def test_match_track_normalisation_title_only():
-    """Title comparison is case/punctuation-insensitive after normalisation.
-    Artist disagreement is OK now — title-only matching."""
-    airplay = {"title": "HEY JUDE!", "artist": "Some Cover Band"}
-    spotify = _spotify("Hey Jude", "The Beatles")
-    assert _match_track(airplay, spotify) is True
-
-
-def test_match_track_remaster_suffix_still_matches():
-    """Real-world: AirPlay reports the album-version title with no suffix,
-    Spotify reports the same track from a remastered release. Title-only
-    matching tolerates this; both-must-match would have false-negatived."""
-    airplay = {"title": "Hey Jude", "artist": "The Beatles"}
-    spotify = _spotify("Hey Jude", "The Beatles - Remastered 2015")
-    assert _match_track(airplay, spotify) is True
-
-
-def test_match_track_different_song_returns_false():
-    airplay = {"title": "Float On", "artist": "Modest Mouse"}
-    spotify = _spotify("Hey Jude", "The Beatles")
-    assert _match_track(airplay, spotify) is False
+@pytest.mark.parametrize(
+    'title,artist,spotify_artist,expected',
+    [
+        ('Hey Jude', 'The Beatles', 'The Beatles', True),
+        # Matching is title-only: artist disagreement (cover-band credit,
+        # remaster-suffix attribution) is tolerated.
+        ('HEY JUDE!', 'Some Cover Band', 'The Beatles', True),
+        ('Hey Jude', 'The Beatles', 'The Beatles - Remastered 2015', True),
+        ('Float On', 'Modest Mouse', 'The Beatles', False),
+    ],
+    ids=['exact', 'normalized-title', 'remastered-artist', 'different-song'],
+)
+def test_match_track_title(title, artist, spotify_artist, expected):
+    airplay = {"title": title, "artist": artist}
+    spotify = _spotify("Hey Jude", spotify_artist)
+    assert _match_track(airplay, spotify) is expected
 
 
 def test_match_track_spotify_paused_returns_false():

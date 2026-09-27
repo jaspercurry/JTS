@@ -76,8 +76,7 @@ BRIDGE_BESIDE_MARKER_REMEDY = (
     "sudo systemctl start jasper-grouping-reconcile.service"
 )
 
-#: The recorded remedy for an unconverged ACTIVE endpoint. Owner ruling
-#: 2026-08-26: a recorded command, not a new reconciler rung.
+#: The operator remedy for an unconverged ACTIVE endpoint.
 #:
 #: BOTH steps, because the first one alone does not clear this park.
 #: ``baseline-reemit --endpoint ring`` moves the GRAPH; the endpoint marker

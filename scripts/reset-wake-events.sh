@@ -66,7 +66,7 @@ fi
 echo "Resetting wake-event corpus on ${PI_USER}@${PI_HOST}" >&2
 echo "  Archive target: ${ARCHIVE_DIR}" >&2
 
-ssh "${PI_USER}@${PI_HOST}" "set -euo pipefail
+ssh_remote "set -euo pipefail
 # Sanity-check before we touch anything destructive. Needs sudo
 # because /var/lib/jasper is 0750 root:root — pi user can't even
 # stat the wake-events subdir without it.

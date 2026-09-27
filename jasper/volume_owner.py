@@ -2,18 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The one owner of CamillaDSP's main fader — four ranked claim kinds.
+"""The one owner of CamillaDSP's main fader — three ranked level claims.
 
-Every fader writer in a process goes through this owner, as one of four claim
-kinds: **household · transient-duck · session-measurement · commissioning**.
-
-**What "ranked" means.** Three kinds declare a LEVEL — an absolute dB the fader
-should read — totally ordered household < session-measurement < commissioning,
-and the highest-ranked claim held is *the level in effect*. The transient duck
-declares no level: it is an ATTENUATION composing below whichever level is in
-effect. A lower-ranked level claim held under a higher-ranked one is **recorded
-and not written**, and is what the fader lands on when the higher claim
-releases.
+Every claim declares a LEVEL — an absolute dB the fader should read — and the
+kinds are totally ordered **household < session-measurement <
+commissioning**. The highest-ranked claim held is *the level in effect*. A
+lower-ranked claim held under a higher-ranked one is **recorded and not
+written**, and a release restores the next level OUTRIGHT, never clamped to the
+fader's reading. The graph-swap duck is not a claim here (ADR-0375).
 
 **One declared level.** A claim's ``level_db`` is the only seat of truth: any
 level a caller derives arrives as an argument to
@@ -27,13 +23,8 @@ level a caller derives arrives as an argument to
 **The 0 dB ceiling is NOT this module's.** ``devices.volume_limit`` stays
 ``0.0`` and ``jasper.camilla._coerce_main_volume_db`` clamps every positive
 write; the owner sits BEHIND that door as its only caller, never as its
-exception. It refuses only *non-finite* numbers, which is arithmetic integrity
-(a NaN would poison :func:`jasper.volume_latch.duck_release_target_db`), not a
-safety clamp.
-
-**The release algebra is ADR-0004's.** The one thing not stated there, because
-it only arises once claims are ranked: a *level* claim's release restores the
-next level OUTRIGHT, while only a duck gives back its own attenuation.
+exception. It refuses only *non-finite* numbers, which is arithmetic integrity,
+not a safety clamp.
 
 **Every settle reads first**, which keeps arbitration from churning: re-deriving
 the whole target on every claim change would otherwise repeat writes CamillaDSP
@@ -55,20 +46,21 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 from .volume_latch import (
     FADER_IO_ERRORS,
     READBACK_TOLERANCE_DB,
-    duck_release_target_db,
     fader_matches,
     read_fader_db,
     set_and_confirm_volume,
 )
-from .json_fields import finite_float
+from .json_fields import require_finite
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -87,26 +79,24 @@ SetFaderDb = Callable[[float], Awaitable[Any]]
 GetFaderDb = Callable[[], Awaitable[Any]]
 
 #: A release that waited longer than this (seconds) for the owner's lock is
-#: disclosed: a duck release runs inside a shielded ``finally`` and a stranded
-#: duck is a silent speaker.
+#: disclosed: until it lands, the fader holds the level being given up.
 #: **Removal condition:** delete when no owner operation can hold the lock
 #: across a fader round-trip — today an acquire can, bounded by
 #: ``CamillaController``'s 5 s attempt budget and its one retry.
 RELEASE_WAIT_DISCLOSE_S = 1.0
 
+# Only a contended acquire sleeps, so this latency is paid only under contention.
+_LOCK_POLL_S = 0.01
+
 
 class ClaimKind(Enum):
-    """The four things that may claim the main fader."""
+    """The three things that may claim the main fader."""
 
     HOUSEHOLD = "household"
-    TRANSIENT_DUCK = "transient_duck"
     SESSION_MEASUREMENT = "session_measurement"
     COMMISSIONING = "commissioning"
 
 
-#: The total order over LEVEL claims. The transient duck is deliberately absent
-#: — it declares an attenuation, not a level, and never answers "what level is
-#: in effect right now".
 _LEVEL_RANK: dict[ClaimKind, int] = {
     ClaimKind.HOUSEHOLD: 0,
     ClaimKind.SESSION_MEASUREMENT: 1,
@@ -132,18 +122,14 @@ class VolumeClaimHandle:
 
     kind: ClaimKind
     token: int
-    level_db: float | None = None
-    depth_db: float | None = None
+    level_db: float
 
 
 def _finite(value: Any, what: str) -> float:
     """A finite dB number, or a refusal. A ``bool`` is not a level: read as
     ``1.0`` it would be a POSITIVE level the 0 dB ceiling can never carry.
     """
-    number = finite_float(value)
-    if number is None:
-        raise VolumeClaimRefused(f"{what} must be a finite number, got {value!r}")
-    return number
+    return require_finite(value, field=what, error=VolumeClaimRefused)
 
 
 def _fmt_db(value: float | None) -> str:
@@ -153,6 +139,21 @@ def _fmt_db(value: float | None) -> str:
     an absent number must never render as one.
     """
     return "" if value is None else f"{value:.6f}"
+
+
+@asynccontextmanager
+async def _holding(lock: threading.Lock) -> AsyncIterator[None]:
+    """Hold ``lock`` from any thread's event loop.
+
+    Polls instead of parking a worker thread on ``acquire``: a task cancelled
+    while parked there leaves the worker holding a lock nobody will release.
+    """
+    while not lock.acquire(blocking=False):
+        await asyncio.sleep(_LOCK_POLL_S)
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 class VolumeOwner:
@@ -180,33 +181,21 @@ class VolumeOwner:
         self._get_fader_db = get_fader_db
         self._claims: dict[int, VolumeClaimHandle] = {}
         self._tokens = itertools.count(1)
-        self._lock = asyncio.Lock()
+        # Not an asyncio.Lock, which binds to one event loop: jasper-web
+        # shares the registered owner across request threads, each running
+        # its own asyncio.run.
+        self._lock = threading.Lock()
 
-    # ---- the synchronous readers (ADR-0004 constraint 3) -----------------
+    # ---- the synchronous readers -----------------------------------------
 
     def declared_level_db(self) -> float | None:
-        """The level in effect: the highest-ranked level claim held.
+        """The level in effect: the highest-ranked claim held.
 
-        SYNCHRONOUS and non-blocking by contract. It is asked at release time,
-        from inside a shielded ``finally``, where awaiting could strand a
-        ducked — silent — speaker. ``None`` means no level claim is held at
-        all, which is a fall-through and not an error.
+        ``None`` means no claim is held at all, which is a fall-through and
+        not an error.
         """
         top = self._top_level_claim()
         return None if top is None else top.level_db
-
-    def duck_depth_db(self) -> float:
-        """Total attenuation the held ducks are asking for, in dB."""
-        return sum(
-            abs(float(claim.depth_db or 0.0))
-            for claim in self._claims.values()
-            if claim.kind is ClaimKind.TRANSIENT_DUCK
-        )
-
-    def target_db(self) -> float | None:
-        """What the fader should read right now: level in effect, ducked."""
-        level = self.declared_level_db()
-        return None if level is None else level - self.duck_depth_db()
 
     def holds(self, handle: VolumeClaimHandle) -> bool:
         """Is this claim still held? False once released or never taken."""
@@ -222,33 +211,42 @@ class VolumeOwner:
         Fail-closed: an unconfirmable write raises
         :class:`VolumeClaimRefused` and leaves no claim held, because a level
         that could not be established is not a level anything may be admitted
-        against. A claim that outranks what is currently in effect moves the
-        fader; one that does not is recorded and writes nothing.
+        against. The claim is unwound on EVERY exit that is not a completed
+        take — the refusal, a cancellation, or a raise from the injected door.
+        A claim that outranks what is currently in effect moves the fader; one
+        that does not is recorded and writes nothing.
 
         ``ClaimKind.HOUSEHOLD`` is not taken here — see
         :meth:`declare_household_level_db`, which is the standing claim.
         """
-        if kind is ClaimKind.TRANSIENT_DUCK:
-            raise VolumeClaimRefused("a duck declares a depth, not a level")
         if kind is ClaimKind.HOUSEHOLD:
             raise VolumeClaimRefused(
                 "the household level is declared, not acquired"
             )
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             if any(claim.kind is kind for claim in self._claims.values()):
                 raise VolumeClaimConflict(
                     f"a {kind.value} level claim is already held"
                 )
-            return await self._take(
-                VolumeClaimHandle(
-                    kind=kind, token=next(self._tokens), level_db=target,
-                ),
-                kind=kind.value,
-                refusal=(
-                    f"could not establish {target:.6f} dB for {kind.value}"
-                ),
+            handle = VolumeClaimHandle(
+                kind=kind, token=next(self._tokens), level_db=target,
             )
+            taken = False
+            try:
+                taken = await self._establish(
+                    handle, context=f"acquire:{kind.value}",
+                )
+                if not taken:
+                    raise VolumeClaimRefused(
+                        f"could not establish {target:.6f} dB for {kind.value}"
+                    )
+                return handle
+            finally:
+                if not taken:
+                    await self._unwind(
+                        handle, context=f"acquire_failed:{kind.value}",
+                    )
 
     async def declare_household_level_db(self, level_db: float) -> bool:
         """The standing claim: what the speaker plays at when nothing else has it.
@@ -266,9 +264,16 @@ class VolumeOwner:
         it again.
         """
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             previous = self.declared_level_db()
-            handle = self._replace_household_claim(target)
+            for token, claim in list(self._claims.items()):
+                if claim.kind is ClaimKind.HOUSEHOLD:
+                    del self._claims[token]
+            handle = VolumeClaimHandle(
+                kind=ClaimKind.HOUSEHOLD,
+                token=next(self._tokens),
+                level_db=target,
+            )
             if await self._establish(handle, context="declare:household"):
                 return True
             # The prior household claim is already gone: a declaration
@@ -296,11 +301,9 @@ class VolumeOwner:
         physical level may have moved before confirmation failed.
         """
         target = _finite(level_db, "level_db")
-        async with self._lock:
+        async with _holding(self._lock):
             if self._claims.get(handle.token) != handle:
                 raise VolumeClaimRefused("that claim is no longer held")
-            if handle.level_db is None:
-                raise VolumeClaimRefused("a duck declares a depth, not a level")
             del self._claims[handle.token]
             moved = VolumeClaimHandle(
                 kind=handle.kind, token=next(self._tokens), level_db=target,
@@ -327,72 +330,25 @@ class VolumeOwner:
                         held_db=f"{handle.level_db:.6f}",
                     )
 
-    async def acquire_duck(self, depth_db: float) -> VolumeClaimHandle:
-        """Take ``depth_db`` of transient attenuation off the level in effect.
-
-        Ducks STACK: two holders that overlap take both depths, and each gives
-        back only its own. A duck over no declared level writes nothing — there
-        is no level to attenuate — and that is a held claim, not a refusal.
-
-        Fail-closed like :meth:`acquire_level`: an attenuation that could not
-        be established raises and leaves no claim held, so a holder never
-        believes it is ducking a speaker it did not move — a holder that
-        latched on a skipped write would restore a level nothing ducked.
-        """
-        depth = abs(_finite(depth_db, "depth_db"))
-        async with self._lock:
-            return await self._take(
-                VolumeClaimHandle(
-                    kind=ClaimKind.TRANSIENT_DUCK,
-                    token=next(self._tokens),
-                    depth_db=depth,
-                ),
-                kind=ClaimKind.TRANSIENT_DUCK.value,
-                refusal=f"could not establish {depth:.6f} dB of attenuation",
-            )
-
     async def _establish(
         self, handle: VolumeClaimHandle, *, context: str,
     ) -> bool:
         """Seat ``handle`` and settle the fader on the new arbitration.
 
-        The one claim-taking skeleton behind all four verbs. Caller holds the
+        The one claim-taking skeleton behind all three verbs. Caller holds the
         lock.
 
-        ``True`` does not mean *"wrote something"*: a level claim outranked by a
+        ``True`` does not mean *"wrote something"*: a claim outranked by a
         higher one is in effect the moment it is RECORDED, and recording cannot
         fail, so such a claim is never refused for a write it never wanted.
-
-        The rank short-circuit is a LEVEL claim's alone: a duck declares no
-        level and always composes.
 
         On failure the ledger KEEPS ``handle`` — the callers give it back two
         different ways, and :meth:`relevel`'s is not an unwind.
         """
         self._claims[handle.token] = handle
-        is_level = handle.level_db is not None
-        if is_level and self._top_level_claim() is not handle:
+        if self._top_level_claim() is not handle:
             return True
         return await self._apply(context=context)
-
-    async def _take(
-        self, handle: VolumeClaimHandle, *, kind: str, refusal: str,
-    ) -> VolumeClaimHandle:
-        """Establish a claim fail-CLOSED: what cannot be established is not held.
-
-        The ``taken`` flag guards a ``finally``, so :meth:`_unwind` runs on
-        EVERY exit that is not a completed take — the refusal raised here, a
-        cancellation, or a raise from the injected door.
-        """
-        taken = False
-        try:
-            taken = await self._establish(handle, context=f"acquire:{kind}")
-            if not taken:
-                raise VolumeClaimRefused(refusal)
-            return handle
-        finally:
-            if not taken:
-                await self._unwind(handle, context=f"acquire_failed:{kind}")
 
     async def _unwind(
         self, handle: VolumeClaimHandle, *, context: str,
@@ -424,36 +380,17 @@ class VolumeOwner:
                 kind=handle.kind.value,
             )
 
-    async def release(
-        self,
-        handle: VolumeClaimHandle,
-        *,
-        household_level_db: float | None = None,
-    ) -> None:
+    async def release(self, handle: VolumeClaimHandle) -> None:
         """Give a claim back. Idempotent, and a no-op against nothing held.
 
         Called on every path out of a holder's lifetime, including after an
         acquire that raised and again if a first release raised — the same
         contract ``session_seams.VolumeClaim.release`` states.
-
-        ``household_level_db`` re-declares the standing level as PART of this
-        release, inside the same lock and before the single settle. A holder
-        whose reference can move while it holds — the voice duck reads the
-        coordinator's target fresh, because another daemon may have written it
-        — must land the new level in one write. Declaring first and releasing
-        second costs two, and the intermediate one is audible: a duck of 25 dB
-        over a level that moved by 2 dB would dip a further 25 dB before coming
-        back up. ``None`` leaves the standing level exactly as it was.
         """
         waited_from = time.monotonic()
-        async with self._lock:
+        async with _holding(self._lock):
             waited_s = time.monotonic() - waited_from
             if waited_s > RELEASE_WAIT_DISCLOSE_S:
-                # A release waits for the lock rather than taking a fast path
-                # around it: a lock-free own-depth give-back would be a second
-                # writer. The cost is disclosed rather than hidden, because a
-                # duck release runs inside a shielded `finally` and a stranded
-                # duck is a silent speaker.
                 log_event(
                     logger,
                     "volume.claim_release_waited",
@@ -463,36 +400,13 @@ class VolumeOwner:
                 )
             if self._claims.get(handle.token) != handle:
                 return
-            # Validated BEFORE the ledger changes: a refusal here must leave
-            # the caller still holding its claim. Validating after the `del`
-            # strands a ducked speaker — the holder believes it released, and
-            # its own restore has no claim left to give the attenuation back.
-            # After the held-check, though, so an idempotent no-op release
-            # stays a no-op rather than starting to raise.
-            household = (
-                None if household_level_db is None
-                else _finite(household_level_db, "household_level_db")
-            )
             del self._claims[handle.token]
-            if household is not None:
-                self._replace_household_claim(household)
             reference = self.declared_level_db()
             if reference is None:
                 await self._disclose_release_without_level(handle)
                 return
-            settled = reference - self.duck_depth_db()
-            if handle.kind is ClaimKind.TRANSIENT_DUCK:
-                settled = duck_release_target_db(
-                    reference_db=settled,
-                    current_db=await self._read(),
-                    depth_db=handle.depth_db or 0.0,
-                )
-            # This read and :meth:`_settle`'s are NOT one question asked
-            # twice: they are separated by a round-trip and the fader is shared
-            # across daemons, so another writer can land a value while the first
-            # read is in flight.
             await self._settle(
-                settled, context=f"release:{handle.kind.value}",
+                reference, context=f"release:{handle.kind.value}",
             )
 
     # ---- proving a level is in effect -------------------------------------
@@ -506,26 +420,24 @@ class VolumeOwner:
         speaker played at a different one.
 
         ``None`` for every way a level can fail to be in effect: the claim was
-        released, a higher-ranked claim preempted it, a duck is down over it,
-        the fader could not be read, or the reading disagrees. Never gated on a
-        diagnostics flag (ADR-0009) — the excitation-safety ledger admitted the
-        program against the declared level, so this is that ledger's own
-        integrity rather than samplable forensics.
+        released, a higher-ranked claim preempted it, the fader could not be
+        read, or the reading disagrees. Never gated on a diagnostics flag
+        (ADR-0009) — the excitation-safety ledger admitted the program against
+        the declared level, so this is that ledger's own integrity rather than
+        samplable forensics.
 
         **The read is UNCONDITIONAL**, taken before any verdict is decided, so
         ``observed_db`` is a real observation on every line: short-circuiting a
         refusal ahead of the read would report "the fader could not be read" for
         a case where it was never asked.
 
-        **Under the owner's lock, for the whole body.** The read is an await, and
-        without the lock a duck acquired while it was in flight would land
-        between the reading and the verdict, which would then pass a PRE-duck
-        number that agrees with the level while the speaker plays ducked.
+        Under the owner's lock for the whole body, so no claim change lands
+        between the reading and the verdict.
         """
-        async with self._lock:
+        async with _holding(self._lock):
             expected = handle.level_db
             observed = await self._read()
-            if expected is None or self._claims.get(handle.token) != handle:
+            if self._claims.get(handle.token) != handle:
                 result = "unheld"
             elif self._top_level_claim() is not handle:
                 result = "preempted"
@@ -541,36 +453,16 @@ class VolumeOwner:
 
     # ---- internals --------------------------------------------------------
 
-    def _replace_household_claim(self, level_db: float) -> VolumeClaimHandle:
-        """Seat the standing level. Replaces, never stacks — it is one fact.
-
-        Caller holds the lock, and settles afterwards: this only moves the
-        claim, so a release can re-declare and settle in one write.
-        """
-        for token, claim in list(self._claims.items()):
-            if claim.kind is ClaimKind.HOUSEHOLD:
-                del self._claims[token]
-        handle = VolumeClaimHandle(
-            kind=ClaimKind.HOUSEHOLD,
-            token=next(self._tokens),
-            level_db=level_db,
-        )
-        self._claims[handle.token] = handle
-        return handle
-
     def _top_level_claim(self) -> VolumeClaimHandle | None:
-        ranked = [
-            claim
-            for claim in self._claims.values()
-            if claim.kind in _LEVEL_RANK
-        ]
-        if not ranked:
-            return None
-        return max(ranked, key=lambda c: (_LEVEL_RANK[c.kind], c.token))
+        return max(
+            self._claims.values(),
+            key=lambda c: (_LEVEL_RANK[c.kind], c.token),
+            default=None,
+        )
 
     async def _apply(self, *, context: str) -> bool:
-        """Settle the fader on the arbitrated target. No level writes nothing."""
-        target = self.target_db()
+        """Settle the fader on the level in effect. No level writes nothing."""
+        target = self.declared_level_db()
         if target is None:
             return True
         return await self._settle(target, context=context)
@@ -583,14 +475,13 @@ class VolumeOwner:
         pre-read earns two things:
 
         **Arbitration is not churn.** Every claim change re-derives the whole
-        target, so a household level re-declared under a held duck, or a release
-        landing where the fader already sits, would otherwise repeat a write
-        CamillaDSP ramps over 400 ms.
+        target, so a household level re-declared unchanged, or a release landing
+        where the fader already sits, would otherwise repeat a write CamillaDSP
+        ramps over 400 ms.
 
         **Drift is repaired, not patrolled for.** The pre-read puts back a fader
         that drifted off a level nobody re-declared, so skipping a redundant
-        write never means skipping the check — which is why no periodic
-        reconciler is needed.
+        write never means skipping the check.
         """
         target = float(target_db)
         if fader_matches(
@@ -621,9 +512,9 @@ class VolumeOwner:
     ) -> None:
         """A claim came back and nothing declares where the fader belongs.
 
-        The owner writes nothing — with no level claim it has no target — but
-        states the reading and the depth just given up, so a fader parked far
-        from anything does not go unnoticed.
+        The owner writes nothing — with no claim left it has no target — but
+        states the reading, so a fader parked far from anything does not go
+        unnoticed.
         """
         observed = await self._read()
         log_event(
@@ -632,7 +523,6 @@ class VolumeOwner:
             level=logging.WARNING,
             kind=handle.kind.value,
             observed_db=_fmt_db(observed),
-            depth_db=_fmt_db(handle.depth_db),
         )
 
     def _disclose(

@@ -19,8 +19,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _camilla_block_field,
-    _parse_systemd_environment,
+    parse_systemd_environment,
     run,
 )
 
@@ -78,10 +77,39 @@ REASON_CROSSOVER_UNIT_MISSING = "crossover_unit_missing"
 REASON_CROSSOVER_UNIT_UNVERIFIED = "crossover_unit_unverified"
 REASON_CROSSOVER_UNIT_INVALID = "crossover_unit_invalid"
 
+def _camilla_block_field(text: str, block: str, key: str) -> str | None:
+    """The FIRST value of ``key`` inside the top-level ``block:`` of a
+    CamillaDSP config text (comment + surrounding quotes stripped), or None
+    when block or key is absent.
+
+    The value is ``""`` for a key whose value is a nested block (a mixer name
+    like ``channel_select:``), so ``... is not None`` is the presence test.
+
+    A deliberately fail-soft line scan that never raises, unlike
+    ``yaml.safe_load`` on a malformed config — the doctor must stay total.
+    Block-scoped, but not depth-scoped: use it only for keys unambiguous at
+    any depth within their block. Depth-sensitive safety fields such as
+    ``devices.volume_limit`` use
+    :func:`jasper.camilla_config_contract.parse_camilla_devices_config`."""
+    in_block = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw.startswith((" ", "\t")):
+            in_block = stripped == f"{block}:"
+            continue
+        if not in_block:
+            continue
+        match = re.match(rf"^\s+{re.escape(key)}:\s*([^#]*)", raw)
+        if match:
+            return match.group(1).strip().strip("'\"")
+    return None
+
+
 def _devices_rate_adjust_from_text(text: str) -> bool | None:
     """``devices.enable_rate_adjust`` from a CamillaDSP config — True/False, or
-    None when absent / unparseable. Reads via the shared
-    :func:`_camilla_block_field` scanner."""
+    None when absent or unparseable."""
     value = _camilla_block_field(text, "devices", "enable_rate_adjust")
     return parse_bool_value(value)
 
@@ -115,7 +143,7 @@ def _compute_grouping_runtime(cfg: object) -> dict:
     # `derive_grouping_runtime` ignores it otherwise.
     stream_clients = None
     if cfg.role == "leader":
-        # The stream-client probe adds the 2026-06-11 silent-bond classes
+        # The stream-client probe detects silent bonds
         # (stale group→stream binding / muted client / leader's own client
         # absent); RPC failure maps to an explicit unreachable verdict, same
         # as /state — the doctor and the dashboard must tell one story.
@@ -717,7 +745,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
     if values is None:
         error = "systemctl unavailable"
     else:
-        unit_env = _parse_systemd_environment(values[0])
+        unit_env = parse_systemd_environment(values[0])
     grouping = read_env_file_state(VOICE_GROUPING_ENV_FILE)
     if grouping.status == "unreadable":
         return None, f"{VOICE_GROUPING_ENV_FILE}: {grouping.error}"
@@ -863,14 +891,10 @@ def check_grouping_channel_pick() -> CheckResult:
 def check_grouping_tts_lane() -> CheckResult:
     """A bonded passive member's assistant TTS must route to its OWN outputd
     (member-local, instant), not ride the synced stream (delayed by the sync
-    buffer + audible on every bonded speaker — the retired Increment 5 PR-1
-    interim behavior). Active endpoints are the crossover safety exception.
+    buffer + audible on every bonded speaker). Active endpoints are the
+    crossover safety exception.
     The route matrix wires grouping-voice.env and grouping-outputd.env so the
-    voice socket, voice park flag, and outputd TTS server state agree.
-
-    (Replaces ``check_grouping_tts_interim``, the standing bonded warn
-    that existed while TTS still mixed in fanin pre-stream — Increment 5
-    PR-2 closed that gap.)"""
+    voice socket, voice park flag, and outputd TTS server state agree."""
     # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
     from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
@@ -1097,8 +1121,8 @@ def check_grouping_household_credential() -> CheckResult:
     """A BONDED member must hold the household credential — the device-to-device
     secret that authenticates the cross-device ``/grouping/set`` fan-out.
 
-    A bonded member with NO secret is the recovery shape (the 2026-05-23
-    ext4-loss class, or an adopt that never landed): its ``/grouping/set`` is
+    A bonded member with NO secret is the recovery shape after filesystem
+    loss or an incomplete adopt: its ``/grouping/set`` is
     fail-safe-OPEN to any LAN caller until it re-pairs, and this is the only
     place that loss is visible. A solo speaker needs no credential (absence =
     not-yet-paired), so it reads ``ok``. Strictly secret-free — it reports only

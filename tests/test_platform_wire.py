@@ -17,11 +17,11 @@ import pytest
 
 from jasper.assistant_volume import EffectiveVolumeContext
 from jasper.platform import wire
+from jasper.mux import _CONTROL_VERBS
 
 REPO = Path(__file__).resolve().parents[1]
 FANIN_STATE_RS = REPO / "rust" / "jasper-fanin" / "src" / "state.rs"
 TTS_PROTOCOL_RS = REPO / "rust" / "jasper-tts-protocol" / "src" / "lib.rs"
-MUX_PY = REPO / "jasper" / "mux.py"
 VOICE_CONTROL_SOCKET_PY = REPO / "jasper" / "voice" / "control_socket.py"
 
 _CONTEXT = EffectiveVolumeContext(
@@ -56,8 +56,7 @@ _CONTEXT = EffectiveVolumeContext(
     (wire.tts_program_duck(False), "PROGRAM_DUCK_OFF"),
     (wire.tts_gain(-12.0), "GAIN -12.000"),
     (wire.tts_gain(0.12345), "GAIN 0.123"),
-    (wire.tts_audio(wire.TTS_AUDIO_NARROW, 960), "AUDIO 960"),
-    (wire.tts_audio(wire.TTS_AUDIO_WIDE, 1920), "AUDIO32 1920"),
+    (wire.tts_audio(1920), "AUDIO32 1920"),
     (wire.tts_segment_start("speech", "item-7", None), "SEGMENT_START speech item-7"),
     (
         wire.tts_segment_start("speech", "item-7", ("openai", "gpt", "cedar")),
@@ -120,8 +119,7 @@ def test_unmuted_volume_context_carries_the_zero_token():
     (wire.tts_program_duck(True), TTS_PROTOCOL_RS),
     (wire.tts_program_duck(False), TTS_PROTOCOL_RS),
     (wire.tts_gain(0.0), TTS_PROTOCOL_RS),
-    (wire.tts_audio(wire.TTS_AUDIO_NARROW, 0), TTS_PROTOCOL_RS),
-    (wire.tts_audio(wire.TTS_AUDIO_WIDE, 0), TTS_PROTOCOL_RS),
+    (wire.tts_audio(0), TTS_PROTOCOL_RS),
     (wire.tts_segment_start("k", "i", None), TTS_PROTOCOL_RS),
     (wire.tts_volume_context(_CONTEXT), TTS_PROTOCOL_RS),
     (
@@ -130,12 +128,12 @@ def test_unmuted_volume_context_carries_the_zero_token():
         ),
         TTS_PROTOCOL_RS,
     ),
-    (wire.STATUS, MUX_PY),
-    (wire.MUX_AUTO, MUX_PY),
-    (wire.mux_select("x"), MUX_PY),
-    (wire.mux_preempt("x"), MUX_PY),
-    (wire.mux_test_select("l", "o"), MUX_PY),
-    (wire.mux_test_release("o"), MUX_PY),
+    (wire.STATUS, _CONTROL_VERBS),
+    (wire.MUX_AUTO, _CONTROL_VERBS),
+    (wire.mux_select("x"), _CONTROL_VERBS),
+    (wire.mux_preempt("x"), _CONTROL_VERBS),
+    (wire.mux_test_select("l", "o"), _CONTROL_VERBS),
+    (wire.mux_test_release("o"), _CONTROL_VERBS),
     (wire.STATUS, VOICE_CONTROL_SOCKET_PY),
     (wire.voice_start(), VOICE_CONTROL_SOCKET_PY),
     (wire.voice_start("airplay"), VOICE_CONTROL_SOCKET_PY),
@@ -147,14 +145,9 @@ def test_unmuted_volume_context_carries_the_zero_token():
     (wire.VOICE_MEASURE_RESUME, VOICE_CONTROL_SOCKET_PY),
 ])
 def test_every_verb_is_still_handled_by_its_reader(command, reader):
-    """The reader for each socket still dispatches on the verb we emit.
-
-    Verb-level, not argument-level: an argument-order change is pinned by the
-    byte test above, but a verb the reader dropped is only visible here.
-    """
     verb = command.split(" ", 1)[0]
-    # The reader spells a bare verb `"VERB"` and an argument-taking one
-    # `"VERB `; requiring that boundary keeps AUDIO from being satisfied by
-    # AUDIO32's arm.
+    if reader is _CONTROL_VERBS:
+        assert verb in reader
+        return
     handled = re.search(rf'"{re.escape(verb)}[" ]', reader.read_text())
     assert handled, f"{reader.name} no longer handles {verb}"

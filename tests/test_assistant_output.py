@@ -48,11 +48,6 @@ async def test_mute_click_uses_matched_cue_path():
     )
     tts = FakeTts()
     output = _output(tts)
-    # STATED, not inherited: the bake width comes from `tts_wire_is_wide()`,
-    # which reads the box's own fanin.env — absent on a test runner, and an
-    # undeclared box is WIDE since #3655. The flag asserted below is this
-    # value, so the test must declare it rather than read the host's.
-    output._earcon_wide = False
     output._mute_click_on_pcm = b"on"
     output._mute_click_off_pcm = b"off"
     output._mute_click_on_profile = profile
@@ -65,9 +60,7 @@ async def test_mute_click_uses_matched_cue_path():
             "pcm": b"on",
             "segment_kind": "cue",
             "source_profile": profile,
-            # The earcon bake's width travels with its bytes. This output is
-            # DECLARED narrow above, so the flag reads False.
-            "pcm_wide": False,
+            "pcm_wide": True,
         }
     ]
 
@@ -88,8 +81,6 @@ async def test_listening_chirp_uses_matched_chirp_path():
     tts = FakeTts()
     stamped: list[str] = []
     output = _output(tts)
-    # STATED, not inherited — see the mute-click test above.
-    output._earcon_wide = False
     output._chirp_on_pcm = b"wake"
     output._chirp_off_pcm = b"end"
     output._chirp_on_profile = profile
@@ -108,7 +99,7 @@ async def test_listening_chirp_uses_matched_chirp_path():
             "pcm": b"wake",
             "segment_kind": "chirp",
             "source_profile": profile,
-            "pcm_wide": False,
+            "pcm_wide": True,
         }
     ]
     assert stamped == ["attempt", "accepted"]

@@ -2,10 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Composition root for jasper-voice: `run()` assembles the daemon's
-startup phases; `main()` maps boot-time failures to a park. The
-`jasper-voice` script entry point calls `jasper.voice_daemon.main`,
-which lazily delegates here."""
+"""Voice daemon startup and command entry point."""
 
 from __future__ import annotations
 
@@ -61,8 +58,8 @@ from ..spotify_router import Router, build_router
 from ..timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
-from ..tool_prompt_overrides import read_prompt_overrides
-from ..tool_state import read_tool_state
+from ..tools.tool_prompt_overrides import read_prompt_overrides
+from ..tools.tool_state import read_tool_state
 from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
 from ..usage import (
     BillableActivityMeter,
@@ -80,7 +77,7 @@ from ..voice.input_policy import (
     EffectiveSpeechInputPolicy,
     build_effective_speech_input_policy,
 )
-from ..voice.prompt import _build_system_instruction
+from ..voice.prompt import build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
@@ -103,6 +100,8 @@ from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs
 from ..logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
+
+HEARTBEAT_STALE_THRESHOLD_SEC = 5.0
 
 _T = TypeVar("_T")
 
@@ -237,14 +236,12 @@ def _make_connection(
     code below it talks only to the `LiveConnection` / `LiveTurn`
     Protocols and works equally for any provider that implements them.
 
-    Adapter modules are imported lazily inside each branch. Loading
-    `gemini_session` pulls in `google.genai` (~49 MB resident); loading
-    `openai_session`/`grok_session` skips that cost when the active
-    provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
+    Load only the selected provider SDK to bound the daemon's memory use —
+    google.genai alone costs ~49 MB resident."""
     if speech_policy is None:
         speech_policy = build_effective_speech_input_policy(cfg)
     if cfg.voice_provider == "gemini":
-        from .gemini_session import GeminiLiveConnection
+        from .gemini_session import GeminiLiveConnection  # lazy: optional provider SDK and import cost
         return GeminiLiveConnection(
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
@@ -258,7 +255,7 @@ def _make_connection(
             voice=cfg.openai_live_voice, backend_model=cfg.openai_live_backend_model,
         )
     if cfg.voice_provider == "openai":
-        from .openai_session import OpenAIRealtimeConnection
+        from .openai_session import OpenAIRealtimeConnection  # lazy: optional provider SDK and import cost
         return OpenAIRealtimeConnection(
             api_key=cfg.openai_api_key,
             model=cfg.openai_model,
@@ -270,7 +267,7 @@ def _make_connection(
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
         )
     if cfg.voice_provider == "grok":
-        from .grok_session import GrokRealtimeConnection
+        from .grok_session import GrokRealtimeConnection  # lazy: optional provider SDK and import cost
         return GrokRealtimeConnection(
             api_key=cfg.grok_api_key,
             model=cfg.grok_model,
@@ -827,7 +824,7 @@ def _open_live_session(
     against it rather than opening new WebSockets. Its release is registered
     later, at the escalation-callback site (see `_wire_wake_loop`). The
     prompt is a callable, not a rendered string, so the time injection
-    inside `_build_system_instruction` stays accurate across context resets
+    inside `build_system_instruction` stays accurate across context resets
     and reconnects — the connection re-renders it on every fresh open. The
     location and the linked Google accounts are snapshotted instead:
     changing either needs a jasper-voice restart, which the wizards trigger.
@@ -854,7 +851,7 @@ def _open_live_session(
     connect = partial(
         connection.start,
         registry,
-        lambda: _build_system_instruction(
+        lambda: build_system_instruction(
             cfg.weather_prompt_location,
             google_accounts=google_account_names,
             default_google_account=google_default_account,
@@ -1090,9 +1087,9 @@ async def run() -> None:
         volume_coordinator, spotify_router = _build_volume_coordinator(
             cfg, camilla=camilla, renderer=renderer,
         )
-        # Every duck holder in this process releases against the coordinator's
-        # canonical target so their interleavings cannot strand the fader at a
-        # value one of them had ducked.
+        # A graph swap's duck releases against the coordinator's canonical
+        # target, so a volume change made during the swap survives it
+        # (ADR-0004).
         set_canonical_target_db_provider(
             volume_coordinator.get_camilla_target_db,
         )
@@ -1174,7 +1171,7 @@ async def run() -> None:
         # Tier 1 of the resilience ladder: bumped on every mic frame inside
         # WakeLoop.run, paired with `Type=notify` + `WatchdogSec=30s` in
         # jasper-voice.service. See jasper/watchdog.py.
-        heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
+        heartbeat = Heartbeat(stale_threshold_sec=HEARTBEAT_STALE_THRESHOLD_SEC, interval_sec=10.0)
         heartbeat.start()
         _release(stack, "heartbeat", heartbeat.stop)
         wake_loop = WakeLoop(

@@ -756,7 +756,7 @@ def test_a_window_that_refuses_to_open_raises_out_of_start_rather_than_parking(
     # thread forever, so the join bound reports it instead of hanging pytest.
     @asynccontextmanager
     async def refusing_window(**kwargs):
-        raise MeasurementWindowError("window refused")
+        raise MeasurementWindowError("window refused", reason="gate_not_confirmed")
         yield
 
     monkeypatch.setattr(coordinator, "measurement_window", refusing_window)
@@ -850,7 +850,7 @@ def test_isolation_lost_mid_run_publishes_nothing_and_hands_the_music_back(
         try:
             yield
         except asyncio.CancelledError as exc:
-            raise MeasurementWindowError("isolation could not be renewed") from exc
+            raise MeasurementWindowError("isolation could not be renewed", reason="gate_lease_lost") from exc
         finally:
             watch.cancel()
             gate.append({"action": "release", "gate_owner": kwargs["gate_owner"]})
@@ -911,7 +911,7 @@ def test_a_release_failure_after_a_pass_is_its_own_event_not_a_failed_run(
     @asynccontextmanager
     async def stuck_release(**_kwargs):
         yield
-        raise MeasurementWindowError("mux did not confirm the release")
+        raise MeasurementWindowError("mux did not confirm the release", reason="gate_release_failed")
 
     monkeypatch.setattr(coordinator, "measurement_window", stuck_release)
     io = _FakeIO()

@@ -110,15 +110,14 @@ class OpenAILiveTurn(BaseLiveTurn):
         super().__init__(conn, started_at)
         self._conn: OpenAILiveConnection = conn
         self._resample_state = None
-        self._input_q = asyncio.Queue(maxsize=16)
+        self._input_q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=16)
         self._input_admitted = True
         self._input_caught_up = 0.0
         self._sender = None
-        self._transcript_intervals = {"user": [], "assistant": []}
+        self._transcript_intervals: dict[str, list[dict[str, Any]]] = {"user": [], "assistant": []}
         self._seconds = 0.0
         self._quiet_played = 0
         self._quiet_discarded = 0
-        # Previous admitted PCM delta, for coverage within the silence bridge.
         self._last_delta_at = 0.0
         self._last_delta_audio_sec = 0.0
         self._playout_available = asyncio.Event()

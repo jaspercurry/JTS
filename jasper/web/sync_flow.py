@@ -25,6 +25,7 @@ from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
+from . import active_speaker_flow
 from ._common import close_awaitable
 from .chrome import canonical_header, canonical_page, follower_delegation_page
 from .pair_flow import members_by_channel, resolve_pair
@@ -172,7 +173,7 @@ async def _session_window(session_token: int, window: HeldWindow) -> None:
 
 
 def _marker_wav_path() -> str:
-    from jasper.multiroom.sync_measure import write_marker_wav
+    from jasper.multiroom.sync_measure import write_marker_wav  # lazy: numpy import cost
 
     with _lock:
         cached = _state.get("wav_path")
@@ -205,8 +206,6 @@ async def _watch_playback(proc) -> None:
 
 
 def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
-    from .active_speaker_flow import active_phase as _active_speaker_phase
-
     own, peer, err = resolve_pair()
     if err:
         return {"ok": False, "error": err}, HTTPStatus.CONFLICT
@@ -219,7 +218,7 @@ def handle_start(hostname: str, schedule: Callable) -> tuple[dict, int]:
     # Active-speaker commissioning measures through the production graph too;
     # refuse so the two measurement flows can't run at once (see
     # active_speaker_flow — it participates cooperatively, not via the window).
-    if _active_speaker_phase() is not None:
+    if active_speaker_flow.active_phase() is not None:
         return {
             "ok": False,
             "error": "active-speaker commissioning is in progress on this speaker",
@@ -350,7 +349,7 @@ def handle_play(run_async: Callable, schedule: Callable) -> tuple[dict, int]:
 
 
 def handle_analyze(wav_bytes: bytes) -> tuple[dict, int]:
-    from jasper.multiroom.sync_measure import (
+    from jasper.multiroom.sync_measure import (  # lazy: numpy import cost
         analyze_wav_bytes,
         recommend_channel_delays,
     )
@@ -416,7 +415,7 @@ def handle_apply(handler) -> tuple[dict, int]:
     gate-armed speaker — and since sync only writes self, a missing token
     fails the apply outright.
     """
-    from .rooms_peers import (
+    from .rooms_peers import (  # lazy: tests/test_web_rooms_setup.py boundary
         post_grouping_to_member,
         request_control_token,
         self_addresses,

@@ -2,11 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frozen `event=` vocabulary snapshots read by test_log_event_conventions.
-
-Three exception tables, each recorded so the guard fails on a NEW deviation
-while the ones already in the tree are worked off. None of them may grow.
-"""
+"""Frozen event names; package owners track code moves."""
 from __future__ import annotations
 
 # Event names with no `domain.action` dot — the sole exception to the shape
@@ -23,8 +19,6 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
     "correction_bundle_manifest_entry_dropped",
     "correction_bundle_manifest_reset",
     "correction_calibration_lookup",
-    "correction_calibration_sign_migrated",
-    "correction_calibration_sign_migration",
 )
 
 # Top-level event prefixes emitted from more than one package, mapped to the
@@ -35,10 +29,11 @@ FLAT_EVENT_NAMES: tuple[str, ...] = (
 # the table when it is empty.
 PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "active_speaker": ("active_speaker", "cli"),
-    "aec": ("aec", "control"),
+    "aec": ("aec", "cli", "control"),
     "aec_bridge": ("aec", "cli"),
     "airplay": ("jasper",),
     "assistant_loudness": ("jasper", "voice"),
+    "audio_validation": ("cli", "jasper"),
     "barge": ("jasper", "voice"),
     "bluetooth": ("bluetooth", "jasper", "web"),
     "correction": ("active_speaker", "audio_measurement", "jasper", "web"),
@@ -47,7 +42,6 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "ha": ("control", "jasper", "tools", "web"),
     "household_credential": ("control", "web"),
     "http": ("control", "web"),
-    "install_profile": ("control", "jasper"),
     "local_sources": ("local_sources",),
     "manual_mic": ("jasper", "voice"),
     "measurement": ("control", "voice"),
@@ -60,7 +54,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "source": ("control", "jasper", "local_sources"),
     "source_intent": ("jasper", "local_sources"),
     "spotify": ("jasper", "voice", "web"),
-    "transit": ("jasper", "tools", "transit", "web"),
+    "transit": ("tools", "transit", "web"),
     "tts_flush": ("jasper", "voice"),
     "tts_write": ("jasper",),
     "turn": ("jasper", "voice"),

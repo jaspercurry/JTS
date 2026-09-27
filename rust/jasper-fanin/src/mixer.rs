@@ -2274,11 +2274,10 @@ mod tests {
         }
     }
 
-    /// A `TtsMixer` with an ACTIVE program duck and one queued TTS period.
     /// Returns it with its senders, which the caller must keep alive for the
     /// mixer's whole life.
     fn ducking_tts_mixer(
-        payload: &[i16],
+        payload: &[i32],
         program_duck_db: f32,
     ) -> (
         TtsMixer,
@@ -2300,7 +2299,7 @@ mod tests {
         });
         for command in [
             TtsCommand::ProgramDuckOn,
-            TtsCommand::Audio(payload.to_vec()),
+            TtsCommand::AudioWide(payload.to_vec()),
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
@@ -2335,7 +2334,7 @@ mod tests {
 
         // A loud TTS period: it must ride above anything a duck applied AFTER
         // the TTS mix could produce (asserted on the reference below).
-        let payload = vec![30_000i16; TTS_FRAMES * (CHANNELS as usize)];
+        let payload = vec![30_000 << 16; TTS_FRAMES * (CHANNELS as usize)];
         let (tts, _tx, _flush_tx) = ducking_tts_mixer(&payload, PROGRAM_DUCK_DB);
         let duck_gain = gain_db_to_linear(PROGRAM_DUCK_DB);
 

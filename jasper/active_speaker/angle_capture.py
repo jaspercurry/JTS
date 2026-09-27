@@ -11,7 +11,7 @@ representation the evidence sidecar, the ``wide`` rule and the attribution stage
 read.
 
 These poses are FORWARD-MODEL INPUT, never a pose-ratio statistic: the lateral-walk
-statistic was retired as invalidated (PR #2717, #2711), and the P2 complex-summation
+statistic was retired as invalidated, and the P2 complex-summation
 model consumes each angle's transfer function directly.
 
 This module never constructs :data:`~.crossover_v2.journey.PHASE_LATERAL` -- it returns
@@ -36,7 +36,6 @@ from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.capture_plan import room_sweep_band_hz
 from .crossover_v2.contracts import (
-    REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
@@ -50,7 +49,9 @@ from .measurement_programs import (
     BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
-    MeasurementProgram,
+    cleared_layers,
+    Preset,
+    plan_poses,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIME_BRANCHES,
@@ -87,6 +88,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     stage1_plan_max_attempts,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
 __all__ = [
     "REGIME_PER_DRIVER",
@@ -117,7 +119,7 @@ __all__ = [
     "design_axis_spec",
     "stop_specs",
     "default_run_level",
-    "request_for_program",
+    "request_for_preset",
     "per_driver_at",
     "summed_at",
     "both_at",
@@ -230,7 +232,7 @@ class AngleStop:
     is stated from (:class:`~.measurement_programs.ProgramPose`).
     ``branch_pair`` is which two targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
-    a near-field stop plays alone (ADR-0360).
+    a stop plays alone (ADR-0366).
     """
 
     angle_deg: int
@@ -259,8 +261,7 @@ class AngleStop:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
             validated_branch_pair(self.branch_pair, self.regime)
-            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose,
-                                  kind=self.kind, distance_m=distance)
+            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
@@ -272,7 +273,7 @@ class AngleStop:
     def plays_summed(self) -> bool:
         """Whether this stop plays a summed graph (the scope a summed sweep
         rides); a stop naming its driver plays that driver alone instead."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD) and not self.driver
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.driver
 
     @property
     def place(self) -> tuple[object, ...]:
@@ -410,7 +411,8 @@ class LevelPolicy:
 class AngleCaptureRequest:
     """One ordered walk, with adjacent candidates at each pose.
 
-    ``program`` is provenance; geometry and purpose come from the stops.
+    ``program`` (the preset id) and ``layout`` (its named layout, or ``custom``)
+    are provenance; geometry and purpose come from the stops.
     ``template`` supplies stimulus and overlays to the two spec builders.
     """
 
@@ -418,6 +420,7 @@ class AngleCaptureRequest:
     mover: str = MOVER_HUMAN
     template: MeasureSpec = DEFAULT_TEMPLATE
     program: str = ""
+    layout: str = ""
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
     level_source: str = ""
@@ -514,12 +517,12 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source"}
+        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source", "layout"}
         if missing:
             raise ValueError(f"request must state {', '.join(sorted(missing))}")
         values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
-        for name in ("mover", "program"):
-            if not isinstance(values[name], str):
+        for name in ("mover", "program", "layout"):
+            if not isinstance(values.get(name, ""), str):
                 raise ValueError(f"{name} must be text")
         if not isinstance(values["stops"], list) or not values["stops"]:
             raise ValueError("stops must be a nonempty list")
@@ -712,7 +715,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            regime=MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else request.template.regime,
+            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
@@ -759,7 +762,7 @@ def both_at(
 
 
 def default_run_level(
-    program: MeasurementProgram | AngleCaptureRequest,
+    program: Preset | AngleCaptureRequest,
     *,
     state_path: str | Path | None = None,
 ) -> tuple[LevelPolicy, str]:
@@ -770,8 +773,8 @@ def default_run_level(
     return LevelPolicy(), "program_default"
 
 
-def request_for_program(
-    program: MeasurementProgram,
+def request_for_preset(
+    preset: Preset,
     *,
     candidates: tuple[str, ...] = (),
     mover: str = MOVER_HUMAN,
@@ -781,13 +784,19 @@ def request_for_program(
     levels: tuple[float, ...] | None = None,
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    targets: Sequence[str] = (),
+    driver: str = "",
 ) -> AngleCaptureRequest:
-    """Expand poses with adjacent driver repeats, room sweeps and candidate trials."""
-    if program.mover is not None and program.mover != mover:
-        raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
-    if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
+    """Expand poses with adjacent driver repeats, room sweeps and candidate trials.
+
+    ``targets`` are the outputs this speaker declares for a pose to play alone; a
+    preset's driver role expands to them, and ``driver`` narrows the run to one
+    (:func:`~.measurement_programs.plan_poses`)."""
+    if preset.mover is not None and preset.mover != mover:
+        raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{preset.preset} requires mover={preset.mover}")
+    if preset.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
-    room_sweep = program.room_sweep and not candidates
+    room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
             replace(
@@ -795,16 +804,16 @@ def request_for_program(
                 kind=pose.kind,
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
-                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else program.purpose,
+                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else preset.purpose,
                 headline=pose.headline, detail=pose.detail,
-                stimulus=program.stimulus,
-                branch_pair=program.branch_pair,
+                stimulus=preset.stimulus,
+                branch_pair=preset.branch_pair,
             )
-            for pose in program.poses
+            for pose in plan_poses(preset, targets, driver)
             for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
-                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
+                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
                           kind=pose.kind, distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
-                          purpose=program.purpose, driver=pose.driver),))
+                          purpose=preset.purpose, driver=pose.driver),))
             for _ in range(1 if room_sweep and stop.plays_summed else pose.repeats)
             for candidate in (candidates or (BASE_CANDIDATE,))
         ),
@@ -813,13 +822,8 @@ def request_for_program(
         candidates=candidates,
         level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
-        # ``spot`` carries caller geometry rather than a registry row, so its
-        # size names nothing an operator chose.
-        program=(
-            program.program_id
-            if program.program_id == "spot"
-            else f"{program.program_id}/{program.size}"
-        ),
+        program=preset.preset,
+        layout=preset.layout,
     )
 
 
@@ -1052,7 +1056,6 @@ def session_lateral_walk(
     :func:`stage1_plan_max_attempts`, the same producer the emitted plan
     sets ``max_attempts`` from.
     """
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER

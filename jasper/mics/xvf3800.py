@@ -7,21 +7,18 @@
 Chip control library: jasper/xvf/xvf_host.py (JTS-owned USB
 vendor-control helper used for chip-side parameter reads/writes).
 
-This module holds the mic-family-specific knowledge consulted by
-doctor checks, the AEC bridge, and operator tooling. The bash
-reconciler consumes these facts through `python -m jasper.cli.xvf_profile`
-so geometry/channel truth stays in this module.
+The reconciler reads these facts through `python -m jasper.cli.xvf_profile`.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from math import pi
 from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.env_load import parse_bool_value
+from jasper.json_fields import json_fingerprint
+from jasper.mics.profile_ids import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC
 
 
 # ---------------------------------------------------------------------
@@ -158,10 +155,7 @@ class RuntimeProfile:
 
     @property
     def recommended_profile(self) -> str:
-        # Requested intent; the reconciler owns active capture and fallback.
-        if self.present:
-            return "xvf_chip_aec"
-        return "direct_mic"
+        return PROFILE_XVF_CHIP_AEC if self.present else PROFILE_DIRECT_MIC
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -350,8 +344,9 @@ def chip_aec_fixed_profile_fingerprint(plan: ChipBeamPlan) -> str:
             "transform": CHIP_AEC_REFERENCE_TRANSFORM,
         },
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return json_fingerprint(payload)
+
+
 CHIP_BEAM_PLANS: dict[str, ChipBeamPlan] = {
     SQUARE_FIXED_150_210_PLAN.plan_id: SQUARE_FIXED_150_210_PLAN,
 }
@@ -610,7 +605,7 @@ MIC_CHANNEL_INDEX = 1
 # Helpers
 # ---------------------------------------------------------------------
 
-def _capture_channels_for_card(
+def capture_channels_for_card(
     card: str,
     *,
     asound_root: Path = Path("/proc/asound"),
@@ -819,7 +814,7 @@ def detect_runtime_profile(
 
     bld_variant = variant_for_bld_msg(bld_msg)
     for card in ALSA_CARD_NAMES:
-        channels = _capture_channels_for_card(card, asound_root=asound_root)
+        channels = capture_channels_for_card(card, asound_root=asound_root)
         if channels is None:
             continue
         variant = bld_variant or variant_for_card(card, channels)
@@ -891,7 +886,7 @@ def capture_channels() -> int | None:
     endpoint) then Capture (Channels: 6 on 6-ch firmware).
     `grep Channels:` returns the Playback value, not Capture —
     reading the wrong one silently disables software AEC."""
-    return _capture_channels_for_card(alsa_card_name())
+    return capture_channels_for_card(alsa_card_name())
 
 
 def dfu_flash_command(firmware_path: str = "") -> str:

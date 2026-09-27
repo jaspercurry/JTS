@@ -10,6 +10,7 @@ armed camilla#2), and the unbond restore (always an ACTIVE graph, never passive,
 re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
+from jasper import atomic_io
 from jasper import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 
@@ -75,7 +76,7 @@ def _stable_live_graph_authority(monkeypatch):
             config_path=str(expected_config_path),
         )
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -505,14 +506,14 @@ def test_apply_bake_loads_camilla1_and_stashes(monkeypatch, tmp_path) -> None:
     )
     monkeypatch.setattr(alc, "LEADER_BAKE_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-    real_atomic_write = alc.atomic_io.atomic_write_text
+    real_atomic_write = atomic_io.atomic_write_text
 
     def atomic_write_while_locked(path, text, *, mode):
         assert path == alc.LEADER_BAKE_PRIOR_STASH
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         real_atomic_write(path, text, mode=mode)
 
-    monkeypatch.setattr(alc.atomic_io, "atomic_write_text", atomic_write_while_locked)
+    monkeypatch.setattr(atomic_io, "atomic_write_text", atomic_write_while_locked)
 
     cam = _FakeCamilla(current="/var/lib/camilladsp/configs/active_speaker_baseline.yml")
     applied = asyncio.run(alc.apply_active_leader_bake(camilla_factory=lambda: cam))
@@ -553,7 +554,7 @@ def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
         assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", refuse)
     cam = _FakeCamilla(current=prior)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:

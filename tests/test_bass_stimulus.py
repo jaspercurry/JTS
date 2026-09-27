@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from jasper.active_speaker.angle_capture import request_for_program
+from jasper.active_speaker.angle_capture import request_for_preset
 from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused, build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
@@ -18,16 +18,18 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, stubbed_capabilities
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
-from jasper.active_speaker.measurement_analysis import analyzed_measurements
+from jasper.active_speaker.measurement_analysis import decoded_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.measurement_programs import gate_exemption, load_programs, program, run_program, validated_capture_purpose
+from jasper.active_speaker.measurement_programs import (
+    gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
+)
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.program import segment_sweep_meta
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
 from jasper.audio_measurement.quality_model import DRIVER
@@ -56,7 +58,7 @@ def bass_fixture():
 
 def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
-    return build_bass_program(excitation, program("bass").stimulus,
+    return build_bass_program(excitation, preset("bass").stimulus,
                               safety_profile=safety, role_targets=targets, **kwargs)
 
 
@@ -82,7 +84,7 @@ def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
     excitation = replace(bass_fixture[3], roles=tuple(RoleBand(role, i, FrequencyBand(20, 20000))
                                                    for i, role in enumerate(roles)))
     with pytest.raises(BassStimulusRefused) as exc:
-        build_bass_program(excitation, program("bass").stimulus,
+        build_bass_program(excitation, preset("bass").stimulus,
                            safety_profile=bass_fixture[1], role_targets={})
     assert exc.value.code == "bass_stimulus_targets_missing"
 
@@ -91,27 +93,24 @@ def _replay(bass, raw, tmp_path, monkeypatch):
     wav = tmp_path / "capture.wav"
     wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))
     record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    return next(analyzed_measurements(tmp_path, paths=["capture"]))
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_record", lambda *_: (record, wav.read_bytes))
+    return next(decoded_measurements(tmp_path, paths=["capture"]))
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
-    rows = load_programs().values()
-    bass = [row for row in rows if row.purpose == "bass"]
-    assert {row.layout for row in bass} == {"bass_axis", "seat_cloud", "room_quick", "bass_nearfield"}
+    rows = load_presets().values()
     for row in rows:
         assert (row.stimulus is not None) == (row.purpose == "bass")
-    for row in bass:
-        assert row.stimulus == {"ceiling_hz": 1100.0}
-        request = request_for_program(row, mover=row.mover or "human", candidates=("trial",))
-        assert all(capture.spec.stimulus == row.stimulus for capture in prepare_plan_captures(request))
-    near = run_program("bass", "bass_nearfield")
-    assert (near.regime, near.mover, near.capture_count) == ("near_field", "human", 1)
-    capture, = prepare_plan_captures(request_for_program(near, candidates=("trial",)))
-    assert (capture.spec.regime, capture.stop.kind, capture.stop.distance_m) == ("near_field", "close", 0.03)
+    bass, = (row for row in rows if row.purpose == "bass")
+    assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")
+    for layout in bass.layouts:
+        run = run_preset("bass", layout)
+        assert run.stimulus == {"ceiling_hz": 1100.0}
+        request = request_for_preset(run, mover=run.mover or "human", candidates=("trial",))
+        assert all(capture.spec.stimulus == run.stimulus for capture in prepare_plan_captures(request))
 
 
-@pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", True), ("branches", False), ("per_driver", False), ("reference_axis", False)])
+@pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", False), ("branches", False), ("per_driver", False), ("reference_axis", False)])
 def test_bass_capture_regimes(regime, allowed):
     if allowed:
         assert validated_capture_purpose("bass", "close", regime) == "bass"
@@ -148,11 +147,10 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
         assert quiet.n_samples >= math.ceil(required_pre_guard_s(meta) * bass.sample_rate_hz)
 
 
-@pytest.mark.parametrize("size", ["axis", "nearfield"])
-def test_bass_capture_program_agrees_across_surfaces(bass_fixture, size):
+def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     _, safety, targets, excitation = bass_fixture
-    row = program("bass", size)
-    request = request_for_program(row, mover=row.mover, candidates=("trial",))
+    row = preset("bass/axis")
+    request = request_for_preset(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     played = compose_plan_program(SimpleNamespace(excitation=excitation, set_program=lambda *args: None),

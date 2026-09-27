@@ -23,17 +23,16 @@ from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
 )
-from jasper.audio_measurement.excitation_admission import (
+from jasper.audio_measurement.admission.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
     FrequencyBand,
 )
 from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite, require_sha256_hex
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ._common import require_sha256_hex
 from .driver_protection import (
     FULL_RANGE_ROLES,
     HIGH_FREQUENCY_ROLES,
@@ -80,35 +79,29 @@ def request_limit_rows(
         (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_BAND,
          [request.band.lower_hz, request.band.upper_hz],
          [limits.permitted_band.lower_hz, limits.permitted_band.upper_hz],
-         not request.band.is_subset_of(limits.permitted_band)),
+         request.band.is_subset_of(limits.permitted_band)),
         (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_LEVEL, request.effective_peak_dbfs, limits.maximum_effective_peak_dbfs,
-         request.effective_peak_dbfs > limits.maximum_effective_peak_dbfs),
+         request.effective_peak_dbfs <= limits.maximum_effective_peak_dbfs),
         (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_DURATION, request.duration_s, limits.maximum_duration_s,
-         request.duration_s > limits.maximum_duration_s),
+         request.duration_s <= limits.maximum_duration_s),
         (ExcitationSafetyPlanRefusal.REQUEST_OUTSIDE_REPEATS, request.repeat_count, limits.maximum_repeat_count,
-         request.repeat_count > limits.maximum_repeat_count),
+         request.repeat_count <= limits.maximum_repeat_count),
     )
 
 
 def _request_refusals(
     request: ExcitationRequest, limits: ExcitationLimits,
 ) -> tuple[ExcitationSafetyPlanRefusal, ...]:
-    return tuple(code for code, _, _, outside in request_limit_rows(request, limits) if outside)
+    return tuple(code for code, _, _, passed in request_limit_rows(request, limits) if not passed)
 
 
 def _sha256(value: Any, *, field: str) -> str:
-    return require_sha256_hex(
-        value,
-        field,
-        ExcitationSafetyPlanError,
-        message=f"{field} must be a lowercase SHA-256",
-    )
+    return require_sha256_hex(value, field=field, error=ExcitationSafetyPlanError)
 
 
 def _finite(value: Any, *, field: str) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise ExcitationSafetyPlanError(f"{field} must be finite")
+    number = require_finite(value, field=field, error=ExcitationSafetyPlanError)
+    # -0.0 and 0.0 are one value, and the plan's fingerprint must say so.
     return 0.0 if number == 0.0 else number
 
 

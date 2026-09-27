@@ -4,8 +4,7 @@
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 from jasper.camilla_config_contract import DEFAULT_CAPTURE_FORMAT, resolve_enable_rate_adjust
@@ -18,10 +17,13 @@ from jasper.fanin_coupling import (
     RING_PCM_DEVICES,
     resolve_ring_wire,
 )
+from jasper.json_fields import JsonFields
 
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from ..profile import ActiveSpeakerConfigError
+
+_JSON_FIELDS = JsonFields(ActiveSpeakerConfigError)
 
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
     "jasper_out",
@@ -121,6 +123,11 @@ class ActiveEmitDevices:
     queuelimit: int | None
     enable_rate_adjust: bool
 
+    def emit_kwargs(self) -> dict[str, Any]:
+        """The whole block as the emitters' keyword arguments, so no emit can
+        forward half of it."""
+        return {field.name: getattr(self, field.name) for field in fields(self)}
+
 
 def active_emit_devices(
     playback_device: str, *, topology: Any = None
@@ -183,20 +190,11 @@ def active_emit_devices(
 
 
 def _finite_float(value: Any, field_name: str) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError) as e:
-        raise ActiveSpeakerConfigError(f"{field_name} must be numeric") from e
-    if not math.isfinite(out):
-        raise ActiveSpeakerConfigError(f"{field_name} must be finite")
-    return out
+    return _JSON_FIELDS.finite_number(value, field_name)
 
 
 def _positive_int(value: int, field_name: str) -> int:
-    try:
-        out = int(value)
-    except (TypeError, ValueError) as e:
-        raise ActiveSpeakerConfigError(f"{field_name} must be an integer") from e
+    out = _JSON_FIELDS.integer(value, field_name)
     if out <= 0:
         raise ActiveSpeakerConfigError(f"{field_name} must be positive")
     return out

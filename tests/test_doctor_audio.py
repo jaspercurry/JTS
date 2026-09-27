@@ -686,7 +686,7 @@ def _local_mic_and_accessory() -> MicPresence:
 def _not_bonded(monkeypatch: pytest.MonkeyPatch) -> None:
     # Keep the bonded-follower short-circuit out of the way — we're exercising
     # the mic-absence path specifically.
-    monkeypatch.setattr(audio, "_parked_follower_result", lambda _label: None)
+    monkeypatch.setattr(audio, "parked_follower_result", lambda _label: None)
 
 
 @pytest.mark.parametrize(

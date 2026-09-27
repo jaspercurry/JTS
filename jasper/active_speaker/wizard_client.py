@@ -122,14 +122,6 @@ class WizardClient:
             answer["capture"] = dict(capture)
         return status, answer
 
-    def v2_block(self) -> dict[str, Any]:
-        """``status["crossover_v2"]`` -- phase, candidate, failure, session id. ``{}`` when
-        unreadable or absent; every caller treats that as "nothing known yet", never a
-        verdict.
-        """
-        status, block = self.status_envelope()
-        return block if status == 200 else {}
-
     def open_session(self, plan: Mapping[str, Any]) -> tuple[int, Any]:
         return self.post_json(SESSION_PATH, {"plan": dict(plan)})
 

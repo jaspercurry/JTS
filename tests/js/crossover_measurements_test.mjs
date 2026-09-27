@@ -92,17 +92,18 @@ function responseRun(slot, id) {
       angles_deg: [0, 7, 14],
       trusted_floor_hz: 200,
       excluded_bands_hz: [[900, 1100]],
-      smoothing: {
-        average_fractional_octave: 3,
-        positions_fractional_octave: 6,
-      },
     },
     series: [
-      responseSeries("average", "average", true),
+      responseSeries("entry", "entry_baseline", true),
       responseSeries("7-deg", "measurement", false, { validity_floor_hz: 250 }),
       responseSeries("14-deg", "analysis", false, { validity_floor_hz: 250 }),
     ],
   };
+}
+
+function unbankedRun(slot, id) {
+  return { ...responseRun(slot, id), series: [],
+    metadata: { curves: { status: "unavailable", reason: "take_curves_not_banked" } } };
 }
 
 const catalog = [
@@ -116,6 +117,14 @@ async function getJSON(url) {
   if (mode === "error") throw new Error("load failed");
   if (mode === "empty") {
     return { catalog: [], selected: { a: null, b: null }, view: null };
+  }
+  if (mode === "unbanked") {
+    return { catalog, selected: { a: "a", b: null }, view: { runs: [unbankedRun("a", "a")] } };
+  }
+  if (mode === "hidden-and-unbanked") {
+    const hidden = responseRun("a", "a");
+    hidden.series = hidden.series.map((series) => ({ ...series, visible_by_default: false }));
+    return { catalog, selected: { a: "a", b: "round:r3" }, view: { runs: [hidden, unbankedRun("b", "round:r3")] } };
   }
   const withB = url.includes("b=");
   return {
@@ -200,7 +209,7 @@ assert.deepEqual(chartPayloads.at(-1).frequencyRangeHz, [20, 20000]);
 check(resetRange.disabled, 'reset restores the full frequency range');
 check(
   chart.series.map((series) => series.draw).join(",") === "true,false,false",
-  "only the aggregate is visible by default",
+  "only the curve the run marks visible is drawn by default",
 );
 check(
   JSON.stringify(chart.series[1].dash) !== JSON.stringify(chart.series[2].dash),
@@ -235,6 +244,22 @@ assert.deepEqual(chart.frequencyRangeHz, [632.5, 20000]);
 check(
   requests.at(-1) === "data?a=a&b=round%3Ar3" && chart.series.length === 6,
   "selecting a banked round as run B loads and draws the A/B view",
+);
+
+mode = "unbanked";
+await elements.get("measurement-run-a").dispatch("change");
+check(
+  elements.get("measurement-chart-status").textContent.includes("take_curves_not_banked") &&
+  !elements.get("measurement-chart-status").textContent.includes("No visible"),
+  "a measurement whose takes banked no curves says so instead of drawing nothing",
+);
+
+mode = "hidden-and-unbanked";
+await elements.get("measurement-run-a").dispatch("change");
+check(
+  elements.get("measurement-chart-status").textContent.includes("Select a curve") &&
+  elements.get("measurement-chart-status").textContent.includes("take_curves_not_banked"),
+  "a run with hidden curves keeps its hint beside another run's missing curves",
 );
 
 mode = "empty";

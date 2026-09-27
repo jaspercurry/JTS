@@ -61,8 +61,8 @@ from jasper.home_assistant import (
 def test_system_prompt_includes_ha_nudge_when_unconfigured():
     """When ha_configured=False, the prompt grows a clause with the
     speaker's hostname and a 'do not call other tools' guard."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(
         location="", ha_configured=False, hostname="jts.local",
     )
     assert "Home Assistant smart-home control isn't set up" in prompt
@@ -75,8 +75,8 @@ def test_system_prompt_includes_ha_nudge_when_unconfigured():
 def test_system_prompt_omits_ha_nudge_when_configured():
     """When ha_configured=True (the default), no nudge is added — the
     model relies on the static SYSTEM_INSTRUCTION's tool guidance."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="", ha_configured=True)
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="", ha_configured=True)
     assert "Home Assistant smart-home control isn't set up" not in prompt
     assert "/ha" not in prompt
 
@@ -84,8 +84,8 @@ def test_system_prompt_omits_ha_nudge_when_configured():
 def test_system_prompt_ha_configured_defaults_to_true():
     """Backwards-compat: callers not passing the new arg must NOT get
     the nudge. The signature default is True (assume configured)."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(location="")
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(location="")
     assert "Home Assistant smart-home control isn't set up" not in prompt
 
 
@@ -94,8 +94,8 @@ def test_system_prompt_ha_nudge_uses_configured_hostname():
     URL — the speaker the user is talking to, not a hardcoded default.
     This was the staff-review-fix bug: the original prompt hardcoded
     jts.local."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(
         location="", ha_configured=False, hostname="jts2.local",
     )
     assert "jts2.local/assistant/ha/" in prompt
@@ -106,8 +106,8 @@ def test_system_prompt_ha_nudge_uses_configured_hostname():
 def test_system_prompt_transit_nudge_uses_configured_hostname():
     """Same fix applies to the transit nudge — was hardcoding jts.local
     before, breaking multi-speaker setups."""
-    from jasper.voice.prompt import _build_system_instruction
-    prompt = _build_system_instruction(
+    from jasper.voice.prompt import build_system_instruction
+    prompt = build_system_instruction(
         location="", transit_configured=False, hostname="jts2.local",
     )
     assert "jts2.local/assistant/transit/" in prompt

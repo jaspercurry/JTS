@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
@@ -15,18 +15,17 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
-    DEFAULT_VOLUME_LIMIT_DB,
     resolve_enable_rate_adjust,
 )
+from jasper.camilla_emit import emit_devices_block
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.log_event import log_event
 
-from ..camilla_names import output_commission_mute_name
+from ..camilla_names import output_commission_mute_name, program_protection_name
 from ..graph_safety import TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .decorate_rear import _mute_unfitted_rear_outputs
 from .devices import (
     _assert_ring_playback_width,
@@ -42,7 +41,6 @@ from .filters import (
     COMMISSIONING_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     _emit_commissioning_filter_definitions,
-    _program_protection_name,
 )
 from .gates import (
     PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE,
@@ -50,7 +48,6 @@ from .gates import (
     _assert_program_graph_proven,
     _assert_tweeter_crossover_hp_satisfies_floor,
     _assert_tweeter_outputs_protected,
-    _assert_volume_limit,
     _validate_program_role_channels,
 )
 from .pipeline import (
@@ -157,7 +154,6 @@ def emit_active_speaker_program_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
@@ -226,7 +222,6 @@ def emit_active_speaker_program_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    volume_limit_db = _finite_float(volume_limit_db, "volume_limit_db")
     limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
     protective_hp_min_corner_hz = _finite_float(
         protective_hp_min_corner_hz, "protective_hp_min_corner_hz"
@@ -235,7 +230,6 @@ def emit_active_speaker_program_config(
         protective_hp_min_slope_db_per_octave,
         "protective_hp_min_slope_db_per_octave",
     )
-    _assert_volume_limit(volume_limit_db)
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
@@ -275,7 +269,7 @@ def emit_active_speaker_program_config(
                     preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
                     order=hp_section.order)
                 raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
-            tweeter_hp_name = _program_protection_name("tweeter", hp_index)
+            tweeter_hp_name = program_protection_name("tweeter", hp_index)
 
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
@@ -350,8 +344,13 @@ def emit_active_speaker_program_config(
 
     if enable_rate_adjust is None:
         enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
-    # CamillaDSP YAML booleans are lowercase; Python's repr is not.
-    enable_rate_adjust_yaml = 'true' if enable_rate_adjust else 'false'
+    devices_yaml = emit_devices_block(
+        samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
+        target_level=target_level, enable_rate_adjust=enable_rate_adjust,
+        capture_channels=program_channels, capture_device=capture_device,
+        capture_format=capture_format, playback_channels=output_count,
+        playback_target=playback_device, playback_format=playback_format,
+    )
     yaml = f"""---
 # Auto-generated active-speaker crossover-measurement program config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_program_config
@@ -362,23 +361,7 @@ def emit_active_speaker_program_config(
 # mid-program) while a 2-channel program WAV sequences the driver stimuli by
 # channel. The software volume ceiling remains non-positive.
 
-devices:
-  samplerate: {sample_rate}
-  chunksize: {chunksize}
-  queuelimit: {queuelimit}
-  target_level: {target_level}
-  volume_limit: {volume_limit_db!r}
-  enable_rate_adjust: {enable_rate_adjust_yaml}
-  capture:
-    type: Alsa
-    channels: {program_channels}
-    device: "{capture_device}"
-    format: {capture_format}
-  playback:
-    type: Alsa
-    channels: {output_count}
-    device: "{playback_device}"
-    format: {playback_format}
+{devices_yaml}
 
 filters:
 {filter_yaml}

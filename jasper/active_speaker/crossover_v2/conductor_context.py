@@ -25,6 +25,9 @@ from .refusal_copy import (
 )
 from jasper.output_topology import topology_is_subless_passive_mains
 from jasper.speaker_layout import declared_radiating_diameters_mm, measurement_target_id
+from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED, DRIVER_CLASSES
+from jasper.active_speaker.playback_route import resolve_active_playback_device
+from jasper.audio_measurement.program import RoleBand
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.program import FrequencyBand
@@ -149,8 +152,6 @@ def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
     whole session.
     """
 
-    from jasper.active_speaker._common import DRIVER_CLASSES
-
     manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
     if not isinstance(manual, Mapping):
         return {}
@@ -192,21 +193,18 @@ def resolve_conductor_context(
 
     Leveling resolves the speaker inputs before a session level can be banked.
     """
-    from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset
-    from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
+    from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset  # lazy: test_correction_crossover_v2_conductor_context patches commission_wiring
     from jasper.active_speaker.design_draft import declared_effective_driver_sensitivities, load_design_draft  # lazy: reader boundary is patched by conductor tests
-    from jasper.active_speaker.excitation_safety_plan import (
+    from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
         ExcitationSafetyPlanError,
         require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
     )
-    from jasper.active_speaker.playback_route import resolve_active_playback_device
-    from jasper.active_speaker.session_volume_plan import (
+    from jasper.active_speaker.session_volume_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches session_volume_plan
         LevelUnresolved, session_measurement_volume_db,
     )
-    from jasper.audio_measurement.program import RoleBand
     from jasper.output_topology_store import load_output_topology  # lazy: test_correction_crossover_v2_conductor_context pins the store lookup
 
     topology = topology if topology is not None else load_output_topology()

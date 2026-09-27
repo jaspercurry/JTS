@@ -438,7 +438,6 @@ def test_summarize_latencies_empty_does_not_crash():
 def _healthy_route_snapshot(
     *,
     uptime_seconds: float = 10.0,
-    outputd_content_xruns: int = 0,
     outputd_dac_xruns: int = 0,
     usb_xruns: int = 0,
     usb_unlocks: int = 0,
@@ -464,7 +463,6 @@ def _healthy_route_snapshot(
         },
         "outputd": {
             "uptime_seconds": uptime_seconds,
-            "content": {"xrun_count": outputd_content_xruns},
             "dac": {"xrun_count": outputd_dac_xruns},
         },
     }
@@ -611,24 +609,13 @@ def test_diff_route_health_negative_known_delta_means_restart_not_clean():
     assert report.window_clean is False
 
 
-def test_diff_route_health_outputd_content_and_dac_xruns_would_not_justify_ok():
-    # S2: outputd content-capture and final-DAC xruns are both on the route.
-    for surface_after in (
-        _healthy_route_snapshot(
-            uptime_seconds=20.0,
-            outputd_content_xruns=1,
-        ),
-        _healthy_route_snapshot(
-            uptime_seconds=20.0,
-            outputd_dac_xruns=2,
-        ),
-    ):
-        before = _healthy_route_snapshot()
-        after = surface_after
+def test_diff_route_health_outputd_dac_xruns_would_not_justify_ok():
+    before = _healthy_route_snapshot()
+    after = _healthy_route_snapshot(uptime_seconds=20.0, outputd_dac_xruns=2)
 
-        report = harness.diff_route_health(before, after)
+    report = harness.diff_route_health(before, after)
 
-        assert report.window_clean is False
+    assert report.window_clean is False
 
 
 def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():

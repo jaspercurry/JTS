@@ -43,13 +43,13 @@ LINKWITZ_Q_MAX = 1.5
 _RESERVE_GRID_MARGIN_DB = 0.01
 
 _COMMON_REQUIRED = {"detector_lowpass_hz", "compressor_threshold_dbfs"}
-_REQUIRED_FIELDS = _COMMON_REQUIRED | {"linkwitz_transform", "delta_highpass_hz"}
-_OPTIONAL_FIELDS = {"compressor_factor", "compressor_attack_s", "compressor_release_s"}
+REQUIRED_FIELDS = _COMMON_REQUIRED | {"linkwitz_transform", "delta_highpass_hz"}
+OPTIONAL_FIELDS = {"compressor_factor", "compressor_attack_s", "compressor_release_s"}
 # An ADR-0352 section, which only stored candidates carry, requires these instead (ADR-0359).
 _OLD_FORM_FIELDS = {"low_boost_db", "reference_level_db"}
 
 DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {
-    f"bass_{name}_invalid" for name in _REQUIRED_FIELDS | _OPTIONAL_FIELDS | _OLD_FORM_FIELDS
+    f"bass_{name}_invalid" for name in REQUIRED_FIELDS | OPTIONAL_FIELDS | _OLD_FORM_FIELDS
 })
 
 
@@ -101,7 +101,7 @@ class DynamicBassDescriptor:
     reference_level_db: float | None = None
 
     def __post_init__(self) -> None:
-        for name in sorted(_COMMON_REQUIRED | _OPTIONAL_FIELDS):
+        for name in sorted(_COMMON_REQUIRED | OPTIONAL_FIELDS):
             object.__setattr__(self, name, _finite(getattr(self, name), name))
         if not DETECTOR_CORNER_HZ_MIN <= self.detector_lowpass_hz <= DETECTOR_CORNER_HZ_MAX:
             raise DynamicBassDescriptorError("detector_lowpass_hz", "detector_lowpass_hz is outside the measured bass domain")
@@ -146,7 +146,7 @@ class DynamicBassDescriptor:
 
     def payload(self) -> dict[str, Any]:
         """The normalized candidate payload; an old section keeps its bytes, so banked fingerprints do not move."""
-        names = _REQUIRED_FIELDS | _OPTIONAL_FIELDS | (_OLD_FORM_FIELDS if self.low_boost_db is not None else set())
+        names = REQUIRED_FIELDS | OPTIONAL_FIELDS | (_OLD_FORM_FIELDS if self.low_boost_db is not None else set())
         payload = {name: getattr(self, name) for name in sorted(names)}
         if self.linkwitz_transform is None:
             del payload["linkwitz_transform"]
@@ -163,7 +163,7 @@ def validate_dynamic_bass_descriptor(value: Any, *, new_section: bool = False) -
     old_form = any(value.get(name) is not None for name in _OLD_FORM_FIELDS)
     if new_section and old_form:
         raise DynamicBassDescriptorError("dynamic_bass", "a new bass section is linkwitz_transform with delta_highpass_hz")
-    names, required = _REQUIRED_FIELDS | _OPTIONAL_FIELDS, _REQUIRED_FIELDS
+    names, required = REQUIRED_FIELDS | OPTIONAL_FIELDS, REQUIRED_FIELDS
     if old_form:
         names, required = names | _OLD_FORM_FIELDS, _COMMON_REQUIRED | _OLD_FORM_FIELDS
     if not required <= set(value) <= names:

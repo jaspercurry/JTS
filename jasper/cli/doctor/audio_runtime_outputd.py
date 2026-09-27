@@ -124,34 +124,17 @@ _OUTPUTD_XRUN_RATE_WARN_PER_HOUR = 6.0
 _OUTPUTD_XRUN_RECENT_AGE_MS = 300_000  # 5 minutes
 
 
-def _outputd_xrun_rate_warning(
-    content: dict[str, object],
-    dac: dict[str, object],
-) -> str | None:
-    """Return a one-clause WARN reason when either outputd lane shows a
-    sustained xrun rate with a recent xrun, else None.
-
-    Both sections are checked independently; the worst qualifying lane wins.
-    """
-
-    worst: tuple[float, str] | None = None
-    for label, section in (("content", content), ("dac", dac)):
-        if not isinstance(section, dict):
-            continue
-        rate = finite_float(section.get("xrun_rate_per_hour"))
-        # last_xrun_age_ms: null → None → no recent xrun
-        age = finite_float(section.get("last_xrun_age_ms"))
-        count = finite_float(section.get("xrun_count"))
-        if rate is None or age is None or count is None or count < 2:
-            continue
-        if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:
-            reason = (
-                f"{label} xrun_rate_per_hour={rate:.1f} "
-                f"(last_xrun_age_ms={int(age)})"
-            )
-            if worst is None or rate > worst[0]:
-                worst = (rate, reason)
-    return worst[1] if worst else None
+def _outputd_xrun_rate_warning(dac: dict[str, object]) -> str | None:
+    if not isinstance(dac, dict):
+        return None
+    rate = finite_float(dac.get("xrun_rate_per_hour"))
+    age = finite_float(dac.get("last_xrun_age_ms"))
+    count = finite_float(dac.get("xrun_count"))
+    if rate is None or age is None or count is None or count < 2:
+        return None
+    if rate >= _OUTPUTD_XRUN_RATE_WARN_PER_HOUR and age <= _OUTPUTD_XRUN_RECENT_AGE_MS:
+        return f"dac xrun_rate_per_hour={rate:.1f} (last_xrun_age_ms={int(age)})"
+    return None
 
 
 def _outputd_dual_apple_health(
@@ -532,9 +515,8 @@ def _outputd_transport_health(
 ) -> tuple[str, str, str, str] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
-    OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``
-    (which under ADR-0100 selects nothing). ``outputd_env`` is read through the
-    unit's ``EnvironmentFile=`` layering (:func:`outputd_reconciled_env`), so
+    ``outputd_env`` follows the unit's ``EnvironmentFile=`` layering
+    (:func:`outputd_reconciled_env`), so
     the question here is "is the running daemon on the env it was last given?".
     Whether that env is the RIGHT one for this box is
     :func:`check_content_transport_coherence`'s.
@@ -773,9 +755,8 @@ def check_outputd_service() -> CheckResult:
             "STATUS response missing watchdog.last_progress_age_ms",
             reason=REASON_OUTPUTD_STATUS_MISSING_WATCHDOG,
         )
-    content_xruns = int(content.get("xrun_count", 0) or 0)
     dac_xruns = int(dac.get("xrun_count", 0) or 0)
-    xrun_warning = _outputd_xrun_rate_warning(content, dac)
+    xrun_warning = _outputd_xrun_rate_warning(dac)
     content_empty = int(content.get("empty_periods", 0) or 0)
     content_partial = int(content.get("partial_periods", 0) or 0)
     content_eagain = int(content.get("eagain_count", 0) or 0)
@@ -828,7 +809,7 @@ def check_outputd_service() -> CheckResult:
         return CheckResult(
             "jasper-outputd",
             "warn",
-            f"active but {xrun_warning}. xruns={content_xruns}/{dac_xruns}. "
+            f"active but {xrun_warning}. xruns={dac_xruns}. "
             "A sustained, recent xrun rate means audible dropouts — check "
             "CPU contention (jasper-camilla RT scheduling), DAC buffer sizing "
             "(JASPER_OUTPUTD_DAC_BUFFER_FRAMES), and "
@@ -855,7 +836,7 @@ def check_outputd_service() -> CheckResult:
         status,
         f"active, backend=alsa, frames_written={frames}, "
         f"content_buffer_frames={content_buffer}, dac_buffer_frames={dac_buffer}, "
-        f"xruns={content_xruns}/{dac_xruns}, "
+        f"xruns={dac_xruns}, "
         f"content_empty_periods={content_empty}, "
         f"content_partial_periods={content_partial}, "
         f"content_eagain_count={content_eagain}, "

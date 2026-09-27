@@ -17,8 +17,8 @@ from jasper.json_fields import finite_float
 from ._prescription_common import (
     PRESCRIPTION_MALFORMED as _PRESCRIPTION_MALFORMED,
     BlendPrescriptionRefused,
-    _finite_number,
-    _read_artifacts,
+    finite_number,
+    read_artifacts,
 )
 from .contracts import POLARITY_INVERT, POLARITY_KEEP
 
@@ -91,7 +91,6 @@ PRESCRIPTION_FC_UNKNOWN = "prescription_fc_unknown"
 #: own reason because an unknown corner is a number to go and derive while this
 #: one never exists (#3480).
 ALIGNMENT_NO_CROSSOVER_REGION = "alignment_no_crossover_region"
-PRESCRIPTION_OUT_OF_LOBE = "prescription_out_of_lobe"
 #: The preset's own declared delay window — the one bound here that does not
 #: depend on a number the operator supplied.
 PRESCRIPTION_OUTSIDE_DECLARED_WINDOW = "prescription_outside_declared_window"
@@ -213,11 +212,11 @@ def _parse_prescription(raw: Mapping[str, Any]) -> AlignmentPrescription:
         raise AlignmentPrescriptionRefused(
             PRESCRIPTION_DELAY_INVALID, "a prescription must state delay_us",
         )
-    delay_us = _finite_number(
+    delay_us = finite_number(
         raw["delay_us"], reason=PRESCRIPTION_DELAY_INVALID, field="delay_us",
     )
     basis_delay_us = finite_float(raw.get("basis_delay_us"))
-    artifacts = _read_artifacts(raw.get("basis_artifacts"))
+    artifacts = read_artifacts(raw.get("basis_artifacts"))
     note = raw.get("basis_note", "")
     return AlignmentPrescription(
         delay_us=delay_us,

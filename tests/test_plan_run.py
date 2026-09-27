@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    MeasurementProgram, ProgramPose, run_program, program as measurement_program,
+    Preset, ProgramPose, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -29,8 +29,8 @@ from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferr
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
-    REASON_SPL_CEILING_EXCEEDED, TakeVerdict,
+    REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -41,7 +41,7 @@ from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, r
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -672,10 +672,10 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     assert not graph.installs
 
 
-@pytest.mark.parametrize("layout,poses", [("baseline/express", 5), ("baseline/full", 13)])
+@pytest.mark.parametrize("layout,poses", [("baseline_express", 5), ("baseline_full", 13)])
 def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, poses):
-    program = run_program("speaker", layout)
-    request = ac.request_for_program(program, repeats=2)
+    program = run_preset("speaker", layout)
+    request = ac.request_for_preset(program, repeats=2)
     captures = plan_run.prepare_plan_captures(request)
     timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
     assert [(capture.stop.angle_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
@@ -703,8 +703,8 @@ def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
 
 
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
-    program = run_program("speaker", "room_quick")
-    request = ac.request_for_program(program, mover=ac.MOVER_ARM)
+    program = run_preset("speaker", poses="0,-20,20")
+    request = ac.request_for_preset(program, mover=ac.MOVER_ARM)
     _, safety, targets = _profile_and_targets(woofer_floor=30)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
         safety, fingerprint, program_admission=True)[0])
@@ -763,10 +763,10 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     at every pose (the front and rear woofer at one distance included), and
     every take banks as reference evidence at its driver (ADR-0360)."""
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
-    program = MeasurementProgram("nearfield", "custom", tuple(
+    program = Preset("nearfield/each", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
         purpose="reference", regime="near_field")
-    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_program(program).to_dict())))
+    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_preset(program).to_dict())))
     captures = plan_run.prepare_plan_captures(request)
     gate = AnsweredGate()
 
@@ -836,9 +836,10 @@ def _heard_analysis(record, _record_id):
                    stimulus_levels=(LevelReading(stimulus_peak_dbfs(program), heard, heard - 30.0),))
 
 
-def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=()):
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
-    and judged on the level each take read; the microphone is re-placed at take
+    (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
+    judged on the level each take read; the microphone is re-placed at take
     ``replace_at``, and the operator presses Redo during each take in
     ``redo_at``, take 0 being just after the first placement is confirmed."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
@@ -859,9 +860,9 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
-                request, session=session, manifest=manifest, gate=gate, aborts=_ABORTS, signals=signals,
-                analyze=_heard_analysis, captures=captures, assessor=assessor,
-                admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
+                request, session=session, manifest=manifest, gate=gate if web else None, aborts=_ABORTS,
+                signals=signals, analyze=_heard_analysis, captures=captures, assessor=assessor,
+                admit=(lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger)) if web else None)
 
     result = asyncio.run(run())
     selected = [take["selected"] for take in sorted(_takes(result.to_dict()), key=lambda take: take["take_id"])]
@@ -873,7 +874,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     the solved peak; the rest of that placement starts there, a re-placement
     starts with its probe again, and in-band re-seats are never
     sent back as drift, though each banks its reading (ADR-0361)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purpose="reference", regime="near_field"))
     readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
@@ -892,13 +893,37 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     """A take its ceiling played under the peak it asked for is kept too quiet:
     a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
+    request = ac.request_for_preset(Preset("nearfield/each", (
         ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purpose="reference", regime="near_field"))
 
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
 
     assert result.status == "complete"
     assert (fakes.play.rungs, selected) == ([None, -29.0], [False, True])
+
+
+def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
+    """As on jts3, the rear woofer needs 6 dB more drive than the woofer to read
+    80 dB at each distance. A placement's finding shows in the round's facts and
+    lines from the next pose on; the ended round shows each in its facts, lines
+    and packet lines, and logs each once (#5714)."""
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
+        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
+        for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purpose="reference", regime="near_field"))
+
+    with caplog.at_level("WARNING", logger=plan_run.logger.name):
+        result, fakes, _, gate = _run_levelled(request, (70.0, 80.0) * 2 + (60.0, 80.0) * 2)
+
+    assert fakes.play.rungs == [None, -33.0] * 2 + [None, -27.0] * 2
+    *live, ended = gate.progress
+    assert [(finding["role"], finding["pose"]["distance_m"], finding["spread_db"])
+            for finding in ended["level_mismatches"]] == [("woofer", 0.015, 6.0), ("woofer", 0.03, 6.0)]
+    assert [len(facts["level_mismatches"]) for facts in live] == [int(facts["pose"] == 4) for facts in live]
+    lines = set(round_lines(ended)) - set(round_lines({**ended, "level_mismatches": []}))
+    assert len(lines) == 2 and lines <= set(coverage_lines({}, result.to_dict()))
+    assert len(lines & set(round_lines(live[-1]))) == 1
+    assert sum(getattr(record, "jasper_event", "") == "active_speaker.driver_level_mismatch"
+               for record in caplog.records) == 2
 
 
 def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
@@ -913,13 +938,26 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     assert not any("level_step" in progress for progress in gate.progress)
 
 
+@pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])
+@pytest.mark.parametrize("retries", [0, 2])
+def test_a_repeat_that_keeps_drifting_is_retaken_only_for_its_retries(web, retries):
+    """A level-drift retake spends one of the pose's retries in a web run and in
+    the bass ladder alike, so a repeat that keeps drifting is left unmeasured
+    once they are spent, never retaken without end (#5722)."""
+    result, _, selected, _ = _run_levelled(replace(_walk([0]), repeats=2, retries_per_pose=retries),
+                                           (70.0,) + (73.0,) * (retries + 1), web=web)
+
+    assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_DRIFT_AT_SESSION_GAIN]
+    assert selected == [True] + [False] * (retries + 1)
+
+
 @pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
 def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
     """Each redo asks for the microphone again and starts the pose over at its
     probe, with its retries, so redos past the pose's budget never end the
     round, even one with no retries; the page is told which plays are the
     probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", tuple(
+    request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 1), (30, 2))), purpose="reference", regime="near_field"), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
@@ -935,34 +973,44 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
 
 
-@pytest.mark.parametrize("redo_at,readings,allowed", [
-    ((0,), (66.0, 80.0, 80.0), 0),
-    ((3,), (66.0, 80.0, 80.0, 66.0, 80.0, 80.0), 2),
-], ids=["before_any_take", "during_the_second_take"])
-def test_a_redo_leaves_a_driver_pose_its_retries(monkeypatch, redo_at, readings, allowed):
-    """Admission charges every attempt after a take's first. A redo before any
-    take played only asks for the placement again, and a redo after two takes
-    carries a retry for each take it plays again, so a pose with no retries
-    still completes (ADR-0361)."""
+@pytest.mark.parametrize("driver,repeats,retries,redo_first,left,retakes,reason", [
+    (True, 2, 0, True, 0, 1, ""), (True, 2, 0, False, 0, 2, ""), (True, 6, 3, False, 3, 2, ""),
+    (False, 2, 0, True, 0, 0, ""), (False, 2, 1, False, 0, 1, ""), (False, 6, 3, False, 2, 1, ""),
+    (False, 2, 0, False, 0, 0, REASON_RETRIES_SPENT),
+])
+def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
+        monkeypatch, driver, repeats, retries, redo_first, left, retakes, reason):
+    """A redo during a pose's last take plays the pose again from its start, and
+    each take it plays again is free (#5722): a far-field redo costs its own retry,
+    and a driver's pose starts over with its retries (ADR-0361). The earlier takes
+    stay banked, but neither kept nor the level the new placement is held to, so
+    a placement that moved the level is not refused as drift. A redo before any
+    take played only asks for the placement again; one the pose cannot pay for
+    ends the round with its retries spent."""
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
-    request = ac.request_for_program(MeasurementProgram("nearfield", "custom", (
-        ProgramPose(0, 0, repeats=2, kind="close", distance_m=0.015, driver="woofer"),),
-        purpose="reference", regime="near_field"), retries_per_pose=0)
+    request = (ac.request_for_preset(Preset("nearfield/each", (
+        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
+        purpose="reference", regime="near_field"), retries_per_pose=retries) if driver else
+        replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
+    placements = [(66.0, *(80.0,) * repeats)] * 2 if driver else [(70.0,) * repeats, (75.0,) * repeats]
 
-    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+    result, _, selected, gate = _run_levelled(request, placements[0] + placements[1],
+                                              redo_at=(0,) if redo_first else (repeats + driver,))
 
-    assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
-    assert [index for index, _ in gate.grants] == [1, 1]
-    assert selected[-2:] == [True, True]
-    assert [p["budget"]["allowed"] for p in gate.progress if "budget" in p][-1] == allowed
+    assert (result.status, result.reason) == ("partial" if reason else "complete", reason)
+    assert [index for index, _ in gate.grants] == [1] * (1 if reason else 2)
+    kept = 0 if reason else repeats
+    assert selected == [False] * (len(selected) - kept) + [True] * kept
+    final = gate.progress[-1]
+    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (retries, left, retakes)
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
-    ("speaker", "baseline/express", True, 5), ("room", "seat_express", False, 3),
-    ("rear", "rear/express", False, 3),
+    ("speaker", "baseline_express", True, 5), ("room", "seat_express", False, 3),
+    ("rear", "rear_express", False, 3),
 ])
 def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
-    request = ac.request_for_program(run_program(purpose, layout))
+    request = ac.request_for_preset(run_preset(purpose, layout))
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
@@ -970,8 +1018,15 @@ def test_program_entry_baseline_and_placement_count(purpose, layout, entry, pose
     assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
 
 
+async def test_a_run_banks_its_preset_and_its_layout():
+    """The banked record names the preset and, in its own field, the layout it walked (ADR-0366 §6)."""
+    result, _ = await _run_gated(ac.request_for_preset(run_preset("tournament", "tournament_full")))
+    assert {key: result.to_dict()[key] for key in ("program", "layout")} == {
+        "program": "tournament/express", "layout": "tournament_full"}
+
+
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
-    request = ac.request_for_program(run_program("room", "seat_express"))
+    request = ac.request_for_preset(run_preset("room", "seat_express"))
     captures = plan_run.prepare_plan_captures(request)
     manifest = RunManifest("run", _Store(FakeSeams().records), program=request.program)
     for index, (capture, observed, accepted, action, delta) in enumerate(zip(
@@ -1082,7 +1137,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     facts = ready_facts(request)
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
-    ladder = preflight_levels(request, facts, "-28,-23,-18")
+    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0, -18.0)), facts)
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
     entry_volume = box.volume_db
@@ -1182,7 +1237,7 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
     rung_spl.update({level: {"loudest_half_second_db_spl": half, "max_window_db_spl": peak,
                             "ceiling_db_spl": stop}
                     for level, half, peak in ((-31.46, 66.22, 71.11), (-21.46, 76.04, 80.53))})
-    ladder = preflight_levels(request, facts, "-14.46,-31.46,-21.46")
+    ladder = preflight_levels(replace(request, levels=(-14.46, -31.46, -21.46)), facts)
     fakes, gate = FakeSeams(), AnsweredGate()
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
 
@@ -1223,7 +1278,7 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
     facts = ready_facts(request, program_ids_for=lambda _: ("bass-sweep",))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
     rung_spl[-22.23] = {"loudest_half_second_db_spl": 75, "max_window_db_spl": 80, "ceiling_db_spl": 85}
-    preview = preflight_levels(request, facts, "-12.46,-11.46")
+    preview = preflight_levels(replace(request, levels=(-12.46, -11.46)), facts)
     received = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(preview.plan.to_dict())))
     ladder = preflight_levels(received, facts)
     fakes, gate = FakeSeams(), AnsweredGate()
@@ -1250,7 +1305,7 @@ async def test_unmeasured_rung_holds_or_persists_its_missing_level(tmp_path, box
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
-    ladder = preflight_levels(request, ready_facts(request), "-28,-18")
+    ladder = preflight_levels(replace(request, levels=(-28.0, -18.0)), ready_facts(request))
     rung_spl[-28] = {"loudest_half_second_db_spl": 66.22, "max_window_db_spl": window, "ceiling_db_spl": 85}
     fakes, gate = FakeSeams(), AnsweredGate()
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), json.loads(json.dumps(ladder.to_dict())))
@@ -1287,10 +1342,10 @@ async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile, r
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     candidate = _room_candidate(tuning_profile)
-    program = run_program("room")
+    program = run_preset("room")
     levels = (-10.0, -20.0)
     rung_spl[-20] = {"loudest_half_second_db_spl": 73, "max_window_db_spl": 73, "ceiling_db_spl": 95}
-    request = ac.request_for_program(program, candidates=("base", candidate.fingerprint), levels=levels)
+    request = ac.request_for_preset(program, candidates=("base", candidate.fingerprint), levels=levels)
     report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
     assert not report.blocking
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
@@ -1442,7 +1497,7 @@ def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
+    request = ac.request_for_preset(run_preset("tournament", "tournament_full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
     assert facts["measurements"] == len(captures) == walk_price(request, roles_bands=context.roles_bands)["captures"]
@@ -1455,6 +1510,19 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
 
 
+def _ladder_execute(monkeypatch, box, levels, *, manifest=None, production=None):
+    """A one-rung ladder host's ``execute``, with ``levels`` standing in for ``run_levels``."""
+    monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
+    monkeypatch.setattr(correction_run_host, "run_levels", levels)
+    return correction_run_host.bind_run_door(
+        host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)) if manifest is None else manifest,
+        production=FakeSeams() if production is None else production, conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
+        camilla_factory=lambda: box,
+        ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
+    )[3]
+
+
 async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatch, box):
     """The ladder's last published facts count from the joined manifest that
     ``wait`` reprints once banked, so the two "Measured" lines agree."""
@@ -1463,20 +1531,25 @@ async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatc
               "not_measured": [{"pose": {"deg": 0}, "reason": "summed_sweep_heard"}] * 3}
     packet = SimpleNamespace(runs={}, to_dict=lambda: joined, finish=AsyncMock(), update_schedule=AsyncMock())
     monkeypatch.setattr(correction_run_host, "RoundPacket", lambda *_args: packet)
-    monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
-    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
-    monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(return_value=[]))
     gate = AnsweredGate()
-    _, _, _, execute = correction_run_host.bind_run_door(
-        host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)),
-        production=FakeSeams(), conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
-        camilla_factory=lambda: box,
-        ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
-    )
+    execute = _ladder_execute(monkeypatch, box, AsyncMock(return_value=[]))
     await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
     ended = gate.progress[-1]
     assert (ended["takes"], ended["not_measured"]) == (1, 3)
     assert round_lines(ended)[0] == coverage_lines({}, joined)[0]
+
+
+async def test_a_ladder_stopped_on_the_channel_map_keeps_the_drivers_it_named(monkeypatch, box):
+    child = RunManifest("packet-level-1", _Store(FakeSeams().records))
+    child.failed_roles = ("tweeter",)
+
+    async def levels(_ladder, *, signals, **_kwargs):
+        signals.request_stop(REASON_CHANNEL_MAP_MISMATCH)
+        return (child,)
+
+    execute = _ladder_execute(monkeypatch, box, levels)
+    result = await execute(None, gate=AnsweredGate(), signals=plan_run.RunSignals(), captures=())
+    assert (result.reason, result.failed_roles) == (REASON_CHANNEL_MAP_MISMATCH, ("tweeter",))
 
 
 @pytest.mark.parametrize("site", ["transaction", "executor", "ladder"])
@@ -1492,15 +1565,7 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
     outer = RunManifest("packet", store)
     gate = AnsweredGate()
     if site == "ladder":
-        monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
-        monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
-        monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(side_effect=failure))
-        _, _, _, execute = correction_run_host.bind_run_door(
-            host=None, device=None, evidence_store=None, manifest=outer, production=fakes,
-            conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
-            camilla_factory=lambda: box,
-            ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
-        )
+        execute = _ladder_execute(monkeypatch, box, AsyncMock(side_effect=failure), manifest=outer, production=fakes)
         with pytest.raises(ProgramPlaybackRefused):
             await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
     else:

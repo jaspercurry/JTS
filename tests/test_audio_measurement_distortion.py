@@ -189,9 +189,9 @@ def test_the_production_pre_guard_wraps_every_image_and_ours_does_not():
     assert needed > DECONV_PRE_GUARD_S
     assert deconv.harmonic_time_advance_s(meta, 2) > DECONV_PRE_GUARD_S
 
-    from jasper.audio_measurement.program_analysis import _deconvolve_window
+    from jasper.audio_measurement.program_analysis import deconvolve_window
 
-    wrapped, pre = _deconvolve_window(
+    wrapped, pre = deconvolve_window(
         capture, segment, anchor, rate, pre_guard_s=DECONV_PRE_GUARD_S,
     )
     peak = int(np.argmax(np.abs(wrapped)))
@@ -444,7 +444,7 @@ def test_the_ir_seam_is_the_whole_read_and_records_what_it_is_told():
     the bin equality across DIFFERENT values of them — and a caller that leaves
     them unstated gets NaN back, whose clearance must not read as clean.
     """
-    from jasper.audio_measurement.program_analysis import _deconvolve_window
+    from jasper.audio_measurement.program_analysis import deconvolve_window
 
     program = _program()
     capture = _captured_through(program, a=0.03, b=0.01)
@@ -456,7 +456,7 @@ def test_the_ir_seam_is_the_whole_read_and_records_what_it_is_told():
 
     via_wrapper = read_segment_distortion(program, capture, "sweep_w", anchor)
 
-    full_ir, _pre = _deconvolve_window(
+    full_ir, _pre = deconvolve_window(
         capture, segment, anchor, rate, pre_guard_s=needed,
     )
     drive = DriveLevel(0.0, 0.0, 0.0, 0.0)

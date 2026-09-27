@@ -102,7 +102,7 @@ def test_real_time_pack_uses_explicit_tool_boundary_end_to_end():
         "description": tool.model_facing_description(),
         "parameters": expected_parameters,
     }]
-    assert reg.to_manifest() == [tool.to_manifest_entry()]
+    assert tool.to_manifest_entry()["input_schema"] == expected_parameters
 
     catalog = build_catalog(reg, frozenset(), packs=(pack,))
     row = catalog["tools"][0]
@@ -171,7 +171,7 @@ def test_real_weather_pack_uses_explicit_tool_boundary_end_to_end():
         "description": tool.model_facing_description(),
         "parameters": expected_parameters,
     }]
-    assert reg.to_manifest() == [tool.to_manifest_entry()]
+    assert tool.to_manifest_entry()["input_schema"] == expected_parameters
 
     catalog = build_catalog(reg, frozenset(), packs=(pack,))
     row = catalog["tools"][0]
@@ -237,7 +237,7 @@ def test_custom_capability_pack_registers_explicit_tool_boundary():
 
     assert outcomes == [PackOutcome("contrib_echo", "registered", tool_count=1)]
     assert reg.tool_packs == {"contrib_echo": "contrib_echo"}
-    assert reg.to_manifest()[0]["labels"] == ["contrib", "example"]
+    assert reg.tools["contrib_echo"].to_manifest_entry()["labels"] == ["contrib", "example"]
 
     assert asyncio.run(dispatch_tool(reg, "contrib_echo", {"text": "hi"})) == {
         "echo": "hi",
@@ -390,7 +390,7 @@ def test_explicit_disabled_set_never_reads_the_ssot_file(monkeypatch):
     """Passing an explicit `disabled` set must NOT touch the SSOT file —
     tests stay filesystem-independent. Monkeypatch the reader to blow up;
     the walk with an explicit set still registers the full set."""
-    import jasper.tool_state as tool_state
+    import jasper.tools.tool_state as tool_state
 
     def _boom(*_a, **_k):
         raise AssertionError("read_tool_state must not be called with explicit state")
@@ -410,7 +410,7 @@ def test_default_disabled_is_fail_safe(monkeypatch):
     """With no `disabled=` passed, the walk reads the SSOT fail-safe. A
     reader that returns the empty set (the missing-file case) registers
     the full set — the no-disabled path stays identical to today."""
-    import jasper.tool_state as tool_state
+    import jasper.tools.tool_state as tool_state
 
     monkeypatch.setattr(tool_state, "read_tool_state", lambda *_a, **_k: tool_state.ToolState())
     reg = ToolRegistry()

@@ -42,7 +42,7 @@ from tests.test_round_inputs import _bank_packet
 from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
-from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
+from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
@@ -53,7 +53,7 @@ from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_session_volume_plan import _bank_reference
-from tests.test_crossover_v2_blend_prescription import _bundle, _receipt
+from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_BAND,
@@ -95,13 +95,14 @@ def _speaker_dirs(
     draft: dict[str, Any] | None = None,
     classification: dict[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
-    session, _ = _bundle(tmp_path)
+    # Nested under bank/bundle/ (like a real bank) so a classification write
+    # resolves beside the round instead of falling back to the cwd.
+    session, _ = _bundle(tmp_path / "bank" / "bundle")
     write_manifest(session)
     if classification is not None:
-        round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-        (round_dir / "feature_classification.json").write_text(
-            json.dumps(classification)
-        )
+        round_views.default_out(
+            round_inputs_mod.round_inputs(session), session, CLASSIFICATION_ARTIFACT
+        ).write_text(json.dumps(classification))
     draft_path = None
     if draft is not None:
         draft_path = tmp_path / "draft.json"
@@ -202,15 +203,9 @@ def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
         "tweeter": list(TWEETER_BAND),
         "woofer": list(WOOFER_BAND),
     }
-    # banked — the round, its region, and its classified features.
+    # banked — the round and its classified features.
     assert payload["banked"]["available"] is True
-    assert payload["banked"]["round_id"] == "r1"
-    assert payload["banked"]["region"]["available"] is True
     assert payload["banked"]["classification"]["n_verdicts"] == 2
-    # applied — both records the packet keeps side by side.
-    assert payload["applied"]["from_round_receipt"] == {
-        "available": True, "n_filters": 0
-    }
     assert payload["applied"]["from_applied_profile"] == {
         "available": True, "n_filters": 1
     }
@@ -221,13 +216,13 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 ):
     session, _ = _speaker_dirs(tmp_path)
     seen: dict[str, Any] = {}
-    build = cli.build_crossover_evidence_packet
+    build = evidence_packet.build_crossover_evidence_packet
 
     def _spy(session_dir: Path, **kwargs: Any) -> dict[str, Any]:
         seen.update(kwargs, session_dir=session_dir)
         return build(session_dir, **kwargs)
 
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _spy)
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", _spy)
     _status([str(session)], capsys)  # no --state/--drivers/--applied-profile
 
     assert seen == {
@@ -238,8 +233,6 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
         "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
         "declared_geometry_path": round_inputs_mod.DECLARED_GEOMETRY_DEFAULT_PATH,
-        # No default, same reason as ``state_path`` above (#3316).
-        "statefile_path": None,
     }
 
 
@@ -259,22 +252,17 @@ def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
 
 
 def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
-    """A prescription is a TOTAL, so "empty" and "unknown" must not merge.
-
-    The synthetic round records ``incumbent: []`` — the round derived from
-    nothing. Reported as zero filters rather than as an absence, because an
-    author told "none" would prescribe the same document either way and only
-    one of the two readings is safe.
-    """
+    """A prescription is a TOTAL, so "empty" and "unknown" must not merge."""
     session, _ = _speaker_dirs(tmp_path)
+    applied = tmp_path / "applied-profile.json"
+    applied.write_text(json.dumps(applied_profile()))
 
-    _, payload = _status([str(session)], capsys)
+    _, empty = _status([str(session), "--applied-profile", str(applied)], capsys)
+    _, missing = _status([str(session)], capsys)
 
-    assert payload["applied"]["from_round_receipt"]["available"] is True
-    assert payload["applied"]["from_round_receipt"]["n_filters"] == 0
-    # …while the side whose default path has nothing behind it says so.
-    assert payload["applied"]["from_applied_profile"]["available"] is False
-    assert payload["applied"]["from_applied_profile"]["reason"] == "source_absent"
+    assert empty["applied"]["from_applied_profile"] == {"available": True, "n_filters": 0}
+    assert missing["applied"]["from_applied_profile"]["available"] is False
+    assert missing["applied"]["from_applied_profile"]["reason"] == "source_absent"
 
 
 def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
@@ -296,7 +284,7 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
-    packet = cli.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
+    packet = evidence_packet.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
     trim = packet["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
@@ -304,56 +292,6 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         "delta_db": pytest.approx(-2.105 - (-1.361)),
         "pinned_this_round": False,
     }
-
-
-def _receipt_with_incumbent(session: Path, incumbent: Any) -> None:
-    """Rewrite the banked receipt's incumbent to an arbitrary JSON value."""
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    receipt = _receipt()
-    receipt["round_measurements"]["blend"]["incumbent"] = incumbent
-    (round_dir / "round_receipt.json").write_text(json.dumps(receipt))
-
-
-def test_a_stray_reason_key_in_the_receipt_is_not_echoed_as_an_explanation(
-    tmp_path, capsys
-):
-    """The incumbent block is the one value read VERBATIM out of a bundle.
-
-    A receipt whose ``incumbent`` is some other object would otherwise have that
-    object's ``reason`` key printed as though the packet builder had explained
-    something. Only the builder's own absence shape is echoed.
-    """
-    session, _ = _speaker_dirs(tmp_path)
-    _receipt_with_incumbent(session, {"unrelated": "junk", "reason": "STRAY-FIELD"})
-
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["applied"]["from_round_receipt"]["reason"] == "not reported"
-    assert "STRAY-FIELD" not in json.dumps(payload)
-
-
-def test_a_receipt_that_mimics_the_absence_shape_is_a_recorded_residue(
-    tmp_path, capsys
-):
-    """The half this layer CANNOT close, pinned so it stays a decision.
-
-    A receipt carrying the builder's own ``status: not_evaluated`` shape is
-    indistinguishable from one the builder wrote, because the packet does not
-    record which of the two authored a given absence. Closing it belongs to the
-    packet builder, not here. It is terminal output only — this verb gates
-    nothing and no refusal reads this string — so it is recorded rather than
-    papered over with an allowlist of the packet's own reason slugs, which
-    would be a second copy of a vocabulary the packet owns and would not close
-    it anyway (a crafted receipt can always claim a legal slug).
-    """
-    session, _ = _speaker_dirs(tmp_path)
-    _receipt_with_incumbent(
-        session, {"status": "not_evaluated", "reason": "FABRICATED-REASON"}
-    )
-
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["applied"]["from_round_receipt"]["reason"] == "FABRICATED-REASON"
 
 
 # --------------------------------------------------------------------------- #
@@ -372,25 +310,18 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
     session, _ = _speaker_dirs(tmp_path)
     monkeypatch.setattr(
         cli,
-        "build_crossover_evidence_packet",
-        lambda *a, **k: {"session": {"round_id": "from-the-builder"}, "round":
-                         {"available": True}},
+        "round_evidence",
+        lambda *a, **k: {"session": {"bundle_session_id": "from-the-builder"}},
     )
 
     _, payload = _status([str(session)], capsys)
 
-    assert payload["banked"]["round_id"] == "from-the-builder"
+    assert payload["banked"]["bundle_session_id"] == "from-the-builder"
 
 
 def test_a_banked_walk_is_visible_before_any_round_receipt_is():
-    """The done-signal for a measurement-only walk.
-
-    ``banked.available`` needs a ``round_receipt.json``, which is written only
-    once a graded post-apply VERIFY completes — so a session that walked poses
-    and applied nothing has no receipt and would otherwise report as empty. The
-    packet's ``lateral_poses`` block is filled by accepted takes instead, and
-    that is what an operator (or the driver polling this verb) is waiting for.
-    """
+    """The done-signal for a walk: ``lateral_poses`` is filled by accepted
+    takes, whatever else the round banked."""
     payload = cli.status_document(
         {"lateral_poses": {"available": True, "n_takes": 8,
                            "angles_deg": [-20, 0, 20]}},
@@ -481,8 +412,6 @@ def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
 @pytest.mark.parametrize(
     "reader, replacement, section, expected",
     [
-        ("packet_region_band_hz", lambda p: (111.0, 222.0),
-         lambda s: s["banked"]["region"]["band_hz"], [111.0, 222.0]),
         ("packet_driver_passbands_hz", lambda p: {"midrange": (300.0, 3000.0)},
          lambda s: s["declared"]["roles"], ["midrange"]),
         ("packet_feature_classifications", lambda p: ("one", "two", "three"),
@@ -494,8 +423,7 @@ def test_each_state_comes_from_the_named_reader_its_gate_uses(
 ):
     """The packet owns its layout; this verb asks it the gate's own questions.
 
-    ``packet_region_band_hz`` is what bounds a blend prescription,
-    ``packet_driver_passbands_hz`` is what bounds a per-driver one, and
+    ``packet_driver_passbands_hz`` is what bounds a per-driver prescription, and
     ``packet_feature_classifications`` is what the per-driver gate's
     classification bar counts. Reading the blocks by hand instead would be a
     second opinion about where in the document those live.
@@ -680,7 +608,7 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(level))
     _bank_reference(level, -9.0)
     packet_builder = []
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", lambda *a, **kw: packet_builder.append(kw))
+    monkeypatch.setattr(cli, "round_evidence", lambda *a, **kw: packet_builder.append(kw))
     before = _tree(tmp_path)
 
     code, payload = _status([], capsys)
@@ -798,33 +726,18 @@ def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
 def test_both_prescription_classes_are_offered_when_both_have_a_bound(
     tmp_path, capsys
 ):
-    """The region bounds a blend document; the declared bands bound a driver one."""
+    """The declared bands bound a driver document."""
     session, draft = _speaker_dirs(
         tmp_path, draft=_draft(), classification=_classification()
     )
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
 
-    assert payload["banked"]["region"]["available"] is True
     assert payload["declared"]["available"] is True
     assert payload["banked"]["classification"]["available"] is True
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
     assert f"{cli.PROG} contract --round {session}" in payload["next_commands"]
-
-
-def test_a_round_with_no_region_says_a_blend_document_has_no_bound(
-    tmp_path, capsys, monkeypatch
-):
-    """The refusal the blend gate would raise, named before it is paid for."""
-    session, _ = _speaker_dirs(tmp_path)
-    monkeypatch.setattr(cli, "packet_region_band_hz", lambda packet: None)
-
-    _, payload = _status([str(session)], capsys)
-
-    assert payload["banked"]["region"] == {
-        "available": False, "band_hz": None, "reason": "not reported",
-    }
 
 
 def _full_range_draft() -> dict[str, Any]:
@@ -837,54 +750,16 @@ def _full_range_draft() -> dict[str, Any]:
     ]})
 
 
-def _rebank_round_as_no_crossover(session: Path) -> None:
-    """Re-bank one bundle's round with the blend block a 1-way main's round
-    banked: no region, and the no-crossover reason."""
-    from jasper.active_speaker.crossover_v2.round_inputs import (
-        round_artifact_dir,
-    )
-    from jasper.audio_measurement.program_analysis import (
-        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-    )
-
-    round_dir, _reason = round_artifact_dir(session)
-    assert round_dir is not None
-    path = round_dir / "round_receipt.json"
-    receipt = json.loads(path.read_text())
-    receipt["round_measurements"]["blend"] = {
-        "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY, "band_hz": None,
-        "commanded": [], "incumbent": [], "damping": 0.7, "realized": None,
-    }
-    path.write_text(json.dumps(receipt))
-
-
 def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     tmp_path, capsys
 ):
-    from jasper.audio_measurement.program_analysis import (
-        ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-    )
-
     session, draft = _speaker_dirs(
         tmp_path, draft=_full_range_draft(), classification=_classification()
     )
-    _rebank_round_as_no_crossover(session)
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
-        session, state_path=None, driver_draft_path=draft
-    )
-    not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
-    assert not_evaluated["crossover_region.band_hz"] == ABSOLUTE_NO_CROSSOVER_TOPOLOGY
 
     assert payload["declared"]["roles"] == ["full_range"]
-    # The SHAPE, not a measurement that has not happened yet.
-    assert payload["banked"]["region"] == {
-        **payload["banked"]["region"],
-        "available": False,
-        "reason": ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
-        "band_hz": None,
-    }
     # …and the per-driver door, the only one this speaker has, is open.
     assert payload["declared"]["available"] is True
     assert payload["banked"]["classification"]["available"] is True
@@ -946,6 +821,7 @@ _STATUS_DOCUMENT_KEYS = {
     "speaker",
     "packet_fingerprint",
     "contracts",
+    "packet_contracts",
     "packet_error",
     "selected_round",
     "recent_rounds",
@@ -977,7 +853,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     )
 
     _, cli_payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
+    packet = evidence_packet.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(

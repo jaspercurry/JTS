@@ -27,12 +27,9 @@ from ..assistant_loudness import (
     tts_envelope_lufs_for_level,
 )
 from ..assistant_volume import resolved_route_consumes_volume_context
-from ..tts_playout import (
-    TtsPlayout,
-    tts_wire_is_wide as _tts_wire_is_wide,
-)
+from ..tts_playout import TtsPlayout
 from ..config import Config
-from ..cues import AudioCueManager
+from ..cues import AudioCueManager, registry
 from ..cues.manager import (
     REASON_BUSY,
     REASON_OUTPUT_ACTIVE,
@@ -75,11 +72,6 @@ class FanInDucker:
     @property
     def is_ducked(self) -> bool:
         return self._ducked
-
-    @property
-    def locks_camilla_volume(self) -> bool:
-        """Fan-in ducking leaves Camilla available as the master volume."""
-        return False
 
     async def duck(self) -> None:
         if self._ducked:
@@ -160,50 +152,42 @@ class AssistantOutput:
         # silent, and why it logs once rather than per-cue.
         self._warned_cues_unconfigured = False
 
-        # Pre-render generated earcons once; synthesis is pure, so caching
-        # the PCM keeps the cost off hot paths. Same shape
-        # `TtsPlayout.write()` accepts: 24 kHz mono at the box's wire
-        # width. The bake width comes from the SAME resolution the playout
-        # writes at, asked once here, so the recipe's float render is
-        # quantized on the wire's grid rather than flattened onto the S16
-        # grid and promoted afterwards.
-        earcon_wide = _tts_wire_is_wide()
-        self._earcon_wide = earcon_wide
+        # Bake at spine precision before any S16 rounding can discard detail.
         self._chirp_on_pcm: bytes = generate_listening_chirp(
-            going_on=True, wide=earcon_wide,
+            going_on=True, wide=True,
         )
         self._chirp_off_pcm: bytes = generate_listening_chirp(
-            going_on=False, wide=earcon_wide,
+            going_on=False, wide=True,
         )
         self._chirp_on_profile = synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="wake_start",
             pcm=self._chirp_on_pcm,
-            wide=earcon_wide,
+            wide=True,
         )
         self._chirp_off_profile = synthetic_audio_profile(
             model="synthetic-listening-chirp",
             voice="turn_end",
             pcm=self._chirp_off_pcm,
-            wide=earcon_wide,
+            wide=True,
         )
         self._mute_click_on_pcm: bytes = generate_mute_click(
-            going_on=True, wide=earcon_wide,
+            going_on=True, wide=True,
         )
         self._mute_click_off_pcm: bytes = generate_mute_click(
-            going_on=False, wide=earcon_wide,
+            going_on=False, wide=True,
         )
         self._mute_click_on_profile = synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="unmute",
             pcm=self._mute_click_on_pcm,
-            wide=earcon_wide,
+            wide=True,
         )
         self._mute_click_off_profile = synthetic_audio_profile(
             model="synthetic-mute-click",
             voice="mute",
             pcm=self._mute_click_off_pcm,
-            wide=earcon_wide,
+            wide=True,
         )
 
     @property
@@ -282,8 +266,7 @@ class AssistantOutput:
         cues = self._cues
         if cues is None:
             return "cues_not_configured"
-        from ..cues.registry import find as _find
-        if _find(slug) is None:
+        if registry.find(slug) is None:
             return REASON_UNKNOWN_SLUG
         refusal = self.admission_refusal()
         if refusal is not None:
@@ -555,7 +538,7 @@ class AssistantOutput:
                     pcm,
                     segment_kind="cue",
                     source_profile=profile,
-                    pcm_wide=self._earcon_wide,
+                    pcm_wide=True,
                 )
             finally:
                 await wait_tts_drained_owned(self.tts)
@@ -610,7 +593,7 @@ class AssistantOutput:
                 self._chirp_on_pcm if going_on else self._chirp_off_pcm,
                 segment_kind="chirp",
                 source_profile=self._chirp_on_profile if going_on else self._chirp_off_profile,
-                pcm_wide=self._earcon_wide,
+                pcm_wide=True,
                 on_first_write=on_first_write,
             )
         except Exception as e:  # noqa: BLE001
@@ -673,9 +656,7 @@ class AssistantOutput:
     ) -> None:
         await self.prepare_loudness()
         await self.tts.pause_content_meter()
-        self.volume_coordinator.note_voice_session(
-            True, camilla_volume_locked=getattr(self.ducker, "locks_camilla_volume", True),
-        )
+        self.volume_coordinator.note_voice_session(True)
         if feedback is not None:
             self.start_turn_feedback(episode, feedback())
         await self.ducker.duck()

@@ -472,7 +472,7 @@ def test_config_import_chain_does_not_require_httpx():
         "import sys\n"
         "sys.modules['httpx'] = None\n"  # makes `import httpx` raise
         "import jasper.config\n"
-        "import jasper.home_assistant, jasper.bus, jasper.citibike\n"
+        "import jasper.home_assistant, jasper.transit.bus, jasper.transit.citibike\n"
         "import jasper.transit\n"
         "print('ok')\n"
     )

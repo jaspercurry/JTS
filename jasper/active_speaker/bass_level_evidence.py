@@ -25,7 +25,8 @@ def _response(grid, curve, takes, reference_from_hz):
     floor = next((lo for lo, hi in BASS_BANDS_HZ
                   if np.any(valid & (grid >= lo) & (grid < hi)) and all(
                       _band(take, lo, hi).get("fundamental_qualified") for take in takes)), None)
-    corners, bounded = {}, {}
+    corners: dict[str, float | None] = {}
+    bounded: dict[str, bool | None] = {}
     indices = np.flatnonzero(valid & (grid < reference_from_hz))
     contiguous = indices[np.r_[0, np.flatnonzero(np.diff(indices) > 1) + 1][-1]:] if indices.size else indices
     for depth in (3, 6, 10):
@@ -53,14 +54,15 @@ def _level_spl(groups, side):
     for repeats in groups.values():
         readings = [finite_float(((pair[side]["record"].get("capture_integrity") or {}).get("spl") or {})
                                  .get("loudest_half_second_db_spl")) for pair in repeats]
-        if any(value is None for value in readings):
+        if None in readings:
             return None
-        poses.append(float(np.median(readings)))
+        poses.append(float(np.median(np.asarray(readings, dtype=float))))
     return float(np.median(poses))
 
 
 def _harmonics(groups, bands):
-    rows, rises = [], []
+    rows: list[dict[str, Any]] = []
+    rises = []
     curves = {}
     for lo, hi in bands:
         orders = {}
@@ -91,7 +93,7 @@ def _harmonics(groups, bands):
                                   "delta_db": changes[-1], "evidence_floor_db": floor})
             complete = len(changes) == len(groups)
             orders[order] = {"delta_db": float(np.mean(changes)) if complete else None,
-                             "repeat_spread_db": max(spreads) if complete and all(s is not None for s in spreads) else None,
+                             "repeat_spread_db": max(s for s in spreads if s is not None) if complete and None not in spreads else None,
                              "evidence_floor_db": max(s if s is not None else 1.0 for s in spreads) if complete else None}
         rows.append({"band_hz": [lo, hi], "orders": orders})
     missing = any(order["delta_db"] is None for row in rows for order in row["orders"].values())
@@ -108,11 +110,11 @@ def _growth_readings(takes, lo, hi, order, on_grid):
             return None
         curves += [(take["harmonics"][order], "relative_db", "qualified") for take in takes]
     grid = np.asarray(takes[0]["freqs_hz"])
-    values, masks = zip(*(on_grid(grid, *curve) for curve in curves))
+    samples, masks = zip(*(on_grid(grid, *curve) for curve in curves))
     shared = np.logical_and.reduce(masks) & (grid >= lo) & (grid < hi)
     if not shared.any():
         return None
-    values = np.asarray(values)[:, shared]
+    values = np.asarray(samples)[:, shared]
     fundamental = np.mean(values[:len(takes)], axis=1)
     relative = np.mean(values[len(takes):], axis=1) if order != "fundamental" else np.zeros(len(takes))
     snr = [finite_float(_band(take, lo, hi).get("estimated_snr_db")) for take in takes]
@@ -161,7 +163,7 @@ def _band_growth(before, after, side, lo, hi, step, on_grid):
                 if step > 0 and before and before.keys() == after.keys() else None for order in ("fundamental", "2", "3")}
     allowances = {order: _growth_allowance(readings[order]) for order in ("2", "3")}
     rises = [int(order) for order, (allowance, _) in allowances.items()
-             if allowance is not None and readings[order]["excess_db"] > allowance]
+             if allowance is not None and (reading := readings[order]) is not None and reading["excess_db"] > allowance]
     return {"band_hz": [lo, hi],
             "growth_db_per_db": {order: reading["growth_db"] / step if reading is not None else None for order, reading in readings.items()},
             "allowance_db_per_db": {order: value / step if value is not None else None for order, (value, _) in allowances.items()},

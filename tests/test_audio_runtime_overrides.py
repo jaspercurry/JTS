@@ -159,24 +159,6 @@ def test_audio_config_override_cli_roundtrip(tmp_path, capsys):
     assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES" not in clear_out
 
 
-def test_audio_config_override_cli_rejects_coupling_key(tmp_path):
-    path = tmp_path / "audio_runtime_overrides.json"
-
-    with pytest.raises(SystemExit) as exc:
-        audio_config_main([
-            "overrides-set",
-            "JASPER_FANIN_CAMILLA_COUPLING",
-            "fifo",
-            "--reason",
-            "coupling transitions need ordered reconcile",
-            "--overrides",
-            str(path),
-        ])
-
-    assert exc.value.code == 2
-    assert not path.exists()
-
-
 def test_audio_config_override_cli_default_path_honors_env(
     monkeypatch,
     tmp_path,

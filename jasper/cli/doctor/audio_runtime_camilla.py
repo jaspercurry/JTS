@@ -16,12 +16,12 @@ from typing import Any
 from ...camilla import CamillaController, CamillaUnavailable, primary_controller
 from ...camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_VOLUME_LIMIT_DB,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
+from ...camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
@@ -205,10 +205,10 @@ def evidence_statefile() -> Path:
     """The statefile behind :meth:`Evidence.camilla_config_path`, from the same
     single read (same memo key)."""
     # Lazy: at module scope this drags `correction` into every `--core` run.
-    from .correction import _active_camilla_config_path
+    from .correction import active_camilla_config_path
 
     statefile, _config_path = evidence.get(
-        "camilla_config", _active_camilla_config_path
+        "camilla_config", active_camilla_config_path
     )
     return statefile
 

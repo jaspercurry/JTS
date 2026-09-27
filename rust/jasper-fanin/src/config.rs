@@ -326,338 +326,38 @@ impl Config {
     }
 
     fn parse_env() -> Result<Self> {
-        // snd-aloop pair 3 is deliberately absent: the USB lane
-        // (`input_resampler_lane_label`) reads the gadget capture directly or
-        // nothing at all, so it takes no aloop substream and the surviving
-        // pairs do not renumber.
-        let input_pcms = env_list(
-            "JASPER_FANIN_INPUT_PCMS",
-            &[
-                "hw:Loopback,1,0",
-                "hw:Loopback,1,1",
-                "hw:Loopback,1,2",
-                "hw:Loopback,1,4",
-            ],
-        );
-        // `from_env_uses_documented_defaults` pins the parsed
-        // `input_renderers[4] == MEASUREMENT_LANE`.
-        let input_renderers = env_list(
-            "JASPER_FANIN_INPUT_RENDERERS",
-            &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
-        );
-        let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
-        // The USB lane is the one label with no aloop PCM; the rest pair
-        // positionally in order.
-        let aloop_lanes = input_renderers
-            .iter()
-            .filter(|label| *label != &input_resampler_lane_label)
-            .count();
-        if input_pcms.len() != aloop_lanes {
-            anyhow::bail!(
-                "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
-                 aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
-                 substream) — must match positionally",
-                input_pcms.len(),
-                aloop_lanes,
-                input_renderers.len(),
-                input_resampler_lane_label,
-            );
-        }
-        if input_pcms.is_empty() {
-            anyhow::bail!(
-                "JASPER_FANIN_INPUT_PCMS is empty — daemon needs at least \
-                 one input substream to mix"
-            );
-        }
-
-        let sample_rate =
-            env_u32_positive_or_bail("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
-        let period_frames =
-            env_u32_positive_or_bail("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
-        let input_buffer_frames = env_u32_fallback(
-            "JASPER_FANIN_INPUT_BUFFER_FRAMES",
-            "JASPER_FANIN_BUFFER_FRAMES",
-            4096,
-        )?;
-
-        // The input buffer must be >= 2 × period_frames per the standard ALSA
-        // convention: the period wakes the reader/writer, the buffer absorbs
-        // jitter between wakeups. The capture lanes are the only ALSA edge left
-        // — the program leaves over Ring A (ADR-0100), sized by `ring_slots`
-        // rather than by an ALSA buffer.
-        let min_buffer_frames = period_frames.saturating_mul(2);
-        if input_buffer_frames < min_buffer_frames {
-            anyhow::bail!(
-                "JASPER_FANIN_INPUT_BUFFER_FRAMES={} must be >= 2 × JASPER_FANIN_PERIOD_FRAMES={} \
-                 (minimum ALSA jitter-absorption convention)",
-                input_buffer_frames,
-                period_frames,
-            );
-        }
-        // The ring is the ONLY fan-in → CamillaDSP transport (ADR-0100), so this
-        // key selects nothing; it exists to REFUSE a declaration this daemon
-        // cannot serve. Unset / empty means "no declaration" (empty is how the
-        // env-file writers clear a key), the same reading
-        // `JASPER_FANIN_RING_WIRE_FORMAT` gives it. Anything other than
-        // `shm_ring` — a persisted `loopback` above all — is a config-class
-        // fault: exit 78, the unit parks visibly rather than playing over a
-        // transport the operator did not ask for.
-        match std::env::var("JASPER_FANIN_CAMILLA_COUPLING")
-            .ok()
-            .as_deref()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            None | Some("") | Some("shm_ring") => {}
-            Some(other) => {
-                return Err(anyhow::anyhow!(
-                    "JASPER_FANIN_CAMILLA_COUPLING={} unsupported (shm_ring) — the \
-                     SHM ring is this daemon's only transport toward CamillaDSP \
-                     (ADR-0100); a box that cannot be served by it parks instead \
-                     of falling back",
-                    other,
-                ));
-            }
-        }
-
-        // Fan-in creates the ring S32_LE unconditionally, so this key selects
-        // nothing either — but the Python reconciler still reads it to render
-        // the ioplug conf.d, so a stale `S16_LE` would leave the two halves of
-        // the box describing different wires. Refuse the declaration instead.
-        // Unset / empty is "no declaration" (empty is how this repo's env
-        // writers clear a key). The token is compared exactly, as spelled in
-        // the ALSA `format` field.
-        let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
-        match ring_wire_format.as_deref().map(str::trim) {
-            None | Some("") | Some("S32_LE") => {}
-            Some(other) => {
-                return Err(anyhow::anyhow!(
-                    "JASPER_FANIN_RING_WIRE_FORMAT={other} unsupported (S32_LE) — \
-                     fan-in publishes the program wire S32_LE unconditionally, so \
-                     a narrower declaration would shear against the ring header \
-                     rather than narrow the program",
-                ));
-            }
-        }
-
-        let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
-        let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)?;
-        if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
-            return Err(anyhow::anyhow!(
-                "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
-                 header validates this at attach; a shear-prone geometry must \
-                 fail loud at config, not at runtime",
-                ring_slots,
-                RING_SLOTS_MIN,
-                RING_SLOTS_MAX,
-            ));
-        }
-        // The slot is pinned at RING_SLOT_FRAMES (128, the outputd DAC-period
-        // contract) and fan-in publishes period_frames/128 slots per step, so
-        // period_frames must be a whole multiple of it or a step shears a slot.
-        if period_frames % RING_SLOT_FRAMES != 0 {
-            return Err(anyhow::anyhow!(
-                "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
-                 pinned SHM ring slot size ({} frames) — a fractional slot count \
-                 would shear the ring",
-                period_frames,
-                RING_SLOT_FRAMES,
-            ));
-        }
-
+        let (input_pcms, input_renderers, input_resampler_lane_label) = parse_lanes()?;
+        let (sample_rate, period_frames, input_buffer_frames) = parse_capture_geometry()?;
+        let (ring_path, ring_slots) = parse_ring(period_frames)?;
         let input_resampler_target_frames =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", 512)?;
         let input_resampler_max_adjust_ppm =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", 500)?;
-        // Eight render periods of held cushion (2048 frames ≈ 42.7 ms). Hardware
-        // USB testing showed a four-period cushion lock/unlock-thrashing on the
-        // real snd-aloop burst feed; the deeper held cushion stayed locked.
         let input_resampler_warmup_cushion_frames =
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 2048)?;
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
         let input_resampler_cushion_decay_enabled =
             env_enabled("JASPER_FANIN_RESAMPLER_CUSHION_DECAY");
-        // The tightest safe floor is the LARGER of two constraints, both a DLL
-        // working margin above their anchor:
-        //   1. `target + DLL margin` — a working cushion above the base target
-        //      the DLL always has to steer within.
-        //   2. `minimum_safe_fill_frames + DLL margin` — the PHYSICAL floor. The
-        //      resampler underfill-unlocks the moment the cursor-relative fill
-        //      drops below `minimum_safe_fill_frames` (= ceil(period × max_ratio)
-        //      + kernel radius + 1), so a held target at/below that value sits on
-        //      the unlock threshold: audible gap → snap-back → relock → warm-up →
-        //      re-descend, on repeat. Constraint 1 alone does NOT imply
-        //      constraint 2 — for a base target below ~period, `target + margin`
-        //      can land below the physical floor.
-        // `min_safe` comes from the same shared `jasper_resampler` helper the
-        // lane's underfill gate uses, so the two cannot disagree about the
-        // physical threshold.
-        let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
-            period_frames,
-            input_resampler_max_adjust_ppm as f64 + crate::lane_resampler::BUFFER_ADJUST_PPM,
-        ) as u32;
-        let cushion_decay_floor_min = (input_resampler_target_frames
-            + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
-            .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
-        // The acquisition ceiling the decay descends FROM. The floor must sit in
-        // [floor_min, ceiling]: above the ceiling there is nothing to decay.
-        // Computed BEFORE the default so the default can clamp under it.
-        let cushion_decay_ceiling =
-            input_resampler_target_frames + input_resampler_warmup_cushion_frames;
-        // The out-of-box default is the hardware-VALIDATED floor (576), not the
-        // tighter unvalidated derived minimum (544 at the default geometry).
-        // Clamped into [floor_min, ceiling]: never below the physical/DLL-margin
-        // hard floor, never above the acquisition ceiling — a small-target
-        // geometry whose ceiling < 576 constructs at its ceiling.
-        let cushion_decay_floor_default = if cushion_decay_floor_min <= cushion_decay_ceiling {
-            DEFAULT_CUSHION_DECAY_FLOOR_FRAMES.clamp(cushion_decay_floor_min, cushion_decay_ceiling)
-        } else {
-            // Preserve parseability while decay is disabled. If it is armed,
-            // the range check below reports the invalid geometry instead of
-            // panicking inside `u32::clamp`.
-            cushion_decay_ceiling
-        };
-        let input_resampler_cushion_decay_floor_frames = env_u32(
-            "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-            cushion_decay_floor_default,
-        )?;
-        // Armed-only, so a stale floor on a decay-off box never blocks boot.
-        if input_resampler_cushion_decay_enabled
-            && !(cushion_decay_floor_min..=cushion_decay_ceiling)
-                .contains(&input_resampler_cushion_decay_floor_frames)
-        {
-            anyhow::bail!(
-                "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
-                 (>= max(target {} , minimum_safe_fill {}) + {}-frame DLL margin — a floor \
-                 at/below minimum_safe_fill would underfill-unlock every period; \
-                 <= the acquisition ceiling target+cushion {})",
-                input_resampler_cushion_decay_floor_frames,
-                cushion_decay_floor_min,
-                cushion_decay_ceiling,
+        let (input_resampler_cushion_decay_floor_frames, cushion_decay_min_safe_fill) =
+            parse_cushion_decay(
+                period_frames,
                 input_resampler_target_frames,
-                cushion_decay_min_safe_fill,
-                CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                cushion_decay_ceiling,
-            );
-        }
-        let usb_direct_enabled = env_enabled("JASPER_FANIN_USB_DIRECT");
-        let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
-        // Range 32..=1024: below 32 the period IRQ storms the mixer thread, above
-        // 1024 the open period exceeds the deep-buffer floor's own headroom and
-        // defeats the low-latency intent. Only consulted on the direct lane, but
-        // parsed unconditionally so a typo fails loud on any boot, not only on an
-        // armed box.
-        let usb_direct_period_frames = env_u32(
-            "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES",
-            crate::mixer::DIRECT_PERIOD_FRAMES,
+                input_resampler_max_adjust_ppm,
+                input_resampler_warmup_cushion_frames,
+                input_resampler_cushion_decay_enabled,
+            )?;
+        let (usb_direct_enabled, usb_direct_device, usb_direct_period_frames) = parse_usb_direct()?;
+        validate_static_cushion(
+            usb_direct_enabled,
+            cushion_decay_min_safe_fill,
+            input_resampler_target_frames,
+            input_resampler_warmup_cushion_frames,
+            period_frames,
         )?;
-        if !(32..=1024).contains(&usb_direct_period_frames) {
-            anyhow::bail!(
-                "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES={} out of range 32..=1024 (the gadget \
-                 open period; 256 is the bridge-proven default, 64 is the lever-2 H1 test knob)",
-                usb_direct_period_frames,
-            );
-        }
-
-        // STATIC held-target churn guard — the symmetric sibling of the
-        // decay-floor validation above, entered through the static cushion knobs.
-        // The armed lane (JASPER_FANIN_USB_DIRECT=enabled — the direct lane has
-        // no aloop catch-up fallback, so it always builds a resampler) holds the
-        // ring at `target + cushion` and renders ONE `period_frames` each step, so the
-        // steady-state post-render cursor-relative fill sits at `held - period`.
-        // The lane underfill-unlocks the instant that fill drops below
-        // `minimum_safe_fill_frames` (= ceil(period × max_ratio) + radius + 1), so
-        // the held target must sit at least `period + jitter margin` above
-        // min_safe or ordinary USB delivery coalescing (arrivals clustering below
-        // the per-render deficit — the max_avail ≈ 2×period gadget signature the
-        // drain-stats histogram shows) trips lock→silence→relock every burst.
-        // Arm-gated so a stale cushion on a resampler-OFF box never blocks boot.
-        // The production defaults (512 + 2048 = 2560 held) clear this by ~2030
-        // frames; only a hand-tuned lab geometry (the observed churn came from
-        // 256 + 256 = 512 held) can trip it.
-        if usb_direct_enabled {
-            let min_safe = cushion_decay_min_safe_fill;
-            let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
-            let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
-            if held_target < required_held {
-                // The steady post-render cursor fill (`held - period`) vs the
-                // underfill-unlock threshold (`min_safe`) — reported as an i64 so a
-                // fill already AT/BELOW the threshold shows a negative headroom
-                // rather than a misleading clamped 0.
-                let post_render_headroom =
-                    held_target as i64 - period_frames as i64 - min_safe as i64;
-                anyhow::bail!(
-                    "resampler held target (target {} + warm-up cushion {} \
-                     = {}) is too shallow for the armed clock-crossing lane: it must be >= \
-                     minimum_safe_fill {} + one render period {} + {}-frame jitter margin = {}. \
-                     The steady post-render cursor fill would sit only {} frames above the \
-                     underfill-unlock threshold (negative = already at/below it), so ordinary \
-                     USB delivery coalescing thrashes lock->silence->relock \
-                     (churn-by-construction). Raise \
-                     JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES (or _TARGET_FRAMES) so \
-                     target+cushion >= {}, or lower JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM \
-                     / JASPER_FANIN_PERIOD_FRAMES.",
-                    input_resampler_target_frames,
-                    input_resampler_warmup_cushion_frames,
-                    held_target,
-                    min_safe,
-                    period_frames,
-                    STATIC_CUSHION_JITTER_MARGIN_FRAMES,
-                    required_held,
-                    post_render_headroom,
-                    required_held,
-                );
-            }
-        }
-
-        let host_clock_enabled = env_enabled("JASPER_FANIN_HOST_CLOCK");
-        let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
-        if !(200..=800).contains(&host_clock_probe_ppm) {
-            anyhow::bail!(
-                "JASPER_FANIN_HOST_CLOCK_PROBE_PPM={} out of range 200..=800 (a probe \
-                 at/below the ~163 ppm Windows usbaudio2.sys deadband would falsely \
-                 fail every session; the ceiling keeps it inside the ±1000 ppm \
-                 validity window)",
-                host_clock_probe_ppm,
-            );
-        }
-        let tts_program_duck_db =
-            env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
-        if tts_program_duck_db > 0.0 {
-            anyhow::bail!(
-                "JASPER_FANIN_TTS_PROGRAM_DUCK_DB={} must be <= 0 (a duck \
-                 attenuates; positive gain on the program is never allowed)",
-                tts_program_duck_db
-            );
-        }
-        // The shallower duck for the segment-driven auto-duck that fires while a
-        // standalone short earcon/cue is queued (mute/unmute sparkle, wake chirp)
-        // — see `TtsMixer::program_duck_gain`. Deliberately does NOT fall back to
-        // JASPER_DUCK_DB: a cue must duck less than a conversation.
-        let tts_cue_duck_db = env_f32("JASPER_FANIN_TTS_CUE_DUCK_DB", -6.0)?;
-        if tts_cue_duck_db > 0.0 {
-            anyhow::bail!(
-                "JASPER_FANIN_TTS_CUE_DUCK_DB={} must be <= 0 (a duck \
-                 attenuates; positive gain on the program is never allowed)",
-                tts_cue_duck_db
-            );
-        }
-        let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
-        if !(1..=200).contains(&tts_duck_attack_ms) {
-            anyhow::bail!(
-                "JASPER_FANIN_TTS_DUCK_ATTACK_MS={} out of range 1..=200",
-                tts_duck_attack_ms
-            );
-        }
-        let tts_duck_release_ms = env_u32("JASPER_FANIN_TTS_DUCK_RELEASE_MS", 150)?;
-        if !(1..=2000).contains(&tts_duck_release_ms) {
-            anyhow::bail!(
-                "JASPER_FANIN_TTS_DUCK_RELEASE_MS={} out of range 1..=2000",
-                tts_duck_release_ms
-            );
-        }
-
+        let (host_clock_enabled, host_clock_probe_ppm) = parse_host_clock()?;
+        let (tts_program_duck_db, tts_cue_duck_db, tts_duck_attack_ms, tts_duck_release_ms) =
+            parse_tts_duck()?;
         Ok(Self {
             input_pcms,
             input_renderers,
@@ -698,6 +398,272 @@ impl Config {
             host_clock_probe_ppm,
         })
     }
+}
+
+fn parse_lanes() -> Result<(Vec<String>, Vec<String>, String)> {
+    // USB reads the gadget directly, so aloop substream 3 stays unused.
+    let input_pcms = env_list(
+        "JASPER_FANIN_INPUT_PCMS",
+        &[
+            "hw:Loopback,1,0",
+            "hw:Loopback,1,1",
+            "hw:Loopback,1,2",
+            "hw:Loopback,1,4",
+        ],
+    );
+    let input_renderers = env_list(
+        "JASPER_FANIN_INPUT_RENDERERS",
+        &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
+    );
+    let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
+    let aloop_lanes = input_renderers
+        .iter()
+        .filter(|label| *label != &input_resampler_lane_label)
+        .count();
+    if input_pcms.len() != aloop_lanes {
+        anyhow::bail!(
+            "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
+             aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
+             substream) — must match positionally",
+            input_pcms.len(),
+            aloop_lanes,
+            input_renderers.len(),
+            input_resampler_lane_label,
+        );
+    }
+    if input_pcms.is_empty() {
+        anyhow::bail!(
+            "JASPER_FANIN_INPUT_PCMS is empty — daemon needs at least \
+             one input substream to mix"
+        );
+    }
+    Ok((input_pcms, input_renderers, input_resampler_lane_label))
+}
+
+fn parse_capture_geometry() -> Result<(u32, u32, u32)> {
+    let sample_rate = env_u32_positive_or_bail("JASPER_FANIN_SAMPLE_RATE", DEFAULT_SAMPLE_RATE)?;
+    let period_frames =
+        env_u32_positive_or_bail("JASPER_FANIN_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
+    let input_buffer_frames = env_u32_fallback(
+        "JASPER_FANIN_INPUT_BUFFER_FRAMES",
+        "JASPER_FANIN_BUFFER_FRAMES",
+        4096,
+    )?;
+
+    let min_buffer_frames = period_frames.saturating_mul(2);
+    if input_buffer_frames < min_buffer_frames {
+        anyhow::bail!(
+            "JASPER_FANIN_INPUT_BUFFER_FRAMES={} must be >= 2 × JASPER_FANIN_PERIOD_FRAMES={} \
+             (minimum ALSA jitter-absorption convention)",
+            input_buffer_frames,
+            period_frames,
+        );
+    }
+    Ok((sample_rate, period_frames, input_buffer_frames))
+}
+
+fn parse_ring(period_frames: u32) -> Result<(String, u32)> {
+    let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
+    match ring_wire_format.as_deref().map(str::trim) {
+        None | Some("") | Some("S32_LE") => {}
+        Some(other) => {
+            return Err(anyhow::anyhow!(
+                "JASPER_FANIN_RING_WIRE_FORMAT={other} unsupported (S32_LE) — \
+                 fan-in publishes the program wire S32_LE unconditionally, so \
+                 a narrower declaration would shear against the ring header \
+                 rather than narrow the program",
+            ));
+        }
+    }
+
+    let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
+    let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)?;
+    if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
+        return Err(anyhow::anyhow!(
+            "JASPER_FANIN_RING_SLOTS={} out of range {}..={} — the SHM ring \
+             header validates this at attach; a shear-prone geometry must \
+             fail loud at config, not at runtime",
+            ring_slots,
+            RING_SLOTS_MIN,
+            RING_SLOTS_MAX,
+        ));
+    }
+    if period_frames % RING_SLOT_FRAMES != 0 {
+        return Err(anyhow::anyhow!(
+            "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
+             pinned SHM ring slot size ({} frames) — a fractional slot count \
+             would shear the ring",
+            period_frames,
+            RING_SLOT_FRAMES,
+        ));
+    }
+    Ok((ring_path, ring_slots))
+}
+
+fn parse_cushion_decay(
+    period_frames: u32,
+    input_resampler_target_frames: u32,
+    input_resampler_max_adjust_ppm: u32,
+    input_resampler_warmup_cushion_frames: u32,
+    input_resampler_cushion_decay_enabled: bool,
+) -> Result<(u32, u32)> {
+    let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
+        period_frames,
+        input_resampler_max_adjust_ppm as f64 + crate::lane_resampler::BUFFER_ADJUST_PPM,
+    ) as u32;
+    let cushion_decay_floor_min = (input_resampler_target_frames
+        + CUSHION_DECAY_FLOOR_MARGIN_FRAMES)
+        .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
+    let cushion_decay_ceiling =
+        input_resampler_target_frames + input_resampler_warmup_cushion_frames;
+    // Disabled decay must still parse; clamp panics on an inverted range.
+    let cushion_decay_floor_default = if cushion_decay_floor_min <= cushion_decay_ceiling {
+        DEFAULT_CUSHION_DECAY_FLOOR_FRAMES.clamp(cushion_decay_floor_min, cushion_decay_ceiling)
+    } else {
+        cushion_decay_ceiling
+    };
+    let input_resampler_cushion_decay_floor_frames = env_u32(
+        "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
+        cushion_decay_floor_default,
+    )?;
+    if input_resampler_cushion_decay_enabled
+        && !(cushion_decay_floor_min..=cushion_decay_ceiling)
+            .contains(&input_resampler_cushion_decay_floor_frames)
+    {
+        anyhow::bail!(
+            "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
+             (>= max(target {} , minimum_safe_fill {}) + {}-frame DLL margin — a floor \
+             at/below minimum_safe_fill would underfill-unlock every period; \
+             <= the acquisition ceiling target+cushion {})",
+            input_resampler_cushion_decay_floor_frames,
+            cushion_decay_floor_min,
+            cushion_decay_ceiling,
+            input_resampler_target_frames,
+            cushion_decay_min_safe_fill,
+            CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
+            cushion_decay_ceiling,
+        );
+    }
+    Ok((
+        input_resampler_cushion_decay_floor_frames,
+        cushion_decay_min_safe_fill,
+    ))
+}
+
+fn parse_usb_direct() -> Result<(bool, String, u32)> {
+    let usb_direct_enabled = env_enabled("JASPER_FANIN_USB_DIRECT");
+    let usb_direct_device = env_str("JASPER_FANIN_USB_DIRECT_DEVICE", "hw:UAC2Gadget");
+    // Below 32 frames IRQ load rises; above 1024 the period exceeds buffer headroom.
+    let usb_direct_period_frames = env_u32(
+        "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES",
+        crate::mixer::DIRECT_PERIOD_FRAMES,
+    )?;
+    if !(32..=1024).contains(&usb_direct_period_frames) {
+        anyhow::bail!(
+            "JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES={} out of range 32..=1024 (the gadget \
+             open period; 256 is the bridge-proven default, 64 is the lever-2 H1 test knob)",
+            usb_direct_period_frames,
+        );
+    }
+    Ok((
+        usb_direct_enabled,
+        usb_direct_device,
+        usb_direct_period_frames,
+    ))
+}
+
+fn validate_static_cushion(
+    usb_direct_enabled: bool,
+    cushion_decay_min_safe_fill: u32,
+    input_resampler_target_frames: u32,
+    input_resampler_warmup_cushion_frames: u32,
+    period_frames: u32,
+) -> Result<()> {
+    if usb_direct_enabled {
+        let min_safe = cushion_decay_min_safe_fill;
+        let held_target = input_resampler_target_frames + input_resampler_warmup_cushion_frames;
+        let required_held = min_safe + period_frames + STATIC_CUSHION_JITTER_MARGIN_FRAMES;
+        if held_target < required_held {
+            let post_render_headroom = held_target as i64 - period_frames as i64 - min_safe as i64;
+            anyhow::bail!(
+                "resampler held target (target {} + warm-up cushion {} \
+                 = {}) is too shallow for the armed clock-crossing lane: it must be >= \
+                 minimum_safe_fill {} + one render period {} + {}-frame jitter margin = {}. \
+                 The steady post-render cursor fill would sit only {} frames above the \
+                 underfill-unlock threshold (negative = already at/below it), so ordinary \
+                 USB delivery coalescing thrashes lock->silence->relock \
+                 (churn-by-construction). Raise \
+                 JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES (or _TARGET_FRAMES) so \
+                 target+cushion >= {}, or lower JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM \
+                 / JASPER_FANIN_PERIOD_FRAMES.",
+                input_resampler_target_frames,
+                input_resampler_warmup_cushion_frames,
+                held_target,
+                min_safe,
+                period_frames,
+                STATIC_CUSHION_JITTER_MARGIN_FRAMES,
+                required_held,
+                post_render_headroom,
+                required_held,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn parse_host_clock() -> Result<(bool, u32)> {
+    let host_clock_enabled = env_enabled("JASPER_FANIN_HOST_CLOCK");
+    let host_clock_probe_ppm = env_u32("JASPER_FANIN_HOST_CLOCK_PROBE_PPM", 300)?;
+    if !(200..=800).contains(&host_clock_probe_ppm) {
+        anyhow::bail!(
+            "JASPER_FANIN_HOST_CLOCK_PROBE_PPM={} out of range 200..=800 (a probe \
+             at/below the ~163 ppm Windows usbaudio2.sys deadband would falsely \
+             fail every session; the ceiling keeps it inside the ±1000 ppm \
+             validity window)",
+            host_clock_probe_ppm,
+        );
+    }
+    Ok((host_clock_enabled, host_clock_probe_ppm))
+}
+
+fn parse_tts_duck() -> Result<(f32, f32, u32, u32)> {
+    let tts_program_duck_db =
+        env_f32_fallback("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", "JASPER_DUCK_DB", -25.0)?;
+    if tts_program_duck_db > 0.0 {
+        anyhow::bail!(
+            "JASPER_FANIN_TTS_PROGRAM_DUCK_DB={} must be <= 0 (a duck \
+             attenuates; positive gain on the program is never allowed)",
+            tts_program_duck_db
+        );
+    }
+    let tts_cue_duck_db = env_f32("JASPER_FANIN_TTS_CUE_DUCK_DB", -6.0)?;
+    if tts_cue_duck_db > 0.0 {
+        anyhow::bail!(
+            "JASPER_FANIN_TTS_CUE_DUCK_DB={} must be <= 0 (a duck \
+             attenuates; positive gain on the program is never allowed)",
+            tts_cue_duck_db
+        );
+    }
+    let tts_duck_attack_ms = env_u32("JASPER_FANIN_TTS_DUCK_ATTACK_MS", 15)?;
+    if !(1..=200).contains(&tts_duck_attack_ms) {
+        anyhow::bail!(
+            "JASPER_FANIN_TTS_DUCK_ATTACK_MS={} out of range 1..=200",
+            tts_duck_attack_ms
+        );
+    }
+    let tts_duck_release_ms = env_u32("JASPER_FANIN_TTS_DUCK_RELEASE_MS", 150)?;
+    if !(1..=2000).contains(&tts_duck_release_ms) {
+        anyhow::bail!(
+            "JASPER_FANIN_TTS_DUCK_RELEASE_MS={} out of range 1..=2000",
+            tts_duck_release_ms
+        );
+    }
+    Ok((
+        tts_program_duck_db,
+        tts_cue_duck_db,
+        tts_duck_attack_ms,
+        tts_duck_release_ms,
+    ))
 }
 
 // ---- env var helpers ------------------------------------------------
@@ -1805,44 +1771,6 @@ mod tests {
         );
     }
 
-    /// Which `JASPER_FANIN_CAMILLA_COUPLING` declarations this daemon will
-    /// serve, now that the ring is the only transport (ADR-0100).
-    ///
-    /// The REFUSAL is the load-bearing half: a box still carrying a persisted
-    /// `loopback` must PARK — exit 78 via [`crate::ConfigClassError`], visible on
-    /// /state and doctor — not silently play over the ring the operator did not
-    /// ask for. Unset / empty is "no declaration" (empty is how this repo's env
-    /// writers clear a key), which the single transport serves.
-    #[test]
-    fn only_a_ring_declaration_or_none_is_served() {
-        for (raw, served) in [
-            (None, true),
-            (Some(""), true),
-            (Some("   "), true),
-            (Some("shm_ring"), true),
-            (Some(" SHM_RING "), true),
-            (Some("loopback"), false),
-            (Some("pipe"), false),
-            (Some("transport_pipe"), false),
-            (Some("ring"), false),
-            (Some("shm-ring"), false),
-        ] {
-            with_env(
-                &[("JASPER_FANIN_CAMILLA_COUPLING", raw)],
-                || match Config::from_env() {
-                    Ok(_) => assert!(served, "{raw:?} must be refused"),
-                    Err(err) => {
-                        assert!(!served, "{raw:?} must be served: {err:#}");
-                        assert!(
-                            parks_the_unit(&err),
-                            "{raw:?} must park the unit (exit 78), not restart-loop it",
-                        );
-                    }
-                },
-            );
-        }
-    }
-
     /// Which `JASPER_FANIN_RING_WIRE_FORMAT` declarations this daemon will
     /// serve, now that fan-in creates the ring S32_LE unconditionally.
     ///
@@ -1895,7 +1823,6 @@ mod tests {
     fn shm_ring_ring_path_and_slots_override() {
         with_env(
             &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
                 ("JASPER_FANIN_RING_PATH", Some("/dev/shm/jts-ring/lab.ring")),
                 ("JASPER_FANIN_RING_SLOTS", Some("16")),
             ],
@@ -1913,20 +1840,14 @@ mod tests {
         // both must carry the config-class marker or the parse failure
         // restart-loops.
         for bad in ["1", "17", "0", "100", "abc"] {
-            with_env(
-                &[
-                    ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                    ("JASPER_FANIN_RING_SLOTS", Some(bad)),
-                ],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range ring slots must error");
-                    assert!(
-                        parks_the_unit(&err),
-                        "a bad ring geometry must park at 78, not restart-loop \
+            with_env(&[("JASPER_FANIN_RING_SLOTS", Some(bad))], || {
+                let err = Config::from_env().expect_err("out-of-range ring slots must error");
+                assert!(
+                    parks_the_unit(&err),
+                    "a bad ring geometry must park at 78, not restart-loop \
                          into StartLimitAction=reboot: {err:#}",
-                    );
-                },
-            );
+                );
+            });
         }
     }
 
@@ -1972,7 +1893,6 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
             ],
-            vec![("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback"))],
             vec![("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE"))],
             vec![("JASPER_FANIN_RING_SLOTS", Some("1"))],
         ] {

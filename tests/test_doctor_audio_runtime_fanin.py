@@ -29,23 +29,10 @@ def _patch_asound_conf(
     monkeypatch,
     conf_text: str,
     tmp_path: Path,
-    *,
-    stale_topology_env: bool = False,
 ):
     target = tmp_path / "asound.conf"
     target.write_text(conf_text)
-    stale = tmp_path / "audio_topology.env"
-    if stale_topology_env:
-        stale.write_text("JASPER_AUDIO_TOPOLOGY=dmix\n")
-    real_path_cls = Path
-
-    def fake_path(arg):
-        if arg == "/var/lib/jasper/audio_topology.env":
-            return stale
-        return real_path_cls(arg)
-
     monkeypatch.setattr(audio_runtime_fanin, "ASOUND_CONF_PATH", target)
-    monkeypatch.setattr(audio_runtime_fanin, "Path", fake_path)
 
 
 _FANIN_ASOUND = """
@@ -350,18 +337,6 @@ def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path
     r = audio_runtime_fanin.check_fanin_asound_wiring()
     assert r.status == "fail"
     assert r.reason == audio_runtime_fanin.REASON_ASOUND_LEGACY_RENDERER_BLOCK
-
-
-def test_fanin_asound_wiring_warns_on_stale_topology_env(monkeypatch, tmp_path):
-    _patch_asound_conf(
-        monkeypatch,
-        _FANIN_ASOUND,
-        tmp_path,
-        stale_topology_env=True,
-    )
-    r = audio_runtime_fanin.check_fanin_asound_wiring()
-    assert r.status == "warn"
-    assert r.reason == audio_runtime_fanin.REASON_ASOUND_STALE_TOPOLOGY_STATE
 
 
 # ---------------------------------------------------------------------------
@@ -984,7 +959,7 @@ filters:
 def test_a_roleful_box_with_a_clear_marker_is_its_own_state(
     monkeypatch, tmp_path, roleful, reason
 ):
-    monkeypatch.setattr(audio_runtime_fanin, "_requires_roleful_graph", lambda: roleful)
+    monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: roleful)
 
     res = _run_check(monkeypatch, cfg_text=_STALE_RING_CFG, tmp_path=tmp_path)
 
@@ -992,7 +967,7 @@ def test_a_roleful_box_with_a_clear_marker_is_its_own_state(
     assert res.reason == reason
 
 
-# --- `_requires_roleful_graph` fail-soft DIRECTION ----------------------------
+# --- `requires_roleful_graph` fail-soft DIRECTION ----------------------------
 
 
 @pytest.mark.parametrize(
@@ -1009,7 +984,7 @@ def test_a_roleful_box_with_a_clear_marker_is_its_own_state(
 def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path, exc):
     """The documented direction, pinned — an unreadable topology asserts NOTHING.
 
-    ``_requires_roleful_graph`` only ever SOFTENS a message or adds an
+    ``requires_roleful_graph`` only ever SOFTENS a message or adds an
     eligibility sentence; it gates nothing, and every caller that acts on
     rolefulness reads the fail-CLOSED loaders instead. So its ``except`` arm must
     return False: a box whose topology cannot be read must keep the generic
@@ -1024,7 +999,7 @@ def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path,
 
     monkeypatch.setattr(output_topology, "load_output_topology_strict", _raise)
 
-    assert audio_runtime_fanin._requires_roleful_graph() is False
+    assert audio_runtime_fanin.requires_roleful_graph() is False
 
 
 def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
@@ -1041,7 +1016,7 @@ def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
         output_topology, "load_output_topology_strict", lambda *a, **kw: topology
     )
 
-    assert audio_runtime_fanin._requires_roleful_graph() is True
+    assert audio_runtime_fanin.requires_roleful_graph() is True
 
 
 # ===========================================================================

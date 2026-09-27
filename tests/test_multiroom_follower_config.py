@@ -64,7 +64,7 @@ from jasper.multiroom.grouping_ring import (
 from tests.active_speaker_fixtures import driver_domain_graph
 from tests.test_active_speaker_profile import _two_way_preset
 
-_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH = fc._prove_live_bass_extension_graph
+_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH = fc.prove_live_bass_extension_graph
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +88,7 @@ def _stable_live_graph_authority(monkeypatch):
             config_path=str(expected_config_path),
         )
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", prove)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", prove)
 
 
 def _cfg(channel: str = "left", trim_db: float = 0.0) -> GroupingConfig:
@@ -210,7 +210,7 @@ def test_apply_live_proof_failure_rolls_back_before_unlock(
         assert await cam.get_config_file_path() == fc.FOLLOWER_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", refuse)
     cam = _FakeCamilla(current=prior)
 
     with pytest.raises(fc.ActiveFollowerError) as exc:
@@ -504,7 +504,7 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
     2026-08-06 bonded-pair outage stayed misdiagnosed.
 
     So this walks all four hops with production code: boundary issue message ->
-    ``_prove_live_bass_extension_graph`` -> ``apply_prebuilt_follower_config``
+    ``prove_live_bass_extension_graph`` -> ``apply_prebuilt_follower_config``
     -> the rendered ``event=multiroom.reconcile.camilla_failed`` line.
     """
 
@@ -546,7 +546,7 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
     # autouse stub) and the REAL apply, which is where the re-wrap happens.
     monkeypatch.setattr(
         fc,
-        "_prove_live_bass_extension_graph",
+        "prove_live_bass_extension_graph",
         _REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH,
     )
 
@@ -580,39 +580,6 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
         "the operator-visible journal line does not name the cause; it reads: "
         f"{line}"
     )
-
-
-def test_reconcile_camilla_failed_still_logs_without_exc_info() -> None:
-    """Anti-drift anchor for the end-to-end test above.
-
-    That test models reconcile's rendering as ``error=<exception>`` with no
-    ``exc_info``. If reconcile ever starts passing ``exc_info``, ``__cause__``
-    would render on its own and the interpolation could be revisited — so fail
-    here and make someone re-read the pair, rather than letting the model
-    silently stop describing production.
-    """
-
-    source = (
-        Path(fc.__file__).resolve().parent / "reconcile.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    sites = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "log_event"
-        and any(
-            isinstance(arg, ast.Constant)
-            and arg.value == "multiroom.reconcile.camilla_failed"
-            for arg in node.args
-        )
-    ]
-
-    assert sites, "the camilla_failed log sites should be discoverable"
-    for site in sites:
-        supplied = {kw.arg for kw in site.keywords if kw.arg is not None}
-        assert "error" in supplied
-        assert "exc_info" not in supplied
 
 
 def test_every_chained_grouping_error_interpolates_its_cause() -> None:
@@ -729,7 +696,7 @@ def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
         assert await cam.get_config_file_path() == str(solo)
         raise RuntimeError("restore proof refused")
 
-    monkeypatch.setattr(fc, "_prove_live_bass_extension_graph", refuse)
+    monkeypatch.setattr(fc, "prove_live_bass_extension_graph", refuse)
     cam = _FakeCamilla(current=fc.FOLLOWER_CONFIG_PATH)
 
     with pytest.raises(fc.ActiveFollowerError) as exc:

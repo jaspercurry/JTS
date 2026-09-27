@@ -21,7 +21,8 @@ const make = tag => Object.assign(element(tag), {
 });
 globalThis.Node = class { static [Symbol.hasInstance](value) { return !!value?.appendChild; } };
 const start = buildFunction([
-  repoPath('deploy/assets/shared/js/dom.js'), repoPath('deploy/assets/sound-profile/js/speaker.js')
+  repoPath('deploy/assets/shared/js/dom.js'), repoPath('deploy/assets/shared/js/frequency-scale.js'),
+  repoPath('deploy/assets/sound-profile/js/speaker.js'),
 ], { stripImports: true, stripExports: true,
   params: ['document', 'getJSON', 'postJSON', 'copyText', 'jtsConfirm'] });
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -80,6 +81,21 @@ test('pasting and applying use server state and reveal the tuning menu without r
   assert.doesNotMatch(visible(ui.root), /\/opt\/jasper/);
   const reloaded = setup(state('tune')); await flush();
   assert.match(visible(reloaded.root), /Driver linearization/);
+});
+
+for (const [source, values, drivers, shown] of [
+  ['research', {usable_frequency_range_hz: [40, 3000]}, [], '40 Hz – 3.0 kHz (research)'],
+  ['custom', {usable_frequency_range_hz: [45.4, 2800]},
+    [{target_id: 'main:woofer', role: 'woofer', usable_frequency_range_hz: [45.4, 2800]}], '45 Hz – 2.8 kHz (custom)'],
+  ['nowhere', {usable_frequency_range_hz: null}, [], 'Not specified'],
+]) test(`a driver card names its usable range from ${source}`, async () => {
+  const initial = state('details');
+  initial.draft.targets[0].values = values;
+  initial.draft.manual_settings = {drivers};
+  const ui = setup(initial);
+  await flush();
+  const row = nodes(ui.root).find(n => n.tag === 'dl');
+  assert.deepEqual(row.children.map(text), ['Usable range', shown]);
 });
 
 test('failed import keeps pasted text; failed apply never reports an active setup', async () => {

@@ -45,8 +45,7 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import run_program
-from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -449,7 +448,7 @@ def arm_runtime(monkeypatch):
     install = Mock(wraps=aw.install_park_on_signals)
     monkeypatch.setattr(aw, "install_park_on_signals", install)
     with _own_signals():
-        yield SimpleNamespace(install=install, mover=mover, trail=trail, threads=threads, factory=factory, session=session)
+        yield SimpleNamespace(install=install, mover=mover, trail=trail, threads=threads, session=session)
 
 
 @pytest.fixture
@@ -480,21 +479,22 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     return bank
 
 
-@pytest.mark.parametrize("resolution,flags,program,mover", [
-    ({"driver": "document", "room": "base"}, (), "speaker/mark", "human"),
-    ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "arm"),
-    ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "arm"),
-    ({"alignment": "cleared"}, (), "speaker/mark", "human"),
-    ({"bass": "document"}, ("--mover", "human"), "bass/nearfield", "human"),
-    ({"room": "document"}, ("--mover", "arm"), "room/arm", "arm"),
-    ({"room": "document"}, ("--layout", "seat_cloud"), "room/cloud", "human"),
-    ({"driver": "document", "room": "document"}, (), "room/seat", "human"),
-    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "arm"),
-    ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "human"),
-    ({"driver": "base", "alignment": "saved"}, (), None, None),
+@pytest.mark.parametrize("resolution,flags,program,layout,mover", [
+    ({"driver": "document", "room": "base"}, (), "speaker/mark", "speaker_mark", "human"),
+    ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "speaker_mark", "arm"),
+    ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "rear_express", "arm"),
+    ({"rear_calibration": "document"}, ("--layout", "rear_express"), "rear/express", "rear_express", "human"),
+    ({"alignment": "cleared"}, (), "speaker/mark", "speaker_mark", "human"),
+    ({"bass": "document"}, ("--mover", "human"), "bass/axis", "seat_express", "human"),
+    ({"room": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),
+    ({"room": "document"}, ("--layout", "seat_cloud"), "room/seat", "seat_cloud", "human"),
+    ({"driver": "document", "room": "document"}, (), "room/seat", "seat_express", "human"),
+    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "bass_axis", "arm"),
+    ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "seat_express", "human"),
+    ({"driver": "base", "alignment": "saved"}, (), None, None, None),
 ])
 def test_trial_runs_the_program_its_document_states(
-    bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags, program, mover, arm_plan_answer,
+    bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags, program, layout, mover, arm_plan_answer,
 ):
     fingerprint = bank_trial(resolution)
     opener = _opener(session='{"session_id": "trial-1"}')
@@ -504,10 +504,10 @@ def test_trial_runs_the_program_its_document_states(
         return
     assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    expected = run_program(program.partition("/")[0], program)
-    assert (plan.program, plan.mover, plan.candidates) == (program, mover, ("base", fingerprint))
+    expected = run_preset(program, layout)
+    assert (plan.program, plan.layout, plan.mover, plan.candidates) == (program, layout, mover, ("base", fingerprint))
     assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
-        (pose.place, candidate, "near_field" if program == "bass/nearfield" else "summed")
+        (pose.place, candidate, "summed")
         for pose in expected.poses for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
     if expected.levels is None:
@@ -520,28 +520,17 @@ def test_trial_runs_the_program_its_document_states(
 
 
 @pytest.mark.parametrize("mover", ["human", "arm"])
-def test_declared_trial_uses_the_design_mark_speaker_experiment(isolated_candidate_bank, monkeypatch, capsys, mover, arm_plan_answer):
+def test_a_declared_crossover_states_no_trial_program(isolated_candidate_bank, monkeypatch, capsys, mover):
     topology = mono_output_topology()
-    candidate = candidate_from_design_draft(topology, standard_design_draft(topology))
-    banked = publish_authored_candidate(candidate)
-    monkeypatch.setattr(_run_request, "read_preflight_facts",
-                        lambda plan, **kw: ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate}))
+    banked = publish_authored_candidate(candidate_from_design_draft(topology, standard_design_draft(topology)))
     opener = _opener(session='{"session_id": "first-experiment"}')
     code, body = _run(["trial", banked.fingerprint, "--mover", mover, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
-    assert code == 0, body
-    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
-    assert plan.program == "speaker/mark" and plan.mover == mover
-    assert {(stop.angle_deg, stop.elevation_deg, stop.regime) for stop in plan.stops} == {
-        (0, 0, "per_driver"), (0, 0, "summed")}
-    assert plan.candidates == () and body["shape"] == "measure"
+    assert (code, body["code"], body["next_action"]["id"]) == (cli.EXIT_REFUSED, "trial_program_unknown", "run_program")
+    assert not opener.requests
 
 
-@pytest.mark.parametrize("resolution,flags,near_field", [
-    ({"driver": "document"}, (), False),
-    ({"bass": "document"}, ("--mover", "human"), True),
-])
-def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys,
-                                               resolution, flags, near_field):
+@pytest.mark.parametrize("resolution,flags", [({"driver": "document"}, ()), ({"bass": "document"}, ("--mover", "human"))])
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags):
     fingerprint = bank_trial(resolution)
     silent = _opener()
     code, priced = _run(["trial", fingerprint, "--dry-run", *flags], silent, monkeypatch, capsys)
@@ -551,9 +540,6 @@ def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level,
     posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert code == 0 and (priced.pop("program"), priced.pop("mover")) == (posted["program"], posted["mover"])
     assert {key: value for key, value in priced.items() if key not in ("verb", "dry_run")} == ran["schedule"]
-    rungs = priced.get("levels", [priced])
-    assert rungs and all(rung["rung_admission"].get("predicted_spl_basis") == (
-        NEAR_FIELD_SPL_BASIS if near_field else None) for rung in rungs)
 
 
 def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):
@@ -582,7 +568,7 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 @pytest.mark.parametrize("source", ["flags", "file"])
 def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
-    argv = ["run", "--program", "room", "--poses", "seat_express", "--level-db", "-25"]
+    argv = ["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
     if source == "file":
@@ -636,15 +622,16 @@ _NEAR_FIELD_POSES = json.dumps([{"azimuth_deg": 0, "elevation_deg": 0, "kind": "
                                   "driver": "woofer"} for mm in (12, 24)])
 
 
-@pytest.mark.parametrize("program,layout", [("speaker", "baseline_express"), ("rear", "rear/pair_behind"),
-                                            ("nearfield", _NEAR_FIELD_POSES)])
+@pytest.mark.parametrize("program,flag,value", [("speaker", "--layout", "baseline_express"),
+                                                ("rear/pair", "--layout", "rear_behind"),
+                                                ("nearfield", "--poses", _NEAR_FIELD_POSES)])
 @pytest.mark.parametrize("repeats", [None, 1, 2])
-def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkeypatch, capsys, program, layout, repeats):
+def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkeypatch, capsys, program, flag, value, repeats):
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
-    argv = ["run", "--program", program, "--poses", layout]
-    if program == "rear":
+    argv = ["run", "--program", program, flag, value]
+    if program.startswith("rear"):
         argv += ["--candidates", bank_trial({"rear_calibration": "document"})]
-    selected = run_program(program, layout)
+    selected = run_preset(program, **{flag.removeprefix("--"): value})
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
     code, _ = _run(argv, opener, monkeypatch, capsys)
@@ -669,14 +656,14 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
             for t in active_driver_targets(topology))))
     names = ("base", *bank)
     assert len(names) == 4
-    argv = ["run", "--program", "rear", "--poses", "rear/behind", "--candidates", ",".join(names), "--dry-run"]
+    argv = ["run", "--program", "rear", "--layout", "rear_behind", "--candidates", ",".join(names), "--dry-run"]
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
     opener = _opener()
     code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0 and body["dry_run"] is True and body["issues"] == []
     assert not opener.requests
-    poses = run_program("rear", "rear/behind").poses
+    poses = run_preset("rear", "rear_behind").poses
     assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
         (pose.place, name): repeats or 1 for pose in poses for name in names}
     assert {row["regime"] for row in body["schedule"]} == {"summed"}
@@ -860,7 +847,7 @@ def test_wait_banks_and_returns_packet(preflight_ready, bank_trial, monkeypatch,
     monkeypatch.setattr(cli, "_round_session_dir", lambda run: str(tmp_path))
     opener = _run_opener({"status": "complete", "run": {"status": "complete", "manifest": "run_manifest.json"}})
     opener.pages[wc.SESSION_PATH] = json.dumps({"capture": {"session_id": "run-1"}})
-    argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--poses", "seat_express", "--wait"]
+    argv = ["wait", "--run", "run-1"] if verb == "wait" else ["run", "--program", "room", "--layout", "seat_express", "--wait"]
     if verb == "trial":
         argv = ["trial", bank_trial({"room": "document"}), "--wait"]
     links = {"run_id": "run-1", "link": f"http://jts3.local{cli.CROSSOVER_PAGE_PATH}",
@@ -945,21 +932,30 @@ def test_program_choices_include_rear():
     assert args.program == "rear"
 
 
+@pytest.mark.parametrize("argv,reason,detail", [
+    (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
+     {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
+    (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",
+     {"preset": "nearfield/each", "driver": "woofer:rear", "offered": []}),
+])
+def test_an_unoffered_layout_or_driver_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
+    opener = _opener()
+    code, body = _run(["run", *argv], opener, monkeypatch, capsys)
+    assert (code, body["reason"], body["code"], body["detail"]) == (cli.EXIT_REFUSED, reason, reason, detail)
+    assert not opener.requests
+
+
 @pytest.mark.parametrize("poses, azimuths", [
     ("-30,-10,10,30", (-30, -10, 10, 30)),
     ("-20", (-20,)),
-    ("rear/express", None),
 ])
 def test_a_pose_set_reads_the_same_spaced_or_joined(poses, azimuths):
     spaced = cli.build_parser().parse_args(["run", "--program", "rear", "--poses", poses])
     joined = cli.build_parser().parse_args(["run", "--program", "rear", f"--poses={poses}"])
     assert spaced.poses == joined.poses == poses
-    program = run_program("rear", spaced.poses)
-    if azimuths is None:
-        assert program.size != "custom"
-    else:
-        assert program.size == "custom"
-        assert tuple(pose.azimuth_deg for pose in program.poses) == azimuths
+    program = run_preset("rear", poses=spaced.poses)
+    assert program.layout == "custom"
+    assert tuple(pose.azimuth_deg for pose in program.poses) == azimuths
 
 
 @pytest.mark.parametrize("named", [False, True])
@@ -980,11 +976,11 @@ def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: {"status": "applied",
                                  "source": {"measured_candidate_fingerprint": applied.fingerprint}})
-    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: topology)
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
         plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
                           for name in plan.candidates}))
-    argv = ["run", "--program", "rear", "--poses", "rear/pair",
+    argv = ["run", "--program", "rear/pair",
             *(["--candidates", applied.fingerprint] if named else [])]
 
     plan = _run_request.resolve_run(cli.build_parser().parse_args(argv)).plan
@@ -1191,7 +1187,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, lambda *a, **kw: TakeVerdict(True)))
     hold = host.isolation_hold
     monkeypatch.setattr(host, "isolation_hold", lambda **kw: hold(**{**kw, "plan": None, "volume_state_path": tmp_path / "volume.json"}))
-    for name in ("persist_conductor_state", "_persist_execution_result", "_persist_terminal_failure"):
+    for name in ("persist_conductor_state", "persist_execution_result", "persist_terminal_failure"):
         monkeypatch.setattr(wired.v2state, name, lambda *a, **kw: None)
 
     def engine(**kw):
@@ -1428,7 +1424,6 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
     assert arm_runtime.mover.moves[-1] == 0
     assert trail.one("parked")["ok"] is True
     assert trail.one("up")["rig_clear_attested"] is True
-    arm_runtime.factory.assert_called_with(attest_rig_clear=True)
     arm_runtime.session.assert_called_once_with(host_header="jts.local", base_url="http://127.0.0.1:8080")
     arm_runtime.install.assert_called_once_with()
 
@@ -1468,7 +1463,7 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "purposes", "banked_at", "status", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "status", "sets", "applied_identity"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [

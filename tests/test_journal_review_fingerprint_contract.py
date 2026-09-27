@@ -4,7 +4,7 @@
 
 """Drift guard for the shared log-message `fingerprint()` awk function.
 
-`scripts/journal-review.sh` reuses the exact `fingerprint()` awk function
+`deploy/bin/journal-review.sh` reuses the exact `fingerprint()` awk function
 that `scripts/fetch-pi-logs.sh`'s `write_log_noise_summary()` defines — the
 timestamp/PID/number-normalizing fingerprinter — rather than re-implementing
 it (AGENTS.md anti-duplication rule). Extraction to a shared awk lib is not
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # The two scripts that must carry byte-identical fingerprint() logic.
 _FETCH = ROOT / "scripts/fetch-pi-logs.sh"
-_REVIEW = ROOT / "scripts/journal-review.sh"
+_REVIEW = ROOT / "deploy/bin/journal-review.sh"
 
 # The full awk function, signature through closing brace. The body contains
 # `{4}`/`{2}` interval quantifiers (curly braces mid-line) but no line-leading
@@ -56,7 +56,7 @@ def test_fingerprint_awk_bodies_are_byte_identical():
     review = _extract_fingerprint(_REVIEW)
     assert fetch == review, (
         "The fingerprint() awk function has DRIFTED between "
-        "scripts/fetch-pi-logs.sh and scripts/journal-review.sh. "
+        "scripts/fetch-pi-logs.sh and deploy/bin/journal-review.sh. "
         "journal-review.sh reuses it verbatim (see its comment); keep the two "
         "byte-identical (modulo indentation) or their log-noise fingerprints "
         "will silently disagree.\n\n"

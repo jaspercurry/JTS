@@ -4,11 +4,10 @@
 
 """How a feature is read off a magnitude curve — the optics every reader shares.
 
-It sits below :mod:`.feature_classifier`, :mod:`.gate_sweep` and
-:mod:`.close_reference` so all three read a feature the same way and the
-import graph stays acyclic (#2662 G1). Every constant here is a frame
-choice, so :func:`~.gate_sweep.frame_descriptor` publishes them beside
-every result.
+It sits below :mod:`.feature_classifier` and :mod:`.gate_sweep` so both read
+a feature the same way and the import graph stays acyclic (#2662). Every
+constant here is a frame choice, so :func:`~.gate_sweep.frame_descriptor`
+publishes them beside every result.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.excess_phase import (
     FEATURE_HALF_OCT, NEIGHBOURHOOD_OCT,
 )
+from jasper.biquad import biquad_coeffs
 
 __all__ = [
     "CENTRE_SEARCH_OCT",
@@ -83,10 +83,7 @@ def feature_q(det_curve: np.ndarray, grid: np.ndarray, fc: float) -> float:
 def biquad_peaking(
     f0: float, gain_db: float, q: float, sample_rate: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """RBJ peaking EQ. Minimum phase by construction."""
-    amp = 10 ** (gain_db / 40)
-    w0 = 2 * np.pi * f0 / sample_rate
-    alpha = np.sin(w0) / (2 * q)
-    b = np.array([1 + alpha * amp, -2 * np.cos(w0), 1 - alpha * amp])
-    a = np.array([1 + alpha / amp, -2 * np.cos(w0), 1 - alpha / amp])
-    return b / a[0], a / a[0]
+    """RBJ peaking EQ at ``sample_rate``, normalised to ``a0 = 1``. Minimum
+    phase by construction."""
+    b0, b1, b2, a0, a1, a2 = biquad_coeffs("Peaking", f0, gain_db, q, sample_rate_hz=sample_rate)
+    return np.array([b0, b1, b2]) / a0, np.array([a0, a1, a2]) / a0

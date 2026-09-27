@@ -28,7 +28,7 @@ import pytest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
 from jasper.cli.round_views import main
 from jasper.active_speaker.round_bank import bank_round
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
@@ -66,14 +66,28 @@ ORDERS = (2, 3)
 # --------------------------------------------------------------------------- #
 
 
+def _beside(session: Path, name: str) -> Path:
+    """Where ``name`` files beside this bundle's round (ADR-0346)."""
+    return view_path(round_inputs(session), name)
+
+
+def _bundle_dir(tmp_path: Path) -> Path:
+    """Where :func:`_bundle` puts the bundle: nested under a bank root's
+    ``bundle/`` so ``view_path`` resolves beside the round (ADR-0346)
+    instead of falling back to the caller's cwd. Shared with the two
+    hand-rolled bundles below that must agree with it on the same tree.
+    """
+    return tmp_path / "bank" / "bundle" / "session"
+
+
 def _bundle(tmp_path: Path, *, harmonics: dict[str, Any] | None = None) -> Path:
     """A commissioning bundle on disk, in the real tree shape.
 
-    Deliberately minimal: the harmonics block reads exactly one file out of the
-    round directory, and a fixture that also staged a receipt and a cloud
-    artifact would let a test pass for a reason it did not name.
+    Deliberately minimal: the harmonics block reads exactly one file, and a
+    fixture that also staged a receipt and a cloud artifact would let a test
+    pass for a reason it did not name.
     """
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     round_dir = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
     round_dir.mkdir(parents=True)
     (session / "info.json").write_text(json.dumps({
@@ -82,7 +96,7 @@ def _bundle(tmp_path: Path, *, harmonics: dict[str, Any] | None = None) -> Path:
         "fingerprints": {"build_sha": "200d54578"},
     }))
     if harmonics is not None:
-        (round_dir / HARMONICS_ARTIFACT).write_text(json.dumps(harmonics))
+        _beside(session, HARMONICS_ARTIFACT).write_text(json.dumps(harmonics))
     return session
 
 
@@ -168,52 +182,24 @@ def _artifact(n_roles: int = 1) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _not_evaluated_fields(packet: dict[str, Any]) -> set[str]:
-    return {entry["field"] for entry in packet["not_evaluated"]}
+def _harmonics(session: Path) -> dict[str, Any]:
+    return build_crossover_evidence_packet(session)[DERIVED_VIEWS]["harmonics"]
 
 
-def test_a_round_with_no_reading_says_so_about_that_round_by_name(tmp_path):
-    """No artifact: the block refuses, and the honest list names the field.
+def test_a_round_with_no_reading_says_it_has_none(tmp_path):
+    block = _harmonics(_bundle(tmp_path))
 
-    The reason must be about THIS round rather than about the corpus. The
-    sentence it replaced ("H2/H3 are computable from banked captures but no
-    round writes them") was a corpus-wide claim, and half of it stopped being
-    true the moment an instrument existed to write one.
-    """
-    packet = build_crossover_evidence_packet(_bundle(tmp_path))
-
-    block = packet["harmonics"]
     assert block["available"] is False
     assert block["status"] == "not_evaluated"
     assert block["n_roles"] == 0
-    assert "harmonics" in _not_evaluated_fields(packet)
-    assert not any(
-        entry["field"] == "harmonic_distortion" for entry in packet["not_evaluated"]
-    )
-    # The corpus-wide claim is gone from the reason, not merely from the field
-    # name: a reader told "no round writes them" would not go and run the
-    # instrument that does.
-    reason = next(
-        entry["reason"] for entry in packet["not_evaluated"]
-        if entry["field"] == "harmonics"
-    )
-    assert "no round writes" not in reason
 
 
-def test_a_banked_reading_closes_the_row_and_carries_the_rows(tmp_path):
-    """Ticket 1.4, as the state change it is: the row is gone and H2/H3 are in.
+def test_a_banked_reading_carries_the_rows(tmp_path):
+    block = _harmonics(_bundle(tmp_path, harmonics=_artifact()))
 
-    This is the assertion the whole change exists for. A packet that carried
-    the rows AND still printed "there is no distortion record to carry" would
-    be the exact dishonesty the ``not_evaluated`` block exists to prevent.
-    """
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-
-    block = packet["harmonics"]
     assert block["available"] is True
     assert block["orders"] == [2, 3]
     assert block["n_roles"] == 1
-    assert "harmonics" not in _not_evaluated_fields(packet)
 
     row = block["roles"][0]["rows"][0]
     assert row["hz"] == 200.0
@@ -222,38 +208,24 @@ def test_a_banked_reading_closes_the_row_and_carries_the_rows(tmp_path):
 
 
 def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(tmp_path):
-    """A file present but empty is not a reading, and must not close the row."""
+    """A file present but empty is not a reading."""
     artifact = _artifact()
     artifact["roles"] = []
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=artifact))
 
-    assert packet["harmonics"]["available"] is False
-    assert "harmonics" in _not_evaluated_fields(packet)
+    assert _harmonics(_bundle(tmp_path, harmonics=artifact))["available"] is False
 
 
 @pytest.mark.parametrize("banked", ["[]", '["a list"]', '"a string"', "7"])
-def test_an_artifact_that_is_not_an_object_still_names_itself_in_the_honest_list(
-    tmp_path, banked
-):
-    """The honest list must have no silent gaps, including this one.
-
-    A file that is absent or unreadable carries a read reason; a file that
-    PARSED into something that is not an object carries the empty string,
-    because the read succeeded. The not_evaluated builder drops any entry whose
-    reason is falsy, so passing that empty string through would have removed
-    the row from the one block whose entire job is to have no gaps.
-    """
+def test_an_artifact_that_is_not_an_object_still_names_its_reason(tmp_path, banked):
+    """A file that PARSED into something that is not an object has an empty
+    read reason, because the read succeeded; the block must still name one."""
     session = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / HARMONICS_ARTIFACT).write_text(banked)
+    _beside(session, HARMONICS_ARTIFACT).write_text(banked)
 
-    packet = build_crossover_evidence_packet(session)
+    block = _harmonics(session)
 
-    assert packet["harmonics"]["available"] is False
-    assert packet["harmonics"]["reason"].strip()
-    assert "harmonics" in _not_evaluated_fields(packet)
-    for entry in packet["not_evaluated"]:
-        assert entry["reason"].strip(), entry["field"]
+    assert block["available"] is False
+    assert block["reason"].strip()
 
 
 @pytest.mark.parametrize("orders", [[], None, ["2"], [True], "23"])
@@ -270,16 +242,9 @@ def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
     """
     artifact = _artifact()
     artifact["orders"] = orders
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=artifact))
+    block = _harmonics(_bundle(tmp_path, harmonics=artifact))
 
-    assert packet["harmonics"]["available"] is False
-    assert "no harmonic order" in packet["harmonics"]["reason"]
-    assert "harmonics" in _not_evaluated_fields(packet)
-
-
-# --------------------------------------------------------------------------- #
-# the enrichment rule — every published field is declared
-# --------------------------------------------------------------------------- #
+    assert block["available"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -367,10 +332,7 @@ def test_two_captures_are_two_blocks_because_captures_are_poses(tmp_path):
     unseparated case — so the instrument does not merge them, and a reader who
     wants them combined can see what they are combining.
     """
-    packet = build_crossover_evidence_packet(
-        _bundle(tmp_path, harmonics=_artifact(n_roles=2))
-    )
-    blocks = packet["harmonics"]["roles"]
+    blocks = _harmonics(_bundle(tmp_path, harmonics=_artifact(n_roles=2)))["roles"]
 
     assert len(blocks) == 2
     assert {block["role"] for block in blocks} == {"woofer"}
@@ -437,8 +399,7 @@ def test_the_state_the_program_came_from_is_recorded_for_audit(tmp_path):
     assert he._state_capture_session_id({"session_id": ""}) is None
     assert he._state_capture_session_id({"session_id": 7}) is None
 
-    packet = build_crossover_evidence_packet(_bundle(tmp_path, harmonics=_artifact()))
-    assert packet["harmonics"]["program"]["state_capture_session_id"] == "wired-TESTONLY"
+    assert _harmonics(_bundle(tmp_path, harmonics=_artifact()))["program"]["state_capture_session_id"] == "wired-TESTONLY"
 
 
 def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():
@@ -1366,7 +1327,7 @@ def harmonic_capture(tmp_path, monkeypatch, request):
 def bank_measure_capture(harmonic_capture, tmp_path: Path) -> Path:
     """The fixture's MEASURE capture filed in a session, banked; the banked round."""
     _, compose, _, wav, document = harmonic_capture
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     capture_id = document["jts_session_identity"]["aliases"]["capture_session_id"]
     artifacts = session / f"evidence/v1/artifacts/crossover_v2/{capture_id}"
     positions = artifacts / "positions"
@@ -1548,7 +1509,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     calibration = tmp_path / "mic.txt"
     calibration.write_text("20 2\n20000 4\n")
     _, compose, _, wav, document = harmonic_capture
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     info = json.loads((session / "info.json").read_text())
     info["fingerprints"] = {"mic": {"calibration_id": calibration_id}}
     (session / "info.json").write_text(json.dumps(info))
@@ -1604,7 +1565,6 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     harmonic = json.loads(out["distortion"].read_text())
     feature_result = json.loads(out["classify-features"].read_text())
     views = cited[DERIVED_VIEWS]
-    assert views["legacy_view_files_in_evidence"] is False
     assert views["harmonics"]["n_roles"] == len(harmonic["roles"])
     assert views["feature_classification"]["n_rows_banked"] == len(feature_result["rows"])
     assert harmonic["captures"]["n_read"] == 1

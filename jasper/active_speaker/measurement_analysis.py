@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explicit offline analysis of immutable summed Room and bass captures."""
+"""The analysis of summed room and bass takes: banked on the take, or decoded from its recording."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,8 +25,9 @@ from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.audio_measurement.repeated_sweep import average_summed_capture
 from jasper.json_fields import finite_float
 
+from .crossover_v2.capture_provenance import banks_curves
 from .crossover_v2.record_index import (
-    MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_capture,
+    MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_record,
 )
 from .crossover_v2.spatial import analysis_curve_records
 from .frequency_view import FrequencyRun
@@ -62,37 +63,73 @@ class AnalyzedMeasurement:
         }
 
 
-def analyzed_measurements(
-    bundle_dir: Path, *, calibration_root: Path | None = None, paths: Iterable[str] | None = None,
-) -> Iterator[AnalyzedMeasurement]:
-    """Reopen exact takes once; release each raw capture before loading the next."""
+@dataclass(frozen=True)
+class BankedMeasurement:
+    """A take whose record banked its analysed curves (ADR-0373), read without its recording."""
+
+    record: dict[str, Any]
+    record_path: str
+
+    def document(self) -> dict[str, Any]:
+        calibration = self.record.get("capture_calibration") or {}
+        return {**self.record, "calibration": {"applied": bool(calibration.get("applied")),
+                                               "calibration_id": calibration.get("calibration_id")}}
+
+
+def _reopened(
+    bundle_dir: Path, paths: Iterable[str] | None,
+) -> Iterator[tuple[str, dict[str, Any], ExcitationProgram, Callable[[], bytes]]]:
     for path in paths if paths is not None else map(record_path, bundle_measurements(bundle_dir)):
         try:
-            record, wav = reopen_measurement_capture(bundle_dir, path)
+            record, capture = reopen_measurement_record(bundle_dir, path)
         except MeasurementCaptureIdentityError as exc:
             raise MeasurementAnalysisRefused("measurement_capture_identity_mismatch") from exc
-        if wav is None:
+        if capture is None:
             continue
         if not record.get("program"):
             raise MeasurementAnalysisRefused("measurement_program_manifest_missing")
         program = ExcitationProgram.from_dict(record["program"])
         if program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1 or (record.get("graph_scope") != "candidate" or not record.get("candidate_id")):
             raise MeasurementAnalysisRefused("measurement_analysis_program_unsupported")
-        samples, rate = decode_wav_to_mono(wav)
-        calibration = resolve_setup_calibration(
-            record.get("capture_setup"), device=record.get("capture_device"),
-            root=calibration_root,
-        )
-        analysis = analyze_program_capture(
-            program, samples, rate,
-            calibration=calibration.curve if calibration is not None else None,
-            geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
-            capture_report=record.get("capture_integrity"),
-        )
-        offset = analysis.locations[0].scheduled_start - program.segments[0].start_sample
-        yield AnalyzedMeasurement(record, path, program, average_summed_capture(program, samples, offset,
-                                   analysis.capture_integrity.pass_alignment if analysis.capture_integrity else None),
-                                   rate, calibration, analysis)
+        yield path, record, program, capture
+
+
+def _decoded(
+    path: str, record: dict[str, Any], program: ExcitationProgram, wav: bytes, calibration_root: Path | None,
+) -> AnalyzedMeasurement:
+    samples, rate = decode_wav_to_mono(wav)
+    calibration = resolve_setup_calibration(
+        record.get("capture_setup"), device=record.get("capture_device"),
+        root=calibration_root,
+    )
+    analysis = analyze_program_capture(
+        program, samples, rate,
+        calibration=calibration.curve if calibration is not None else None,
+        geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
+        capture_report=record.get("capture_integrity"),
+    )
+    offset = analysis.locations[0].scheduled_start - program.segments[0].start_sample
+    return AnalyzedMeasurement(record, path, program, average_summed_capture(program, samples, offset,
+                               analysis.capture_integrity.pass_alignment if analysis.capture_integrity else None),
+                               rate, calibration, analysis)
+
+
+def decoded_measurements(
+    bundle_dir: Path, *, calibration_root: Path | None = None, paths: Iterable[str] | None = None,
+) -> Iterator[AnalyzedMeasurement]:
+    """Reopen exact takes once and decode each recording, releasing it before loading the next."""
+    for path, record, program, capture in _reopened(bundle_dir, paths):
+        yield _decoded(path, record, program, capture(), calibration_root)
+
+
+def analyzed_measurements(
+    bundle_dir: Path, *, calibration_root: Path | None = None, paths: Iterable[str] | None = None,
+) -> Iterator[AnalyzedMeasurement | BankedMeasurement]:
+    """Each take's analysis: the curves a room, bass or rear take banked
+    (ADR-0373), else a decode of its recording."""
+    for path, record, program, capture in _reopened(bundle_dir, paths):
+        yield (BankedMeasurement(record, path) if "curves" in record and banks_curves(record)
+               else _decoded(path, record, program, capture(), calibration_root))
 
 
 def analyze_measurement_bundle(
