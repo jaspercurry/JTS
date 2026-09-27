@@ -296,7 +296,6 @@ LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 
 # --------------------------------------------------------------------------- #
-# constants the flow used to own
 # --------------------------------------------------------------------------- #
 
 # Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor

@@ -426,11 +426,8 @@ def mic_probe_and_identity() -> tuple[MicProbe, dict[str, Any]]:
                 "present": xvf_present,
                 "capture_channels": capture_channels,
             },
-            # Provenance for the DETECTED board, never the legacy square
-            # build's by default: a Flex recording used to carry a blob name
-            # docs/bringup.md says not to run on a linear board, beside a
-            # `geometry: linear` that contradicted it (#4361). Keys a family
-            # does not publish are omitted rather than borrowed.
+            # Firmware provenance must match the detected board geometry (#4361).
+            # Omit fields its family does not publish.
             "recommended_firmware": {
                 **(
                     {
