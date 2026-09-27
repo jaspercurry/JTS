@@ -5,6 +5,7 @@
 """Handoff transaction tests against its concrete carrier I/O boundary."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
@@ -41,6 +42,11 @@ def carrier(tmp_path):
         write_guard=AsyncMock(side_effect=write_guard),
         push_source=AsyncMock(return_value=True),
         write_level=AsyncMock(side_effect=write_level),
+        voice_session_active=lambda: False,
+        active_source=AsyncMock(return_value=Source.IDLE),
+        refresh=lambda: None,
+        mutation=nullcontext,
+        publish=AsyncMock(),
         handoff_settle_sec=0.0,
         push_settle_sec=0.0,
     )
@@ -122,7 +128,7 @@ async def test_handoff_airplay_to_spotify_pushes_before_finalize(carrier):
 
     assert handoff.ok
     assert handoff.push_ok is True
-    assert owner._set_push_source_for_handoff.await_args_list == [call(Source.SPOTIFY, 60)]
+    assert owner._push_source.await_args_list == [call(Source.SPOTIFY, 60)]
     await owner.finalize_source_handoff(handoff)
     assert cam.set_calls[-1] == pytest.approx(0.0)
 
@@ -135,7 +141,7 @@ async def test_handoff_push_failure_keeps_camilla_guarded(carrier):
     cam.db = percent_to_db(40)
     persistence.save_now(cam.db)
 
-    owner._set_push_source_for_handoff.return_value = False
+    owner._push_source.return_value = False
     handoff = await owner.prepare_source_handoff(
         Source.AIRPLAY, Source.SPOTIFY, reason="manual",
     )
@@ -191,7 +197,7 @@ async def test_finalize_catches_a_lower_level_before_repush(carrier, push_ok):
         assert (source, level) == (Source.SPOTIFY, 20)
         return push_ok
 
-    owner._set_push_source_for_handoff.side_effect = push
+    owner._push_source.side_effect = push
     assert await owner.finalize_source_handoff(handoff)
     assert cam.db == pytest.approx(0.0 if push_ok else percent_to_db(20))
     owner._set_camilla.assert_not_awaited()

@@ -134,7 +134,7 @@ class VolumeCoordinator:
         # librespot 0.8.0 has no local HTTP control API, so to set
         # Spotify volume we go: coordinator → spotipy → Spotify
         # cloud → spirc → librespot. Optional; if None or empty,
-        # _set_spotify is a no-op (logged as warning).
+        # the Spotify push is a no-op (logged as warning).
         self._spotify_router = spotify_router
         self._spotify_device_name = spotify_device_name
 
@@ -182,8 +182,13 @@ class VolumeCoordinator:
             write_guard=lambda db, *, context, persist: self._set_camilla_db(
                 db, context=context, persist=persist,
             ),
-            push_source=lambda source, level: self._set_push_source_for_handoff(source, level),
+            push_source=lambda source, level: self._push_source(source, level),
             write_level=lambda level: self._set_camilla(level),
+            voice_session_active=lambda: self._voice_session_active,
+            active_source=lambda: self._active_source(),
+            refresh=lambda: self._refresh_from_disk(),
+            mutation=lambda: self._mutation(),
+            publish=lambda: self.publish_volume_context(),
             handoff_settle_sec=handoff_settle_sec,
             push_settle_sec=push_settle_sec,
         )
@@ -772,48 +777,24 @@ class VolumeCoordinator:
         through it. AirPlay is
         camilla-master: shairport-sync cannot reliably reflect
         receiver-originated AirPlay 2 volume back to iOS/macOS, so JTS
-        uses CamillaDSP as the AirPlay speaker-volume surface.
+        uses CamillaDSP as the AirPlay speaker-volume surface (ADR-0176);
+        the sender's slider reaches us through shairport's volume hook
+        (ADR-0206).
         """
         source = source if source is not None else await self._active_source()
         try:
-            if source == Source.AIRPLAY:
-                await self._set_airplay(level)
-            elif source == Source.SPOTIFY:
-                ok = await self._set_spotify(level)
-                if ok:
-                    await self._handoff.confirm_push_mode_carrier(
-                        source,
-                        level,
-                        context="dispatch_spotify_push_confirmed",
-                    )
-                else:
-                    await self._handoff.guard_camilla_after_push_failure(
-                        level,
-                        context="dispatch_spotify_degraded",
-                        warning_prefix="spotify volume dispatch failed",
-                        guarded_warning_suffix=(
-                            "; camilla guarded at {guard_db:.1f} dB for "
-                            "{level:d}%"
-                        ),
-                    )
-            elif source == Source.BLUETOOTH:
-                ok = await self._set_bluetooth(level)
-                if ok:
-                    await self._handoff.confirm_push_mode_carrier(
-                        source,
-                        level,
-                        context="dispatch_bluetooth_push_confirmed",
-                    )
-                else:
-                    await self._handoff.guard_camilla_after_push_failure(
-                        level,
-                        context="dispatch_bluetooth_degraded",
-                        warning_prefix="bluetooth volume dispatch failed",
-                        guarded_warning_suffix=(
-                            "; camilla guarded at {guard_db:.1f} dB for "
-                            "{level:d}%"
-                        ),
-                    )
+            if volume_mode(source) == VolumeMode.PUSH:
+                await self._handoff.push_or_guard(
+                    source,
+                    level,
+                    confirm_context=f"dispatch_{source.value}_push_confirmed",
+                    guard_context=f"dispatch_{source.value}_degraded",
+                    warning_prefix=f"{source.value} volume dispatch failed",
+                    guarded_warning_suffix=(
+                        "; camilla guarded at {guard_db:.1f} dB for "
+                        "{level:d}%"
+                    ),
+                )
             else:
                 # USBSINK is camilla-master like AirPlay; we don't write
                 # back to the gadget's mixer (the host's slider is
@@ -842,147 +823,8 @@ class VolumeCoordinator:
     async def apply_active_source_transition(
         self, prev_source: Source, current_source: Source,
     ) -> None:
-        """Called by the observer when active_renderers reports a
-        source-state change. Single point that touches camilla
-        across the boundary, driven by each source's `volume_mode`:
-
-        - camilla-master → push-mode (AirPlay/idle → Spotify/BT):
-          push the effective level to the new renderer,
-          then pin camilla to 0 dB only if that push succeeds.
-        - push-mode → camilla-master (Spotify/BT → AirPlay/idle):
-          hand camilla back the current effective level.
-        - push → push (e.g. Spotify → BT): camilla already at 0 dB;
-          just enforce the effective level on the new source.
-        - camilla-master → camilla-master (idle ↔ AirPlay): no
-          volume handoff is needed; camilla already carries the level.
-
-        We DON'T fire this mid-voice-session: the ducker hooks in via
-        `note_voice_session` so this method can short-circuit.
-        """
-        if self._voice_session_active:
-            logger.debug(
-                "active_source transition %s→%s: deferred (voice "
-                "session in progress)",
-                prev_source.value, current_source.value,
-            )
-            return
-        if prev_source == current_source:
-            return
-        prev_carries = volume_mode(prev_source) == VolumeMode.CAMILLA_MASTER
-        curr_carries = volume_mode(current_source) == VolumeMode.CAMILLA_MASTER
-        async with self._mutation():
-            # The verdict was resolved before the cross-daemon lease. Re-check
-            # source ownership at the ordering point, as
-            # `observe_source_volume` does, so a handoff that landed meanwhile
-            # cannot pin camilla against a lane the mux has already left.
-            active = await self._active_source()
-            if active != current_source:
-                self._refresh_from_disk()
-                logger.debug(
-                    "active_source transition %s→%s: dropped, active "
-                    "source became %s",
-                    prev_source.value, current_source.value, active.value,
-                )
-                return
-            # Pull the latest listening_level from disk before
-            # dispatching. The control daemon (remote / HTTP) writes
-            # the same file on every twist, but voice_daemon's in-
-            # memory cache only re-syncs on its own set/adjust/mute
-            # calls. Without this refresh, a remote twist that lands
-            # between voice operations would be silently ignored
-            # when the next source-state transition fires.
-            self._refresh_from_disk()
-            level = self._effective_level()
-            if prev_carries and not curr_carries:
-                # Camilla-master → push-mode renderer. Push the new
-                # source first, then clear Camilla only after the
-                # source-side write succeeds. If the push fails,
-                # Camilla remains the safety carrier instead of
-                # exposing a stale/full-scale source.
-                push_ok = await self._set_push_source_for_handoff(
-                    current_source, level,
-                )
-                if push_ok:
-                    carrier_ok = await self._handoff.confirm_push_mode_carrier(
-                        current_source,
-                        level,
-                        context="active_source_transition_push_clear",
-                    )
-                    logger.info(
-                        "active source: %s → %s; pushed %d%% to source "
-                        "slider and confirmed camilla push-mode carrier "
-                        "result=%s",
-                        prev_source.value, current_source.value, level,
-                        "accepted" if carrier_ok else "failed",
-                    )
-                else:
-                    await self._handoff.guard_camilla_after_push_failure(
-                        level,
-                        context="active_source_transition_push_degraded",
-                        warning_prefix=(
-                            f"active source: {prev_source.value} → "
-                            f"{current_source.value}; source volume push failed"
-                        ),
-                        guarded_warning_suffix=(
-                            ", keeping camilla guarded at {guard_db:.1f} dB"
-                        ),
-                    )
-            elif curr_carries and not prev_carries:
-                # Push-mode renderer → camilla-master. Hand
-                # effective volume back to camilla so a temporary mute
-                # remains silent while its remembered level is preserved.
-                ok = await self._set_camilla(level)
-                logger.info(
-                    "active source: %s → %s; camilla → %.1f dB (%d%%) "
-                    "result=%s",
-                    prev_source.value, current_source.value,
-                    percent_to_db(level), level,
-                    "accepted" if ok else "failed",
-                )
-            elif not curr_carries:
-                # Push → push (e.g. spotify → bt). Camilla already at
-                # 0 dB; enforce listening_level on the new source. If
-                # the push fails, fall back to Camilla as a safety
-                # carrier because all renderer lanes still flow
-                # through Camilla.
-                push_ok = await self._set_push_source_for_handoff(
-                    current_source, level,
-                )
-                if push_ok:
-                    await self._handoff.confirm_push_mode_carrier(
-                        current_source,
-                        level,
-                        context="active_source_transition_push_push_confirmed",
-                    )
-                    logger.info(
-                        "active source: %s → %s (push→push); pushed "
-                        "%d%% to new source slider",
-                        prev_source.value, current_source.value, level,
-                    )
-                else:
-                    await self._handoff.guard_camilla_after_push_failure(
-                        level,
-                        context="active_source_transition_push_push_degraded",
-                        warning_prefix=(
-                            f"active source: {prev_source.value} → "
-                            f"{current_source.value} (push→push); source "
-                            "volume push failed"
-                        ),
-                        guarded_warning_suffix=(
-                            ", camilla guarded at {guard_db:.1f} dB"
-                        ),
-                    )
-            else:
-                # Idle ↔ AirPlay: both are camilla-master modes, so
-                # camilla already carries listening_level.
-                logger.debug(
-                    "active source: %s → %s (no camilla change)",
-                    prev_source.value, current_source.value,
-                )
-        # Carrier handoffs change the downstream attenuation algebra even when
-        # the canonical level is unchanged. Publish after releasing the
-        # mutation lock; snapshotting re-acquires it, while socket IPC does not.
-        await self.publish_volume_context()
+        """The observer's source transition: :meth:`VolumeHandoff.apply_transition`."""
+        await self._handoff.apply_transition(prev_source, current_source)
 
     def note_voice_session(self, active: bool) -> None:
         """Called by voice_daemon's WakeLoop on session start/end. While a
@@ -1298,18 +1140,6 @@ class VolumeCoordinator:
             self._persistence.save_now(db)
         return bool(ok)
 
-    async def _set_push_source_for_handoff(
-        self, source: Source, level: int,
-    ) -> bool:
-        if source == Source.SPOTIFY:
-            return bool(await self._set_spotify(level))
-        if source == Source.BLUETOOTH:
-            return bool(await self._set_bluetooth(level))
-        logger.warning(
-            "source handoff: %s is not a push-mode source", source.value,
-        )
-        return False
-
     def _persisted_main_volume_db(self) -> float | None:
         record = self._persistence.load()
         return record.main_volume_db if record is not None else None
@@ -1329,32 +1159,22 @@ class VolumeCoordinator:
     # Source-side dispatchers
     # ------------------------------------------------------------------
 
-    async def _set_airplay(self, level: int) -> bool:
-        """AirPlay is camilla-as-master.
-
-        shairport-sync still exposes SetAirplayVolume, but modern
-        iOS/macOS AirPlay 2 sessions often omit DACP-ID/Active-Remote
-        and receiver-originated volume reflection silently no-ops, so
-        this direction stays closed (ADR-0176): a JTS-side volume change
-        moves CamillaDSP and leaves the sender's slider where it was.
-        The sender's slider reaches us the other way, through shairport's
-        volume hook (ADR-0206).
-        """
-        return await self._set_camilla(level)
-
-    async def _set_spotify(self, level: int) -> bool:
-        ok = await volume_push_sources.push_spotify_volume(
-            self._spotify_router, self._spotify_device_name, level,
-        )
+    async def _push_source(self, source: Source, level: int) -> bool:
+        """Push `level` to a push-mode source's own slider; stamp the echo."""
+        if source == Source.SPOTIFY:
+            ok = await volume_push_sources.push_spotify_volume(
+                self._spotify_router, self._spotify_device_name, level,
+            )
+        elif source == Source.BLUETOOTH:
+            ok = await volume_push_sources.push_bluetooth_volume(level)
+        else:
+            logger.warning(
+                "source handoff: %s is not a push-mode source", source.value,
+            )
+            return False
         if ok:
-            self._stamp_outbound(Source.SPOTIFY)
-        return ok
-
-    async def _set_bluetooth(self, level: int) -> bool:
-        ok = await volume_push_sources.push_bluetooth_volume(level)
-        if ok:
-            self._stamp_outbound(Source.BLUETOOTH)
-        return ok
+            self._stamp_outbound(source)
+        return bool(ok)
 
     async def _set_camilla(self, level: int) -> bool:
         db = percent_to_db(level)
