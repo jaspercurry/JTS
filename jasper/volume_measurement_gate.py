@@ -60,7 +60,7 @@ class MeasurementGate:
         """
         if not self.active:
             return False
-        held_for = voice_measurement._measurement_monotonic() - self._active_at
+        held_for = voice_measurement.measurement_monotonic() - self._active_at
         if held_for < voice_measurement.MEASUREMENT_AUTOCLEAR_SEC:
             return True
         if not self._lapse_logged:
@@ -114,5 +114,5 @@ class MeasurementGate:
         async with self.write_lock:
             self.active = bool(active)
             if self.active:
-                self._active_at = voice_measurement._measurement_monotonic()
+                self._active_at = voice_measurement.measurement_monotonic()
                 self._lapse_logged = False

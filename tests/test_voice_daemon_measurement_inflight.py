@@ -420,7 +420,7 @@ async def test_drain_timeout_stays_ok_inside_one_setup_budget(
     out is additive `drained=false` evidence: an OLD coordinator sees only
     `result=ok`, so it still renews and sends MEASURE_RESUME."""
     clock = FakeClock()
-    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock.monotonic)
+    monkeypatch.setattr(measurement_hold_mod, "measurement_monotonic", clock.monotonic)
 
     async def guard(active: bool) -> None:
         if active:
@@ -531,7 +531,7 @@ async def test_uds_setup_expiry_rolls_back_inside_the_declared_total(
 ) -> None:
     """The wire answers non-ok only after local rollback, inside the total."""
     clock = FakeClock()
-    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock.monotonic)
+    monkeypatch.setattr(measurement_hold_mod, "measurement_monotonic", clock.monotonic)
 
     async def guard(active: bool) -> None:
         clock.now += 0.40 if active else 0.10
@@ -731,7 +731,7 @@ async def test_lease_refresh_joins_stale_auto_clear_before_return(monkeypatch) -
 async def test_renewal_timeout_releases_lock_for_auto_clear(monkeypatch, caplog) -> None:
     """An expiring setup cannot starve the generation-bound backstop."""
     clock = FakeClock()
-    monkeypatch.setattr(measurement_hold_mod, "_measurement_monotonic", clock.monotonic)
+    monkeypatch.setattr(measurement_hold_mod, "measurement_monotonic", clock.monotonic)
     safety_sleep = _Hold("renewed measurement lease expiry")
     monkeypatch.setattr(measurement_hold_mod, "_measurement_safety_sleep", safety_sleep)
 

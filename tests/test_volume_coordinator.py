@@ -1781,7 +1781,7 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
     later window that strands its own flag lapses, and says so, again.
     """
     now = [0.0]
-    monkeypatch.setattr(voice_measurement, "_measurement_monotonic", lambda: now[0])
+    monkeypatch.setattr(voice_measurement, "measurement_monotonic", lambda: now[0])
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
     )
@@ -1820,7 +1820,7 @@ async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
     IS the clock the pause runs on — so it may clear what it finds lapsed.
     """
     now = [0.0]
-    monkeypatch.setattr(voice_measurement, "_measurement_monotonic", lambda: now[0])
+    monkeypatch.setattr(voice_measurement, "measurement_monotonic", lambda: now[0])
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=0.0, level=70, mark_user_change=True,
     )
