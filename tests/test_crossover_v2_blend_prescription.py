@@ -212,6 +212,7 @@ def test_a_missing_state_file_is_reported_not_papered_over(tmp_path):
 
 
 @pytest.mark.parametrize("needle", [
+    pytest.param("/var/lib/jasper", id="an-absolute-capture-path"),
     pytest.param("my flat, second bedroom", id="household-authored-prose"),
     pytest.param("should-be-redacted", id="an-identity-field-off-the-allowlist"),
 ])
@@ -228,7 +229,12 @@ def test_the_packet_emits_no_path_no_prose_and_nothing_off_the_allowlist(
         "household_findings": [{"at": 1.0, "household_copy": "my flat, second bedroom"}],
         "verify": {"claims": {}},
     })
+    take = _bank_entry_baseline(session)
+    take_path = next(session.rglob(f"positions/{take['take_id']}.json"))
+    banked = json.loads(take_path.read_text())
+    take_path.write_text(json.dumps({**banked, "wav_path": "/var/lib/jasper/commissioning/take.wav"}))
     packet = build_crossover_evidence_packet(session, state_path=state_path)
+    assert packet["entry_baseline"]["available"] is True
     assert needle not in json.dumps(packet)
 
 

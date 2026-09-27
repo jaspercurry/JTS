@@ -528,10 +528,10 @@ _COMPOSED_GRID_POINTS = 512
 def composed_grid(
     band_hz: tuple[float, float], freqs_hz: Sequence[float] | np.ndarray | None
 ) -> np.ndarray:
-    """The axis a composed cascade is read on, for every prescription door.
+    """The axis a composed cascade is read on.
 
-    The DENSER of the evidence's own grid inside the band and a log sweep over
-    it, never whichever happens to be supplied — a coarse axis steps over a
+    The DENSER of the supplied grid inside the band and a log sweep over it,
+    never whichever happens to be supplied — a coarse axis steps over a
     narrow filter's peak (measured: up to 0.43 dB under-read at the eight-bin
     floor), which would make a composed bound a property of the evidence
     document rather than of the filters.
