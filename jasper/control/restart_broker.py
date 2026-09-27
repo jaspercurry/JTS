@@ -139,11 +139,7 @@ MANAGED_UNITS = frozenset({
     CAMILLA_SERVICE,
     OUTPUTD_SERVICE,
     # jasper.fanin.coupling_reconcile restarts fan-in to apply a coupling or
-    # USB-combo flip. Caught on jts 2026-06-27 (then via the since-deleted
-    # adaptive output-buffer arm): the restart was rejected ("not in allowlist")
-    # because fan-in had never been broker-restarted before — the unit tests
-    # mocked the broker so they never hit this. Keep in lockstep with the
-    # polkit grant.
+    # USB-combo flip; keep this allowlist in step with the polkit grant.
     FANIN_SERVICE,
     # Root oneshot that captures `jasper-doctor --json` at full fidelity for the
     # /system/diagnostics card — the non-root jasper-control `systemctl start`s
@@ -273,9 +269,9 @@ _SOURCE_INTENT_RECONCILE_UNIT = SOURCE_INTENT_RECONCILE_UNIT
 _CAMILLA_UNIT = CAMILLA_SERVICE
 # jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
 # reconciler whose RemainAfterExit is unset, so every camilla START re-queues
-# that oneshot in full. Measured on jts4 (Pi Zero 2 W, 2026-08-21): the
-# reconciler took 25.5-26.0 s inside camilla restarts of 30.307 / 28.675 /
-# 28.723 s. Its caller derives its bound from the reconciler's declared 50 s
+# that oneshot in full. On jts4 (Pi Zero 2 W), the reconciler took
+# 25.5-26.0 s inside 28.675-30.307 s camilla restarts. Its caller derives
+# its bound from the reconciler's declared 50 s
 # ceiling plus camilla's own 90 s plus a margin; clamping that back to the
 # ordinary 120 s here would re-create exactly the false timeout the derived
 # bound exists to remove. Mirrors

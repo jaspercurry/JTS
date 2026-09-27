@@ -171,8 +171,7 @@ class ShairportSupervisor:
         # wants the unit running. /sources/ turns AirPlay off with
         # `systemctl disable --now`; counting those refused connections
         # would end in a restart that revives a deliberately-disabled
-        # source (the 2026-07-10 gate_bypass regression). Checked only
-        # on failure so the healthy path stays subprocess-free.
+        # source. Checked only on failure so the healthy path stays subprocess-free.
         if await self.is_shairport_unit_disabled():
             if not self.unit_disabled:
                 log_event(

@@ -6,8 +6,7 @@
 
 The grouping reconciler converges a bond at RECONCILE TIME (boot,
 wizard save, deploy). This supervisor closes the runtime gap between
-reconciles — the two silence classes observed during the 2026-06-11
-bring-up, both of which left every systemd unit green:
+reconciles: both silence classes below can leave every systemd unit green:
 
   1. **Round-trip starvation.** The member's snapclient stops feeding
      the dac-content return ring (process gone, wedged, or the
