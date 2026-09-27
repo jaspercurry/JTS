@@ -154,7 +154,7 @@ def frequency_run_from_capture_prediction(
                 responses.append(item)
         difference = _series(
             "reconstruction:difference",
-            "Reconstruction level-aligned difference (predicted − measured)",
+            "Reconstruction level-aligned difference (measured − predicted)",
             reconstruction,
             "delta_db",
             "compared_band_hz",

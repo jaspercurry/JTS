@@ -22,7 +22,7 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.prediction_document import CAPTURE_PREDICTION_KIND
 from jasper.speaker_layout import measurement_target_id
 
-from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
+from .forward_model import ForwardModelError, PredictedSum, acceptance_block, measured_minus_predicted_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
@@ -130,7 +130,7 @@ def prediction_record(basis: DiagnosticBasis, transfer: np.ndarray) -> Predicted
 def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray) -> dict:
     predicted = prediction_record(basis, transfer)
     actual = basis.transfers["summed"]
-    delta = predicted_minus_measured_db(
+    delta = measured_minus_predicted_db(
         predicted, basis.freqs_hz, 20 * np.log10(np.maximum(abs(actual), 1e-12)),
         band_hz=basis.band_hz,
     )
@@ -144,7 +144,7 @@ def compare_transfer(basis: DiagnosticBasis, transfer: np.ndarray) -> dict:
     reference = np.sum([abs(basis.transfers[role]) for role in basis.branches], axis=0)
     reliable = (np.minimum(abs(transfer), abs(actual)) > np.max(reference) * 1e-3)
     reliable &= np.minimum(abs(transfer), abs(actual)) > reference * .01
-    phase = np.degrees(np.angle(transfer * actual.conjugate()))
+    phase = np.degrees(np.angle(actual * transfer.conjugate()))
     delta["phase"] = {
         "status": "available" if np.any(reliable) else "unavailable",
         "rms_deg": float(np.sqrt(np.mean(phase[reliable]**2))) if np.any(reliable) else None,

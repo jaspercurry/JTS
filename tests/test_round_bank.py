@@ -864,7 +864,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
                 assert [delta[k] for k in ("mean_abs_db", "max_abs_db", "rms_db")] == pytest.approx([0] * 3, abs=0.05)
                 if table["deg"] == 0 and row["window"] == "gated" and delta["a"] == "candidate-a":
                     assert delta["b"] == "candidate-b"
-                    assert delta["level_offset_db"] == pytest.approx(-6.0, abs=0.05)
+                    assert delta["level_offset_db"] == pytest.approx(6.0, abs=0.05)
 
 
 @pytest.mark.parametrize("failure", [False, True])

@@ -175,7 +175,7 @@ def _own_deviation(curve: _Curve, band_hz: tuple[float, float]) -> dict[str, Any
 def _pair_delta(
     a: _Curve, b: _Curve, band_hz: tuple[float, float]
 ) -> dict[str, Any] | None:
-    """``a`` minus ``b`` on ``a``'s grid, level offset removed and published.
+    """``b`` minus ``a`` (ADR-0355's order) on ``a``'s grid, level offset removed and published.
 
     The level comes off by
     :func:`~jasper.audio_measurement.series_stats.curve_difference`: the raw
@@ -184,7 +184,8 @@ def _pair_delta(
     ``level_offset_db`` is what was removed, read on ``a``'s grid, so it is not
     the two published ``median_db`` values differenced.
     """
-    difference = curve_difference(a.freqs_hz, a.magnitude_db, b.freqs_hz, b.magnitude_db, band_hz=band_hz)
+    b_db = np.interp(a.freqs_hz, b.freqs_hz, b.magnitude_db)
+    difference = curve_difference(a.freqs_hz, b_db, a.freqs_hz, a.magnitude_db, band_hz=band_hz)
     if difference is None:
         return None
     return {

@@ -86,14 +86,14 @@ class PredictedSum:
         }
 
 
-def predicted_minus_measured_db(
+def measured_minus_predicted_db(
     predicted: PredictedSum,
     measured_freqs_hz: Any,
     measured_db: Any,
     *,
     band_hz: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
-    """The predicted-vs-measured delta, as facts and no verdict.
+    """Measured minus predicted (ADR-0355's b − a) on the prediction's grid, as facts and no verdict.
 
     The level comes off before the shapes are compared, by
     :func:`~jasper.audio_measurement.series_stats.curve_difference`: a forward
@@ -121,7 +121,8 @@ def predicted_minus_measured_db(
     if band_hz is not None:
         lo_hz = max(lo_hz, float(band_hz[0]))
         hi_hz = min(hi_hz, float(band_hz[1]))
-    difference = curve_difference(predicted.freqs_hz, predicted.predicted_db, measured_grid, measured_curve,
+    measured_on_grid = np.interp(predicted.freqs_hz, measured_grid, measured_curve)
+    difference = curve_difference(predicted.freqs_hz, measured_on_grid, predicted.freqs_hz, predicted.predicted_db,
                                   band_hz=(lo_hz, hi_hz))
     if difference is None:
         raise ForwardModelError(
@@ -136,8 +137,8 @@ def predicted_minus_measured_db(
         "compared_points": summary["bins"],
         "level_offset_db": difference.level_offset_db,
         "freqs_hz": [float(hz) for hz in difference.freqs_hz],
-        "predicted_db": difference.curve_db.tolist(),
-        "measured_db": difference.against_db.tolist(),
+        "predicted_db": difference.against_db.tolist(),
+        "measured_db": difference.curve_db.tolist(),
         "delta_db": [float(db) for db in delta],
         "max_abs_db": summary["max_abs_db"],
         "rms_db": summary["rms_db"],
@@ -154,5 +155,5 @@ __all__ = [
     "ForwardModelError",
     "PredictedSum",
     "acceptance_block",
-    "predicted_minus_measured_db",
+    "measured_minus_predicted_db",
 ]

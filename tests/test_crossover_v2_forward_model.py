@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_NOT_RUN,
     ForwardModelError,
     PredictedSum,
-    predicted_minus_measured_db,
+    measured_minus_predicted_db,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
 from jasper.active_speaker.crossover_v2.round_captures import (
@@ -545,13 +545,13 @@ def test_a_pure_level_difference_is_reported_as_offset_not_as_shape_error() -> N
     predicted = PredictedSum(freqs, np.full(freqs.size, 6.0), BAND, "take")
     offset_db = 7.5
 
-    delta = predicted_minus_measured_db(
+    delta = measured_minus_predicted_db(
         predicted, freqs, predicted.predicted_db - offset_db
     )
 
     assert delta["predicted_db"] == pytest.approx(predicted.predicted_db)
     assert delta["measured_db"] == pytest.approx(predicted.predicted_db - offset_db)
-    assert delta["level_offset_db"] == pytest.approx(offset_db)
+    assert delta["level_offset_db"] == pytest.approx(-offset_db)
     assert delta["max_abs_db"] == pytest.approx(0.0, abs=1e-9)
     assert delta["rms_db"] == pytest.approx(0.0, abs=1e-9)
     assert delta["compared_band_hz"] == [BAND[0], BAND[1]]
@@ -560,18 +560,18 @@ def test_a_pure_level_difference_is_reported_as_offset_not_as_shape_error() -> N
 
 
 def test_a_shape_difference_survives_the_level_normalisation() -> None:
-    """The delta reports SHAPE: a single-bin bump on the measured curve comes
-    back at its own size, on the bin it was put on."""
+    """The delta reports SHAPE: a single-bin dip on the measured curve comes
+    back at its own size and sign, on the bin it was put on."""
 
     freqs = _grid()
     predicted = PredictedSum(freqs, np.full(freqs.size, 6.0), BAND, "take")
     measured = predicted.predicted_db.copy()
     measured[100] -= 3.0
 
-    delta = predicted_minus_measured_db(predicted, freqs, measured)
+    delta = measured_minus_predicted_db(predicted, freqs, measured)
 
     assert delta["max_abs_db"] == pytest.approx(3.0)
-    assert delta["delta_db"][100] == pytest.approx(3.0)
+    assert delta["delta_db"][100] == pytest.approx(-3.0)
     assert delta["freqs_hz"][100] == pytest.approx(float(freqs[100]))
 
 
@@ -580,7 +580,7 @@ def test_a_measured_curve_that_is_not_a_curve_refuses() -> None:
     predicted = PredictedSum(freqs, np.full(freqs.size, 6.0), BAND, "take")
 
     with pytest.raises(ForwardModelError):
-        predicted_minus_measured_db(predicted, freqs, freqs[:-1])
+        measured_minus_predicted_db(predicted, freqs, freqs[:-1])
 
 
 @pytest.fixture

@@ -141,7 +141,8 @@ deltas per role. `window` is present only when reading the frequency view. A
 table is `trusted` only when each curve's own gate windowed it
 (`gate_window_ms`); its `band_hz` then starts at their trusted floor. Only a
 trusted table sets the `max_abs_delta_*` headline. `omitted`, `superseded_take_ids` and `takes_naming_no_candidate`
-name every take no table compares. `level_offset_db` is median A minus median B on A's grid;
+name every take no table compares. Each delta is B minus A, as in `compare`: `level_offset_db`
+is the median of B minus A over `band_hz`, on A's grid;
 `mean_abs_db`, `max_abs_db`, `max_abs_hz`, and `rms_db` describe the remaining
 shape difference over `band_hz`, with `bins` giving the count. Base keeps its
 fingerprint. These numbers do not rank candidates or establish a repeat floor.
