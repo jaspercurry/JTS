@@ -46,7 +46,7 @@ import contextlib
 import json
 import logging
 import time as _time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jasper.log_event import log_event
 from jasper.secret_redaction import redact_secrets
@@ -64,6 +64,9 @@ from ._supervisor import (
 from .input_policy import NOISE_REDUCTION_FAR, NOISE_REDUCTION_NEAR
 from .session import AudioOutChunk, TurnCapture
 from .trace import emit as _trace_emit
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -443,10 +446,7 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
         self._proactive_buffer_sec = proactive_buffer_sec
         self._connect_factory = connect_factory
         self._base_url = base_url
-        # Lazy SDK client — only built when ``connect_factory`` is None.
-        # We do this lazily so test setups can construct the connection
-        # object without the openai package installed.
-        self._client = None
+        self._client: AsyncOpenAI | None = None
 
         # SDK connection + context manager (cleared during reconnect).
         self._session = None
@@ -654,13 +654,8 @@ class OpenAIRealtimeConnection(BaseLiveConnection):
             return self._connect_factory
         if self._client is None:
             from openai import AsyncOpenAI
-            kwargs = {"api_key": self._api_key}
-            if self._base_url:
-                # Used by GrokRealtimeConnection via its docs-stated
-                # OpenAI-compatible endpoint.
-                kwargs["websocket_base_url"] = self._base_url
-            self._client = AsyncOpenAI(**kwargs)
-        return lambda model: self._client.realtime.connect(model=model)
+            self._client = AsyncOpenAI(api_key=self._api_key, websocket_base_url=self._base_url or None)
+        return self._client.realtime.connect
 
     async def _open_session_attempt(self) -> None:
         connect_call = self._resolve_connect_call()

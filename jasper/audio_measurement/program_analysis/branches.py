@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read complete-tune branch diagnostics without fitting another crossover."""
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -28,11 +26,12 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
     records = []
     for seg, (ir, pre) in zip(segments, impulses):
         role = seg.role or "summed"
+        band = _radiated_band_hz(seg)
         shift = epsilon * seg.start_sample
         response = driver_response(
             role, ir, sample_rate, calibration=calibration, ambient_report=None,
             fc_hz=priors.crossover_fc_hz, n_fft=n_fft,
-            radiated_band_hz=_radiated_band_hz(seg), preserve_timing=True,
+            radiated_band_hz=band, preserve_timing=True,
             geometry=geometry,
         )
         # Remove accumulated clock drift, retaining physical branch delay.
@@ -45,7 +44,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
             "input_channel": seg.channel,
             "scheduled_start_sample": seg.start_sample, "pre_guard_samples": pre,
             "clock_shift_samples": shift, "gate": response.gating,
-            "band_hz": list(_radiated_band_hz(seg)),
+            "band_hz": list(band) if band is not None else None,
             "impulse": ir[:pre + round(.1 * sample_rate)].tolist(),
         })
     pilots, linearity, channel_map, pilot_snr = _pilot_verdicts(
