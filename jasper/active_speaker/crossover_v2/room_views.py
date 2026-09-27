@@ -29,13 +29,15 @@ from jasper.audio_measurement.measurement_geometry import boundary_prior, load_d
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.json_fields import finite_float
+from ..measurement_programs import PURPOSE_SPEAKER
 from ..run_manifest import room_sets, view_sets
 
 from .evidence_packet.incumbent import applied_profile_source
+from .journey import PHASE_LATERAL, PHASE_MEASURE
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
-from .record_index import measurement_documents
+from .record_index import kept_measurements
 from .round_inputs import RoundViewsError
 
 #: A feature is a local excursion at least this deep against the local level,
@@ -93,9 +95,9 @@ class Ceiling:
 
 
 def room_ceiling(bundle_dir: Path) -> Ceiling:
-    """The highest trusted floor disclosed by a gated take in this round."""
+    """The highest trusted floor disclosed by a gated speaker take the round kept (ADR-0256)."""
     floors = []
-    for row, record in measurement_documents(bundle_dir):
+    for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
         gating_applied = record.get("gating_applied")
         if gating_applied is False:
             continue

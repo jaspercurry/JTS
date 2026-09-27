@@ -19,7 +19,6 @@ from typing import Any
 
 import numpy as np
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.json_fields import sha256_file
 
 from jasper.audio_measurement.evidence_reasons import (
@@ -37,6 +36,7 @@ from jasper.audio_measurement.evidence_reasons import (
     PROGRAM_MISSING,
     ROUND_SHAPE_INADMISSIBLE,
 )
+from ...measurement_programs import PURPOSE_SPEAKER
 from ..evidence_packet.offline_reads import RING_SIDECAR_GLOB
 from ..journey import (
     PHASE_CLOUD_VERIFY,
@@ -45,14 +45,10 @@ from ..journey import (
 )
 from ..position_cycle import (
     parse_curve_magnitude,
-    read_take_curves,
+    take_curves,
 )
-from ..record_index import (
-    Measurement,
-    bundle_measurements,
-)
+from ..record_index import kept_measurements
 from ..round_captures import radiated_band_of
-from ..spatial import take_stop_id
 
 
 CLASSIFICATION_REFUSAL_REASONS = frozenset({
@@ -385,38 +381,27 @@ class RoundPoseCurve:
 
 
 def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
-    """Every banked lateral-walk pose curve in this bundle, magnitude only.
+    """Every pose curve of a lateral speaker take this bundle's round kept,
+    magnitude only.
 
     ``bundle_dir`` is the commissioning bundle, not the round's own artifact
-    directory. Reused, not re-walked:
-    :func:`~.record_index.bundle_measurements` is the same take index the
-    evidence packet's ``lateral_poses`` block scans, and
-    :func:`~.position_cycle.read_take_curves` is the same banked-curve reader
-    :func:`~.spatial.pose_curve_record` writes. Phase is dropped — a
-    persistence read is magnitude-only.
+    directory. Reused, not re-walked: :func:`~.record_index.kept_measurements`
+    is the take index, and :func:`~.position_cycle.take_curves` the
+    banked-curve reader the delay pair uses. Phase is dropped — a persistence
+    read is magnitude-only.
 
-    One entry per (pose stop, role). **Latest attempt wins, per stop**: a
-    retake's superseded attempts stay banked as the honest walk record, but
-    only the newest readable take speaks for its stop, so a pooling read never
-    averages a retake with the noise it replaced. Empty when this round ran no
-    lateral walk, and never raises, which is what lets :func:`classify_round`
-    tell "no lateral walk" from a directory error.
+    One entry per (kept take, role). The run manifest keeps one take per
+    stop: a retake's superseded attempts stay banked as the honest walk record
+    but never speak for their stop, so a pooling read never averages a retake
+    with the noise it replaced. Empty when this round kept no lateral speaker
+    take, which is what lets :func:`classify_round` tell "no lateral walk"
+    from a directory error.
     """
 
-    artifacts = Path(bundle_dir) / EVIDENCE_ROOT / "artifacts"
-    # Rows arrive in path order, which the zero-padded attempt ids make
-    # chronological, so the last readable write per stop IS the newest
-    # readable attempt.
-    latest_by_stop: dict[str, tuple[Measurement, list[Mapping[str, Any]]]] = {}
-    for row in bundle_measurements(bundle_dir, phase=PHASE_LATERAL):
-        curves = read_take_curves(artifacts / row.path, phase=PHASE_LATERAL)
-        if curves is None:
-            continue
-        latest_by_stop[take_stop_id(Path(row.path).stem)] = (row, curves)
     out: list[RoundPoseCurve] = []
-    for row, curves in latest_by_stop.values():
+    for row, record in kept_measurements(bundle_dir, phases=(PHASE_LATERAL,), purposes=(PURPOSE_SPEAKER,)):
         pose_id = Path(row.path).stem
-        for curve in curves:
+        for curve in take_curves(record) or ():
             role = curve.get("role")
             if not isinstance(role, str):
                 continue

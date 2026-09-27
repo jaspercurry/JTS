@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,21 +105,6 @@ class PositionGeometry:
                 "a pose elevation is a whole number of degrees above mark "
                 f"height, got {self.vertical_deg!r}"
             )
-
-
-_ATTEMPT_SUFFIX = re.compile(r"_a\d+$")
-
-
-def take_stop_id(take_id: str) -> str:
-    """The prompted stop a take measured: its id with the attempt struck.
-
-    Takes sharing a stop id are attempts at one prompted spot and only the
-    newest speaks for it, which is the key "latest attempt wins" supersedes
-    across. An id carrying no attempt suffix is its own stop — true of every
-    id ``run_manifest.RunManifest.allocate_take_id`` mints today; the ``_aNN``
-    suffix this strips is the retired flow pipeline's take-id convention.
-    """
-    return _ATTEMPT_SUFFIX.sub("", take_id)
 
 
 def phase_composition(analysis: Any, *, protection_emitted: bool) -> str:
