@@ -70,7 +70,9 @@ from jasper.active_speaker.crossover_v2.round_captures import (
     REFUSE_RADIATED_BAND_MISSING,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import analysis_grid as sweep_grid
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.cli import round_views as cli
+from tests.run_manifest_fixture import write_bundle_manifest
 
 SR = 48000
 SESSION_ID = "bundle5essi0n"
@@ -1444,10 +1446,8 @@ def _bank_lateral_pose(
     bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
     vertical_deg: int = 0, capture: str = "wired-TEST",
 ) -> None:
-    """Directly write a banked ``positions/<take_id>.json`` -- the exact
-    fields :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
-    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
-    read, real-shaped without going through the retention engine.
+    """Directly write a banked lateral speaker take's ``positions/<take_id>.json``,
+    real-shaped without going through the retention engine.
     """
     from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
@@ -1459,6 +1459,8 @@ def _bank_lateral_pose(
         json.dumps({
             "kind": POSITION_EVIDENCE_KIND,
             "phase": fx.PHASE_LATERAL,
+            "measurement_purpose": PURPOSE_SPEAKER,
+            "take_id": take_id,
             "position_deg": position_deg,
             "vertical_deg": vertical_deg,
             "curves": curves,
@@ -1472,9 +1474,10 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     ``jasper-round-views delay-landscape`` uses, never a second tree-walker.
 
     The stop is banked TWICE -- a superseded first attempt whose curve never
-    swept the feature, then the retake. Latest attempt wins: exactly one
-    persistence entry, the retake's, resolved. An include-all regression
-    would read two poses; an oldest-wins regression would read unresolved.
+    swept the feature, then the retake the run manifest kept. Only the kept
+    take speaks for its stop: exactly one persistence entry, the retake's,
+    resolved. An include-all regression would read two poses; one that read
+    the superseded attempt would read unresolved.
 
     The stop is a RAISED seat, so the entry's pose key carries both halves
     of the pose -- bearing and elevation -- off the banked file.
@@ -1500,6 +1503,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
                 "phase_deg": [0.0] * banked_curve.freqs_hz.size,
             }],
         )
+    write_bundle_manifest(bundle, selected={"lateral_00_a02"})
     code = cli.main(
         ["classify-features", str(bundle), "--at", str(RESONANCE_HZ)]
     )

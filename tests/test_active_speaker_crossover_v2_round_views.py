@@ -32,13 +32,14 @@ from jasper.active_speaker.crossover_v2.gate_sweep import REFUSE_SINGLE_POSE
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import bank_capture_round
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
 from tests.test_crossover_v2_gate_sweep import _pose_ir
@@ -824,12 +825,9 @@ def _bank_lateral_pose(
     curves: list[dict[str, Any]], vertical_deg: int = 0,
     capture: str = "wired-TEST", candidate_id: str = "",
 ) -> None:
-    """Directly write a banked ``positions/<take_id>.json`` lateral-pose
-    take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
-    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
-    read, real-shaped without going through the retention engine. Mirrors
-    ``test_crossover_v2_feature_classifier.py``'s own fixture builder for
-    the same take shape.
+    """Directly write a banked lateral speaker take's ``positions/<take_id>.json``,
+    real-shaped without going through the retention engine, and a run
+    manifest keeping every take banked so far.
     """
     positions_dir = (
         session_dir / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
@@ -838,11 +836,13 @@ def _bank_lateral_pose(
     (positions_dir / f"{take_id}.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND,
         "phase": PHASE_LATERAL,
+        "measurement_purpose": PURPOSE_SPEAKER,
         "position_deg": position_deg,
         "vertical_deg": vertical_deg,
         "candidate_id": candidate_id,
         "curves": curves,
     }))
+    write_bundle_manifest(session_dir)
 
 
 def _summed_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict[str, Any]:
