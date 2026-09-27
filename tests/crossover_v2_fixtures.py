@@ -1133,7 +1133,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "applied",
     "attempts_loop",
     "candidate",
-    "cloud",
     "evidence",
     "expected_post_apply_offset_db",
     "failure",

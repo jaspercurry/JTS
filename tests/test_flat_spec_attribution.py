@@ -38,7 +38,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_envelope_v2 import _flatness_lines_from_block
 from jasper.active_speaker.flat_spec import (
     REFERENCE_BAND_HZ,
     SPEC_BANDS,
@@ -408,60 +407,6 @@ def test_the_split_adds_up_bin_for_bin():
         # of each sign -- the band's distance from the frame can never read
         # SMALLER than where the band sits.
         assert abs(band.max_deviation_db) >= abs(band.level_deviation_db) - 1e-12
-
-
-# --------------------------------------------------------------------------- #
-# the surfaces that render it
-# --------------------------------------------------------------------------- #
-
-
-#: Persisted flatness blocks, as the retired cloud gauge banked them for
-#: ``_dark_tweeter(5.0)`` and for a flat curve on this module's axis.
-_DARK_TWEETER_5DB_BLOCK = {'max_db': -5.103116531753232, 'max_hz': 9656.25, 'max_band_hz': [8000.0, 16000.0], 'reference_band_hz': [250.0, 2000.0], 'tolerance_db': 2.5, 'max_band_level_deviation_db': -5.01440917662902, 'max_band_ripple_db': 0.11057649778803302, 'rms_db': 4.71564638464755, 'n_bins': 672, 'n_excluded': 0, 'evaluable': True, 'passed': False, 'tilt': {'step_db': 5.01440917662902, 'high_band_hz': [250.0, 2000.0], 'low_band_hz': [8000.0, 16000.0], 'n_bands': 3, 'evaluable': True}}
-_FLAT_BLOCK = {'max_db': 0.0, 'max_hz': 257.8125, 'max_band_hz': [250.0, 2000.0], 'reference_band_hz': [250.0, 2000.0], 'tolerance_db': 1.5, 'max_band_level_deviation_db': 0.0, 'max_band_ripple_db': 0.0, 'rms_db': 0.0, 'n_bins': 672, 'n_excluded': 0, 'evaluable': True, 'passed': True, 'tilt': {'step_db': 0.0, 'high_band_hz': [250.0, 2000.0], 'low_band_hz': [2000.0, 8000.0], 'n_bands': 3, 'evaluable': True}}
-
-
-def test_the_household_lines_say_the_band_is_flat_and_names_the_real_step():
-    block = dict(_DARK_TWEETER_5DB_BLOCK)
-    lines = _flatness_lines_from_block(block)
-    rendered = " | ".join(lines)
-
-    # The low-mid anchor means the pointer itself now names a genuinely
-    # deviant band (the darkened tweeter octave), not the flat woofer
-    # #1857 was filed about...
-    assert "flatness -5.10 dB from the 250–2000 Hz reference mean" in rendered
-    # ...and the split still says exactly how much of that is the band's own
-    # level versus what the curve does inside it.
-    assert "-5.01 dB is where the whole 8000–16000 Hz band sits" in rendered
-    assert "its own worst excursion from that level is +0.11 dB" in rendered
-    assert "band levels differ by 5.01 dB, a reading no reference choice moves" in rendered
-    assert "250–2000 Hz sits above 8000–16000 Hz" in rendered
-
-
-def test_a_block_from_an_older_build_renders_neither_attribution_line():
-    """Absent keys mean absent lines — never a line built around a missing
-    half, and never a fabricated zero."""
-    block = dict(_DARK_TWEETER_5DB_BLOCK)
-    legacy = {
-        key: value for key, value in block.items()
-        if key not in ("tilt", "max_band_level_deviation_db", "max_band_ripple_db")
-    }
-    lines = _flatness_lines_from_block(legacy)
-    assert any("flatness -5.10 dB from" in line for line in lines)
-    assert not any("band levels differ by" in line for line in lines)
-    assert not any("is where the whole" in line for line in lines)
-
-
-def test_a_level_tilt_renders_no_direction_it_cannot_show():
-    """At 0.00 dB the printed step supports no ordering, so the "sits above"
-    clause is dropped rather than asserting one."""
-    block = dict(_FLAT_BLOCK)
-    line = next(
-        line for line in _flatness_lines_from_block(block)
-        if "band levels differ by" in line
-    )
-    assert line.endswith("a reading no reference choice moves")
-    assert "sits above" not in line
 
 
 def test_module_constants_still_describe_the_shipped_frame():

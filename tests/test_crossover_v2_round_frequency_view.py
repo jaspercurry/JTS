@@ -38,7 +38,7 @@ from jasper.active_speaker.measurement_document import frequency_run_from_docume
 from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker import frequency_plot
-from jasper.active_speaker.crossover_envelope_v2 import chart_cloud_status, prediction_status
+from jasper.active_speaker.crossover_envelope_v2 import prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker import measurement_archive
 from tests.crossover_v2_banked_round import bank_executor_take
@@ -98,7 +98,7 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
 
 
 @pytest.mark.parametrize("reference", [-24, None])
-def test_saved_live_and_predicted_views_share_display_rules(reference):
+def test_saved_and_predicted_views_share_display_rules(reference):
     raw = {"freqs_hz": [50, 150, 200, 500, 1000, 20000],
            "magnitude_db": [-29, -25, -24, -23, -22, -21], "band_hz": [100, 10000]}
     metadata = {"reference_db": reference, "validity_floor_hz": 143, "trusted_floor_hz": 357,
@@ -107,17 +107,11 @@ def test_saved_live_and_predicted_views_share_display_rules(reference):
                               reference_db=reference, **raw)
     assert series is not None
     saved = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata=metadata))
-    pipeline = {**metadata, "available": True, "curve": raw, "spec": {"reference_db": reference},
-                "merged_excluded_bands_hz": metadata["excluded_bands_hz"]}
-    shifted = {**pipeline, "curve": {**raw, "magnitude_db": [db - 10 for db in raw["magnitude_db"]]},
-               "spec": {"reference_db": reference - 10 if reference is not None else None}}
-    live = chart_cloud_status({"cloud_verify": {"pipeline": pipeline}, "cloud_measure": {"pipeline": shifted}})
     predicted = prediction_status({"verify_priors": {"predicted_sum": raw, "predicted_spec": {
         **metadata, "excluded_intervals": metadata["excluded_bands_hz"],
     }}})
     display = saved["runs"][0]["series"][0]["display"]
-    assert live["cloud_verify"]["curve"]["display"] == predicted["curve"]["display"] == display
-    assert live["cloud_measure"]["curve"]["display"] == display
+    assert predicted["curve"]["display"] == display
     assert display == {
         "deviation_db": [None, -1, 0, 1, 2, None] if reference is not None else [None] * 6,
         "valid_band_hz": [143, 10000],

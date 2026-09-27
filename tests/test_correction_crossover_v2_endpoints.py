@@ -566,436 +566,67 @@ def test_status_publishes_the_banked_seat_level_once(banked, request):
     load.assert_called_once()
 
 
-def test_state_cloud_block_is_the_compact_projection_of_the_durable_pipeline():
-    """PR-4's ``/state`` surface: per band, only ``within_target``; the
-    excluded-interval COUNT, not the intervals; the geometry verdict's two
-    household-relevant bits. The full per-null τ/r/evidence numbers stay in
-    the durable state's own ``pipeline`` sub-key (not re-derived here) and
-    the bundle artifact — this is the dashboard-sized read, not a third
-    owner of the same data."""
-    v2state.save_v2_state({
-        "session_id": "cap_state",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-                "positions": [],
-                "pipeline": {
-                    "available": True,
-                    "merged_excluded_bands_hz": [[8000.0, 9000.0], [11000.0, 12000.0]],
-                    "spec": {
-                        "overall_within_target": False,
-                        "reference_db": -27.27,
-                        "bands": [
-                            {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
-                             "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
-                             "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
-                             "tolerance_db": 1.5},
-                            {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
-                             "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
-                             "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
-                             "tolerance_db": 2.0},
-                            # The top band graded past its NOMINAL 16 kHz edge:
-                            # this session's microphone is trusted to 20 kHz.
-                            {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
-                             "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
-                             "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
-                             "tolerance_db": 2.5},
-                        ],
-                    },
-                    "flatness": {
-                        "max_db": -4.85, "max_hz": 11480.0,
-                        "max_band_hz": [8000.0, 16000.0], "tolerance_db": 2.5,
-                        "rms_db": 1.37, "n_bins": 900, "n_excluded": 42,
-                        "evaluable": True, "passed": False,
-                    },
-                    "validity_floor_hz": 187.5,
-                },
-            },
-            PHASE_CLOUD_VERIFY: {
-                "geometry": {"locked": False, "reason": "geometry_insufficient_usable_estimates"},
-                "positions": [],
-                "pipeline": {"available": False, "reason": "combine_failed"},
-            },
-        },
-    })
-
-    block = v2status.crossover_v2_status_block()
-    cloud = block["cloud"]
-    assert set(cloud) == {PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY}
-
-    measure = cloud[PHASE_CLOUD_MEASURE]
-    assert measure["geometry_locked"] is True
-    assert measure["thin_evidence"] is False
-    # Computed straight from the geometry verdict (SF-1 review finding,
-    # 2026-07-27), not read out of the pipeline's own copy — the fixture
-    # above deliberately carries no ``pipeline.geometry_guidance`` key to
-    # prove that.
-    assert measure["geometry_guidance"] == (
-        "The measured echo pattern did not change between microphone "
-        "positions. Spreading the microphone further apart next time may "
-        "help JTS tell the speaker's own sound apart from the room's."
-    )
-    assert measure["overall_within_target"] is False
-    assert measure["excluded_interval_count"] == 2
-    # Per-band ``max_deviation_db``/``tolerance_db`` ride along
-    # (flat-linearization PR-5 N-3 / PR-7): `/state` is what a chart reads,
-    # and per-band numbers missing from the only projection a page sees is
-    # the pressure that grows a second derivation downstream.
-    #
-    # ``max_deviation_hz`` and the GRADED edges ride along for the same
-    # reason: a dB with no frequency names no defect to fix, and the top
-    # band's graded edge no longer equals its nominal one -- a row printing
-    # only ``f_hi_hz`` here would say 16 kHz about a band graded to 20.
-    assert measure["spec_bands"] == [
-        {"f_lo_hz": 250.0, "f_hi_hz": 2000.0, "within_target": True,
-         "graded_lo_hz": 357.14, "graded_hi_hz": 2000.0,
-         "max_deviation_db": 1.02, "max_deviation_hz": 412.0,
-         "tolerance_db": 1.5},
-        {"f_lo_hz": 2000.0, "f_hi_hz": 8000.0, "within_target": True,
-         "graded_lo_hz": 2000.0, "graded_hi_hz": 8000.0,
-         "max_deviation_db": -1.41, "max_deviation_hz": 5100.0,
-         "tolerance_db": 2.0},
-        {"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False,
-         "graded_lo_hz": 8000.0, "graded_hi_hz": 20000.0,
-         "max_deviation_db": -4.85, "max_deviation_hz": 11480.0,
-         "tolerance_db": 2.5},
-    ]
-    # PR-7: the report-level reference the tolerance corridor is centered on
-    # rides the entry too, copied verbatim like everything else here.
-    assert measure["reference_db"] == -27.27
-    # The gauge is copied verbatim; the clamp is separable from interference
-    # on this live surface (PR-5 SF-2), so a reader can tell a combed room
-    # apart from one capture's collapsed gate.
-    assert measure["flatness"]["max_db"] == -4.85
-    assert measure["flatness"]["rms_db"] == 1.37
-    assert measure["validity_floor_hz"] == 187.5
-
-    # A group whose pipeline never became available (combine_failed) reports
-    # the honest "nothing to disclose" shape, never a fabricated pass --
-    # excluded_interval_count is None, not 0 (SF-1 review finding,
-    # 2026-07-27): 0 would read as "the pipeline looked and found nothing",
-    # a fabricated-clean claim for a pipeline that never ran.
-    verify = cloud[PHASE_CLOUD_VERIFY]
-    assert verify["geometry_locked"] is False
-    assert verify["overall_within_target"] is None
-    assert verify["excluded_interval_count"] is None
-    assert verify["spec_bands"] == []
-    assert verify["geometry_guidance"] == ""
-    # Same rule for the two PR-5 keys: unavailable means unknown, never a
-    # fabricated zero or a floor of 0 Hz.
-    assert verify["flatness"] is None
-    # PR-7: same rule again for the chart's own reference level.
-    assert verify["reference_db"] is None
-    assert verify["validity_floor_hz"] is None
-
-
-def test_state_cloud_reference_db_survives_an_unbounded_json_integer():
-    """#2245: JSON integers are unbounded and ``json`` round-trips one
-    happily (a hand-edited or hostile durable state file), but ``float()``
-    on one that large RAISES ``OverflowError`` rather than returning
-    ``inf`` — on the wizard's poll path, where an escaping conversion is a
-    500 on a plain page load. The same hazard
-    :func:`household_findings_status` already guards (the ``10 ** 400``
-    case in ``test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it``
-    below); ``_finite`` — read here through ``spec.reference_db``, the
-    exact path PR #2242's review found it unreachable-but-real on — now
-    catches it too.
-    """
-    v2state.save_v2_state({
-        "session_id": "cap_overflow",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-                "positions": [],
-                "pipeline": {
-                    "available": True,
-                    "merged_excluded_bands_hz": [],
-                    "spec": {
-                        "overall_within_target": True,
-                        "reference_db": 10 ** 400,
-                        "bands": [],
-                    },
-                },
-            },
-        },
-    })
-
-    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
-    assert measure["reference_db"] is None
-    assert measure["overall_within_target"] is True
-
-
-def test_state_cloud_block_reports_locked_guidance_even_when_pipeline_never_ran():
-    """SF-1 review finding (2026-07-27): a locked group's "spread the mic
-    further" guidance must survive an unrelated downstream pipeline failure,
-    not disappear with it -- geometry locking is decided and RECORDED
-    BEFORE the honest-instrument pipeline ever runs (see
-    ``_close_cloud_group``), so the guidance is a pure function of the
-    geometry verdict alone. Before the fix, an unavailable pipeline
-    defaulted ``geometry_guidance`` to ``""`` regardless of the geometry
-    verdict -- a locked-but-pipeline-failed group silently lost its one
-    actionable piece of copy. Also pins the sibling fix: ``excluded_interval_count``
-    is ``None``, never a fabricated ``0``, when the pipeline never became
-    available."""
-    v2state.save_v2_state({
-        "session_id": "cap_state_locked_unavailable",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {
-                    "locked": True, "reason": "geometry_locked",
-                    "thin_evidence": False,
-                },
-                "positions": [],
-                "pipeline": {"available": False, "reason": "combine_failed"},
-            },
-        },
-    })
-
-    measure = v2status.crossover_v2_status_block()["cloud"][PHASE_CLOUD_MEASURE]
-    assert measure["geometry_locked"] is True
-    assert measure["excluded_interval_count"] is None
-    assert measure["overall_within_target"] is None
-    assert measure["spec_bands"] == []
-    assert measure["geometry_guidance"] == (
-        "The measured echo pattern did not change between microphone "
-        "positions. Spreading the microphone further apart next time may "
-        "help JTS tell the speaker's own sound apart from the room's."
-    )
-
-
-def test_state_cloud_block_is_none_before_any_group_closes():
-    v2state.save_v2_state({"session_id": "cap_fresh"})
-    assert v2status.crossover_v2_status_block()["cloud"] is None
-
-
-def test_provenance_note_reflects_whether_the_group_matches_the_active_session():
-    """The household-facing half of the same marker
-    (``compact_cloud_status``'s ``provenance_note``, PR-7). Three states,
-    told apart rather than collapsed: the stamped producer matches the
-    caller's current session (nothing to say — the chart is fresh); it
-    disagrees (a group carried forward from an earlier session — say so);
-    or there is no stamp at all (a durable state written before this marker
-    existed — unknown, not stale, so an upgrade cannot manufacture a false
-    warning for data nobody ever mis-attributed)."""
-    pipeline = {"available": True, "spec": {"overall_within_target": True, "bands": []}}
-    stamped_state = {
-        PHASE_CLOUD_VERIFY: {
-            "geometry": {"locked": False},
-            "positions": [],
-            "pipeline": pipeline,
-            "session_id": "cap_producer_session",
-        },
-    }
-
-    fresh = v2projection.compact_cloud_status(
-        stamped_state, current_session_id="cap_producer_session",
-    )
-    assert fresh[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-    stale = v2projection.compact_cloud_status(
-        stamped_state, current_session_id="cap_rearm_session",
-    )
-    assert stale[PHASE_CLOUD_VERIFY]["provenance_note"] == (
-        "This chart is from a previous session's measurement — "
-        "re-measure to see this session's own result."
-    )
-
-    legacy_state = {
-        PHASE_CLOUD_VERIFY: {
-            "geometry": {"locked": False}, "positions": [], "pipeline": pipeline,
-        },
-    }
-    legacy = v2projection.compact_cloud_status(
-        legacy_state, current_session_id="cap_rearm_session",
-    )
-    assert legacy[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-    # Backward compatibility: an existing caller that never passes
-    # current_session_id at all (every test seam before this PR) still gets
-    # the honest "unknown" reading, not a crash or a fabricated verdict.
-    no_current = v2projection.compact_cloud_status(stamped_state)
-    assert no_current[PHASE_CLOUD_VERIFY]["provenance_note"] == ""
-
-
-def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
-    """A new VERIFY capture keeps the applied candidate and its cloud evidence.
-
-    B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
-    (the re-arm's ``index_phase_map={1: PHASE_VERIFY}``) has no
-    group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
-    ``None`` for it — but the OLD session-id-gated carry-forward turned that
-    ``None`` into a destructive overwrite of a real prior cloud verdict.
-    One tap of "Try again" (the PRIMARY next_action after a failed verify)
-    used to blank `/state.crossover_v2.cloud`, the envelope's ``cloud`` key,
-    AND make the doctor report "no cloud-measurement session recorded yet"
-    for a session that very much ran.
-
-    Walks: a completed cloud session (durable state seeded, mirroring what
-    ``persist_conductor_state`` would have written) -> the REAL re-arm
-    conductor + the REAL ``persist_conductor_state`` call (the exact
-    production seam the verify-only prepare's ``_open`` uses, mirroring
-    ``test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm``'s
-    own pattern for the way-back pointer) -> asserts all three surfaces
-    (`/state`, the envelope, the doctor) still see the cloud verdict. The
-    candidate assertion also pins #2079's crash/retry write identity: the
-    fingerprint must survive this same new-session rebind so a recovery
-    VERIFY cannot become a second model-error observation.
-    """
+def test_an_old_state_file_with_a_cloud_block_loads_and_drops_it(monkeypatch):
+    """A state file from a build that still ran the cloud groups carries
+    ``cloud`` and ``evidence.cloud_artifacts``. It still loads everywhere, no
+    surface reports or grades that stale block, and the next persist does not
+    carry it. The applied candidate still survives a re-arm's new session id
+    (#2079)."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.cli.doctor import correction
-    from jasper.cli.doctor.correction import check_crossover_v2_cloud_pipeline
 
-    cloud_block = {
-        PHASE_CLOUD_MEASURE: {
-            "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
-            "positions": [{"position_id": "cloud_measure_09", "index": 9, "attempt": 9}],
-            "pipeline": {
-                "available": True,
-                "geometry_guidance": "Spread the mic further.",
-                "merged_excluded_bands_hz": [[8000.0, 9000.0]],
-                "spec": {
-                    "overall_within_target": False,
-                    "bands": [{"f_lo_hz": 8000.0, "f_hi_hz": 16000.0, "within_target": False}],
-                },
-            },
+    passing_group = {
+        "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
+        "positions": [{"position_id": "cloud_verify_09", "index": 9, "attempt": 9}],
+        "pipeline": {
+            "available": True,
+            "merged_excluded_bands_hz": [[8000.0, 9000.0]],
+            "spec": {"overall_within_target": True, "bands": []},
+            "curve": {"freqs_hz": [100.0, 1000.0], "magnitude_db": [0.0, 0.0]},
+            "flatness": {"max_db": 0.4, "evaluable": True, "passed": True},
         },
+        "session_id": "cap_original_session",
     }
     v2state.save_v2_state({
         "session_id": "cap_original_session",
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "candidate": {"fingerprint": "fp-original"},
         "applied": True,
-        "cloud": cloud_block,
+        "cloud": {PHASE_CLOUD_MEASURE: passing_group, PHASE_CLOUD_VERIFY: passing_group},
         "evidence": {
             "bundle_session_id": "bundle-1",
             "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"},
         },
     })
-
-    # The real production seam: the verify-only prepare's _open mints a
-    # conductor bound to a NEW capture session id and immediately persists it
-    # ("Keep the durable candidate/applied facts; rebind the session id.").
-    conductor = CrossoverV2Session(
-        session_id="cap_rearm_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=V2FlowSeams(
-            analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(check=lambda *a, **k: None),
-        ),
-        driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
-        index_phase_map={1: PHASE_VERIFY},
-    )
-    v2state.persist_conductor_state(
-        conductor, failure_code=None, evidence={"bundle_session_id": "bundle-2"},
-    )
-
-    # Surface 1: the durable state itself.
-    state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["candidate"] == {"fingerprint": "fp-original"}
-    assert state["cloud"] == cloud_block
-    assert state["evidence"]["cloud_artifacts"] == {
-        PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"
-    }
-
-    # Surface 2: /state's compact projection.
-    compact = v2status.crossover_v2_status_block()["cloud"]
-    assert compact is not None
-    assert compact[PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-    assert compact[PHASE_CLOUD_MEASURE]["overall_within_target"] is False
-
-    # Surface 3: the envelope.
     monkeypatch.setattr(
         v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)
     )
-    status = {
+
+    block = v2status.crossover_v2_status_block()
+    assert not {"cloud", "cloud_chart"} & set(block)
+    grade = block["post_apply_grade"]
+    assert grade["state"] == v2grade.GRADE_UNVERIFIED
+    assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
+    envelope = build_crossover_envelope_v2({
         "active": True,
         "capture": {"status": "awaiting_capture"},
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2status.crossover_v2_status_block(),
-    }
-    envelope = build_crossover_envelope_v2(status)
-    assert envelope["cloud"] is not None
-    assert envelope["cloud"][PHASE_CLOUD_MEASURE]["geometry_locked"] is True
-
-    # Surface 4 (named "all three" in the review, the doctor makes four):
-    # the doctor no longer reports "no cloud-measurement session recorded".
-    monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
-    r = check_crossover_v2_cloud_pipeline()
-    # A recorded cloud_measure entry means the check no longer takes its
-    # REASON_CLOUD_NOT_RUN "nothing recorded yet" branch; with no
-    # cloud_verify present the spec-fail does not gate, so this stays ok.
-    # The row also folds in the applied-grade finding: this rearm's state IS
-    # applied but has no VERIFY outcome yet, which the fold-in now discloses
-    # rather than staying silent about (the gap the row's own docstring
-    # names).
-    assert r.status == "ok"
-    assert r.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
-
-
-def test_a_session_with_its_own_group_phase_overwrites_stale_prior_cloud():
-    """N5 review finding (2026-07-27): the B1 fix's guard is "carry ``cloud``
-    forward ONLY when THIS conductor's own session has no group phase" — the
-    inverse must also hold, and nothing asserted it before this test (a
-    regression to an unconditional carry-forward would have gone green).
-
-    A conductor whose OWN session DOES include a group phase (a fresh,
-    full — not verify-only — session that has started walking a cloud but
-    has not closed any group of its OWN yet) must report ``cloud`` as
-    honestly ``None`` for THIS session, never silently inheriting a stale
-    verdict from whatever the previous session left behind.
-    """
-    v2state.save_v2_state({
-        "session_id": "cap_stale_prior_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-stale"},
-        "applied": True,
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {
-                "geometry": {"locked": True, "reason": "geometry_locked"},
-                "positions": [
-                    {"position_id": "cloud_measure_09", "index": 9, "attempt": 9}
-                ],
-                "pipeline": {"available": True, "spec": {"overall_within_target": False}},
-            },
-        },
+        "crossover_v2": block,
     })
+    assert not {"cloud", "cloud_chart", "expert_details"} & set(envelope)
+    doctor = correction.check_crossover_v2_cloud_pipeline()
+    assert doctor.status == "ok"
+    assert doctor.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
 
-    # A NEW full session whose own index_phase_map includes a cloud group
-    # phase — mirrors the B1 test's verify-only conductor, but with
-    # PHASE_CLOUD_MEASURE instead of PHASE_VERIFY, so this session's
-    # session_phases DOES overlap GROUP_PHASES. It has not walked far enough
-    # to close that group yet.
-    conductor = CrossoverV2Session(
-        session_id="cap_fresh_session",
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=V2FlowSeams(
-            analyze=lambda *a, **k: None,
-            records=V2RecordPublishers(check=lambda *a, **k: None),
-        ),
-        driver_spacing_m=0.15,
-        accepted_phases=(),
-        applied=False,
-        index_phase_map={1: PHASE_CLOUD_MEASURE},
+    v2state.persist_conductor_state(
+        _rearm_conductor_for_persist("cap_rearm_session", {1: PHASE_VERIFY}),
+        failure_code=None, evidence={"bundle_session_id": "bundle-2"},
     )
-    v2state.persist_conductor_state(conductor, failure_code=None, evidence=None)
-
     state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_fresh_session"
-    # Honestly None -- "this session has not closed a group yet" -- never
-    # the previous session's stale verdict.
-    assert state["cloud"] is None
-    assert v2status.crossover_v2_status_block()["cloud"] is None
+    assert state["session_id"] == "cap_rearm_session"
+    assert state["candidate"] == {"fingerprint": "fp-original"}
+    assert "cloud" not in state
+    assert state["evidence"] == {"bundle_session_id": "bundle-2"}
 
 
 def _seeded_session_with_a_banked_finding(copy: str) -> None:
@@ -1415,9 +1046,8 @@ def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
 
 
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
-    """A conductor of the verify-only prepare's shape, seams stubbed — the same
-    construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
-    uses to exercise the REAL ``persist_conductor_state``."""
+    """A conductor of the verify-only prepare's shape, seams stubbed, for the
+    REAL ``persist_conductor_state``."""
     return CrossoverV2Session(
         session_id=session_id,
         source_preset=_preset(),
@@ -1440,9 +1070,8 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
 def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
     """#1927: the history the disclosure reads must survive the opening
     persist of a re-arm, which runs BEFORE any usable VERIFY attempt has set
-    this session's own reference. Same carry-forward shape as ``tier`` and
-    ``cloud`` — a re-arm runs under a brand-new capture session id, so a
-    session-id guard would drop it on the first "Try again"."""
+    this session's own reference. A re-arm runs under a brand-new capture
+    session id, so a session-id guard would drop it on the first "Try again"."""
     reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
     v2state.save_v2_state({
         "session_id": "cap_original_session",
@@ -1559,63 +1188,22 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
-def test_the_predicted_curve_rides_the_existing_chart_decimation_owner():
-    """D4: "the chart feed keeps one decimation owner".
-
-    The predicted curve and the cloud curves are drawn in one frame, so they
-    must be strided by the SAME function at the SAME ceiling — a second inline
-    copy of the stride is how two curves in one chart end up at silently
-    different densities. Pinned by handing both projections the identical raw
-    curve and requiring identical output.
-
-    **The ceiling is now a HARD one (gate finding on #1858, SF-1) — re-derived,
-    not adjusted to match.** This used to read "the ceiling is a SOFT one":
-    ``max(1, n // CAP)`` floor-division stride, so a length not a multiple of
-    it overshot by up to one stride (1031 raw points strode by 4 and yielded
-    258, not 256). That was tolerable only because every persisted length that
-    ever reached this function historically overshot its OWN cap
-    (``_decimate_sum``'s old raw stride landed at/above 512-513 for a real
-    capture). #1858's block-average fix
-    to ``_decimate_sum`` undershoots its cap instead (a 32769-bin capture
-    persists at 504, not 512-513) — landing the predicted curve's persisted
-    length just below ``CAP * 2``, where the OLD floor-division stride
-    computed ``step = 1`` (no reduction at all: 504 rendered, not ~252),
-    silently doubling the prediction's density against the cloud curves in
-    the same frame and breaking this function's own soft-ceiling promise.
-    Fixed at this owner with ceiling division (``-(-n // CAP)``), which
-    guarantees ``len(rendered) <= CAP`` unconditionally — re-derived here on
-    the SAME 1031-point fixture: ``ceil(1031 / 256) = 5`` (not floor's 4), so
-    1031 strode by 5 yields 207, not 258. Both curve families still ride the
-    identical function, so the "one owner" pin is unmoved; only the stride
-    arithmetic inside that one owner changed, verified by direct sweep (see
-    ``test_a_realized_prediction_stays_within_the_chart_cap``)
-    over 1..5000 plus 2000 random larger lengths: max observed output was
-    exactly 256, never more, for any input."""
+def test_the_predicted_curve_is_strided_under_the_chart_cap():
+    """D4: the predicted curve reaches the wire through the chart decimation.
+    The stride divides with ceiling, so the cap is a hard bound (#1858):
+    ``ceil(1031 / 256) = 5``, never floor's 4."""
     n = v2projection.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
     freqs = [100.0 + i for i in range(n)]
     mags = [float(i % 5) for i in range(n)]
     raw = {"freqs_hz": freqs, "magnitude_db": mags}
 
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "cloud": {
-            PHASE_CLOUD_MEASURE: {"pipeline": {"available": True, "curve": raw}},
-        },
-        "verify_priors": {"predicted_sum": raw},
-    })
-    block = v2status.crossover_v2_status_block()
-    predicted = block["prediction"]["curve"]
-    # THE pin: one owner, so identical input yields byte-identical output.
-    assert predicted == block["cloud_chart"][PHASE_CLOUD_MEASURE]["curve"]
+    v2state.save_v2_state({"session_id": "cap_x", "verify_priors": {"predicted_sum": raw}})
+    predicted = v2status.crossover_v2_status_block()["prediction"]["curve"]
     assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
-    # Genuinely decimated, to exactly the shared owner's (now ceiling-division)
-    # stride -- re-derived: ceil(1031 / 256) = 5, not floor's 4.
     stride = -(-n // v2projection.CHART_CURVE_MAX_JSON_POINTS)
     assert stride == 5
     assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
     assert len(predicted["freqs_hz"]) == 207
-    # The hard ceiling itself: never CAP + stride (the old soft promise),
-    # always CAP outright.
     assert len(predicted["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
 
 
@@ -1705,7 +1293,7 @@ def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
     with no stored report (a state written before D4, or a prediction the
     evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
     bands — never ``False``, which would read as a measured failure, and never
-    ``True``, which the compact-cloud rule already forbids fabricating."""
+    ``True``, which would fabricate a pass."""
     v2state.save_v2_state({"session_id": "cap_x", "verify_priors": None})
     assert v2status.crossover_v2_status_block()["prediction"] is None
 
@@ -1837,53 +1425,8 @@ def test_status_block_reports_an_applied_but_ungraded_result():
     assert grade["verify_outcome"] is None
 
 
-def test_status_block_reports_a_graded_result_from_either_instrument():
-    """Both a passing VERIFY and a graded post-apply cloud are real checks, and
-    the tiers differ in which one they run — express omits the post-apply group
-    entirely, so keying only on the cloud would call every express session
-    ungraded."""
-    v2state.save_v2_state({
-        "session_id": "cap_graded_verify",
-        "applied": True,
-        "verify": {"outcome": "pass"},
-    })
-    by_verify = v2status.crossover_v2_status_block()["post_apply_grade"]
-    # Verified at the mark only — express's whole grade, and distinguishable
-    # from a walked post-apply group WITHOUT consulting `tier`.
-    assert by_verify["state"] == v2grade.GRADE_MARK_VERIFIED
-    assert by_verify["graded"] is True
-
-    # The cloud instrument grading ALONE. #2464 moved this fixture off
-    # ``outcome="inconclusive"`` — that pairing now grades ``inconclusive``,
-    # and pinning it here pinned the mask instead of the claim this test
-    # makes. A session whose VERIFY produced no outcome at all is the honest
-    # way to ask "does a closed group grade on its own".
-    v2state.save_v2_state({
-        "session_id": "cap_graded_cloud",
-        "applied": True,
-        "cloud": {
-            PHASE_CLOUD_VERIFY: {
-                "geometry": {"locked": False},
-                "pipeline": {
-                    "available": True,
-                    "spec": {"overall_within_target": False, "bands": []},
-                    "merged_excluded_bands_hz": [],
-                },
-                "session_id": "cap_graded_cloud",
-            },
-        },
-    })
-    by_cloud = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert by_cloud["state"] == v2grade.GRADE_GRADED
-    # A grade that exists and FAILED is still a grade — "we checked and it is
-    # out of spec" is a different claim from "we never checked", and item 7's
-    # headline is what renders the first one.
-    assert by_cloud["post_apply_spec_passed"] is False
-
-
-def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
-                   claims=None):
-    """An applied session, optionally with a post-apply cloud group."""
+def _applied_state(*, tier=None, verify_outcome="pass", claims=None):
+    """An applied session."""
     state = {
         "session_id": "cap_r19",
         "session_phases": [PHASE_VERIFY, PHASE_CLOUD_VERIFY],
@@ -1895,8 +1438,6 @@ def _applied_state(*, tier=None, verify_outcome="pass", cloud_verify=None,
     }
     if tier is not None:
         state["tier"] = tier
-    if cloud_verify is not None:
-        state["cloud"] = {PHASE_CLOUD_VERIFY: cloud_verify}
     return state
 
 
@@ -2199,65 +1740,6 @@ def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplo
     assert fields["outcome"] == "inconclusive"
 
 
-_NO_GAUGE = object()  # "this era wrote no flatness key", vs. an explicit None
-
-
-def _closed_cloud_group(*, passed, flatness=_NO_GAUGE):
-    """A closed post-apply group in DURABLE shape, as the conductor writes it."""
-    pipeline = {
-        "available": True,
-        "spec": {"overall_within_target": passed, "bands": []},
-        # Four excluded intervals — the jts3 2026-08-07 shape.
-        "merged_excluded_bands_hz": [
-            [1400.0, 1900.0], [3000.0, 3200.0], [5000.0, 5400.0], [9000.0, 9600.0],
-        ],
-    }
-    if flatness is not _NO_GAUGE:
-        pipeline["flatness"] = flatness
-    return {
-        # Never locked — the same checkpoint fact the cloud-pipeline doctor
-        # line prints beside this group.
-        "geometry": {"locked": False},
-        "pipeline": pipeline,
-        "session_id": "cap_r19",
-    }
-
-
-_GRADED_AND_FAILED_FLATNESS = {
-    "max_db": -4.628, "max_hz": 1650.0, "max_band_hz": [1250.0, 2000.0],
-    "tolerance_db": 1.5, "rms_db": 1.9, "n_bins": 700, "n_excluded": 40,
-    "evaluable": True, "passed": False,
-}
-
-
-def test_a_closed_post_apply_group_that_failed_grades_as_failed_not_as_green():
-    """#2160 — the jts3 2026-08-07 shape, reproduced.
-
-    ``overall_within_target=False`` reaches ``GRADE_GRADED`` because a
-    graded-and-failed group IS graded, and every consuming surface read that
-    state name as a clean result: doctor printed ``applied and graded
-    (state=graded, verify=pass)`` beside a cloud line reading ``spec=fail
-    worst=-4.63dB``. ``state`` cannot carry the difference; ``spatial`` does,
-    and the failing gauge's own number rides with it so no consumer re-derives
-    it. The ruling is grade-and-disclose: the tune stays, the failure is
-    loud."""
-    v2state.save_v2_state(_applied_state(
-        tier="full",
-        cloud_verify=_closed_cloud_group(
-            passed=False, flatness=_GRADED_AND_FAILED_FLATNESS,
-        ),
-    ))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2grade.GRADE_GRADED  # unchanged vocabulary
-    assert grade["spatial"] == v2grade.GRADE_SPATIAL_FAILED
-    # A failed grade is a COMPLETED grade — the tier delivered what it
-    # promised, and what it delivered is a miss.
-    assert grade["scope"] == v2grade.GRADE_SCOPE_SPATIAL
-    assert grade["complete"] is True
-    assert grade["spatial_worst_db"] == pytest.approx(-4.628)
-    assert grade["spatial_worst_hz"] == pytest.approx(1650.0)
-
-
 @pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
 @pytest.mark.parametrize("poses,complete", [
     ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
@@ -2313,50 +1795,9 @@ def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypa
     assert asked_beyond_mark(state, applied_profile=None) is True
 
 
-_PASSING_GROUP = {"passed": True, "flatness": {
-    **_GRADED_AND_FAILED_FLATNESS, "max_db": 0.9, "passed": True,
-}}
-
-_UNMEASURABLE_FLATNESS = {
-    **_GRADED_AND_FAILED_FLATNESS,
-    "max_db": None, "max_hz": None, "evaluable": False, "passed": False,
-}
-
-_PASSING = _closed_cloud_group(**_PASSING_GROUP)
-
-
 @pytest.mark.parametrize(
     ("state", "expected"),
     (
-        pytest.param(
-            {"tier": "full", "cloud_verify": _PASSING},
-            # No number beside a pass: printing the margin of a pass next to a
-            # failure verdict is how the two get confused.
-            {"spatial": v2grade.GRADE_SPATIAL_PASSED,
-             "scope": v2grade.GRADE_SCOPE_SPATIAL, "complete": True,
-             "spatial_worst_db": None, "spatial_worst_hz": None},
-            id="closed-and-passing-group-is-a-complete-spatial-grade",
-        ),
-        # Reading an unmeasurable spectrum as a miss states a measurement that
-        # never happened. No spatial CLAIM exists, so the delivered width falls
-        # back to what the mark proved — on Full, short of the promise.
-        pytest.param(
-            {"tier": "full", "cloud_verify": _closed_cloud_group(
-                passed=False, flatness=_UNMEASURABLE_FLATNESS)},
-            {"spatial": v2grade.GRADE_SPATIAL_UNMEASURABLE,
-             "spatial_worst_db": None, "scope": v2grade.GRADE_SCOPE_MARK,
-             "complete": True},
-            id="an-ungradeable-group-is-not-a-failure",
-        ),
-        # Unmeasurable is claimed only on POSITIVE evidence: a state written
-        # before the gauge shipped carries a real ``overall_within_target=False`` and
-        # no ``flatness``, and downgrading that on the ABSENCE of an instrument
-        # is the fabricated reading pointed the other way.
-        pytest.param(
-            {"tier": "full", "cloud_verify": _closed_cloud_group(passed=False)},
-            {"spatial": v2grade.GRADE_SPATIAL_FAILED, "spatial_worst_db": None},
-            id="a-failing-group-with-no-gauge-stays-a-failure",
-        ),
         # A pre-tier state file, or one from a later build: this build cannot
         # know what was promised, and manufacturing an incompleteness warning
         # about a promise it never read is worse than saying what it said.
@@ -2375,19 +1816,12 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
              "scope": v2grade.GRADE_SCOPE_NONE, "complete": False},
             id="a-verify-that-did-not-pass-delivers-no-scope",
         ),
-        # #2464: a failed or undecided mark-VERIFY caps the badge whatever the
-        # group says. ``cloud_verdict`` was tested BEFORE the fail arm, so any
-        # closed group masked it. The spatial instrument's own verdict is
-        # untouched and still rides its own field (#2160 rider) — capping the
-        # badge is not co-locating the two facts.
+        # #2464: a failed mark-VERIFY caps the badge.
         pytest.param(
             {"tier": "full", "verify_outcome": "fail",
-             "claims": {"integration": {"status": "fail", "max_db": 4.2}},
-             "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_FAILED, "graded": False,
-             "spatial": v2grade.GRADE_SPATIAL_PASSED,
-             "post_apply_spec_passed": True},
-            id="a-failed-verify-is-not-masked-by-a-passing-spatial-grade",
+             "claims": {"integration": {"status": "fail", "max_db": 4.2}}},
+            {"state": v2grade.GRADE_FAILED, "graded": False},
+            id="a-failed-tracking-claim-caps-the-badge",
         ),
         # ``verify.outcome`` grades capture and tracking health ONLY, so a
         # crossover-region claim that missed its tolerance rides a clean
@@ -2396,8 +1830,7 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "verify_outcome": "pass",
              "claims": {"integration": {"status": "pass", "max_db": 0.7},
                         "absolute": {"status": "fail", "max_db": 4.31,
-                                     "worst_hz": 1590.4}},
-             "cloud_verify": _PASSING},
+                                     "worst_hz": 1590.4}}},
             {"state": v2grade.GRADE_FAILED, "graded": False,
              "verify_outcome": "pass"},
             id="a-failed-absolute-claim-caps-the-badge-on-a-clean-capture",
@@ -2408,39 +1841,19 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
             {"tier": "full", "verify_outcome": "fail",
              "claims": {"integration": {"status": "not_evaluated"},
                         "absolute": {"status": "not_evaluated",
-                                     "reason": "no_trusted_region"}},
-             "cloud_verify": _PASSING},
+                                     "reason": "no_trusted_region"}}},
             {"state": v2grade.GRADE_FAILED},
             id="an-outcome-fail-whose-claims-could-not-grade-still-caps",
-        ),
-        # The same masking defect one arm over: the ``inconclusive`` arm was
-        # unreachable behind the closed-group test.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "inconclusive",
-             "cloud_verify": _closed_cloud_group(passed=False)},
-            {"state": v2grade.GRADE_INCONCLUSIVE, "graded": False},
-            id="an-inconclusive-verify-is-not-masked-by-a-closed-group",
-        ),
-        # The cap is scoped to a FAILED or undecided VERIFY. On a clean pass
-        # the walked group is the wider claim and still wins the state word,
-        # or this demotes every correctly graded Full session.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "pass",
-             "claims": {"integration": {"status": "pass", "max_db": 0.7},
-                        "absolute": {"status": "pass", "max_db": 0.8}},
-             "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_GRADED, "graded": True, "complete": True},
-            id="a-clean-pass-still-grades-on-the-wider-spatial-claim",
         ),
         # Absence of claims is a pre-R18 state file, never a fail and never a
         # pass-of-claims: the outcome stands as the only record there is.
         pytest.param(
-            {"tier": "full", "verify_outcome": "pass", "cloud_verify": _PASSING},
-            {"state": v2grade.GRADE_GRADED},
+            {"tier": "full", "verify_outcome": "pass"},
+            {"state": v2grade.GRADE_MARK_VERIFIED, "graded": True},
             id="no-claims-block-graded-on-a-passing-outcome-alone",
         ),
         pytest.param(
-            {"tier": "full", "verify_outcome": "fail", "cloud_verify": _PASSING},
+            {"tier": "full", "verify_outcome": "fail"},
             {"state": v2grade.GRADE_FAILED},
             id="no-claims-block-graded-on-a-failing-outcome-alone",
         ),
@@ -2449,10 +1862,10 @@ _PASSING = _closed_cloud_group(**_PASSING_GROUP)
 def test_the_post_apply_grade_badge_table(state, expected):
     """What ``post_apply_grade`` publishes for each shape of applied session.
 
-    ``state`` is the vocabulary every consuming surface keys on; ``spatial``,
-    ``scope`` and ``complete`` say how wide the claim is and whether the tier
-    delivered what it promised. A row asserts only the fields its own shape
-    decides — the rest are pinned by the rows that turn on them.
+    ``state`` is the vocabulary every consuming surface keys on; ``scope`` and
+    ``complete`` say how wide the claim is and whether the tier delivered what
+    it promised. A row asserts only the fields its own shape decides — the
+    rest are pinned by the rows that turn on them.
     """
     v2state.save_v2_state(_applied_state(**state))
     grade = v2status.crossover_v2_status_block()["post_apply_grade"]
@@ -2468,7 +1881,6 @@ def test_status_block_never_asks_an_unapplied_session_for_a_grade():
     # warn every speaker that has never been commissioned.
     assert grade["complete"] is True
     assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
-    assert grade["spatial"] == v2grade.GRADE_SPATIAL_ABSENT
     assert grade["graded"] is True
 
 
@@ -4042,7 +3454,7 @@ class _StubConductor:
             session_id=self._session_id, accepted_phases=(),
             session_phases=self._session_phases,
             applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None, cloud_close="",
+            candidate_fingerprint=None,
         )
 
 

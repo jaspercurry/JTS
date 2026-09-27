@@ -337,10 +337,6 @@ _FAILED_GAUGE = {
 
 _PASSING_GAUGE = {**_FAILED_GAUGE, "max_db": 0.9, "passed": True}
 
-_UNMEASURABLE_GAUGE = {
-    **_FAILED_GAUGE, "max_db": None, "max_hz": None, "evaluable": False,
-}
-
 
 def _verify_cloud(*, passed, flatness):
     return {"cloud_verify": _cloud_group(
@@ -360,38 +356,6 @@ def _verify_cloud(*, passed, flatness):
         ),
         pytest.param(
             {"cloud": {}}, "ok", correction.REASON_CLOUD_NOT_RUN, id="no-groups",
-        ),
-        # Only cloud_verify (the post-apply, household-actionable grade) gates
-        # the warn: cloud_measure is the uncorrected pre-apply baseline, and
-        # gating on it warns forever on a perfectly corrected speaker.
-        pytest.param(
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=True, locked=True,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=False),
-            }},
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-            id="verify-failed",
-        ),
-        pytest.param(
-            {"cloud": {
-                "cloud_measure": _cloud_group(passed=False,
-                                              excluded=[[8000.0, 9000.0]]),
-                "cloud_verify": _cloud_group(passed=True),
-            }},
-            "ok", "", id="pre-apply-failed-only",
-        ),
-        pytest.param(
-            {"cloud": {"cloud_measure": _cloud_group(passed=True)}}, "ok", "",
-            id="all-passing",
-        ),
-        # A closed group whose pipeline never became available is not itself a
-        # spec failure.
-        pytest.param(
-            {"cloud": {
-                "cloud_measure": _cloud_group_unavailable(reason="combine_failed"),
-            }},
-            "ok", "", id="pipeline-unavailable",
         ),
         # ---- applied: the folded-in grade finding takes the row's reason —
         # an un-warned cloud spec cannot see a correction that never got
@@ -420,30 +384,6 @@ def _verify_cloud(*, passed, flatness):
             correction.REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE,
             id="verify-inconclusive",
         ),
-        # #2160: a grade that EXISTS is not a grade that PASSED. This printed
-        # "applied and graded" beside a cloud line reading spec=fail. The
-        # cloud_verify failure here also gates the row's own status, and its
-        # reason wins the row's reason on a WARN; the spatial-failed grade
-        # detail still rides the detail text.
-        pytest.param(
-            _v2_applied_state(
-                tier="full", verify={"outcome": "pass"},
-                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            ),
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-            id="spatial-failed",
-        ),
-        # passed=False with evaluable=False means "could not be measured", not
-        # "failed".
-        # The cloud reason still wins the row's reason on this WARN.
-        pytest.param(
-            _v2_applied_state(
-                tier="full", verify={"outcome": "pass"},
-                cloud=_verify_cloud(passed=False, flatness=_UNMEASURABLE_GAUGE),
-            ),
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-            id="spatial-unmeasurable",
-        ),
         # #2098: a plan asking beyond the mark needs a spatial grade.
         pytest.param(
             _v2_applied_state(verify={"outcome": "pass"}, asked_poses=[{"deg": 0}, {"deg": 20}]),
@@ -459,13 +399,6 @@ def _verify_cloud(*, passed, flatness):
         pytest.param(
             _v2_applied_state(verify={"outcome": "pass"}, asked_poses=[{"deg": 0}]),
             "ok", correction.REASON_CLOUD_NOT_RUN, id="mark-only-plan",
-        ),
-        pytest.param(
-            _v2_applied_state(
-                tier="full", verify={"outcome": "pass"},
-                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
-            ),
-            "ok", "", id="spatial-passed",
         ),
         # #2464: a failed mark-VERIFY names verify_failed whatever the
         # spatial group says.
@@ -499,17 +432,6 @@ def _verify_cloud(*, passed, flatness):
             "warn", correction.REASON_APPLIED_GRADE_VERIFY_FAILED,
             id="failed-absolute-claim",
         ),
-        # The cloud spec failure wins the row's reason on a WARN — it is why
-        # the row warned, and the mark-VERIFY finding must not hide that
-        # cause even though it also found something.
-        pytest.param(
-            _v2_applied_state(
-                tier="full", verify={"outcome": "inconclusive"},
-                cloud=_verify_cloud(passed=False, flatness=_FAILED_GAUGE),
-            ),
-            "warn", correction.REASON_CLOUD_VERIFY_SPEC_FAILED,
-            id="inconclusive-behind-a-closed-group",
-        ),
         # The result code is DISCLOSED beside the grade and never gates it:
         # the finding grades the CHECKING, which passed completely here,
         # while the household badge honestly reads "Keep the previous sound."
@@ -532,9 +454,8 @@ def _verify_cloud(*, passed, flatness):
                         },
                     },
                 },
-                cloud=_verify_cloud(passed=True, flatness=_PASSING_GAUGE),
             ),
-            "ok", "", id="keep-previous-result-does-not-gate",
+            "ok", correction.REASON_CLOUD_NOT_RUN, id="keep-previous-result-does-not-gate",
         ),
         # The same posture one tier over: every instrument that grades the
         # CHECKING passed, and the result code is `inconclusive` anyway because

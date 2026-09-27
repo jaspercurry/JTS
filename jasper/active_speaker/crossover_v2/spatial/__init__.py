@@ -19,9 +19,6 @@ from ..pose_curve import (
     lateral_evidence_grid_hz as lateral_evidence_grid_hz,
     pose_curve_record as pose_curve_record,
 )
-from .carve_out_copy import (
-    _geometry_guidance_copy as _geometry_guidance_copy,
-)
 from .group_floor import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )

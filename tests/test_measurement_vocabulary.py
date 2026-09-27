@@ -65,14 +65,12 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # screen envelopes that render its verdicts).
     "jasper/active_speaker/crossover_v2_flow.py",
     "jasper/active_speaker/crossover_v2/refusal_copy.py",
-    # Two homes for household copy wave 3 moved OUT of the flow above. Without
-    # these rows the sweep would still pass and would cover neither: the
-    # geometry guidance and the prompt table — the largest single block of
-    # household copy this flow has.
+    # Homes household copy moved to OUT of the flow above, among them the
+    # prompt table — the largest single block of household copy this flow has.
+    # Without these rows the sweep would still pass and cover none of them.
     "jasper/active_speaker/crossover_v2/spatial/__init__.py",
     "jasper/active_speaker/crossover_v2/spatial/group_floor.py",
     "jasper/active_speaker/crossover_v2/spatial/records.py",
-    "jasper/active_speaker/crossover_v2/spatial/carve_out_copy.py",
     "jasper/active_speaker/crossover_v2/capture_plan.py",
     "jasper/active_speaker/crossover_v2/intervention.py",
     # Not verdict copy -- swept because it is the closed-vocabulary SOURCE of
