@@ -53,6 +53,13 @@ class PrescriptionSection:
     judge_order: int
     reset: bool = True
     compose: bool = True
+    #: The keys the judge adds to an authored section before its reader sees it: ``kind``
+    #: from this row, ``artifact_schema_version`` from the section's contract, ``rationale``
+    #: from the document. Each reader refuses a key it does not name.
+    envelope: tuple[str, ...] = ()
+
+
+_VERSIONED = ("kind", "artifact_schema_version")
 
 
 @dataclass(frozen=True)
@@ -88,10 +95,10 @@ class TuningProgram:
 _PROGRAM_SECTIONS = (
     TuningProgram(
         PURPOSE_SPEAKER,
-        (PrescriptionSection("driver", "jts_crossover_driver_prescription", 0, 6),
-         PrescriptionSection("blend", "jts_crossover_blend_prescription", 1, 1),
-         PrescriptionSection("alignment", "jts_crossover_alignment_prescription", 2, 2, compose=False),
-         PrescriptionSection("topology", "jts_crossover_topology_prescription", 3, 0, reset=False)),
+        (PrescriptionSection("driver", "jts_crossover_driver_prescription", 0, 6, envelope=(*_VERSIONED, "rationale")),
+         PrescriptionSection("blend", "jts_crossover_blend_prescription", 1, 1, envelope=(*_VERSIONED, "rationale")),
+         PrescriptionSection("alignment", "jts_crossover_alignment_prescription", 2, 2, compose=False, envelope=_VERSIONED),
+         PrescriptionSection("topology", "jts_crossover_topology_prescription", 3, 0, reset=False, envelope=_VERSIONED)),
         (CandidateField("linearization", dict), CandidateField("linearization_outcome", str, False),
          CandidateField("trim_decision", dict, False), CandidateField("exclusion_evidence", dict, False),
          CandidateField("blend_correction", list)),
@@ -114,7 +121,7 @@ _PROGRAM_SECTIONS = (
         clears=("room_correction",), base_clears_own=True,
     ),
     TuningProgram(
-        PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
+        PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3, envelope=(*_VERSIONED, "rationale")),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
         trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("room",)),

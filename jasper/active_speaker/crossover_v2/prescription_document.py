@@ -48,7 +48,8 @@ from .round_captures import RoundCapturesRefused
 from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
-SECTION_KINDS = {section.name: section.kind for section in PRESCRIPTION_SECTIONS}
+_SECTIONS = {section.name: section for section in PRESCRIPTION_SECTIONS}
+SECTION_KINDS = {name: section.kind for name, section in _SECTIONS.items()}
 _SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER for section in row.sections}
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
@@ -228,16 +229,15 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
 
 def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
                      contracts: Mapping[str, Any]) -> Mapping[str, Any]:
-    kind = SECTION_KINDS[name]
-    if kind is None:
-        return section
-    # A rear calibration is authored whole and carries its own kind and schema;
-    # read_rear_calibration refuses any extra key a prescription header adds.
-    if name != "rear_calibration":
-        contract = contracts[name] if name == "room" else contracts["speaker"][name]
-        section = {"kind": kind, "artifact_schema_version": contract["schema"]["properties"]["artifact_schema_version"]["const"],
-                   **({"rationale": rationale} if name in {"driver", "blend", "room"} else {}), **section}
-    if section.get("kind") != kind:
+    """The authored section under the envelope its row names."""
+    row = _SECTIONS[name]
+    header: dict[str, Any] = {"kind": row.kind, "rationale": rationale}
+    if "artifact_schema_version" in row.envelope:
+        program = contracts[_SECTION_PROGRAMS[name]]
+        # A one-section program's contract is its section's; the speaker's nests each section's.
+        header["artifact_schema_version"] = program.get(name, program)["schema"]["properties"]["artifact_schema_version"]["const"]
+    section = {**{key: header[key] for key in row.envelope}, **section}
+    if row.kind is not None and section.get("kind") != row.kind:
         raise PrescriptionDocumentRefused("prescription_kind_unknown", name, "section kind does not match its name")
     return section
 

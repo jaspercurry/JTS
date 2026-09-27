@@ -18,6 +18,7 @@ from tests.test_prescription_contract import round_bank as round_bank
 from tests.test_prescription_contract import bass_packet as bass_packet
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS
 from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
 from jasper.active_speaker.preset_binding import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
@@ -446,6 +447,27 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     else:
         assert find_banked_candidate(direct.fingerprint, root=bank).candidate.to_dict() == direct.to_dict()
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
+
+
+@pytest.mark.parametrize("row", PRESCRIPTION_SECTIONS, ids=lambda row: row.name)
+def test_a_section_is_read_under_the_envelope_its_row_names(row):
+    authored = {} if "kind" in row.envelope or row.kind is None else {"kind": row.kind}
+    payload = prescription_document_mod._section_payload(row.name, authored, "Why.", prescription_contracts())
+    added = {key: value for key, value in payload.items() if key not in authored}
+    assert tuple(added) == row.envelope
+    assert (added.get("kind", row.kind), added.get("rationale", "Why.")) == (row.kind, "Why.")
+    assert isinstance(added.get("artifact_schema_version", 1), int)
+
+
+@pytest.mark.parametrize("name", ["bass", "rear_calibration"])
+def test_a_refused_set_names_the_section_it_was_read_for(base, bank, tmp_path, capsys, bass_round, bass_packet, name):
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document(base.fingerprint, {
+        name: bass_document(bass_packet) if name == "bass" else _rear_document()})))
+    argv = ["judge", str(path), "--root", str(bank), "--round", str(bass_round), "--set", "missing"]
+    assert crossover_prescriber.main(argv) == crossover_prescriber.EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["code"], answer["detail"]["section"]) == ("round_set_unknown", name)
 
 
 def test_bass_below_qualified_floor_is_disclosed_by_judge_and_packet(base, bank, evidence, bass_packet, bass_round, round_bank, tmp_path, capsys):
