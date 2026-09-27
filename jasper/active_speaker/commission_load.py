@@ -661,23 +661,40 @@ async def load_driver_commissioning_config(
         in RING_PCM_DEVICES
         else "-"
     )
+    captured: dict[str, Any] = {"evidence": evidence}
 
-    if not preflight.get("load_allowed"):
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=staged_path,
-            last_action="load_blocked",
+    def _payload(
+        status: str,
+        last_action: str,
+        issues: list[dict[str, str]],
+        *,
+        candidate: str | None = candidate_path,
+        active: str | None = None,
+        dsp_apply: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return _commission_state_payload(
+            status=status,
+            candidate_config_path=candidate,
+            active_config_path=active,
+            previous_config_path=str(staged_path),
+            last_action=last_action,
             target=target,
             audible_evidence=evidence,
+            live_evidence=captured.get("live"),
+            durable_statefile_target=captured.get("durable_target"),
+            durable_statefile_intact=captured.get("durable_intact"),
             preflight=preflight,
-            issues=[
-                _normalise_issue(issue)
-                for issue in preflight.get("issues", [])
-                if isinstance(issue, dict)
-            ],
+            dsp_apply=dsp_apply,
+            issues=issues,
         )
+
+    if not preflight.get("load_allowed"):
+        issues = [
+            _normalise_issue(issue)
+            for issue in preflight.get("issues", [])
+            if isinstance(issue, dict)
+        ]
+        payload = _payload("blocked", "load_blocked", issues)
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked group=%s role=%s blockers=%d",
@@ -693,17 +710,7 @@ async def load_driver_commissioning_config(
             "commission_rollback_anchor_missing",
             f"all-muted staged rollback anchor does not exist: {staged_path}",
         )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
+        payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked reason=rollback_anchor_missing anchor=%s",
@@ -726,17 +733,7 @@ async def load_driver_commissioning_config(
                 f"{prior_config_path or '(none)'}"
             ),
         )
-        payload = _commission_state_payload(
-            status="blocked",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_blocked",
-            target=target,
-            audible_evidence=evidence,
-            preflight=preflight,
-            issues=[issue],
-        )
+        payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
         logger.info(
             "event=active_speaker.driver_commission_load result=blocked reason=active_graph_not_staged current=%s anchor=%s",
@@ -744,8 +741,6 @@ async def load_driver_commissioning_config(
             staged_path,
         )
         return {"preflight": preflight, "load": payload}
-
-    captured: dict[str, Any] = {"evidence": evidence}
 
     def _emit_in_lock() -> None:
         # apply_dsp_config runs this inside its writer lock, immediately before
@@ -893,27 +888,12 @@ async def load_driver_commissioning_config(
             validate=validate,
         )
     except DspApplyError as exc:
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=candidate_path,
-            active_config_path=None,
-            previous_config_path=str(staged_path),
-            last_action="load_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=exc.state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "driver_commission_load_failed",
-                    f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
-                )
-            ],
+        issue = _issue(
+            "blocker",
+            "driver_commission_load_failed",
+            f"CamillaDSP commissioning load failed (rolled back to staged): {exc}",
         )
+        payload = _payload("failed", "load_failed", [issue], dsp_apply=exc.state.to_dict())
         _record_commission_state(payload, state_path=state_path)
         # Surface the safety reason (live-mask drift / missing HP / statefile
         # drift / unreadable graph) in the journal, not just the state file — the
@@ -931,21 +911,12 @@ async def load_driver_commissioning_config(
         return {"preflight": preflight, "load": payload}
 
     # live-confirm + S3 both passed inside the lock.
-    payload = _commission_state_payload(
-        status="loaded",
-        candidate_config_path=str(candidate_path),
-        active_config_path=apply_state.active_config_path or str(candidate_path),
-        previous_config_path=str(staged_path),
-        last_action="load",
-        target=target,
-        audible_evidence=evidence,
-        live_evidence=captured.get("live"),
-        durable_statefile_target=captured.get("durable_target"),
-        durable_statefile_intact=captured.get("durable_intact"),
-        preflight=preflight,
-        dsp_apply=apply_state.to_dict(),
-        issues=[],
-    )
+    applied: dict[str, Any] = {
+        "candidate": str(candidate_path),
+        "active": apply_state.active_config_path or str(candidate_path),
+        "dsp_apply": apply_state.to_dict(),
+    }
+    payload = _payload("loaded", "load", [], **applied)
     if not reconcile_output_hardware:
         payload["output_reconcile"] = {
             "status": "skipped",
@@ -971,27 +942,12 @@ async def load_driver_commissioning_config(
     if not _trigger_audio_hardware_reconcile(
         source="active_speaker_driver_commission_load"
     ):
-        payload = _commission_state_payload(
-            status="failed",
-            candidate_config_path=str(candidate_path),
-            active_config_path=apply_state.active_config_path or str(candidate_path),
-            previous_config_path=str(staged_path),
-            last_action="output_reconcile_failed",
-            target=target,
-            audible_evidence=evidence,
-            live_evidence=captured.get("live"),
-            durable_statefile_target=captured.get("durable_target"),
-            durable_statefile_intact=captured.get("durable_intact"),
-            preflight=preflight,
-            dsp_apply=apply_state.to_dict(),
-            issues=[
-                _issue(
-                    "blocker",
-                    "commission_output_hardware_reconcile_failed",
-                    "could not switch outputd to the active driver lane before tone playback",
-                )
-            ],
+        issue = _issue(
+            "blocker",
+            "commission_output_hardware_reconcile_failed",
+            "could not switch outputd to the active driver lane before tone playback",
         )
+        payload = _payload("failed", "output_reconcile_failed", [issue], **applied)
         payload["output_reconcile"] = {
             "status": "failed",
             "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
