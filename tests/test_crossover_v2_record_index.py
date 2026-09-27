@@ -264,13 +264,14 @@ async def test_a_file_the_rescan_cannot_parse_costs_only_itself(store):
 class _Scanner(NamedTuple):
     """What a scanner answers for a round, the phase and purpose it reads, a
     phase and a purpose it passes over (``None``: it reads every purpose),
-    and its answer when it reads the first two takes alone."""
+    and its answer when it reads the first two takes, then all three."""
 
     answer: Callable[[Path], Any]
     phase: str
     other_phase: str
     other_purpose: str | None
-    expected: Any
+    two: Any
+    three: Any
 
 
 def _session(round_dir: Path) -> Path:
@@ -280,32 +281,33 @@ def _session(round_dir: Path) -> Path:
 _SCANNERS = {
     "room_ceiling": _Scanner(
         lambda root: room_ceiling(_session(root)).trusted_floor_hz,
-        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, 300.0),
+        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, 300.0, 450.0),
     "delay_pair": _Scanner(
         lambda root: Path(select_pose_curve_pair(
             _session(root), phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
             roles=("woofer", "tweeter")).take.path).stem,
-        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_REAR, "take_0002"),
+        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_REAR, "take_0002", "take_0003"),
     "pose_bank": _Scanner(
         lambda root: sorted({curve.pose_id for curve in load_round_pose_curves(_session(root))}),
-        PHASE_LATERAL, PHASE_MEASURE, PURPOSE_ROOM, ["take_0001", "take_0002"]),
+        PHASE_LATERAL, PHASE_MEASURE, PURPOSE_ROOM, ["take_0001", "take_0002"],
+        ["take_0001", "take_0002", "take_0003"]),
     "candidate_ladder": _Scanner(
         lambda root: candidate_ladder(root, round_inputs(root))["summary"]["candidates"],
-        PHASE_LATERAL, PHASE_MEASURE, None, ["cfg-a", "cfg-b"]),
+        PHASE_LATERAL, PHASE_MEASURE, None, ["cfg-a", "cfg-b"], ["cfg-a", "cfg-b", "cfg-c"]),
 }
 
 
 @pytest.mark.parametrize("scanner,intruder", [
     (name, intruder) for name, scanner in _SCANNERS.items()
-    for intruder in ("phase", "purpose", "refused", "unselected")
+    for intruder in ("kept", "phase", "purpose", "refused", "unselected")
     if intruder != "purpose" or scanner.other_purpose is not None
 ])
 def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intruder):
-    """A third take at the same pose would change each scanner's answer, as a
-    higher trusted floor, a newer driver pair, a third pose or a third
-    candidate. The scanner passes it over when it is of another phase, of
-    another purpose, refused, or not selected by the run manifest, and still
-    reads the two takes it should."""
+    """A third take at the same pose changes each scanner's answer when the
+    round kept it, as a higher trusted floor, a newer driver pair, a third
+    pose or a third candidate. The scanner passes it over when it is of
+    another phase, of another purpose, refused, or not selected by the run
+    manifest, and still reads the two takes it should."""
     spec = _SCANNERS[scanner]
     positions = _session(tmp_path) / ARTIFACTS / "crossover_v2" / "cap" / "positions"
     positions.mkdir(parents=True)
@@ -326,4 +328,4 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
         selected={"take_0001", "take_0002"} if intruder == "unselected" else None,
     )
 
-    assert spec.answer(tmp_path) == spec.expected
+    assert spec.answer(tmp_path) == (spec.three if intruder == "kept" else spec.two)
