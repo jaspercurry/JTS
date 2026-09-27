@@ -244,7 +244,7 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
             ),
         )
         try:
-            await _prove_live_bass_extension_graph(
+            await prove_live_bass_extension_graph(
                 cam,
                 expected_config_path=FOLLOWER_CONFIG_PATH,
                 expected_classification=GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -427,7 +427,7 @@ async def restore_active_camilla_solo(
             ),
         )
         try:
-            await _prove_live_bass_extension_graph(
+            await prove_live_bass_extension_graph(
                 cam,
                 expected_config_path=candidate,
                 expected_classification=GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -461,7 +461,7 @@ async def restore_active_camilla_solo(
     return candidate
 
 
-async def _prove_live_bass_extension_graph(
+async def prove_live_bass_extension_graph(
     cam,
     *,
     expected_config_path: str | Path,

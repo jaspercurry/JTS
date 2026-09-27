@@ -243,7 +243,7 @@ re-link via the wizard.
   health probe, calls `build_clients` and caches the result for 60s.
   Cache is busted on every mutation (OAuth callback, account remove,
   credentials reset, credentials change).
-- `jasper.control.volume_ops._build_spotify_router_or_none` — control-side
+- `jasper.control.volume_ops.build_spotify_router_or_none` — control-side
   best-effort router for accessory/web volume and transport. Empty builds are cached
   for 30s, keyed by the account-cache file mtimes, so a persistently revoked
   account does not hit Spotify's token endpoint on every `/state`/`/volume`
