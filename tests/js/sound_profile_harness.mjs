@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Minimal DOM harness for the /sound/ static module. It exercises the
-// EQ tab state machine and output settings without needing a
-// browser or CamillaDSP.
+// Minimal DOM harness for the /sound/ static modules: the EQ page's main.js
+// (its tab state machine) and the Output page's output.js (its settings),
+// without needing a browser or CamillaDSP.
 //
 //   node tests/js/sound_profile_harness.mjs deploy/assets/sound-profile/js/main.js
 import assert from "node:assert/strict";
@@ -20,25 +20,28 @@ const JTSCONFIRM_STUB = [
 ];
 
 // Sibling order is load-bearing: state.js reads the JSON island at eval time.
-const runner = buildFunction(
-  [
-    { path: repoPath("deploy/assets/shared/js/escape.js") },
-    { path: repoPath("deploy/assets/shared/js/dom.js") },
-    { path: repoPath("deploy/assets/shared/js/http.js") },
-    { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
-    ...[
-      "eq-math.js", "state.js", "format.js", "eq-curve.js", "cardioid-compare.js",
-    ].map((name) => ({ path: join(siblingDir, name) })),
-    { path: modulePath, rewrite: [JTSCONFIRM_STUB] },
-  ],
-  {
-    stripImports: true,
-    stripExports: true,
-    strictImports: true,
-    guardNoImports: true,
-    params: ["document", "window", "globalThis", "console", "setTimeout", "clearTimeout"],
-  },
-);
+function pageRunner(siblings, pagePath) {
+  return buildFunction(
+    [
+      { path: repoPath("deploy/assets/shared/js/escape.js") },
+      { path: repoPath("deploy/assets/shared/js/dom.js") },
+      { path: repoPath("deploy/assets/shared/js/http.js") },
+      { path: repoPath("deploy/assets/shared/js/frequency-scale.js") },
+      ...siblings.map((name) => ({ path: join(siblingDir, name) })),
+      { path: pagePath, rewrite: [JTSCONFIRM_STUB] },
+    ],
+    {
+      stripImports: true,
+      stripExports: true,
+      strictImports: true,
+      guardNoImports: true,
+      params: ["document", "window", "globalThis", "console", "setTimeout", "clearTimeout"],
+    },
+  );
+}
+const eqRunner = pageRunner(
+  ["eq-math.js", "state.js", "format.js", "eq-curve.js", "cardioid-compare.js"], modulePath);
+const outputRunner = pageRunner(["state.js", "format.js"], join(siblingDir, "output.js"));
 
 function classList() {
   const values = new Set();
@@ -248,6 +251,7 @@ function setupHarness(fetchHandler, options = {}) {
   delete globalThis.__jtsConfirm;
   globalThis.fetch = fetchHandler;
 
+  const runner = pageMode === "output" ? outputRunner : eqRunner;
   runner(globalThis.document, globalThis.window, globalThis, console, setTimeout, clearTimeout);
 
   const viewBody = elements.get("view-body");
@@ -906,26 +910,24 @@ async function testSplitPageModesRenderAndBootOnlyOwnedSurfaces() {
 
 
 async function testCardioidCompareMountFollowsEqPageMode() {
-  for (const mode of ['eq', 'output']) {
-    for (const follower of [false, true]) {
-      const compare = {available: true, state: 'normal', tune: {label: 'Current tune', layers: [], applied_at: null},
-        level_match: {status: 'unavailable', trim_db: null, louder: null}, expires_in_s: null};
-      let requests = 0;
-      const harness = setupHarness(baseFetch({
-        './cardioid-compare': () => { requests++; return Promise.resolve(response(compare)); },
-      }), {mode, follower});
+  for (const follower of [false, true]) {
+    const compare = {available: true, state: 'normal', tune: {label: 'Current tune', layers: [], applied_at: null},
+      level_match: {status: 'unavailable', trim_db: null, louder: null}, expires_in_s: null};
+    let requests = 0;
+    const harness = setupHarness(baseFetch({
+      './cardioid-compare': () => { requests++; return Promise.resolve(response(compare)); },
+    }), {mode: 'eq', follower});
+    await harness.flush(); await harness.flush();
+    const card = harness.elements.get('cardioid-compare-card');
+    assert.equal(!!card, !follower);
+    assert.equal(requests, card ? 1 : 0);
+    if (!card) continue;
+    for (const view of ['off', 'saved', 'draft']) {
+      harness.elements.get('tab-' + view).click();
       await harness.flush(); await harness.flush();
-      const card = harness.elements.get('cardioid-compare-card');
-      assert.equal(!!card, mode === 'eq' && !follower);
-      assert.equal(requests, card ? 1 : 0);
-      if (!card) continue;
-      for (const view of ['off', 'saved', 'draft']) {
-        harness.elements.get('tab-' + view).click();
-        await harness.flush(); await harness.flush();
-        assert.equal(harness.elements.get('cardioid-compare-card'), card);
-        assert.equal(card.hidden, false);
-        assert.ok(!harness.elements.get('view-body').children.includes(card));
-      }
+      assert.equal(harness.elements.get('cardioid-compare-card'), card);
+      assert.equal(card.hidden, false);
+      assert.ok(!harness.elements.get('view-body').children.includes(card));
     }
   }
   return {cardioidCompareMountFollowsEqPageMode: true};
