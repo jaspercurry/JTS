@@ -612,9 +612,9 @@ oom_unit_is_production() {
 # ── USB gadget management-network deploy advisory ────────────────────────
 #
 # deploy-to-pi.sh warns (never blocks) when PI_HOST resolves inside the USB
-# gadget's management subnet. Issue #2340 (2026-08-11 U2 deploy):
-# install.sh rebuilds the composite USB gadget mid-install, which tears
-# down ncm.usb0 out from under a deploy whose own ssh session is riding
+# gadget's management subnet (issue #2340): install.sh rebuilds the
+# composite USB gadget mid-install, which tears down ncm.usb0 out from
+# under a deploy whose own ssh session is riding
 # that same link — the transport dies with no FIN while the install
 # itself keeps going and succeeds on the Pi, which reads as a wedged
 # deploy that actually landed. These are the pure classification helpers;
