@@ -12,6 +12,7 @@ import pytest
 
 from . import nginx_site
 from ._shell_corpus import shell_files
+from .install_surface import installer_shell_paths
 from .test_install_core_audio_graph_loop import staged_file_copies
 from .systemd_unit_helpers import value_for, values_for
 
@@ -19,7 +20,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
 _DEPLOY_TO_PI = _REPO / "scripts" / "deploy-to-pi.sh"
 
-_INSTALL_SCRIPTS = [_DEPLOY / "install.sh", *sorted((_DEPLOY / "lib" / "install").glob("*.sh"))]
+_INSTALL_SCRIPTS = installer_shell_paths()
 
 
 # ----------------------------------------------------------------------

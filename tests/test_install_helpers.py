@@ -26,15 +26,19 @@ from pathlib import Path
 
 import pytest
 
-from tests.install_surface import JASPER_GROUP_STUBS, installer_text
+from tests.install_surface import (
+    INSTALL_LIB_DIR as _INSTALL_LIB_DIR,
+    INSTALL_SH as _INSTALL_SH,
+    JASPER_GROUP_STUBS,
+    REPO as REPO_ROOT,
+    installer_shell_paths,
+    installer_text,
+)
 from tests.shell_runner import run_bash
 
 
-_INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
-REPO_ROOT = _INSTALL_SH.parent.parent
-_INSTALL_LIB_DIR = Path(__file__).parent.parent / "deploy" / "lib" / "install"
 _RENDERERS_LIB = _INSTALL_LIB_DIR / "renderers.sh"
-_ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
+_ENV_EXAMPLE = REPO_ROOT / ".env.example"
 
 
 def _installer_shell_texts() -> dict[Path, str]:
@@ -43,7 +47,7 @@ def _installer_shell_texts() -> dict[Path, str]:
     Invariant-style tests (bounded curl flags, the pinned pip
     toolchain, …) must keep covering function groups that the
     install.sh decomposition moved into sourced libs."""
-    paths = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
+    paths = installer_shell_paths()
     assert _RENDERERS_LIB in paths
     return {p: p.read_text(encoding="utf-8") for p in paths}
 

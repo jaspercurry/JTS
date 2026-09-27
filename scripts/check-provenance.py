@@ -230,6 +230,8 @@ def registry_urls() -> set[str]:
 
 
 def installer_paths(root: Path = ROOT) -> list[Path]:
+    # Mirrors tests/install_surface.py's installer_shell_paths(); kept as a
+    # separate copy because scripts/ must not import tests/ (#5834).
     return [
         root / "deploy" / "install.sh",
         *sorted((root / "deploy" / "lib" / "install").glob("*.sh")),
