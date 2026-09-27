@@ -37,10 +37,11 @@ it must refuse a below-floor corner, and it must not invent a floor where the
 operator declared none.
 
 The two real-box fixtures in ``tests/fixtures/active_speaker_protection_floor_20260814/``
-are verbatim design drafts captured from jts.local's first sanctioned composite
-arm (2026-08-14, issue #2491's closing comment): the 2000 Hz draft that armed
-nothing and produced the 4000 Hz protective high-pass, and the honestly
-re-issued 5000 Hz draft that did arm.
+are design drafts captured from jts.local's first sanctioned composite arm
+(2026-08-14, issue #2491's closing comment), their stored declarations moved to
+the current shape (#2902): the 2000 Hz draft that armed nothing and produced
+the 4000 Hz protective high-pass, and the honestly re-issued 5000 Hz draft that
+did arm.
 """
 
 from __future__ import annotations

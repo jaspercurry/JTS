@@ -440,8 +440,6 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     old = json.loads(path.read_text())
     old["driver_research_request"] = {"targets": [{"operator_declared_context": {"operator_notes": "old"}}]}
     old["driver_research"].update(request_fingerprint="old", result_fingerprint="old")
-    for driver in old["driver_research"]["drivers"]:
-        driver["target_fingerprint"] = "old"
     path.write_text(json.dumps(old))
 
     loaded = load_design_draft(path, topology=topology)
@@ -453,6 +451,24 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     assert saved["driver_research"] == draft["driver_research"]
     assert saved["manual_settings"] == draft["manual_settings"]
     assert "driver_research_request" not in json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("key", ["horn_coverage_deg", "crossover_search_band_hz", "target_fingerprint"])
+def test_a_stored_research_driver_with_a_retired_key_refuses(tmp_path: Path, key: str) -> None:
+    from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    save_design_draft(topology, driver_research=research, operator_inputs=_operator_inputs(), path=path)
+    stored = json.loads(path.read_text())
+    stored["driver_research"]["drivers"][0][key] = 90
+    path.write_text(json.dumps(stored))
+
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        load_design_draft(path, topology=topology)
+    assert caught.value.code == "unknown_driver_fields"
 
 
 def test_design_draft_revision_is_informational(
@@ -889,70 +905,6 @@ def test_driver_class_accepts_every_hoisted_value():
             },
         )
         assert payload["manual_settings"]["drivers"][0]["driver_class"] == value
-
-
-def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
-    tmp_path: Path,
-) -> None:
-    """#2872: a draft written before the deletion must still round-trip.
-
-    ``horn_coverage_deg`` was a wizard-collected number that reached no
-    consumer, so it was deleted rather than kept alive.  An operator who typed
-    a coverage angle before that has the key sitting in their saved draft, on a
-    field /sound/ no longer shows them.  Refusing that record would strand them
-    on a save they cannot fix from the page, so every gate that re-validates a
-    stored driver TOLERATES the key and every normaliser DROPS it: the draft
-    saves, and the value does not come back.
-    """
-
-    path = tmp_path / "active_speaker_design_draft.json"
-    legacy_manual = {
-        "drivers": [
-            {
-                "target_id": "mono:tweeter",
-                "role": "tweeter",
-                "model": "Legacy Horn",
-                "driver_class": "compression_horn",
-                "horn_coverage_deg": 90,
-            }
-        ],
-        "crossover_candidates": [],
-    }
-    # Written the way an older build wrote it -- by hand, because today's
-    # save path can no longer produce this file.
-    path.write_text(
-        json.dumps(
-            {
-                "artifact_schema_version": 1,
-                "kind": DESIGN_DRAFT_KIND,
-                "status": "ready_for_review",
-                "revision": 3,
-                "operator_inputs": {},
-                "manual_settings": legacy_manual,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = load_design_draft(path)
-    assert loaded["manual_settings"]["drivers"][0]["horn_coverage_deg"] == 90
-
-    saved = save_design_draft(
-        _topology(),
-        manual_settings=loaded["manual_settings"],
-        operator_inputs=loaded["operator_inputs"],
-        path=path,
-        created_at="2026-08-22T12:00:00Z",
-    )
-    tweeter = saved["manual_settings"]["drivers"][0]
-    assert "horn_coverage_deg" not in tweeter
-    assert tweeter["driver_class"] == "compression_horn"
-    on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert all(
-        "horn_coverage_deg" not in driver
-        for driver in on_disk["manual_settings"]["drivers"]
-    )
-    assert saved["driver_safety_profile"] is not None
 
 
 @pytest.mark.parametrize("version", [1, 2])
