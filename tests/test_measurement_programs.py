@@ -133,7 +133,7 @@ def test_shipped_run_purposes(program_id, size):
     assert row.co_purposes == expected[1:]
 
 
-@pytest.mark.parametrize("name", ["rear", "rear/custom", "speaker/express", "reference", "", "bass/nearfield"])
+@pytest.mark.parametrize("name", ["rear", "reference", ""])
 def test_run_purposes_preserves_primary_identity_without_a_registry_row(name):
     assert mp.run_purposes(name) == (mp.run_purpose(name),) == (name.partition("/")[0],)
 
@@ -404,46 +404,16 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
     ]
 
 
-#: The registry ids at ``2eeeaf4be``, before the fold, that a banked round still reads
-#: as its purpose (ADR-0366 §6); the folded near-field rows no longer read (#2902).
-_BANKED_BEFORE_THE_FOLD = {
-    "speaker/mark": "speaker", "baseline/full": "speaker", "baseline/express": "speaker",
-    "tournament/full": "speaker", "tournament/express": "speaker", "branches/express": "speaker",
-    "front_rear/express": "speaker", "rear/express": "rear", "rear/seat": "rear", "rear/wide": "rear",
-    "rear/behind": "rear", "rear/pair": "rear", "rear/pair_mark": "rear", "rear/pair_behind": "rear",
-    "seat/cloud": "room", "seat/cube": "room", "seat/express": "room", "room/cloud": "room",
-    "room/arm": "room", "room/seat": "room", "bass/axis": "bass", "bass/cloud": "bass", "bass/quick": "bass",
-    "bass/nearfield": "bass", "close/spot": "reference",
-}
-
-
-@pytest.mark.parametrize("banked,purpose", [
-    *_BANKED_BEFORE_THE_FOLD.items(),
-    *sorted({(f"{banked.partition('/')[0]}/custom", purpose) for banked, purpose in _BANKED_BEFORE_THE_FOLD.items()}),
-])
-def test_every_id_banked_before_the_fold_still_reads_as_its_purpose(banked: str, purpose: str) -> None:
-    assert mp.run_purpose(banked) == purpose
-
-
-def test_no_preset_id_repeats_or_reuses_a_retired_id() -> None:
-    ids = [f"{row['id']}/{row['size']}" for row in _bundled_config()["programs"]]  # type: ignore[index]
-    assert len(ids) == len(set(ids))
-    assert not set(ids) & set(mp.RETIRED_PROGRAMS)
-
-
-@pytest.mark.parametrize("via", ["program", "poses"])
-@pytest.mark.parametrize("retired", sorted(mp.RETIRED_PROGRAMS))
-def test_a_retired_id_refuses_a_new_run_by_name_and_names_a_live_replacement(retired: str, via: str) -> None:
-    """A retired id leaves the registry; a round banked under it still reads, and a
-    new run naming it is told what replaces it (ADR-0366 §6)."""
-    with pytest.raises(mp.RetiredProgramError) as excinfo:
-        mp.run_program(retired) if via == "program" else mp.run_program("speaker", poses=retired)
-    replacement = mp.RETIRED_PROGRAMS[retired]
-    assert (excinfo.value.reason, excinfo.value.detail) == (mp.PROGRAM_RETIRED, {"retired": retired, **replacement._asdict()})
-    assert replacement.purpose == mp.run_purpose(retired)
-    if replacement.preset:
-        run = mp.run_program(replacement.preset, None if replacement.layout == mp.CUSTOM_SIZE else replacement.layout)
-        assert run.purpose == replacement.purpose
+@pytest.mark.parametrize("retired", [
+    "baseline/full", "seat/cube", "rear/pair_mark", "rear/custom", "bass/nearfield", "nearfield/woofer",
+    "speaker/express"])
+def test_a_retired_preset_id_refuses_as_an_unknown_preset(retired: str) -> None:
+    """No retired id is kept for a new run or a banked round (ADR-0377)."""
+    name, _, size = retired.partition("/")
+    for resolve in (mp.run_program, mp.run_purpose):
+        with pytest.raises(mp.UnknownProgramError) as excinfo:
+            resolve(retired)
+        assert (excinfo.value.program_id, excinfo.value.size) == (name, size)
 
 
 def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:

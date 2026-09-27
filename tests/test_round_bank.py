@@ -413,7 +413,7 @@ def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reaso
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
-    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/cloud", "run_id": session.name}))
+    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/axis", "run_id": session.name}))
     monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]

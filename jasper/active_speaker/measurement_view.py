@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, CUSTOM_SIZE, PURPOSE_REAR, RETIRED_PROGRAMS, RUNNABLE_PROGRAMS, MeasurementProgram,
+    BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, MeasurementProgram,
     available_programs, plan_poses, program, run_program,
 )
 from .round_copy import round_lines, packet_lines, round_verdict
@@ -69,9 +69,6 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
                      or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
     default = program(view["next_action"].get("program") or programs[0])
-    retired = RETIRED_PROGRAMS.get(selected_id)
-    if retired is not None and retired.preset and retired.layout != CUSTOM_SIZE:
-        selected_id = _choice_id(run_program(retired.preset), retired.layout)
     refused = bool(selected_id) and selected_id not in plans
     default_id = selected_id or f"{default.program_id}/{default.size}"
     choices = []

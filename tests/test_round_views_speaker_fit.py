@@ -346,8 +346,8 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
         np.testing.assert_allclose(response.magnitude_db, take["curve"]["magnitude_db"])
 
 
-@pytest.mark.parametrize("program,marks,pairs,spread", [("speaker/mark", 2, 1, 1), ("baseline/express", 4, 6, 3)])
-def test_current_round_packet_uses_mark_pairs(speaker_round, program, marks, pairs, spread):
+@pytest.mark.parametrize("marks,pairs,spread", [(2, 1, 1), (4, 6, 3)])
+def test_current_round_packet_uses_mark_pairs(speaker_round, marks, pairs, spread):
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -363,7 +363,7 @@ def test_current_round_packet_uses_mark_pairs(speaker_round, program, marks, pai
     group["capture_basis"]["role"] = "woofer"
     for take, (_, capture) in zip(group["takes"], rows):
         take.update(role="woofer", pose_index=0, analysis=analysis, curve=capture["curves"][0])
-    write_manifest(root, program=program, groups=[group])
+    write_manifest(root, program="speaker/mark", groups=[group])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     assert len(packet["fits"]) == marks
     for fit in packet["fits"]:
@@ -424,7 +424,7 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
         assert fit["residual_max_db"] < 3
 
 
-@pytest.mark.parametrize("run_program", ["speaker", "speaker/full"])
+@pytest.mark.parametrize("run_program", ["speaker", "speaker/mark"])
 def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round, capsys, run_program):
     root, record, program, *_ = speaker_round
     group = manifest_set([(next(row.path for row, _ in measurement_documents(round_inputs(root).session_dir)

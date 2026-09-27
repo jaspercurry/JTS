@@ -576,7 +576,7 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
                               if record["candidate_id"] == candidate], set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
         groups.append(group)
-    write_manifest(bundle, program=f"rear/{pose_kind}", groups=groups)
+    write_manifest(bundle, program="rear/seat" if pose_kind == "seat" else "rear/express", groups=groups)
     _round_environment(bundle, applied=_SECTIONS[BASE_CANDIDATE])
     mark_state(bundle, "applied")
     banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=round_views.run_bookkeeping,
