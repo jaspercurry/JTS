@@ -16,11 +16,6 @@
  ],
  [
   "jasper/volume_coordinator.py",
-  "if current_db is not None and current_db <= db + RECONCILE_DRIFT_DB:",
-  "if current_db is not None and current_db < db + RECONCILE_DRIFT_DB:"
- ],
- [
-  "jasper/volume_coordinator.py",
   "if persisted_db is not None and persisted_db < -RECONCILE_DRIFT_DB:",
   "if persisted_db is not None and persisted_db <= -RECONCILE_DRIFT_DB:"
  ],

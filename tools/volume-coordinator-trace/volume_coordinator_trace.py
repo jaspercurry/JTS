@@ -21,8 +21,8 @@ One ordered stream records, as they happen:
 * every persisted body (``VolumePersistence``'s atomic write);
 * every source push (``volume_push_sources.push_*`` patched at the module);
 * every published ``EffectiveVolumeContext``;
-* every probe answer (mux selection, renderer activity, duck probe, the
-  DSP-writer flock probe, jasper-control's measurement hold);
+* every probe answer (mux selection, renderer activity, the DSP-writer flock
+  probe, jasper-control's measurement hold);
 * each step's return value (or raised type) and the process ``VolumeOwner``
   ``declared_level_db()`` after it.
 
@@ -198,7 +198,6 @@ class Fx:
         self.writes_fail = False
         self.writes_raise = False
         self.graph_probe = "real"  # "real" | "raises"
-        self.duck: object = False  # True | False | None | "raises"
         self.hold = "free"  # "free" | "held" | "unreadable" | "malformed"
         self.push_ok = {"spotify": True, "bluetooth": True}
         self.block_push: tuple[str, int] | None = None
@@ -312,14 +311,6 @@ class Backend:
         return dict(self.active)
 
 
-async def duck_probe():
-    answer = FX.duck
-    rec("probe.duck", answer)
-    if answer == "raises":
-        raise RuntimeError("trace: duck probe bug")
-    return answer
-
-
 async def publisher(context) -> bool:
     rec(
         "publish",
@@ -394,7 +385,6 @@ class World:
         muted: bool = False,
         level: int | None = None,
         mark_user_change: bool = False,
-        duck: bool = False,
         publish: bool = True,
         record: dict | None = None,
     ) -> None:
@@ -413,7 +403,6 @@ class World:
         self.cam = make_controller(self.client, self.lock_path)
         self.backend = Backend(active, selected)
         self.persistence = VolumePersistence(str(self.state_path))
-        self.duck = duck
         self.publish = publish
         self.coord = self.make_coord(self.persistence)
         if level is not None:
@@ -427,7 +416,6 @@ class World:
             backend=self.backend,
             spotify_router="trace-router",
             spotify_device_name="JTS-trace",
-            duck_active_probe=duck_probe if self.duck else None,
             volume_context_publisher=publisher if self.publish else None,
             handoff_settle_sec=0.0,
             push_settle_sec=0.0,
@@ -436,6 +424,15 @@ class World:
     def other_writer(self) -> VolumePersistence:
         """Another process's handle on the same state file."""
         return VolumePersistence(str(self.state_path))
+
+
+def voice_session_on(coord: VolumeCoordinator) -> None:
+    """A voice session that holds no Camilla lock, the production shape, on a
+    tree with or without the lock argument (#5895 step 0)."""
+    if "camilla_volume_locked" in inspect.signature(coord.note_voice_session).parameters:
+        coord.note_voice_session(True, camilla_volume_locked=False)
+    else:
+        coord.note_voice_session(True)
 
 
 async def step(coord: VolumeCoordinator, name: str, make) -> object:
@@ -521,18 +518,13 @@ async def s_verbs() -> None:
         await step(w.coord, "initialize", lambda: w.coord.initialize())
         await steps(w.coord, verb_table(w.coord))
     for source, key in (("spotify", "spotactive"), ("bluetooth", "btactive")):
-        for variant in ("push_fail", "push_fail_camilla_offline", "push_fail_duck", "push_fail_duck_unknown"):
+        for variant in ("push_fail", "push_fail_camilla_offline"):
             w = World(
                 f"verbs:{source}:{variant}", active={key: True}, db=-7.5, level=70,
-                duck=variant.startswith("push_fail_duck"),
             )
             FX.push_ok[source] = False
             if variant == "push_fail_camilla_offline":
                 FX.offline = True
-            if variant == "push_fail_duck":
-                FX.duck = True
-            if variant == "push_fail_duck_unknown":
-                FX.duck = None
             await steps(w.coord, verb_table(w.coord))
     # The two "unsent" / failing publisher shapes.
     for mode in ("unsent", "raises"):
@@ -625,25 +617,23 @@ async def s_observe() -> None:
     advance(0.5)
     await step(w.coord, "observe:55_after", lambda: w.coord.observe_source_volume(Source.SPOTIFY, 55))
     # 9. Equal-level observations repair the carrier (camilla-master and push).
-    for name, active, source, db, muted, level, persisted_db, duck in (
-        ("usbsink_drift", {"usbsinkactive": True}, Source.USBSINK, -20.0, False, 50, -20.0, None),
-        ("usbsink_converged", {"usbsinkactive": True}, Source.USBSINK, None, False, 50, None, None),
-        ("usbsink_zero_unmuted", {"usbsinkactive": True}, Source.USBSINK, "floor", False, 0, "floor", None),
-        ("usbsink_camilla_offline", {"usbsinkactive": True}, Source.USBSINK, -20.0, False, 50, None, None),
-        ("airplay_mute_drift", {"aplactive": True}, Source.AIRPLAY, None, True, 50, None, None),
-        ("spotify_guard", {"spotactive": True}, Source.SPOTIFY, -25.0, False, 100, -25.0, None),
-        ("spotify_live_guard", {"spotactive": True}, Source.SPOTIFY, -13.0, False, 90, 0.0, None),
-        ("spotify_guard_duck", {"spotactive": True}, Source.SPOTIFY, -13.0, False, 90, -13.0, True),
-        ("spotify_guard_duck_unknown", {"spotactive": True}, Source.SPOTIFY, -13.0, False, 90, -13.0, None),
-        ("spotify_muted_flag", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, None, None),
-        ("bluetooth_clean", {"btactive": True}, Source.BLUETOOTH, 0.0, False, 50, None, None),
-        ("usbsink_drift_exact_minus", {"usbsinkactive": True}, Source.USBSINK, "level-1", False, 50, None, None),
-        ("usbsink_drift_exact_plus", {"usbsinkactive": True}, Source.USBSINK, "level+1", False, 50, None, None),
-        ("spotify_guard_boundary_muted", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, -1.0, None),
-        ("spotify_guard_past_boundary_muted", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, -1.01, None),
-        ("spotify_live_guard_boundary", {"spotactive": True}, Source.SPOTIFY, -1.0, False, 70, 0.0, None),
-        ("spotify_live_guard_past_boundary", {"spotactive": True}, Source.SPOTIFY, -1.01, False, 70, 0.0, None),
-        ("spotify_persisted_guard_boundary", {"spotactive": True}, Source.SPOTIFY, 0.0, False, 70, -1.0, None),
+    for name, active, source, db, muted, level, persisted_db in (
+        ("usbsink_drift", {"usbsinkactive": True}, Source.USBSINK, -20.0, False, 50, -20.0),
+        ("usbsink_converged", {"usbsinkactive": True}, Source.USBSINK, None, False, 50, None),
+        ("usbsink_zero_unmuted", {"usbsinkactive": True}, Source.USBSINK, "floor", False, 0, "floor"),
+        ("usbsink_camilla_offline", {"usbsinkactive": True}, Source.USBSINK, -20.0, False, 50, None),
+        ("airplay_mute_drift", {"aplactive": True}, Source.AIRPLAY, None, True, 50, None),
+        ("spotify_guard", {"spotactive": True}, Source.SPOTIFY, -25.0, False, 100, -25.0),
+        ("spotify_live_guard", {"spotactive": True}, Source.SPOTIFY, -13.0, False, 90, 0.0),
+        ("spotify_muted_flag", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, None),
+        ("bluetooth_clean", {"btactive": True}, Source.BLUETOOTH, 0.0, False, 50, None),
+        ("usbsink_drift_exact_minus", {"usbsinkactive": True}, Source.USBSINK, "level-1", False, 50, None),
+        ("usbsink_drift_exact_plus", {"usbsinkactive": True}, Source.USBSINK, "level+1", False, 50, None),
+        ("spotify_guard_boundary_muted", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, -1.0),
+        ("spotify_guard_past_boundary_muted", {"spotactive": True}, Source.SPOTIFY, 0.0, True, 70, -1.01),
+        ("spotify_live_guard_boundary", {"spotactive": True}, Source.SPOTIFY, -1.0, False, 70, 0.0),
+        ("spotify_live_guard_past_boundary", {"spotactive": True}, Source.SPOTIFY, -1.01, False, 70, 0.0),
+        ("spotify_persisted_guard_boundary", {"spotactive": True}, Source.SPOTIFY, 0.0, False, 70, -1.0),
     ):
         from jasper.volume_curve import percent_to_db
         floor = percent_to_db(0)
@@ -655,10 +645,7 @@ async def s_observe() -> None:
         }[db] if db is None or isinstance(db, str) else db
         w = World(
             f"observe:equal:{name}", active=active, db=cam_db, muted=muted, level=level,
-            duck=duck is not None,
         )
-        if duck is not None:
-            FX.duck = duck
         if persisted_db is not None:
             w.other_writer().save_now(floor if persisted_db == "floor" else persisted_db)
         if name == "usbsink_camilla_offline":
@@ -673,16 +660,15 @@ async def s_observe() -> None:
         (Source.SPOTIFY, "spotactive", (40, 0, 100)),
         (Source.BLUETOOTH, "btactive", (64, 0, 127, 200)),
     ):
-        for duck in (False, True):
-            w = World(
-                f"observe:user:{source.value}:duck={duck}", active={key: True},
-                db=-50.0, muted=True, level=0, duck=duck,
-            )
-            w.other_writer().save_now(-50.0)
-            FX.duck = duck
-            for value in values:
-                advance(3.0)
-                await step(w.coord, f"observe:{value}", lambda v=value: w.coord.observe_source_volume(source, v))
+        # The name keeps its `duck=False` so the records match the old base.
+        w = World(
+            f"observe:user:{source.value}:duck=False", active={key: True},
+            db=-50.0, muted=True, level=0,
+        )
+        w.other_writer().save_now(-50.0)
+        for value in values:
+            advance(3.0)
+            await step(w.coord, f"observe:{value}", lambda v=value: w.coord.observe_source_volume(source, v))
     # 11. Two coordinators: a queued stale nonzero cannot cancel a mute.
     w = World("observe:two_coordinator_race", active={"spotactive": True}, db=0.0, level=50)
     control = w.coord
@@ -718,36 +704,31 @@ HANDOFF_PAIRS = [
 ]
 
 HANDOFF_VARIANTS = {
-    # name: (camilla db, camilla muted, level, push ok, offline, duck answer)
-    "loud_camilla": (0.0, False, 40, True, False, None),
-    "quiet_camilla": (-45.0, False, 40, True, False, None),
-    "mute_drift": ("level", True, 40, True, False, None),
-    "push_fail": (0.0, False, 40, False, False, None),
-    "push_fail_offline": (0.0, False, 40, False, True, None),
-    "duck_unsafe": (-5.0, False, 20, True, False, True),
-    "duck_safe": (-45.0, False, 20, True, False, True),
-    "muted_latch": (0.0, False, "muted", True, False, None),
+    # name: (camilla db, camilla muted, level, push ok, offline)
+    "loud_camilla": (0.0, False, 40, True, False),
+    "quiet_camilla": (-45.0, False, 40, True, False),
+    "mute_drift": ("level", True, 40, True, False),
+    "push_fail": (0.0, False, 40, False, False),
+    "push_fail_offline": (0.0, False, 40, False, True),
+    "muted_latch": (0.0, False, "muted", True, False),
 }
 
 
 async def s_handoff() -> None:
     from jasper.volume_curve import percent_to_db
     for prev, cur in HANDOFF_PAIRS:
-        for variant, (db, muted, level, push_ok, offline, duck) in HANDOFF_VARIANTS.items():
+        for variant, (db, muted, level, push_ok, offline) in HANDOFF_VARIANTS.items():
             for ending in ("finalize", "abort"):
                 seed_level = 60 if level == "muted" else level
                 cam_db = percent_to_db(seed_level) if db == "level" else db
                 w = World(
                     f"handoff:{prev.value}>{cur.value}:{variant}:{ending}",
                     active={}, selected=cur.value, db=cam_db, muted=muted, level=seed_level,
-                    duck=duck is not None,
                 )
                 if level == "muted":
                     w.other_writer().save_mute_state(60, "latched")
                 FX.push_ok = {"spotify": push_ok, "bluetooth": push_ok}
                 FX.offline = offline
-                if duck is not None:
-                    FX.duck = duck
                 async with w.coord.source_handoff_operation():
                     h = await step(w.coord, "prepare", lambda: w.coord.prepare_source_handoff(prev, cur, reason="trace"))
                     if h is not None:
@@ -793,7 +774,7 @@ async def s_handoff() -> None:
             await step(w.coord, "state", lambda: w.coord.get_volume_state())
     # Deferred by a voice session; dropped when the lease disagrees.
     w = World("transition:voice_session", active={}, selected="spotify", level=50)
-    w.coord.note_voice_session(True)
+    voice_session_on(w.coord)
     await step(w.coord, "deferred", lambda: w.coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY))
     w.coord.note_voice_session(False)
     await step(w.coord, "applied", lambda: w.coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY))
@@ -829,15 +810,13 @@ async def s_reconcile() -> None:
             await step(w.coord, f"tick{i}", lambda: w.coord.maybe_reconcile_camilla())
             await step(w.coord, "deferred?", lambda: w.coord.reconcile_deferred)
     # Gates.
-    for gate in ("voice_session", "voice_session_unlocked", "measurement", "offline", "push_source", "source_arg_push", "source_arg_idle"):
+    for gate in ("voice_session", "measurement", "offline", "push_source", "source_arg_push", "source_arg_idle"):
         w = World(
             f"reconcile:gate:{gate}", active={"spotactive": True} if gate == "push_source" else {},
             db=0.0, level=70, mark_user_change=True,
         )
         if gate == "voice_session":
-            w.coord.note_voice_session(True)
-        if gate == "voice_session_unlocked":
-            w.coord.note_voice_session(True, camilla_volume_locked=False)
+            voice_session_on(w.coord)
         if gate == "measurement":
             await step(w.coord, "measure_on", lambda: w.coord.note_measurement_active(True))
         if gate == "offline":
@@ -970,59 +949,19 @@ async def s_reconcile() -> None:
         await step(w.coord, "release_duck", lambda: w.coord.volume_owner.release(duck))
 
 
-async def s_duck_lock() -> None:
-    w = World("duck:voice_session_locked", active={}, db=-25.0, level=50)
-    w.coord.note_voice_session(True)
-    await steps(w.coord, [
-        ("set:46", lambda: w.coord.set_listening_level(46)),
-        ("set:0", lambda: w.coord.set_listening_level(0)),
-        ("adjust:+10", lambda: w.coord.adjust_listening_level(10)),
-        ("mute", lambda: w.coord.mute()),
-        ("unmute", lambda: w.coord.unmute()),
-        ("target_db", lambda: w.coord.get_camilla_target_db()),
-        ("context", lambda: w.coord.effective_volume_context()),
-        ("transition", lambda: w.coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)),
-        ("tick", lambda: w.coord.maybe_reconcile_camilla()),
-    ])
-    w.coord.note_voice_session(False)
-    await step(w.coord, "set_after:50", lambda: w.coord.set_listening_level(50))
+async def s_voice_session() -> None:
+    # The name keeps its `unlocked` so the records match the old base.
     w = World("duck:voice_session_unlocked", active={}, db=-25.0, level=50)
-    w.coord.note_voice_session(True, camilla_volume_locked=False)
+    voice_session_on(w.coord)
     await steps(w.coord, [
         ("set:46", lambda: w.coord.set_listening_level(46)),
         ("transition", lambda: w.coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)),
         ("context", lambda: w.coord.effective_volume_context()),
     ])
-    for answer in (True, False, None, "raises"):
-        for active, selected in (({}, None), ({"spotactive": True}, None), ({"usbsinkactive": True}, None)):
-            w = World(
-                f"duck:probe={answer}:{sorted(active)}", active=active, selected=selected,
-                db=-40.0, level=64, duck=True,
-            )
-            FX.duck = answer
-            await steps(w.coord, [
-                ("set:70", lambda: w.coord.set_listening_level(70)),
-                ("adjust:+12", lambda: w.coord.adjust_listening_level(12)),
-                ("set:0", lambda: w.coord.set_listening_level(0)),
-                ("mute", lambda: w.coord.mute()),
-                ("unmute", lambda: w.coord.unmute()),
-                ("observe:30", lambda: w.coord.observe_source_volume(Source.USBSINK, 30)),
-                ("prepare", lambda: w.coord.prepare_source_handoff(Source.SPOTIFY, Source.AIRPLAY, reason="duck")),
-                ("target_db", lambda: w.coord.get_camilla_target_db()),
-            ])
 
 
 async def s_boundaries() -> None:
     from jasper.volume_curve import percent_to_db
-    # already_safe: a ducked fader exactly 1 dB above the guard is safe.
-    for offset in (1.0, 1.01, 0.0):
-        w = World(
-            f"boundary:duck_already_safe:+{offset}", active={"spotactive": True},
-            db=percent_to_db(60) + offset, level=60, duck=True,
-        )
-        FX.duck = True
-        FX.push_ok["spotify"] = False
-        await step(w.coord, "set:60", lambda: w.coord.set_listening_level(60))
     # The handoff guard: a fader exactly 1 dB above the guard needs none.
     for offset in (1.0, 1.01):
         w = World(
@@ -1208,7 +1147,7 @@ async def s_diagnostics() -> None:
 
 
 SCENARIOS = [
-    s_verbs, s_observe, s_handoff, s_reconcile, s_duck_lock, s_boundaries,
+    s_verbs, s_observe, s_handoff, s_reconcile, s_voice_session, s_boundaries,
     s_offline, s_boot, s_plus_one_db, s_measuring, s_diagnostics,
 ]
 
