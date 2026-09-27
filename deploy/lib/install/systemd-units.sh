@@ -286,31 +286,6 @@ install_web_unit_files() {
     done
 }
 
-# Renderer/DSP + assistant wizard ports. Forbidden = the WAKE_DETECTION
-# wizards, which a Zero-2-W-class board never runs. Kept in step with
-# deploy/systemd/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
-# tests/test_web_main_imports.py.
-validate_streambox_web_socket() {
-    local socket="${SYSTEMD_DIR}/jasper-web.socket"
-    local -a expected_ports=(
-        8765 8767 8768 8773 8775 8777 8778 8779 8783 8784 8785 8786
-    )
-    local -a forbidden_ports=(8774 8782)
-    local port
-    for port in "${expected_ports[@]}"; do
-        if ! grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
-            echo "  ERROR: streambox jasper-web.socket missing port ${port}" >&2
-            return 1
-        fi
-    done
-    for port in "${forbidden_ports[@]}"; do
-        if grep -q "^ListenStream=127\\.0\\.0\\.1:${port}$" "${socket}"; then
-            echo "  ERROR: streambox jasper-web.socket still binds wake-side port ${port}" >&2
-            return 1
-        fi
-    done
-}
-
 validate_installed_systemd_units() {
     if command -v systemd-analyze >/dev/null 2>&1; then
         local row _mode _source destination unit seen
@@ -1494,7 +1469,6 @@ _stage_streambox_unit_files() {
         _install_file_rows \
             "0644 deploy/systemd/jasper-turntable-autostop@.service ${SYSTEMD_DIR}/jasper-turntable-autostop@.service"
     fi
-    validate_streambox_web_socket
 }
 
 install_streambox_systemd_units() {

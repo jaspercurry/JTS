@@ -1477,7 +1477,6 @@ install() {{
 }}
 systemctl() {{ return 0; }}
 install_usb_network_files() {{ return 0; }}
-validate_streambox_web_socket() {{ return 0; }}
 reload_audio_recovery_udev_rules_for_install() {{ return 0; }}
 {function}
 """
