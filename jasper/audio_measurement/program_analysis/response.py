@@ -44,6 +44,7 @@ from .model import (
     IR_POST_MS,
     IR_PRE_MS,
     logger,
+    MeasurementGeometry,
     SummedAlignmentReference,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
@@ -310,15 +311,17 @@ def _driver_response(
     n_fft: int,
     radiated_band_hz: tuple[float, float] | None = None,
     capture_segment: np.ndarray | None = None,
-    gate_exempt_reason: str | None = None,
+    geometry: MeasurementGeometry = MeasurementGeometry(),
     preserve_timing: bool = False,
     alignment_band_hz: tuple[float, float] | None = None,
 ) -> DriverResponse:
     """One role's gated, calibrated response plus the gate's own disclosure.
 
-    ``gate_exempt_reason`` keeps the room in: the response is the arrival
-    window ungated, with :func:`gating.exempt_gating_block` saying why and no
-    validity floor claimed (a seat take, ADR-0260; a near-field one, ADR-0360).
+    ``geometry.gate_exempt_reason`` keeps the room in: the response is the
+    arrival window ungated, with :func:`gating.exempt_gating_block` saying why
+    and no validity floor claimed (a seat take, ADR-0260; a near-field one,
+    ADR-0360). Otherwise the gate searches for a reflection up to
+    ``geometry.declared_first_bounce_s`` (#3665 item 10).
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate
@@ -335,22 +338,23 @@ def _driver_response(
     one. See :func:`_driver_snr_block` for why the verdict cannot be built
     from ``full_ir`` in that case.
     """
+    exempt = geometry.gate_exempt_reason
     peak_idx = int(np.argmax(np.abs(full_ir)))
     window = deconv.direct_arrival_window(
         full_ir, sample_rate, direct_peak_idx=peak_idx,
         pre_arrival_ms=IR_PRE_MS,
         post_arrival_ms=(1000 * DEFAULT_VERIFY_TAIL_S
-                         if gate_exempt_reason is not None else IR_POST_MS),
+                         if exempt is not None else IR_POST_MS),
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    if gate_exempt_reason is not None:
+    if exempt is not None:
         gated_ir = ir
-        gating_block = gating.exempt_gating_block(
-            ir, sample_rate, reason=gate_exempt_reason
-        )
+        gating_block = gating.exempt_gating_block(ir, sample_rate, reason=exempt)
         validity_floor_hz = None
     else:
-        gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+        gated_ir, fragment = gating.gate_impulse_response(
+            ir, sample_rate, declared_first_bounce_s=geometry.declared_first_bounce_s,
+        )
         delta = gate_disclosure.pre_post_gate_delta(
             ir, gated_ir, sample_rate,
             trusted_floor_hz=fragment["f_trusted_hz"],
@@ -395,6 +399,7 @@ def _aligned_branch_tf(
     n_fft: int,
     *,
     calibration: "CalibrationCurve | None",
+    declared_first_bounce_s: float | None = None,
 ):
     """Delay-referenced, gating-consistent complex TF for the sum prediction.
 
@@ -412,7 +417,9 @@ def _aligned_branch_tf(
         pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS,
     )
     ir = deconv.apply_arrival_window(full_ir, window)
-    gated_ir, fragment = gating.gate_impulse_response(ir, sample_rate)
+    gated_ir, fragment = gating.gate_impulse_response(
+        ir, sample_rate, declared_first_bounce_s=declared_first_bounce_s,
+    )
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
     return freqs, H, fragment
 

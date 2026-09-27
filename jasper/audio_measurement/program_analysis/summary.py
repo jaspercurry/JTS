@@ -57,8 +57,8 @@ def _gate_floor_source_of(response: "DriverResponse | None") -> str | None:
 
     ``window_ms`` alone can't distinguish the two states, which print
     identically: ``FLOOR_MEASURED`` (a reflection onset was found) vs
-    ``FLOOR_SEARCH_BOUND`` (the search ran to ``SEARCH_T_MAX_MS`` without
-    finding one and was CAPPED). ``None`` for an ungateable capture.
+    ``FLOOR_SEARCH_BOUND`` (the search ran to its bound without finding one
+    and was CAPPED). ``None`` for an ungateable capture.
     """
     if response is None:
         return None

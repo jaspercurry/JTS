@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from .gating import SEARCH_T_MAX_MS, f_trusted_floor_hz
+from .gating import f_trusted_floor_hz, search_bound_ms
 from .measurement_geometry import DeclaredGeometry
 from .piston import at_driver_near_field, beaming_onset_hz, far_field_ceiling_hz
 
@@ -50,12 +50,9 @@ def trusted_band(
     low = high = None
     high_source = None
     if gated:
-        search_s = SEARCH_T_MAX_MS / 1000.0
         if room is None:
             undeclared.append(ROOM_UNDECLARED)
-        # The gate stops at the search bound whatever the room allows; the cap
-        # goes when the gate follows the declared room (#3665 item 10).
-        low = f_trusted_floor_hz(search_s if room is None else min(room.first_bounce_s(distance_m), search_s))
+        low = f_trusted_floor_hz(search_bound_ms(None if room is None else room.first_bounce_s(distance_m)) / 1000.0)
     if distance_m is not None:
         sizes = [size for size in diameters_mm if size is not None]
         if not sizes or len(sizes) < len(diameters_mm):

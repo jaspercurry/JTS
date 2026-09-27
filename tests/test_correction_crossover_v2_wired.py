@@ -1127,6 +1127,29 @@ def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, 
         [] if readable else ["ValueError"])
 
 
+@pytest.mark.parametrize("declared,pose,distance_m", [
+    (True, {"pose_kind": "bearing", "mark_distance_m": 0.5}, 0.5),
+    (True, {"pose_kind": "bearing", "mark_distance_m": None}, 1.0),
+    (False, {"pose_kind": "bearing", "mark_distance_m": 0.5}, None),
+])
+def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(monkeypatch, declared, pose, distance_m):
+    """A take's gate searches as far as the declared room's first bounce at its
+    own pose's distance, a pose that states none at the mark; with no room
+    declared it searches as far as the default (#3665 item 10)."""
+    fakes = FlowSeams()
+    conductor = _conductor(fakes, index_phase_map={1: "verify"})
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    room = DeclaredGeometry(speaker_height_m=1.4, mic_height_m=1.4, distance_m=2.0)
+    monkeypatch.setattr(correction_run_host, "load_declared_geometry", lambda: room if declared else None)
+    correction_run_host.bind_plan_analysis(conductor, records, evidence={},
+                                           manifest=SimpleNamespace(calibration={}, capture_record=dict))
+
+    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+                          "program": conductor.program_for_phase("verify").to_dict(), **pose})
+
+    assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
+
+
 @pytest.mark.parametrize("scope, phase", [
     ("drivers", "check"), ("drivers", "measure"), ("timing", "entry_baseline"),
     ("candidate", "verify"), ("candidate_branches", "lateral"),
