@@ -319,13 +319,8 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[str, Any]:
-    """The classification and H2/H3 views, read beside the round.
-
-    ``round_dir`` is unused now that the pre-ADR-0346 evidence-copy fallback
-    is gone; kept so its two callers in ``evidence_packet/__init__.py`` need
-    no change.
-    """
+def _derived_views_block(inputs: RoundInputs) -> dict[str, Any]:
+    """The classification and H2/H3 views, read beside the round."""
     return {
         "feature_classification": _classification_block(
             *read_json(view_path(inputs, CLASSIFICATION_ARTIFACT))

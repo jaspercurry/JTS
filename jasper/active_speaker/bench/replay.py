@@ -28,8 +28,8 @@ DSP_LEVELS_SCHEMA = "jts_dsp_levels/1"
 
 
 def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float) -> dict:
-    """Refuses a graph with an Aux1 fader: that pre-ADR-0359 shape needs a
-    reference level this replay no longer carries (#5710 slice 2)."""
+    """A graph with an Aux1 fader (the pre-ADR-0359 shape) refuses
+    ``dsp_replay_fader_invalid``."""
     if not math.isfinite(main_db) or not -120 <= main_db <= 0:
         raise ValueError("dsp_replay_fader_invalid")
     with wave.open(str(stimulus), "rb") as wav:

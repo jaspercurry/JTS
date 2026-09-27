@@ -540,7 +540,7 @@ def build_crossover_evidence_packet(
             capture_snr_reason=str(capture_snr.get("reason") or ""),
         ),
         "contracts": _contract_digests(inputs, round_dir, as_mapping(draft_raw), applied_profile),
-        DERIVED_VIEWS: _derived_views_block(round_dir, inputs),
+        DERIVED_VIEWS: _derived_views_block(inputs),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
@@ -627,7 +627,7 @@ def round_evidence(inputs: RoundInputs) -> dict[str, Any]:
     stored = banked_packet(inputs)
     evidence = stored.get(EVIDENCE_KEY)
     if isinstance(evidence, dict):
-        packet = {**evidence, DERIVED_VIEWS: _derived_views_block(round_artifact_dir(inputs.session_dir)[0], inputs)}
+        packet = {**evidence, DERIVED_VIEWS: _derived_views_block(inputs)}
     else:
         packet = build_round_evidence(inputs)
     return {**packet, "packet_fingerprint": stored.get("packet_fingerprint") or packet.get("packet_fingerprint")}

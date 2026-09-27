@@ -81,6 +81,7 @@ from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 
 #: The CLI tests here build a packet from a live session bundle with no
 #: --drivers/--applied-profile, so none may read this machine's own.
@@ -203,12 +204,13 @@ def _speaker(
     statefile was banked at all, distinct from a statefile that IS there and
     names a different config.
     """
-    session, _ = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
+    # Nested under bank/bundle/ (like a real bank) so a classification write
+    # resolves beside the round instead of falling back to the cwd.
+    session, _ = _bundle(tmp_path / "bank" / "bundle")
     if classification is None:
         classification = _classification()
     if classification is not False:
-        (round_dir / "feature_classification.json").write_text(
+        view_path(round_inputs(session), "feature_classification.json").write_text(
             json.dumps(classification)
         )
     draft_path = None
