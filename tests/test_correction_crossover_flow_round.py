@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_poses, run_program
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
@@ -45,9 +46,9 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
         preset if layout == run_program(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
     assert [c["id"] for c in choices if c["default"]] == ["room/seat@seat_cube"]
-    assert [(c["poses"], c["captures"]) for c in choices] == [
-        (run_program(preset, layout).mic_move_count, run_program(preset, layout).capture_count)
-        for preset, layout in visible]
+    walked = [replace(row, poses=plan_poses(row, _VIEW["near_field_drivers"]))
+              for row in (run_program(preset, layout) for preset, layout in visible)]
+    assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
     selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
     plan = selected["action"]["body"]["plan"]
     assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)
@@ -89,13 +90,14 @@ def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch
 
 
 
-@pytest.mark.parametrize("selected", ["nearfield/rear", "nearfield/nope"])
+@pytest.mark.parametrize("selected", ["front_rear/express", "nearfield/nope"])
 def test_a_program_the_speaker_does_not_offer_is_refused_on_its_row(monkeypatch, selected):
-    """A link naming a program this speaker does not offer, such as a rear
-    woofer's near-field row on a 2-way, is refused on its own row instead of
+    """A link naming a program this speaker does not offer, such as the front
+    and rear woofer pair on a 2-way, is refused on its own row instead of
     silently selecting another program."""
-    monkeypatch.setattr(coordinator, "load_commissioning_view",
-                        lambda: {**_VIEW, "near_field_drivers": ("tweeter", "woofer")})
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
+        **_VIEW, "programs": tuple(name for name in RUNNABLE_PROGRAMS if name != "rear"),
+        "near_field_drivers": ("tweeter", "woofer")})
     choices = measurement_view.round_choices({}, selected)
     refused = next(c for c in choices if c["id"] == selected)
     assert (refused["code"], refused["default"], "action" in refused) == (

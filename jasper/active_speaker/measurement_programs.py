@@ -10,6 +10,7 @@ import json
 import math
 import numbers
 from dataclasses import dataclass, replace
+from itertools import groupby
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
@@ -17,7 +18,7 @@ from typing import Any, Collection, Mapping, NamedTuple, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
-from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
+from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
 
 from .measurement import active_driver_targets
 
@@ -282,6 +283,7 @@ RETIRED_PROGRAMS = MappingProxyType({
 PROGRAM_RETIRED = "measurement_program_retired"
 LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"
 POSES_NAME_A_LAYOUT = "measurement_poses_name_a_layout"
+DRIVER_NOT_OFFERED = "measurement_driver_not_offered"
 
 
 def run_purpose(run_program: str | None) -> str:
@@ -435,6 +437,11 @@ class MeasurementProgram:
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
 
     @property
+    def preset_id(self) -> str:
+        """The id a run names and banks, ``program_id/size`` (ADR-0366 §6)."""
+        return f"{self.program_id}/{self.size}"
+
+    @property
     def mic_move_count(self) -> int:
         """Distinct places — repeats stay at one place and move nothing."""
 
@@ -473,6 +480,17 @@ class PosesNameALayoutError(ValueError):
     def __init__(self, layout: str) -> None:
         self.detail = {"poses": layout, "use": "--layout"}
         super().__init__(f"{layout} is a layout: pass it as --layout")
+
+
+class DriverNotOfferedError(ValueError):
+    """A run narrowed to a driver its preset cannot play alone here; ``detail``
+    names the declared outputs the preset does play alone here."""
+
+    reason = DRIVER_NOT_OFFERED
+
+    def __init__(self, preset: str, driver: str, offered: Sequence[str]) -> None:
+        self.detail = {"preset": preset, "driver": driver, "offered": list(offered)}
+        super().__init__(f"{preset} cannot play {driver} alone here")
 
 
 class UnknownProgramError(ValueError):
@@ -683,6 +701,32 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
         {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
     return replace(selected, layout=CUSTOM_SIZE, poses=tuple(
         _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(rows)))
+
+
+def plan_poses(program: MeasurementProgram, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
+    """The poses a run walks on this speaker. A named layout's pose that names a bare
+    driver role (``woofer``) plays each declared output of that role (``targets``), one
+    output's poses after the other's, so a cardioid's rear woofer follows its front one
+    (ADR-0366 §6); a role with no declared output keeps its name for preflight to refuse.
+    A pose that names one output (``woofer:rear``), and every inline pose, plays what it
+    names. ``driver`` narrows the run to that one output."""
+    runs = [(named, tuple(run)) for named, run in groupby(program.poses, key=lambda pose: pose.driver)]
+    poses = tuple(replace(pose, driver=output) for named, run in runs
+                  for output in (_outputs(named, targets) if program.layout != CUSTOM_SIZE else (named,))
+                  for pose in run)
+    if not driver:
+        return poses
+    narrowed = tuple(pose for pose in poses if pose.driver == driver)
+    if driver not in targets or not narrowed:
+        raise DriverNotOfferedError(program.preset_id, driver,
+                                    tuple(dict.fromkeys(pose.driver for pose in poses if pose.driver in targets)))
+    return narrowed
+
+
+def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:
+    """Each declared output of the role a layout pose names; one output (``woofer:rear``)
+    is no role, so it, like a role with no declared output, plays as named."""
+    return tuple(target for target in targets if measurement_target_parts(target)[0] == named) or (named,)
 
 
 def trial_program(

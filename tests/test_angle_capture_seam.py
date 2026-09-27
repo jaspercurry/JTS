@@ -1106,7 +1106,7 @@ def test_position_gate_names_the_behind_pose_without_changing_the_action_body(el
 
 def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
     """A close pose is on the design axis, at a standoff it declares."""
-    program = mp.program("nearfield", "woofer")
+    program = mp.run_program("nearfield")
     stop = ac.resolve_request(ac.request_for_program(program))[0]
     geometry = capture_plan.position_geometry(stop.prompt)
 

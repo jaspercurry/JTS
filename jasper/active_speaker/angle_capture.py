@@ -51,6 +51,7 @@ from .measurement_programs import (
     candidate_identity,
     cleared_layers,
     MeasurementProgram,
+    plan_poses,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIME_BRANCHES,
@@ -783,8 +784,14 @@ def request_for_program(
     levels: tuple[float, ...] | None = None,
     repeats: int = 1,
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
+    targets: Sequence[str] = (),
+    driver: str = "",
 ) -> AngleCaptureRequest:
-    """Expand poses with adjacent driver repeats, room sweeps and candidate trials."""
+    """Expand poses with adjacent driver repeats, room sweeps and candidate trials.
+
+    ``targets`` are the outputs this speaker declares for a pose to play alone; a
+    preset's driver role expands to them, and ``driver`` narrows the run to one
+    (:func:`~.measurement_programs.plan_poses`)."""
     if program.mover is not None and program.mover != mover:
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{program.program_id}/{program.size} requires mover={program.mover}")
     if program.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
@@ -802,7 +809,7 @@ def request_for_program(
                 stimulus=program.stimulus,
                 branch_pair=program.branch_pair,
             )
-            for pose in program.poses
+            for pose in plan_poses(program, targets, driver)
             for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
                 AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and program.regime == REGIME_PER_DRIVER else program.regime,
                           kind=pose.kind, distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,

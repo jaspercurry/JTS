@@ -16,7 +16,7 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_a
 from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED
 from jasper.active_speaker.measurement_programs import (
-    PURPOSE_REAR, REGIME_BRANCHES, run_program,
+    PURPOSE_REAR, REGIME_BRANCHES, near_field_drivers, run_program,
 )
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
@@ -26,7 +26,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_stat
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import household_mic_path
-from jasper.output_topology_store import topology_path
+from jasper.output_topology_store import load_output_topology, topology_path
 from ._refusal import read_json_source
 
 #: The facts only this CLI can see; the session door re-reads every other one and owns admission.
@@ -53,7 +53,8 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         except OSError:
             pass
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "layout", "candidates", "repeats", "mover", "level_db")):
+        if any(getattr(args, key) is not None
+               for key in ("program", "poses", "layout", "driver", "candidates", "repeats", "mover", "level_db")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
@@ -81,6 +82,7 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         level=LevelPolicy(level_db=args.level_db) if operator_level else level,
         level_source="operator" if operator_level else level_source,
         mover=args.mover or program.mover or "human",
+        targets=near_field_drivers(load_output_topology()), driver=args.driver or "",
     )
     facts = _facts(request, args)
     return preflight_levels(request, facts, program.levels if args.level_db is None else None)

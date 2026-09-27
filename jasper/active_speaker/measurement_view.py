@@ -3,12 +3,13 @@
 
 """Measurement screen facts and plan choices, separate from speaker setup."""
 
+from dataclasses import replace
 from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import (
     BRANCH_PAIR_FRONT_REAR, CUSTOM_SIZE, PURPOSE_REAR, RETIRED_PROGRAMS, RUNNABLE_PROGRAMS, MeasurementProgram,
-    available_programs, program, run_program,
+    available_programs, plan_poses, program, run_program,
 )
 from .round_copy import round_lines, packet_lines, round_verdict
 from .wizard_client import CAPTURE_CANCEL_PATH
@@ -59,13 +60,14 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
 
     view = load_commissioning_view()
     programs = view["programs"]
+    targets = view["near_field_drivers"]
     presets = [program(name, size) for name, size in available_programs()]
     plans = {_choice_id(preset, layout): run_program(f"{preset.program_id}/{preset.size}", layout)
              for preset in presets for layout in preset.layouts}
     plans = {key: plan for key, plan in plans.items()
              if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
                      or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
-                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(view["near_field_drivers"]))}
+                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
     default = program(view["next_action"].get("program") or programs[0])
     retired = RETIRED_PROGRAMS.get(selected_id)
     if retired is not None and retired.preset and retired.layout != CUSTOM_SIZE:
@@ -74,8 +76,9 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     default_id = selected_id or f"{default.program_id}/{default.size}"
     choices = []
     for plan_id, plan in plans.items():
+        walked = replace(plan, poses=plan_poses(plan, targets))
         choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
-                                  "poses": plan.mic_move_count, "captures": plan.capture_count}
+                                  "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
             if plan.regime == REGIME_BRANCHES:
                 # See issue #5321.
@@ -90,7 +93,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                     # raisers pass; some carry no code.
                     choice.update(code=exc.code or None, lines=[str(exc)])
                 else:
-                    request = request_for_program(plan, mover=plan.mover or "human")
+                    request = request_for_program(plan, mover=plan.mover or "human", targets=targets)
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
                     facts = preview_schedule(request, captures, context)
                     choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",
