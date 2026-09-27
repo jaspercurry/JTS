@@ -463,24 +463,6 @@ fn parse_capture_geometry() -> Result<(u32, u32, u32)> {
 }
 
 fn parse_ring(period_frames: u32) -> Result<(String, u32)> {
-    match std::env::var("JASPER_FANIN_CAMILLA_COUPLING")
-        .ok()
-        .as_deref()
-        .map(|s| s.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        None | Some("") | Some("shm_ring") => {}
-        Some(other) => {
-            return Err(anyhow::anyhow!(
-                "JASPER_FANIN_CAMILLA_COUPLING={} unsupported (shm_ring) — the \
-                 SHM ring is this daemon's only transport toward CamillaDSP \
-                 (ADR-0100); a box that cannot be served by it parks instead \
-                 of falling back",
-                other,
-            ));
-        }
-    }
-
     let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
     match ring_wire_format.as_deref().map(str::trim) {
         None | Some("") | Some("S32_LE") => {}
@@ -1789,44 +1771,6 @@ mod tests {
         );
     }
 
-    /// Which `JASPER_FANIN_CAMILLA_COUPLING` declarations this daemon will
-    /// serve, now that the ring is the only transport (ADR-0100).
-    ///
-    /// The REFUSAL is the load-bearing half: a box still carrying a persisted
-    /// `loopback` must PARK — exit 78 via [`crate::ConfigClassError`], visible on
-    /// /state and doctor — not silently play over the ring the operator did not
-    /// ask for. Unset / empty is "no declaration" (empty is how this repo's env
-    /// writers clear a key), which the single transport serves.
-    #[test]
-    fn only_a_ring_declaration_or_none_is_served() {
-        for (raw, served) in [
-            (None, true),
-            (Some(""), true),
-            (Some("   "), true),
-            (Some("shm_ring"), true),
-            (Some(" SHM_RING "), true),
-            (Some("loopback"), false),
-            (Some("pipe"), false),
-            (Some("transport_pipe"), false),
-            (Some("ring"), false),
-            (Some("shm-ring"), false),
-        ] {
-            with_env(
-                &[("JASPER_FANIN_CAMILLA_COUPLING", raw)],
-                || match Config::from_env() {
-                    Ok(_) => assert!(served, "{raw:?} must be refused"),
-                    Err(err) => {
-                        assert!(!served, "{raw:?} must be served: {err:#}");
-                        assert!(
-                            parks_the_unit(&err),
-                            "{raw:?} must park the unit (exit 78), not restart-loop it",
-                        );
-                    }
-                },
-            );
-        }
-    }
-
     /// Which `JASPER_FANIN_RING_WIRE_FORMAT` declarations this daemon will
     /// serve, now that fan-in creates the ring S32_LE unconditionally.
     ///
@@ -1879,7 +1823,6 @@ mod tests {
     fn shm_ring_ring_path_and_slots_override() {
         with_env(
             &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
                 ("JASPER_FANIN_RING_PATH", Some("/dev/shm/jts-ring/lab.ring")),
                 ("JASPER_FANIN_RING_SLOTS", Some("16")),
             ],
@@ -1897,20 +1840,14 @@ mod tests {
         // both must carry the config-class marker or the parse failure
         // restart-loops.
         for bad in ["1", "17", "0", "100", "abc"] {
-            with_env(
-                &[
-                    ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                    ("JASPER_FANIN_RING_SLOTS", Some(bad)),
-                ],
-                || {
-                    let err = Config::from_env().expect_err("out-of-range ring slots must error");
-                    assert!(
-                        parks_the_unit(&err),
-                        "a bad ring geometry must park at 78, not restart-loop \
+            with_env(&[("JASPER_FANIN_RING_SLOTS", Some(bad))], || {
+                let err = Config::from_env().expect_err("out-of-range ring slots must error");
+                assert!(
+                    parks_the_unit(&err),
+                    "a bad ring geometry must park at 78, not restart-loop \
                          into StartLimitAction=reboot: {err:#}",
-                    );
-                },
-            );
+                );
+            });
         }
     }
 
@@ -1956,7 +1893,6 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
             ],
-            vec![("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback"))],
             vec![("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE"))],
             vec![("JASPER_FANIN_RING_SLOTS", Some("1"))],
         ] {
