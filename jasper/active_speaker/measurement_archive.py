@@ -15,6 +15,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+
 from . import bundles
 from .frequency_view import FrequencyRun, FrequencySeries
 from .measurement_document import frequency_run_from_documents
@@ -84,6 +86,12 @@ def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
     return tuple(runs)
 
 
+def _disclosed(run: FrequencyRun) -> FrequencyRun:
+    """A run with no curve says why instead of drawing nothing (ADR-0373)."""
+    return run if run.series else replace(
+        run, metadata={**run.metadata, "curves": {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}})
+
+
 def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     """Load one archive entry, preferring its direct measurement records."""
 
@@ -101,9 +109,9 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     )
 
     if retained is None:
-        return direct
+        return _disclosed(direct)
     if not direct.series:
-        return replace(retained, started_at=run.started_at, state=run.state)
+        return _disclosed(replace(retained, started_at=run.started_at, state=run.state))
     identities = {capture_identity(curve.details, set_id=curve.details.get("set_id") or curve.id)
                   for curve in direct.series if curve.details.get("role") == "summed"}
     if len(identities) > 1:

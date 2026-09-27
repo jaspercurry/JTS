@@ -93,6 +93,13 @@ function seriesSwatch(run, series, index) {
   }));
 }
 
+function curvesNotice(runs) {
+  return runs
+    .filter((run) => (run.metadata || {}).curves)
+    .map((run) => `${run.label}: no curves were banked with its takes (${run.metadata.curves.reason}).`)
+    .join(' ');
+}
+
 function draw() {
   if (!currentView) return;
   const chartSeries = [];
@@ -123,11 +130,13 @@ function draw() {
       excluded: cssColor(els.canvas, '--crossover-chart-excluded', '#888'),
     },
   });
-  els.status.textContent = !drew
-    ? 'No visible response data in this frequency range. Select a curve or widen the range.'
-    : `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
+  const notice = curvesNotice(currentView.runs);
+  const summary = drew
+    ? `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
       untrusted ? ' · shaded areas are untrusted' : ''
-    }`;
+    }`
+    : (chartSeries.length || !notice) && 'No visible response data in this frequency range. Select a curve or widen the range.';
+  els.status.textContent = [summary, notice].filter(Boolean).join(' · ');
 }
 
 function renderSeriesControls() {

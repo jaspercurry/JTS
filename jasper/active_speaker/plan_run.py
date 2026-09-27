@@ -520,8 +520,9 @@ async def _run(
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
                                               near_field=at_driver, level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
                             if program is not None:
-                                record = {**record, "curves": analysis_curve_records(analysis, program),
-                                          "analysis": analysis_json(analysis)}
+                                record = {**record, "analysis": analysis_json(analysis)}
+                                if "curves" not in record:  # a room, bass or rear take banked its own (ADR-0373)
+                                    record["curves"] = analysis_curve_records(analysis, program)
                                 if is_level_probe(program):
                                     log_event(logger, "active_speaker.level_probe", fields={
                                         "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),

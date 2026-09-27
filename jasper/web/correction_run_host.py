@@ -103,15 +103,16 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if program is not None:
             try:
                 phase = conductor.phase_of_index(index_of(record))
-                result = analyze_capture({**record, "program": program}, capture, first_bounce_s)
-                fields = evidence.get("capture_provenance", {}).get(phase, {})
+                played = ExcitationProgram.from_dict(program)
+                result = analyze_capture(record, played, capture, first_bounce_s)
+                fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
+                          **analysis_blocks(result, played, record)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         else:
-            fields = {**fields, **analysis_blocks(result),
-                      **_kept_impulses(records, record["take_id"], result, capture)}
+            fields = {**fields, **_kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
         if band is not None:
             fields["trusted_band"] = band
@@ -130,7 +131,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
 
     records.enrich, records.after_bank = enrich, after_bank
 
-    def analyze_capture(record: Any, capture: Any, first_bounce_s: float | None) -> Any:
+    def analyze_capture(record: Any, program: ExcitationProgram, capture: Any, first_bounce_s: float | None) -> Any:
         index = index_of(record)
         phase = conductor.phase_of_index(index)
         priors = (conductor.check_priors() if phase == PHASE_CHECK else
@@ -139,7 +140,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
         analysis = conductor.analyze(
-            ExcitationProgram.from_dict(record["program"]), capture, priors,
+            program, capture, priors,
             replace(conductor.capture_geometry(phase, index), declared_first_bounce_s=first_bounce_s), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})

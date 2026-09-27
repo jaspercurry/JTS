@@ -44,6 +44,7 @@ REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
 ROOM_NOT_BANKED = "room_not_banked"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
+TAKE_CURVES_NOT_BANKED = "take_curves_not_banked"
 
 EVIDENCE_REASONS = MappingProxyType({
     CAPTURES_UNREADABLE: "The round has an admissible capture shape but its stamped audio cannot be read.",
@@ -85,4 +86,5 @@ EVIDENCE_REASONS = MappingProxyType({
     REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
     ROOM_NOT_BANKED: "The banked round holds no room view by the name asked; a room view run after the bank is not its evidence.",
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
+    TAKE_CURVES_NOT_BANKED: "No take in the measurement banked analysed curves, so it has none to draw.",
 })
