@@ -184,7 +184,7 @@ def test_usb_mic_persists_intent_and_schedules_descriptor_recompose(
     monkeypatch.setattr(aec_endpoints, "aec_full_status", lambda: next(statuses))
     monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
-        aec_endpoints,
+        aec_routes,
         "_schedule_usb_gadget_recompose",
         lambda: recomposes.append(True) or True,
     )
@@ -221,7 +221,7 @@ def test_usb_mic_schedule_failure_returns_structured_502(
     )
     monkeypatch.setattr(aec_mod, "write_usb_mic_enabled", writes.append)
     monkeypatch.setattr(
-        aec_endpoints,
+        aec_routes,
         "_schedule_usb_gadget_recompose",
         lambda: False,
     )
@@ -266,7 +266,7 @@ def test_usb_mic_refuses_enable_when_status_gate_is_closed(
         lambda _enabled: pytest.fail("unavailable switch must not persist intent"),
     )
     monkeypatch.setattr(
-        aec_endpoints,
+        aec_routes,
         "_schedule_usb_gadget_recompose",
         lambda: pytest.fail("unavailable switch must not recompose USB"),
     )
@@ -329,7 +329,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
     monkeypatch.setattr(srv_mod.restart_broker, "manage_units", fake_manage)
     monkeypatch.setattr(aec_endpoints, "aec_full_status", lambda: final_status)
     monkeypatch.setattr(
-        aec_endpoints,
+        aec_routes,
         "_schedule_usb_gadget_recompose",
         lambda: pytest.fail("source selection must not recompose the gadget"),
     )
@@ -355,7 +355,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
                 "verb": "reset-failed",
                 "reason": "usb_mic_leg",
                 "no_block": False,
-                "timeout": aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
+                "timeout": aec_routes._ONESHOT_KICK_TIMEOUT_SEC,
             },
         ),
         (
@@ -365,7 +365,7 @@ def test_raw_usb_mic_leg_persists_then_restarts_only_aec_bridge(
                 "verb": "restart",
                 "reason": "usb_mic_leg",
                 "no_block": True,
-                "timeout": aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
+                "timeout": aec_routes._ONESHOT_KICK_TIMEOUT_SEC,
             },
         ),
     ]
@@ -630,10 +630,10 @@ def test_usb_mic_recompose_routes_through_broker(monkeypatch):
     alone burn jasper-web's proxy budget."""
     calls = _record_broker(monkeypatch)
 
-    assert aec_endpoints._schedule_usb_gadget_recompose() is True
+    assert aec_routes._schedule_usb_gadget_recompose() is True
 
-    unit = aec_endpoints._USB_MIC_APPLY_UNIT
-    timeout = aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC
+    unit = aec_routes._USB_MIC_APPLY_UNIT
+    timeout = aec_routes._ONESHOT_KICK_TIMEOUT_SEC
     assert calls == [
         ("reset-failed", [unit], timeout, False),
         ("restart", [unit], timeout, True),
@@ -648,8 +648,8 @@ def test_usb_mic_recompose_surfaces_broker_refusal(monkeypatch, caplog):
     same event name with phase=apply)."""
     _record_broker(monkeypatch, ok=False)
 
-    with caplog.at_level("ERROR", logger=aec_endpoints.logger.name):
-        assert aec_endpoints._schedule_usb_gadget_recompose() is False
+    with caplog.at_level("ERROR", logger=aec_routes._maintenance_logger.name):
+        assert aec_routes._schedule_usb_gadget_recompose() is False
 
     fields = event_fields(caplog, "usb_mic.recompose_failed")
     assert fields["phase"] == "enqueue"
@@ -665,7 +665,7 @@ def test_aec_commission_starts_oneshot_when_idle(
     base, _ = server_with_coordinator
 
     calls = _record_broker(monkeypatch)
-    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(aec_routes, "_aec_commission_running", lambda: False)
     monkeypatch.setattr(
         aec_endpoints,
         "aec_full_status",
@@ -680,8 +680,8 @@ def test_aec_commission_starts_oneshot_when_idle(
         "status": "accepted",
         "commission": {"running": True},
     }
-    unit = aec_endpoints._AEC_COMMISSION_SERVICE
-    timeout = aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC
+    unit = aec_endpoints.AEC_COMMISSION_SERVICE
+    timeout = aec_routes._ONESHOT_KICK_TIMEOUT_SEC
     assert calls == [("start", [unit], timeout, True)]
 
 
@@ -690,8 +690,8 @@ def test_aec_commission_start_surfaces_broker_refusal(monkeypatch, caplog):
     _start_aec_commission -- still a single ``start`` call, no reset leg."""
     _record_broker(monkeypatch, ok=False)
 
-    with caplog.at_level("ERROR", logger=aec_endpoints.logger.name):
-        assert aec_endpoints._start_aec_commission() is False
+    with caplog.at_level("ERROR", logger=aec_routes._maintenance_logger.name):
+        assert aec_routes._start_aec_commission() is False
 
     fields = event_fields(caplog, "aec_commission.start_failed")
     assert fields["phase"] == "enqueue"
@@ -702,9 +702,9 @@ def test_aec_commission_409_while_a_run_is_active(
 ):
     base, _ = server_with_coordinator
 
-    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: True)
+    monkeypatch.setattr(aec_routes, "_aec_commission_running", lambda: True)
     monkeypatch.setattr(
-        aec_endpoints.subprocess,
+        aec_routes.subprocess,
         "run",
         lambda *_a, **_k: pytest.fail("an active run must not be started again"),
     )
@@ -720,8 +720,8 @@ def test_aec_commission_502_when_the_unit_will_not_start(
 ):
     base, _ = server_with_coordinator
 
-    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", lambda: False)
-    monkeypatch.setattr(aec_endpoints, "_start_aec_commission", lambda: False)
+    monkeypatch.setattr(aec_routes, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(aec_routes, "_start_aec_commission", lambda: False)
 
     status, body = _post(f"{base}/aec/commission", None)
 
@@ -769,8 +769,8 @@ def test_aec_commission_concurrent_second_click_starts_nothing(
         state["running"] = True
         return True
 
-    monkeypatch.setattr(aec_endpoints, "_aec_commission_running", fake_running)
-    monkeypatch.setattr(aec_endpoints, "_start_aec_commission", fake_start)
+    monkeypatch.setattr(aec_routes, "_aec_commission_running", fake_running)
+    monkeypatch.setattr(aec_routes, "_start_aec_commission", fake_start)
     monkeypatch.setattr(
         aec_endpoints,
         "aec_full_status",
@@ -810,7 +810,7 @@ def test_aec_firmware_update_starts_when_required(
     }
     monkeypatch.setattr(aec_endpoints, "aec_full_status", lambda: status_payload)
     monkeypatch.setattr(
-        aec_endpoints, "_start_xvf_firmware_update", lambda: starts.append("start"),
+        aec_routes, "_start_xvf_firmware_update", lambda: starts.append("start"),
     )
 
     status, body = _post(f"{base}/aec/firmware/update", {})
@@ -838,7 +838,7 @@ def test_aec_firmware_update_refuses_when_not_available(
         },
     )
     monkeypatch.setattr(
-        aec_endpoints, "_start_xvf_firmware_update", lambda: starts.append("start"),
+        aec_routes, "_start_xvf_firmware_update", lambda: starts.append("start"),
     )
 
     status, body = _post(f"{base}/aec/firmware/update", {})
@@ -859,7 +859,7 @@ def test_enhanced_aec_get_uses_dedicated_status(
         "state": "not_installed",
         "action": {"enabled": True, "label": "Install enhancement"},
     }
-    monkeypatch.setattr(aec_endpoints, "_enhanced_aec_status", lambda: expected)
+    monkeypatch.setattr(aec_routes, "_enhanced_aec_status", lambda: expected)
 
     status, body = _get(f"{base}/aec/enhanced-aec")
 
@@ -886,7 +886,7 @@ def test_enhanced_aec_post_persists_then_starts_allowlisted_oneshot(
         },
     ])
     calls: list[tuple] = []
-    monkeypatch.setattr(aec_endpoints, "_enhanced_aec_status", lambda: next(statuses))
+    monkeypatch.setattr(aec_routes, "_enhanced_aec_status", lambda: next(statuses))
     monkeypatch.setattr(
         enhanced_aec,
         "request_install",
