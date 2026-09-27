@@ -7,7 +7,8 @@ from __future__ import annotations
 import os
 import math
 from dataclasses import dataclass, field
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
+from typing import Any
 
 from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
@@ -172,6 +173,278 @@ def _weather_defaults() -> tuple[str, float | None, float | None, str]:
             lat, lon = transit.lat, transit.lon
             display_name = display_name or transit.display_name
     return location, lat, lon, display_name or location
+
+
+def _parse_provider_env(
+    gemini_key: str, openai_key: str, grok_key: str,
+) -> dict[str, Any]:
+    return dict(
+        gemini_api_key=gemini_key,
+        gemini_model=_env("JASPER_GEMINI_MODEL", default_model_id("gemini")),
+        # Without a pinned voice, Gemini picks one per session.
+        gemini_voice=_env("JASPER_GEMINI_VOICE", default_voice_id("gemini")),
+        openai_api_key=openai_key,
+        openai_live_model=_env("JASPER_OPENAI_LIVE_MODEL", default_model_id("openai_live")),
+        openai_live_voice=_env("JASPER_OPENAI_LIVE_VOICE", default_voice_id("openai_live")),
+        openai_live_backend_model=_env("JASPER_OPENAI_LIVE_BACKEND_MODEL", default_extra_value("openai_live", "backend_model")),
+        openai_model=_env("JASPER_OPENAI_MODEL", default_model_id("openai")),
+        openai_voice=_env("JASPER_OPENAI_VOICE", default_voice_id("openai")),
+        # The adapter sends this only for `-2` models. `minimal` reduces
+        # first-audio latency at the cost of multi-step answer coherence.
+        openai_reasoning_effort=_env(
+            "JASPER_OPENAI_REASONING_EFFORT",
+            default_extra_value("openai", "reasoning_effort"),
+        ),
+        # Resolve "auto" from the active mic/AEC profile later to avoid
+        # double-denoising streams already processed upstream.
+        openai_noise_reduction=normalize_openai_noise_reduction(
+            _env("JASPER_OPENAI_NOISE_REDUCTION", "auto"),
+        ),
+        grok_api_key=grok_key,
+        grok_model=_env("JASPER_GROK_MODEL", default_model_id("grok")),
+        grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
+    )
+
+
+def _parse_wake_input_env() -> dict[str, Any]:
+    return dict(
+        # See jasper/wake_models.py for the picker and install assets.
+        # The fallback is a required hash-checked openWakeWord package asset.
+        wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
+        wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3),
+        # PortAudio accepts an index or device-name substring; it rejects
+        # ALSA "plughw:" syntax. Empty selects its default device.
+        mic_device=_env("JASPER_MIC_DEVICE", "Array"),
+        # Trust the reconciler verdict, not mic_device: a guessed False
+        # could hide a broken room mic and silently disable wake response.
+        local_mic_present=local_mic_present_from_env(),
+        # Accessory reconcilers publish paired push-to-talk sources here.
+        # Keys are /session/start source ids; values are make_mic_capture devices.
+        manual_mic_sources=_env_mapping(
+            "JASPER_MANUAL_MIC_SOURCES",
+            "",
+        ),
+        mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
+        mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
+        # Optional XVF3800 150°/210° ASR beams use UDP 9887/9888.
+        # The primary chip-AEC leg at :9876 does not imply these extra legs.
+        mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
+        mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
+        aec_udp_port=_env_int("JASPER_AEC_UDP_PORT", DEFAULT_AEC_ON_PORT),
+        aec_udp_host=_env("JASPER_AEC_UDP_HOST", DEFAULT_AEC_UDP_HOST),
+        aec_chip_aec_enabled=env_bool(
+            CHIP_AEC_ENABLED_ENV, False,
+        ),
+        # XVF3800 supports 16 kHz mono. UMIK-2 and other 44.1/48 kHz
+        # devices need 48000/2; MicCapture downsamples to 16 kHz mono.
+        mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
+        mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
+        # Per-leg WAVs cover 6 s; the audio ring evicts oldest first.
+        wake_events_dir=_env(
+            "JASPER_WAKE_EVENTS_DIR",
+            "/var/lib/jasper/wake-events",
+        ),
+        # See jasper/wake_events.py for retention-cap sizing.
+        wake_events_max_audio_bytes=_env_int(
+            "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
+            DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
+        ),
+    )
+
+
+def _parse_tts_env() -> dict[str, Any]:
+    return dict(
+        # Fan-in inserts TTS before Camilla crossover/protection; the
+        # grouping reconciler routes bonded members to outputd instead.
+        tts_outputd_socket=_env(
+            VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET,
+        ),
+        # Python learns these profiles; the TTS IPC owner uses them for gain.
+        assistant_loudness_profile_path=_env(
+            "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
+            DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
+        ),
+        # Paid calibration requires explicit operator opt-in. Passive
+        # measurement still learns from replies without making paid seed calls.
+        assistant_loudness_auto_seed=env_bool(
+            "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
+            False,
+        ),
+        # Apple dongle drain measured ~60–85 ms; leave a small margin.
+        tts_drain_tail_sec=_env_float(
+            "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
+        ),
+        # Silero default is 0.5; raise toward 0.7 for bleed false-triggers,
+        # lower for missed interrupts. Used only when provider barge-in is
+        # enabled; see jasper.voice.provider_state.read_barge_in_enabled.
+        vad_barge_in_threshold=_env_float(
+            "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
+        ),
+    )
+
+
+def _parse_camilla_env() -> dict[str, Any]:
+    return dict(
+        camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
+        camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
+    )
+
+
+def _parse_session_env() -> dict[str, Any]:
+    return dict(
+        # Pre-response timeout measures progress, not socket activity:
+        # audio, transcript deltas, tool calls, or turn_complete reset it.
+        # Session bookkeeping/errors do not. Observed first audio took ~7.7 s.
+        idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
+        followup_timeout_sec=_env_float("JASPER_FOLLOWUP_TIMEOUT_SEC", 2.0),
+        # Bounds stalled speech and turns that keep progressing without audio
+        # (measured from end-of-input), so a wedged turn cannot keep music ducked.
+        response_stall_timeout_sec=_env_int(
+            "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
+            120,
+        ),
+        # Idle reset reopens the session, blocking wake for 1–6 s and losing
+        # prompt-cache savings. OpenAI/Grok fully reconnect; Gemini drops its
+        # resumption handle. Enable only for observed stale-context glitches.
+        openai_context_reset_sec=_env_int(
+            "JASPER_OPENAI_CONTEXT_RESET_SEC", 0,
+        ),
+        gemini_context_reset_sec=_env_int(
+            "JASPER_GEMINI_CONTEXT_RESET_SEC", 0,
+        ),
+        grok_context_reset_sec=_env_int(
+            "JASPER_GROK_CONTEXT_RESET_SEC", 0,
+        ),
+        # OpenAI has a 60-min cap; the buffer lets in-flight speech finish.
+        # See openai_session._watchdog_delay_sec.
+        openai_session_max_sec=_env_int(
+            "JASPER_OPENAI_SESSION_MAX_SEC", 3600,
+        ),
+        openai_proactive_buffer_sec=_env_int(
+            "JASPER_OPENAI_PROACTIVE_BUFFER_SEC", 300,
+        ),
+        # Grok publishes no hard cap; enable both knobs only if one is observed.
+        grok_session_max_sec=_env_int(
+            "JASPER_GROK_SESSION_MAX_SEC", 0,
+        ),
+        grok_proactive_buffer_sec=_env_int(
+            "JASPER_GROK_PROACTIVE_BUFFER_SEC", 0,
+        ),
+    )
+
+
+def _parse_usage_env() -> dict[str, Any]:
+    return dict(
+        daily_spend_cap_usd=_env_float(
+            "JASPER_DAILY_SPEND_CAP_USD",
+            DEFAULT_DAILY_SPEND_CAP_USD,
+        ),
+        daily_spend_cap_safety_multiplier=_env_float(
+            "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
+            DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
+        ),
+        usage_db=_env("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
+    )
+
+
+def _parse_spotify_env(hostname: str) -> dict[str, Any]:
+    return dict(
+        spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
+        # Manual mode uses http://127.0.0.1:8888/callback, Spotify's loopback exception.
+        spotify_redirect_uri=resolved_spotify_redirect_uri(),
+        # See jasper.accounts.maybe_migrate_legacy for the one-shot migration.
+        spotify_cache_path=legacy_cache_path(),
+        # The speaker wizard name also sets librespot's name; device matching
+        # uses a case-insensitive substring of sp.devices()[].name.
+        spotify_device_name=_speaker_runtime_name(),
+        # See jasper.accounts for the household-account registry shape.
+        spotify_accounts_path=registry_path(),
+        # Override for a reverse proxy with a different hostname or path.
+        spotify_setup_url=_env(
+            "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
+        ),
+    )
+
+
+def _parse_google_env(hostname: str) -> dict[str, Any]:
+    return dict(
+        # One OAuth client serves all household members; tokens stay per account.
+        google_client_id=_env("GOOGLE_CLIENT_ID"),
+        google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
+        google_redirect_uri=resolved_google_redirect_uri(),
+        google_accounts_path=google_registry_path(),
+        google_setup_url=_env(
+            "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/assistant/google/",
+        ),
+    )
+
+
+def _parse_local_services_env(hostname: str, timers: ModuleType) -> dict[str, Any]:
+    return dict(
+        # Cues use this hostname when directing users to a wake-blocking failure.
+        management_url=_env(
+            "JASPER_MANAGEMENT_URL", f"http://{hostname}",
+        ),
+        sounds_dir=_env(
+            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+        ),
+        timer_db_path=_env(
+            "JASPER_TIMER_DB", timers.DEFAULT_DB_PATH,
+        ),
+    )
+
+
+def _parse_home_assistant_env() -> dict[str, Any]:
+    return dict(
+        # The HA wizard owns home_assistant.env; an empty URL or token disables
+        # the tool. An empty agent id selects HA's configured default.
+        ha_url=_env(_ha_env.ENV_URL, "").strip().rstrip("/"),
+        ha_token=_env(_ha_env.ENV_TOKEN, "").strip(),
+        ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
+        ha_verify_ssl=_ha_env.verify_ssl_from_state(os.environ),
+    )
+
+
+def _parse_volume_env() -> dict[str, Any]:
+    return dict(
+        volume_state_path=_volume_persistence.configured_path(),
+        # Only old volume outside the safe band is regressed at boot;
+        # recent restarts and in-band values retain continuity.
+        volume_regress_after_sec=_env_float(
+            "JASPER_VOLUME_REGRESS_AFTER_SEC", 1800.0,
+        ),
+        volume_regress_safe_low_pct=_env_int(
+            "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", 20,
+        ),
+        volume_regress_safe_high_pct=_env_int(
+            "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", 70,
+        ),
+        # Used when the persisted record is absent or corrupt.
+        volume_first_boot_default_pct=_env_int(
+            "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
+        ),
+    )
+
+
+def _parse_control_env(
+    mic_mute_persistence: ModuleType, peering_config: ModuleType,
+) -> dict[str, Any]:
+    return dict(
+        # Restore at WakeLoop init so a restart cannot silently unmute.
+        mic_mute_state_path=_env(
+            "JASPER_MIC_MUTE_STATE_PATH",
+            mic_mute_persistence.DEFAULT_PATH,
+        ),
+        # Systemd creates /run/jasper as RuntimeDirectory with mode 0750.
+        voice_control_socket=_env(
+            "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
+        ),
+        peering_enabled=env_bool("JASPER_PEERING", False),
+        # jasper-control owns the server and its RuntimeDirectory.
+        peering_uds_socket=_env(
+            "JASPER_PEERING_UDS", peering_config.PEERING_UDS_PATH,
+        ),
+    )
 
 
 def _validate(cfg: "Config") -> "Config":
@@ -476,355 +749,29 @@ class Config:
         return _validate(cls(
             voice_provider=provider,
             hostname=hostname,
-            gemini_api_key=gemini_key,
-            gemini_model=_env("JASPER_GEMINI_MODEL", default_model_id("gemini")),
-            # Pin the TTS voice so it's consistent across sessions.
-            # Available prebuilt voices on Gemini 3.1 Live Preview
-            # include Aoede, Charon, Fenrir, Kore, Puck, Leda, Orus,
-            # Zephyr. Without this, the server picks one per session.
-            gemini_voice=_env("JASPER_GEMINI_VOICE", default_voice_id("gemini")),
-            openai_api_key=openai_key,
-            openai_live_model=_env("JASPER_OPENAI_LIVE_MODEL", default_model_id("openai_live")),
-            openai_live_voice=_env("JASPER_OPENAI_LIVE_VOICE", default_voice_id("openai_live")),
-            openai_live_backend_model=_env("JASPER_OPENAI_LIVE_BACKEND_MODEL", default_extra_value("openai_live", "backend_model")),
-            openai_model=_env("JASPER_OPENAI_MODEL", default_model_id("openai")),
-            openai_voice=_env("JASPER_OPENAI_VOICE", default_voice_id("openai")),
-            # Reasoning effort for gpt-realtime-2: minimal | low |
-            # medium | high | xhigh. Default `low` matches the SDK
-            # default and is the right choice for short voice queries.
-            # Ignored on non-`-2` models (the openai_session adapter
-            # only includes the field when the model name carries
-            # "-2"). `minimal` cuts ~1 second of TTFA at the cost of
-            # less coherent multi-step answers.
-            openai_reasoning_effort=_env(
-                "JASPER_OPENAI_REASONING_EFFORT",
-                default_extra_value("openai", "reasoning_effort"),
-            ),
-            # Provider-side input denoising depends on the upstream audio
-            # contract. "auto" resolves later from the active mic/AEC profile
-            # so already-processed streams do not get double-denoised.
-            openai_noise_reduction=normalize_openai_noise_reduction(
-                _env("JASPER_OPENAI_NOISE_REDUCTION", "auto"),
-            ),
-            grok_api_key=grok_key,
-            grok_model=_env("JASPER_GROK_MODEL", default_model_id("grok")),
-            grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
-            # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
-            # (e.g. "hey_jarvis", "alexa") or an absolute path to a
-            # .onnx file under /var/lib/jasper/wake/. The
-            # /assistant/wake/ wizard writes
-            # /var/lib/jasper/wake_model.env to set it; the
-            # curated picker rows + install-time download list live in
-            # jasper/wake_models.py. The compiled-in fallback below is
-            # "hey_jarvis" because it's the openWakeWord-bundled model
-            # that install.sh treats as a required hash-checked package
-            # asset, so dev/test runs without a seeded env file still
-            # load something.
-            wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
-            wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3),
-            # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not
-            # an ALSA pcm string — PortAudio rejects "plughw:" syntax.
-            # Accepts an integer index (`sd.query_devices()`), or a
-            # substring of the PortAudio device name (e.g. "Array" matches
-            # the XVF3800's "Array: USB Audio (hw:N,0)"; "UMIK-2" matches
-            # the MiniDSP UMIK-2). Empty/absent → PortAudio default.
-            mic_device=_env("JASPER_MIC_DEVICE", "Array"),
-            # JASPER_LOCAL_MIC_PRESENT is written by jasper-aec-reconcile —
-            # the owner of the voice-input gate — as `1` / `0` / `unknown`.
-            # It exists because `mic_device` above CANNOT answer "is there a
-            # room mic": it defaults to the literal "Array" when unset, and
-            # the reconciler writes a real candidate name on the no-mic paths
-            # to clear a stale udp:PORT. Never guess this locally; a wrong
-            # `0` would make a speaker with a broken mic look like a
-            # push-to-talk-only one and go quietly deaf.
-            local_mic_present=local_mic_present_from_env(),
-            # JASPER_MANUAL_MIC_SOURCES declares active push-to-talk audio
-            # sources that bypass wake detection. The key is an internal source
-            # id carried by /session/start; the value is any make_mic_capture()
-            # device string. This defaults empty: accessory reconcilers write
-            # sources here only when a matching remote profile is paired.
-            manual_mic_sources=_env_mapping(
-                "JASPER_MANUAL_MIC_SOURCES",
-                "",
-            ),
-            mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
-            mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
-            # JASPER_MIC_DEVICE_CHIP_AEC_150 / _210: optional extra wake
-            # detector legs carrying the XVF3800's hardware-AEC ASR beams
-            # (fixed at 150° / 210°), which the bridge forwards on UDP 9887 /
-            # 9888 only when the matching advanced custom toggle is on. The
-            # chip-AEC profile itself uses the primary/session UDP leg at
-            # :9876; it does not imply extra WakeWordDetector instances.
-            # Empty / absent → the leg is not built.
-            mic_device_chip_aec_150=_env("JASPER_MIC_DEVICE_CHIP_AEC_150", ""),
-            mic_device_chip_aec_210=_env("JASPER_MIC_DEVICE_CHIP_AEC_210", ""),
-            aec_udp_port=_env_int("JASPER_AEC_UDP_PORT", DEFAULT_AEC_ON_PORT),
-            aec_udp_host=_env("JASPER_AEC_UDP_HOST", DEFAULT_AEC_UDP_HOST),
-            aec_chip_aec_enabled=env_bool(
-                CHIP_AEC_ENABLED_ENV, False,
-            ),
-            # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
-            # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
-            # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;
-            # MicCapture polyphase-downsamples to 16 kHz mono internally.
-            mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
-            mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
-            # Wake-event telemetry.
-            # Directory holds wake-events.sqlite3 + per-event WAV
-            # files (one per leg, 6 s window). Audio ring rolls
-            # oldest-first when the byte cap is hit.
-            wake_events_dir=_env(
-                "JASPER_WAKE_EVENTS_DIR",
-                "/var/lib/jasper/wake-events",
-            ),
-            # Default sourced from wake_events.DEFAULT_MAX_AUDIO_BYTES —
-            # see that module for the retention-cap sizing rationale.
-            wake_events_max_audio_bytes=_env_int(
-                "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
-                DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
-            ),
-            # TTS IPC socket: jasper-fanin by default, so TTS/cues enter
-            # before CamillaDSP crossover/protection on every output
-            # profile; the grouping reconciler can point a bonded member
-            # at jasper-outputd's socket instead.
-            tts_outputd_socket=_env(
-                VOICE_TTS_SOCKET_ENV, FANIN_TTS_SOCKET,
-            ),
-            # Provider/model/voice source-loudness profiles. Python
-            # can seed/learn these from silent calibration and live
-            # assistant PCM; the active TTS IPC owner consumes them when
-            # choosing final assistant gain.
-            assistant_loudness_profile_path=_env(
-                "JASPER_ASSISTANT_LOUDNESS_PROFILE_PATH",
-                DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
-            ),
-            # Paid/provider TTS calibration is explicit opt-in. Passive
-            # live-response measurement still learns profiles after real
-            # replies; automatic seed calls should only run when an
-            # operator or the /assistant/voice/ "Save and Test" flow intentionally asks.
-            assistant_loudness_auto_seed=env_bool(
-                "JASPER_ASSISTANT_LOUDNESS_AUTO_SEED",
-                False,
-            ),
-            # Apple dongle drain measured ~60–85 ms; 0.085 s leaves a small margin.
-            # Raise if tails are truncated on a Pi; lower if end-of-turn feels sluggish.
-            tts_drain_tail_sec=_env_float(
-                "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
-            ),
-            # Silero speech-probability threshold for in-session barge-in.
-            # While the assistant is speaking, a sustained run of
-            # AEC-cleaned mic frames at or above this value flushes local
-            # TTS so the user can talk over the reply. 0.5 = Silero
-            # default; raise to 0.7 if music/TTS bleed false-triggers,
-            # lower if real interrupts are missed. Only consulted when
-            # barge-in is enabled for the active provider (per-provider
-            # JASPER_BARGE_IN_<PROVIDER> flag in voice_provider.env, set
-            # directly today, default OFF); see
-            # jasper.voice.provider_state.read_barge_in_enabled.
-            vad_barge_in_threshold=_env_float(
-                "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
-            ),
-            camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
-            camilla_port=_env_int("JASPER_CAMILLA_PORT", DEFAULT_CAMILLA_PORT),
-            # Pre-response idle watchdog: closes the turn after this many
-            # seconds with no PROGRESS on it — no audio chunk, no
-            # transcript delta either way, no tool call, no
-            # turn_complete. Server errors and session bookkeeping do not
-            # count, so this measures a stalled turn rather than a quiet
-            # socket. The chosen 20 s sits comfortably above the worst
-            # observed OpenAI Realtime first-chunk latency (~7.7 s in
-            # 2026-05-21 production logs) while keeping recovery from a
-            # genuine API hang under half a minute. A turn that keeps
-            # making progress but never answers is released instead by
-            # the cap below, measured from end-of-input.
-            idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
-            followup_timeout_sec=_env_float("JASPER_FOLLOWUP_TIMEOUT_SEC", 2.0),
-            # Last-resort cap on one answer, applied twice: after a
-            # provider has begun speaking but never sends turn_complete,
-            # and — measured from end-of-input — on a turn that keeps
-            # making progress but never produces audio. Normal speech
-            # pauses are much shorter, and providers should end via the
-            # explicit server signal; this is only the recovery path for
-            # a wedged response that would otherwise leave music ducked
-            # and the wake loop in SESSION indefinitely.
-            response_stall_timeout_sec=_env_int(
-                "JASPER_RESPONSE_STALL_TIMEOUT_SEC",
-                120,
-            ),
-            # Idle context reset is OFF by default. Each turn pays full
-            # uncached price for the system prompt + tool defs on the
-            # first turn after a reset (OpenAI: ~$0.008 vs $0.001
-            # cached), and the reset itself blocks the wake event for
-            # 1-6 s while the session reopens. Worth it only if you
-            # actually observe stale-context glitches. Per-provider
-            # because the cost/race tradeoffs differ:
-            #   - OpenAI: no resumption handle, full reconnect, prompt
-            #     cache busted. Most expensive.
-            #   - Gemini: drops resumption handle, similar reconnect
-            #     cost but cheaper baseline pricing.
-            #   - Grok: inherits OpenAI implementation.
-            openai_context_reset_sec=_env_int(
-                "JASPER_OPENAI_CONTEXT_RESET_SEC", 0,
-            ),
-            gemini_context_reset_sec=_env_int(
-                "JASPER_GEMINI_CONTEXT_RESET_SEC", 0,
-            ),
-            grok_context_reset_sec=_env_int(
-                "JASPER_GROK_CONTEXT_RESET_SEC", 0,
-            ),
-            # OpenAI Realtime: 60-min hard cap per
-            # developers.openai.com/api/docs/guides/realtime-conversations.
-            # 5-min buffer leaves comfortable headroom for an in-flight turn
-            # to finish before the proactive tear-down fires. See
-            # `openai_session._watchdog_delay_sec`.
-            openai_session_max_sec=_env_int(
-                "JASPER_OPENAI_SESSION_MAX_SEC", 3600,
-            ),
-            openai_proactive_buffer_sec=_env_int(
-                "JASPER_OPENAI_PROACTIVE_BUFFER_SEC", 300,
-            ),
-            # xAI Grok Voice Agent doesn't publish a hard cap; defaults
-            # off. Enable by setting both knobs if a cap is observed.
-            grok_session_max_sec=_env_int(
-                "JASPER_GROK_SESSION_MAX_SEC", 0,
-            ),
-            grok_proactive_buffer_sec=_env_int(
-                "JASPER_GROK_PROACTIVE_BUFFER_SEC", 0,
-            ),
-            daily_spend_cap_usd=_env_float(
-                "JASPER_DAILY_SPEND_CAP_USD",
-                DEFAULT_DAILY_SPEND_CAP_USD,
-            ),
-            daily_spend_cap_safety_multiplier=_env_float(
-                "JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER",
-                DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
-            ),
-            usage_db=_env("JASPER_USAGE_DB", DEFAULT_USAGE_DB),
+            **_parse_provider_env(gemini_key, openai_key, grok_key),
+            **_parse_wake_input_env(),
+            **_parse_tts_env(),
+            **_parse_camilla_env(),
+            **_parse_session_env(),
+            **_parse_usage_env(),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", DEFAULT_LIBRESPOT_STATE,
             ),
-            spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
-            # For `manual` mode (no external infrastructure), set
-            # SPOTIFY_REDIRECT_URI to "http://127.0.0.1:8888/callback" —
-            # the loopback exception Spotify still allows.
-            spotify_redirect_uri=resolved_spotify_redirect_uri(),
-            # Legacy single-user cache. Read once at startup for the
-            # one-shot migration into the new multi-account layout
-            # (see jasper.accounts.maybe_migrate_legacy); after the
-            # migration runs once, this path is no longer touched.
-            spotify_cache_path=legacy_cache_path(),
-            # Substring (case-insensitive) matched against
-            # `sp.devices()[].name` to find the Pi's librespot endpoint.
-            # The /speaker/ wizard writes JASPER_SPEAKER_NAME, consumed
-            # by both librespot's --name and this targeting path.
-            spotify_device_name=_speaker_runtime_name(),
-            # Multi-account registry: one record per household member,
-            # mapping AirPlay ClientName patterns to per-user OAuth
-            # caches. See jasper.accounts module-doc for shape.
-            spotify_accounts_path=registry_path(),
-            # Public URL household members visit to add their Spotify
-            # account. Surfaced in error messages so the voice
-            # assistant can tell unrecognized users where to go.
-            # Defaults to http://${hostname}/spotify; override only if
-            # the speaker is reverse-proxied behind a different
-            # hostname or path.
-            spotify_setup_url=_env(
-                "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
-            ),
-            # Google OAuth client (Calendar + Gmail). One Google Cloud
-            # Console OAuth client serves every household member; per-
-            # member refresh tokens are stored under google_accounts_path.
-            google_client_id=_env("GOOGLE_CLIENT_ID"),
-            google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
-            google_redirect_uri=resolved_google_redirect_uri(),
-            google_accounts_path=google_registry_path(),
-            google_setup_url=_env(
-                "JASPER_GOOGLE_SETUP_URL", f"http://{hostname}/assistant/google/",
-            ),
-            # Speaker management dashboard URL. Audio cues extract the
-            # hostname from this and tell the user "visit <hostname>"
-            # when something blocks normal voice response (spend cap,
-            # connection failure). Defaults to http://: the speaker no
-            # longer ships an HTTPS cert for this surface.
-            management_url=_env(
-                "JASPER_MANAGEMENT_URL", f"http://{hostname}",
-            ),
-            sounds_dir=_env(
-                "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
-            ),
-            timer_db_path=_env(
-                "JASPER_TIMER_DB", timers.DEFAULT_DB_PATH,
-            ),
+            **_parse_spotify_env(hostname),
+            **_parse_google_env(hostname),
+            **_parse_local_services_env(hostname, timers),
             gemini_tts_model=_env(
                 "JASPER_GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview",
             ),
-            # Default location for "Hey Jarvis, what's the weather?" with
-            # no city specified. Empty = require explicit location each time.
             weather_default_location=weather_location,
             weather_default_lat=weather_lat,
             weather_default_lon=weather_lon,
             weather_default_display_name=weather_name,
             weather_units=_env(WEATHER_UNITS_ENV, "celsius"),
-            # Home Assistant. Empty url OR empty token disables the tool
-            # (cfg.ha_enabled gates registration). The /ha
-            # wizard writes these to /var/lib/jasper-intsecrets/home_assistant.env;
-            # operators can also set them directly in /etc/jasper/jasper.env
-            # for headless / CI imaging. agent_id is optional — empty
-            # means "let HA pick the default" (its UI-configured choice).
-            ha_url=_env(_ha_env.ENV_URL, "").strip().rstrip("/"),
-            ha_token=_env(_ha_env.ENV_TOKEN, "").strip(),
-            ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
-            ha_verify_ssl=_ha_env.verify_ssl_from_state(os.environ),
-            # Persistent speaker-volume file. Read at boot to restore
-            # CamillaDSP main_volume, written on every change.
-            volume_state_path=_volume_persistence.configured_path(),
-            # If the persisted volume is older than this at boot AND
-            # outside [safe_low, safe_high], clamp it into that band.
-            # Within-session restarts (deploys, fast crash recovery)
-            # preserve continuity. Yesterday's late-night 90% gets
-            # clamped to safe_high so the morning isn't a blast.
-            volume_regress_after_sec=_env_float(
-                "JASPER_VOLUME_REGRESS_AFTER_SEC", 1800.0,
-            ),
-            # Hard floors and ceilings used by the boot-time regression.
-            # Inside [safe_low, safe_high], the saved value is preserved
-            # regardless of age — only "extreme" values get nudged.
-            volume_regress_safe_low_pct=_env_int(
-                "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", 20,
-            ),
-            volume_regress_safe_high_pct=_env_int(
-                "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", 70,
-            ),
-            # Used when no persisted record exists (first boot, or the
-            # state file got deleted / corrupted).
-            volume_first_boot_default_pct=_env_int(
-                "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
-            ),
-            # Persistent mic-mute file. Restored at WakeLoop init so a
-            # daemon restart (deploy, web-wizard save, watchdog) doesn't
-            # silently un-mute. Default lives under StateDirectory=jasper.
-            mic_mute_state_path=_env(
-                "JASPER_MIC_MUTE_STATE_PATH",
-                mic_mute_persistence.DEFAULT_PATH,
-            ),
-            # Unix-domain socket where voice_daemon listens for external
-            # session triggers (remote hold-to-talk via jasper-control).
-            # systemd's RuntimeDirectory=jasper auto-creates /run/jasper
-            # at service start with mode 0750.
-            voice_control_socket=_env(
-                "JASPER_VOICE_CONTROL_SOCKET", VOICE_CONTROL_SOCKET_PATH,
-            ),
-            # Multi-device peering — read JASPER_PEERING the same way
-            # the peering daemon does. Anything other than "on" / "true"
-            # / "1" / "yes" / "enabled" resolves to off (fail-safe;
-            # peering is off by default, and a typo in the env file
-            # should never accidentally enable it).
-            peering_enabled=env_bool("JASPER_PEERING", False),
-            # The path lives under jasper-control's RuntimeDirectory because
-            # jasper-control owns the server side of this socket.
-            peering_uds_socket=_env(
-                "JASPER_PEERING_UDS", peering_config.PEERING_UDS_PATH,
-            ),
+            **_parse_home_assistant_env(),
+            **_parse_volume_env(),
+            **_parse_control_env(mic_mute_persistence, peering_config),
         ))
 
     @property
