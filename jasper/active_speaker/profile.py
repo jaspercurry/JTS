@@ -41,9 +41,10 @@ ACTIVE_BASELINE_KIND = "jts_speaker_baseline_profile"
 #: not say which has published a number whose meaning cannot be recovered.
 #:
 #: The value is derived, not chosen: the level fact is computed from the MEASURE
-#: capture's per-driver responses, and ``spatial._DESIGN_AXIS_GEOMETRY`` places
-#: every such capture at ``degrees=0``, one mark distance out. So the match is
-#: ON AXIS — neither the listening window nor the power response.
+#: capture's per-driver responses, taken at ``contracts.DESIGN_AXIS_DEG`` — the
+#: bearing an unpositioned MEASURE spec measures at
+#: (``session.TuningSession._bearings``). So the match is ON AXIS — neither the
+#: listening window nor the power response.
 LEVEL_MATCH_AXIS = "design_axis_0deg"
 
 DRIVER_ROLES_BY_WAY: dict[int, tuple[str, ...]] = {

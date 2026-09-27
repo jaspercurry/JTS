@@ -521,8 +521,9 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
         wav = b"take-bytes"
 
     # A lateral pose names its prompted spot ``pose_id``; every other phase
-    # calls it ``position_id``. The two vocabularies ``spatial._take_identity``
-    # keeps apart, so the lateral row drives the shape a pose really banks.
+    # calls it ``position_id``. The two vocabularies
+    # ``crossover_v2_banked_round._take_identity`` keeps apart, so the lateral
+    # row drives the shape a pose really banks.
     id_key = "pose_id" if phase == PHASE_LATERAL else "position_id"
     bank(
         _Result(),

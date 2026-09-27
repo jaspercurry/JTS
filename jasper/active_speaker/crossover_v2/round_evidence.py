@@ -149,9 +149,11 @@ class EntryBaseline:
     profile as its own entry graph, which a curve with no record of its graph
     cannot support.
 
-    The flow state file's copy lives exactly as long as the round; the copy that
-    outlives it is the write-once retained take
-    (``spatial.entry_baseline_record``). Both are written from one
+    The flow state file's copy lives exactly as long as the round; the copy
+    meant to outlive it is the write-once retained take — no current product
+    path writes one in that shape, so
+    ``position_cycle.read_entry_baseline_take`` only finds it on a round
+    banked before the engine shipped. Both were written from one
     :class:`MeasuredResponse`; neither is derived from the other.
     """
 

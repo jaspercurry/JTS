@@ -42,10 +42,12 @@ _BANKED_POSITIONS_GLOB = (
 )
 
 #: What each take contributes to the index — the identity, the pose, and the
-#: verifier. Every one is a field ``lateral_pose_record`` writes; the banked
-#: record stays the place to go for the rest (``offset_cm``, ``at_mark``,
-#: ``prompt``, ``lateral_consumer``), which is why the document names its
-#: ``sources``.
+#: verifier; the banked record stays the place to go for the rest
+#: (``offset_cm``, ``at_mark``, ``prompt``, ``lateral_consumer``), which is why
+#: the document names its ``sources``. No current product path writes a take
+#: in this shape — the engine's own banked record
+#: (``session.TuningSession._record``) carries no ``phase``/``role`` key — so
+#: this reader only accepts takes banked before that engine shipped.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
                 "regime", "wav_sha256")
 
@@ -124,12 +126,12 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     last is the ordinary case rather than an error — both groups bank into
     the same directory, and this reader wants one of them.
 
-    **The rule is phase, not bearing presence** —
-    :func:`~.spatial.cloud_position_record` also stamps ``position_deg``, so a
-    cloud seat would pass a bearing-shaped filter too. What separates them is
-    what they ARE: a lateral pose is a per-driver measurement, a cloud seat is
-    a summed sweep judged by gating and ripple, and they carry different
-    columns (:data:`_TAKE_FIELDS` names a ``regime`` no cloud record has).
+    **The rule is phase, not bearing presence** — a banked cloud position also
+    stamps ``position_deg``, so a cloud seat would pass a bearing-shaped filter
+    too. What separates them is what they ARE: a lateral pose is a per-driver
+    measurement, a cloud seat is a summed sweep judged by gating and ripple,
+    and they carry different columns (:data:`_TAKE_FIELDS` names a ``regime``
+    no cloud record has).
     Filtering on :data:`~.journey.PHASE_LATERAL` says that directly.
 
     One corrupt sidecar must not cost a reader the takes that are fine, so
@@ -559,7 +561,7 @@ def takes_by_position(
     order, so per-take curves at that pose can be put beside each other. What
     DISTINGUISHES those takes — a different applied graph, or nothing at all —
     is the take's own banked ``graph_fingerprint`` — WHICH CANDIDATE WAS
-    APPLIED, per :func:`~.spatial.lateral_pose_record`. NOT the capture's
+    APPLIED, stamped onto every take record at bank time. NOT the capture's
     ``provenance.graph.fingerprint``: a per-driver take plays through the
     transient routing graph, whose running hash is identical before and after
     an apply.

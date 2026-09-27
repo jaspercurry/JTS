@@ -68,6 +68,7 @@ from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 
 from tests._async_wait import wait_signalled
 from tests._log_events import event_field_maps
+from tests.crossover_v2_banked_round import _DESIGN_AXIS_GEOMETRY
 
 
 # --------------------------------------------------------------------------- #
@@ -476,10 +477,10 @@ def test_the_polarity_words_are_the_measurement_frames_own():
     assert set(POLARITIES) == {POLARITY_NORMAL, POLARITY_INVERTED}
 
 
-def test_the_design_axis_is_spelled_the_way_spatial_spells_it():
+def test_the_design_axis_is_spelled_the_way_the_take_fixture_spells_it():
     """``()`` means the design axis, and the design axis is ``0`` there."""
-    assert DESIGN_AXIS_DEG == spatial._DESIGN_AXIS_GEOMETRY.degrees
-    assert spatial._DESIGN_AXIS_GEOMETRY.axis == POSITION_AXIS_HORIZONTAL
+    assert DESIGN_AXIS_DEG == _DESIGN_AXIS_GEOMETRY.degrees
+    assert _DESIGN_AXIS_GEOMETRY.axis == POSITION_AXIS_HORIZONTAL
 
 
 # --------------------------------------------------------------------------- #

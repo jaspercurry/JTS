@@ -453,9 +453,9 @@ class TuningSession:
     def _bearings(self, spec: MeasureSpec) -> tuple[int | None, ...]:
         """Where this spec measures, with the design axis spelled once.
 
-        A spec naming no position measures :data:`~.contracts.DESIGN_AXIS_DEG`,
-        the same ``0`` ``spatial._DESIGN_AXIS_GEOMETRY`` uses, so ``positions=()``
-        and ``positions=(0,)`` are one pose and one record.
+        A spec naming no position measures :data:`~.contracts.DESIGN_AXIS_DEG`
+        — ``0`` — so ``positions=()`` and ``positions=(0,)`` are one pose and
+        one record.
 
         On the vertical axis this rig commands no bearing at all, so an
         unpositioned vertical walk is ``None`` rather than a ``0``: ``None`` is

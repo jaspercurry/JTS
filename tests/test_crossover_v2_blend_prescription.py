@@ -67,10 +67,12 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     build_crossover_evidence_packet,
 )
 from jasper.active_speaker.crossover_v2.spatial import (
-    LateralPose,
     MARK_DISTANCE_M,
     POSITION_AXIS_HORIZONTAL,
     PositionGeometry,
+)
+from tests.crossover_v2_banked_round import (
+    LateralPose,
     entry_baseline_record,
     lateral_pose_record,
 )
@@ -279,14 +281,13 @@ def test_two_rounds_in_one_bundle_refuse_rather_than_guess(tmp_path):
 
 
 def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]]:
-    """One accepted pose per bearing, banked where the speaker banks them.
+    """One accepted pose per bearing, in the shape a banked round holds one.
 
-    The records come from the SPEAKER's own producer
-    (:func:`~jasper.active_speaker.crossover_v2.spatial.lateral_pose_record`),
-    not from a dict written here: a fixture that spelled the fields itself
-    would keep passing the day that record changed shape. The envelope
-    (``schema_version`` + ``kind``) is what
-    ``record_store.BankedRecordStore.bank`` wraps it in.
+    Built through the shared take-record builder
+    (``crossover_v2_banked_round.lateral_pose_record``), not from a dict
+    written here: a fixture that spelled the fields itself would keep passing
+    the day that record changed shape. The envelope (``schema_version`` +
+    ``kind``) is what ``record_store.BankedRecordStore.bank`` wraps it in.
     """
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     positions = round_dir / "positions"
@@ -464,9 +465,9 @@ def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
 
 
 def _bank_entry_baseline(session: Path, *, attempt: int = 1) -> dict[str, Any]:
-    """The round's "before", banked where the speaker banks it.
+    """The round's "before", in the shape a banked round holds it.
 
-    From the SPEAKER's own producer for the same reason
+    Through the shared take-record builder for the same reason
     :func:`_bank_lateral_walk` gives: a hand-spelled dict would keep passing the
     day the record changed shape.
     """

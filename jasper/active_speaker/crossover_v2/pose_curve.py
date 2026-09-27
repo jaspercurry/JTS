@@ -126,8 +126,8 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
     ``repeat_curves`` carries each sibling occurrence in this same shape, so a
     reader has one thing to parse at either level. Its ``validity_floor_hz`` is
     that OCCURRENCE's own gate floor, which is a narrower quantity than the
-    take-level field of the same name (:func:`~.spatial.lateral_pose_record`, one
-    response for the whole take).
+    take-level field of the same name a retained take can carry (one response
+    for the whole take).
     """
     tf = np.asarray(curve.complex_tf, dtype=np.complex128)
     magnitude = np.maximum(np.abs(tf), _POSE_MAGNITUDE_FLOOR)
