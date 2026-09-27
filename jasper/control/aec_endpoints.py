@@ -48,7 +48,8 @@ from ..chip_aec.policy import (
     effective_chip_aec_dac_gate,
 )
 from ..wake_models import WAKE_MODEL_FILE, read_wake_threshold
-from .. import systemd_probe
+from .. import env_load, systemd_probe, wake_models
+from ..mics import xvf3800
 
 
 AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
@@ -189,7 +190,6 @@ def _commission_status() -> dict[str, Any]:
 
 def _xvf_firmware_update_status() -> dict[str, Any]:
     try:
-        from ..mics import xvf3800
         profile = xvf3800.detect_runtime_profile()
         return xvf3800.firmware_update_status(
             profile,
@@ -223,13 +223,11 @@ def fresh_jasper_env() -> dict[str, str]:
     surfaces should prefer the file and fall back to process env only for
     keys absent from the file.
     """
-    from ..env_load import parse_env_file
-    return parse_env_file(env_file_path())
+    return env_load.parse_env_file(env_file_path())
 
 
 def _read_wake_word_status() -> dict[str, Any]:
     """Wake model label for the /assistant/wake/ status card."""
-    from .. import wake_models
     state = read_env_file(_WAKE_MODEL_FILE)
     model = (state.get("JASPER_WAKE_MODEL") or "").strip()
     if not model:
