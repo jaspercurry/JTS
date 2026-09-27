@@ -54,19 +54,6 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)
 
 
-@pytest.mark.parametrize("link,opened", [
-    ("seat/cube", "room/seat@seat_cube"), ("rear/pair_mark", "rear/pair@speaker_mark"),
-    ("seat/express", "room/seat"), ("close/spot", None), ("bass/custom", None),
-])
-def test_a_retired_id_link_opens_the_choice_that_replaces_it(monkeypatch, link, opened):
-    """A link banked before the fold (ADR-0366 §6) opens its preset at its layout, or is
-    refused on its own row when nothing on the page replaces it."""
-    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
-    choices = measurement_view.round_choices({}, link)
-    default, = (c for c in choices if c["default"])
-    assert (default["id"], default.get("code") == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED) == (opened or link, not opened)
-
-
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):
     """#5321: picking a ``regime: branches`` row 500'd the page."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,

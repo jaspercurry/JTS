@@ -933,16 +933,12 @@ def test_program_choices_include_rear():
 
 
 @pytest.mark.parametrize("argv,reason,detail", [
-    (["--program", "baseline/full"], "measurement_program_retired",
-     {"retired": "baseline/full", "purpose": "speaker", "preset": "speaker/mark", "layout": "baseline_full"}),
-    (["--program", "rear", "--poses", "rear/pair_mark"], "measurement_program_retired",
-     {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark"}),
     (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
      {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
     (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",
      {"preset": "nearfield/each", "driver": "woofer:rear", "offered": []}),
 ])
-def test_a_retired_id_or_an_unoffered_layout_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
+def test_an_unoffered_layout_or_driver_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
     opener = _opener()
     code, body = _run(["run", *argv], opener, monkeypatch, capsys)
     assert (code, body["reason"], body["code"], body["detail"]) == (cli.EXIT_REFUSED, reason, reason, detail)

@@ -105,7 +105,7 @@ def test_placements_past_the_near_field_read_gated_in_the_rounds_room(tmp_path, 
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
     mark = _take("mark", "woofer", 1000, 80.0, seed=1)
     mark["pose"]["distance_m"] = None
-    write_manifest(bundle, program="nearfield/custom",
+    write_manifest(bundle, program="nearfield/each",
                    groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": [_take("w500", "woofer", 500, 86.0), mark]}])
 
     assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
@@ -201,7 +201,7 @@ def test_drivers_of_one_size_at_one_placement_are_flagged_when_they_play_apart(
     takes = [_take("w15", "woofer", 15, 90.0), _take("probe", driver, distance_mm, 60.0, selected=False, stimulus_dbfs=-44.0),
              *(_take(take_id, driver, distance_mm, 84.0, seed=1, stimulus_dbfs=stimulus_dbfs + offset, kind=kind)
                for take_id, offset in (("over", -1.0), ("other", 0.0), ("under", 6.0)))]
-    write_manifest(bundle, program="nearfield/custom", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+    write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
 
     assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
 

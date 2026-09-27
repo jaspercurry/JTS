@@ -14,7 +14,7 @@ from itertools import groupby
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Collection, Mapping, NamedTuple, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
@@ -243,59 +243,18 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
-class RetiredProgram(NamedTuple):
-    """What a retired id's banked rounds read as, and the preset and layout that
-    replace it for a new run; no preset when nothing does."""
-    purpose: str
-    preset: str = ""
-    layout: str = ""
-
-
-#: The retired rows' ids a round may have banked, keyed by the full banked id, with its
-#: ``/custom`` twin. Older ids outside it (``room/quick``) still read through
-#: :func:`run_purposes` but are refused as unknown, not by name. Frozen: a banked id is never renamed or
-#: reused (ADR-0366 §6).
-RETIRED_PROGRAMS = MappingProxyType({
-    "baseline/express": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", "baseline_express"),
-    "baseline/full": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", "baseline_full"),
-    "baseline/custom": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", CUSTOM_SIZE),
-    "tournament/full": RetiredProgram(PURPOSE_SPEAKER, "tournament/express", "tournament_full"),
-    "tournament/custom": RetiredProgram(PURPOSE_SPEAKER, "tournament/express", CUSTOM_SIZE),
-    "rear/wide": RetiredProgram(PURPOSE_REAR, "rear/express", "rear_wide"),
-    "rear/behind": RetiredProgram(PURPOSE_REAR, "rear/express", "rear_behind"),
-    "rear/pair_mark": RetiredProgram(PURPOSE_REAR, "rear/pair", "speaker_mark"),
-    "rear/pair_behind": RetiredProgram(PURPOSE_REAR, "rear/pair", "rear_behind"),
-    "rear/custom": RetiredProgram(PURPOSE_REAR, "rear/express", CUSTOM_SIZE),
-    "seat/cloud": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cloud"),
-    "seat/cube": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cube"),
-    "seat/express": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_express"),
-    "seat/custom": RetiredProgram(PURPOSE_ROOM, "room/seat", CUSTOM_SIZE),
-    "room/cloud": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cloud"),
-    "room/arm": RetiredProgram(PURPOSE_ROOM, "room/seat", "room_quick"),
-    "room/custom": RetiredProgram(PURPOSE_ROOM, "room/seat", CUSTOM_SIZE),
-    "bass/cloud": RetiredProgram(PURPOSE_BASS, "bass/axis", "seat_cloud"),
-    "bass/quick": RetiredProgram(PURPOSE_BASS, "bass/axis", "room_quick"),
-    "bass/nearfield": RetiredProgram(PURPOSE_BASS),
-    "bass/custom": RetiredProgram(PURPOSE_BASS, "bass/axis", CUSTOM_SIZE),
-    "close/spot": RetiredProgram(PURPOSE_REFERENCE),
-    "close/custom": RetiredProgram(PURPOSE_REFERENCE),
-})
-PROGRAM_RETIRED = "measurement_program_retired"
 LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"
 POSES_NAME_A_LAYOUT = "measurement_poses_name_a_layout"
 DRIVER_NOT_OFFERED = "measurement_driver_not_offered"
 
 
 def run_purpose(run_program: str | None) -> str:
-    """The purpose behind a run manifest's program id: a preset (``speaker/mark``),
-    a bare program (``speaker``), or a retired id (``close/spot``)."""
-    banked = str(run_program or "")
-    name, _, size = banked.partition("/")
-    if not name or name in PURPOSES:
+    """The purpose behind a run manifest's program id: a preset (``speaker/mark``)
+    or a bare program (``speaker``); any other id refuses as an unknown preset."""
+    name, _, size = str(run_program or "").partition("/")
+    if not size and (not name or name in PURPOSES):
         return name
-    if banked in RETIRED_PROGRAMS:
-        return RETIRED_PROGRAMS[banked].purpose
-    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    return program(name, size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -450,16 +409,6 @@ class MeasurementProgram:
     @property
     def capture_count(self) -> int:
         return sum(p.repeats + self.room_sweep for p in self.poses)
-
-
-class RetiredProgramError(ValueError):
-    """A retired id named for a new run; ``detail`` names what replaces it."""
-
-    reason = PROGRAM_RETIRED
-
-    def __init__(self, retired: str) -> None:
-        self.detail = {"retired": retired, **RETIRED_PROGRAMS[retired]._asdict()}
-        super().__init__(f"{retired} is retired")
 
 
 class LayoutNotOfferedError(ValueError):
@@ -682,10 +631,7 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
 def run_program(program_id: str, layout: str | None = None, poses: str | None = None) -> MeasurementProgram:
     """Resolve a run's preset (a bare program id is its default preset) at a named
     layout it offers, or at an inline JSON pose list or bearing list (ADR-0298,
-    ADR-0366 §6). A retired id refuses by name."""
-    for named in (program_id, poses or ""):
-        if named in RETIRED_PROGRAMS:
-            raise RetiredProgramError(named)
+    ADR-0366 §6)."""
     name, _, size = program_id.partition("/")
     selected = program(name, size or None)
     if layout is not None:
