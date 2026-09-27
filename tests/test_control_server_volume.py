@@ -464,8 +464,8 @@ def server_with_transport_stub(monkeypatch):
     'action',
     [
         'toggle',
-        'next',
-        'previous',
+        'next',      # VK-01 remote double-tap
+        'previous',  # VK-01 remote triple-tap
     ],
 )
 def test_transport_dispatches_action(server_with_transport_stub, action):

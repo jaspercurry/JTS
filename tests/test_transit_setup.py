@@ -325,6 +325,9 @@ def test_apply_routes_save_clear_removes_existing_key():
 @pytest.mark.parametrize(
     'key,saved,form',
     [
+        # A marker key present with its "cleared" value (both/unchecked/
+        # empty) means the user explicitly deselected the preference, so
+        # the saved value must be dropped rather than left silently active.
         ('JASPER_SUBWAY_DEFAULT_DIRECTION', 'uptown', {'nyc_subway_direction': 'both'}),
         ('JASPER_CITIBIKE_EBIKE_ONLY', '1', {'citibike_stations': 'abc|9 Av'}),
         ('JASPER_CITIBIKE_STATIONS', 'abc|9 Av,def|Atlantic', {'citibike_stations': ''}),

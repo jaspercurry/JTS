@@ -155,7 +155,10 @@ def test_artist_search_uses_field_qualifier():
     'kind,result_title,query,expected',
     [
         ('album', 'Some Album', 'Grace', 'album:"Grace"'),
+        # Track queries stay unqualified: a `track:` filter would
+        # zero-result a query like "Daylight by Matt and Kim".
         ('track', 'Daylight', 'Daylight by Matt and Kim', 'Daylight by Matt and Kim'),
+        # A stray double-quote breaks Spotify's field-query syntax; strip it.
         ('artist', 'X', 'Foo "Bar"', 'artist:"Foo Bar"'),
     ],
     ids=['album-field', 'unqualified-track', 'strip-artist-quotes'],

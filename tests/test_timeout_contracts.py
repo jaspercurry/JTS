@@ -207,6 +207,8 @@ def test_every_unbounded_call_is_marked_and_every_marker_is_live() -> None:
          'async def f(path):\n'
          '    return await asyncio.open_unix_connection(path)\n',
          'asyncio.open_unix_connection'),
+        # A captured Popen handle always flags: the walk can't verify its
+        # bound is enforced elsewhere.
         ('\n'
          'import subprocess\n'
          'def f():\n'

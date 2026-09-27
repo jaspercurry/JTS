@@ -236,7 +236,8 @@ def _make_connection(
     code below it talks only to the `LiveConnection` / `LiveTurn`
     Protocols and works equally for any provider that implements them.
 
-    Load only the selected provider SDK to bound the daemon's memory use."""
+    Load only the selected provider SDK to bound the daemon's memory use —
+    google.genai alone costs ~49 MB resident."""
     if speech_policy is None:
         speech_policy = build_effective_speech_input_policy(cfg)
     if cfg.voice_provider == "gemini":

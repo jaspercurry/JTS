@@ -317,6 +317,9 @@ def _build_system_instruction(
     if not ha_configured:
         # Without Home Assistant, unrelated tools cannot control devices. The
         # configured hostname must lead to this speaker's setup page.
+        # The "do not call any other tool" clause is load-bearing: the model
+        # has misrouted these requests to get_current_time / get_now_playing
+        # without it.
         addendum += (
             " Home Assistant smart-home control isn't set up on this "
             "speaker yet — no home_assistant tool is available. If the "

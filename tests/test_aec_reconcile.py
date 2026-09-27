@@ -72,6 +72,8 @@ SCRIPT = ROOT / "deploy" / "bin" / "jasper-aec-reconcile"
 VOICE_RESTART_CMD = "--no-block restart jasper-voice.service"
 
 # Persist only the registry fields the runtime writer carries into jasper.env.
+# Read live from xvf3800, never hard-coded, so this can't drift from the
+# registry jasper-xvf-profile --env publishes (ADR-0235).
 _PERSISTED_REGISTRY_ENV = (
     f"JASPER_XVF_SUPPORTED_ALSA_CARDS={','.join(xvf3800.ALSA_CARD_NAMES)}\n"
     f"JASPER_XVF_RECOMMENDED_CHANNELS={xvf3800.RECOMMENDED_CAPTURE_CHANNELS}\n"

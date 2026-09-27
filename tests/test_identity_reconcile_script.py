@@ -171,12 +171,17 @@ def test_avahi_unavailable_falls_back_to_os_hostname(tmp_path):
          'jts3',
          'JASPER_IDENTITY_COLLISION',
          '0'),
+        # Mirrors systemd EnvironmentFile layering: a duplicated key's last
+        # assignment is the effective one.
         ('jts3',
          'JASPER_HOSTNAME=old.local\nJASPER_HOSTNAME=jts3.local\n',
          'JASPER_IDENTITY_CONFIGURED_HOSTNAME',
          'jts3.local',
          'JASPER_IDENTITY_DRIFT',
          '0'),
+        # Quotes must be stripped to match what
+        # jasper.env_file.parse_env_mapping sees, or a hand-edited hostname
+        # shows drift forever.
         ('jts3',
          'JASPER_HOSTNAME="jts3.local"\n',
          'JASPER_IDENTITY_CONFIGURED_HOSTNAME',
