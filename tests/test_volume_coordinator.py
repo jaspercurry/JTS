@@ -16,13 +16,22 @@ import threading
 import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from tests._async_wait import wait_signalled
 from tests._log_events import event_field_maps, event_records
+from tests.volume_coordinator_fixtures import (
+    _assert_persisted,
+    _coord,
+    _FakeBackend,
+    _FakeCamilla,
+    _owned_coord,
+    _Pushes,
+    _real_coord,
+    _use_real_pushes,
+)
 
 from jasper import bluealsa_probe, camilla, renderer, volume_process
 from jasper import volume_handoff as vh_mod
@@ -31,7 +40,7 @@ from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
 from jasper.atomic_io import advisory_file_lock
-from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_apply import camilla_graph_mutation
 from jasper.volume_handoff import main_mute_for_level
@@ -72,6 +81,12 @@ def measurement_hold_served(monkeypatch) -> measurement_hold.MeasurementHold:
     return hold
 
 
+@pytest.fixture(autouse=True)
+def pushes(monkeypatch) -> _Pushes:
+    """Every Spotify/Bluetooth push, delivered unless a test refuses it."""
+    return _Pushes.install(monkeypatch)
+
+
 # ---------- mapping helpers -------------------------------------------------
 
 
@@ -107,191 +122,7 @@ def test_level_one_is_strictly_above_the_mute_floor():
     assert percent_to_db(1) > percent_to_db(0)
 
 
-# ---------- doubles and builders -------------------------------------------
-
-
-class _FakeCamilla:
-    def __init__(self, db: float = 0.0) -> None:
-        self._db = db
-        self.muted = False
-        self.set_calls: list[float] = []
-        self.mute_calls: list[bool] = []
-        self.events: list[tuple[str, float | bool]] = []
-        self.get_calls: int = 0
-        # When True, every best_effort call is a no-op (writes return
-        # False, reads return None) to simulate a camilla restart blip.
-        # Non-best_effort calls raise CamillaUnavailable.
-        self.unavailable = False
-
-    async def get_volume_db(self, *, best_effort: bool = False) -> float | None:
-        self.get_calls += 1
-        if self.unavailable:
-            if best_effort:
-                return None
-            raise CamillaUnavailable("test fake offline")
-        return self._db
-
-    async def get_volume_and_mute(
-        self, *, best_effort: bool = False,
-    ) -> tuple[float, bool] | None:
-        self.get_calls += 1
-        if self.unavailable:
-            if best_effort:
-                return None
-            raise CamillaUnavailable("test fake offline")
-        return self._db, self.muted
-
-    async def set_volume_db(
-        self, db: float, *, best_effort: bool = False,
-    ) -> bool:
-        if self.unavailable:
-            if best_effort:
-                return False
-            raise CamillaUnavailable("test fake offline")
-        self._db = db
-        self.set_calls.append(db)
-        self.events.append(("volume", db))
-        return True
-
-    async def set_main_mute(
-        self, muted: bool, *, best_effort: bool = False,
-    ) -> bool:
-        if self.unavailable:
-            if best_effort:
-                return False
-            raise CamillaUnavailable("test fake offline")
-        self.muted = bool(muted)
-        self.mute_calls.append(bool(muted))
-        self.events.append(("mute", bool(muted)))
-        return True
-
-
-class _FakeBackend:
-    def __init__(
-        self,
-        active: dict[str, bool] | None = None,
-        selected: str | None = None,
-    ) -> None:
-        self._active = active or {}
-        self._selected = selected
-        self.active_renderers_calls = 0
-
-    async def active_renderers(self) -> dict[str, bool]:
-        self.active_renderers_calls += 1
-        return dict(self._active)
-
-    async def selected_source(self) -> str | None:
-        return self._selected
-
-
-class _RecordingCoordinator(VolumeCoordinator):
-    """Records source-side dispatch instead of invoking busctl / HTTP.
-
-    Mirrors production semantics: idle/AirPlay use camilla; Spotify/BT are
-    push-mode.
-    """
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.airplay_writes: list[int] = []
-        self.spotify_writes: list[int] = []
-        self.bt_writes: list[int] = []
-        self.camilla_writes: list[int] = []
-
-    async def _set_airplay(self, level: int) -> bool:
-        self.airplay_writes.append(level)
-        return await self._set_camilla(level)
-
-    async def _set_spotify(self, level: int) -> bool:
-        self.spotify_writes.append(level)
-        self._stamp_outbound(Source.SPOTIFY)
-        return True
-
-    async def _set_bluetooth(self, level: int) -> bool:
-        self.bt_writes.append(level)
-        self._stamp_outbound(Source.BLUETOOTH)
-        return True
-
-    async def _set_camilla(self, level: int) -> bool:
-        ok = await super()._set_camilla(level)
-        self.camilla_writes.append(level)
-        return ok
-
-
-class _BlockingMuteCoordinator(_RecordingCoordinator):
-    """Pause only the Spotify 0% write to expose the persisted pre-push gap."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.mute_push_started = asyncio.Event()
-        self.release_mute_push = asyncio.Event()
-
-    async def _set_spotify(self, level: int) -> bool:
-        self.spotify_writes.append(level)
-        if level == 0:
-            self.mute_push_started.set()
-            await self.release_mute_push.wait()
-        self._stamp_outbound(Source.SPOTIFY)
-        return True
-
-
-def _build(
-    cls,
-    tmp_path,
-    *,
-    active: dict[str, bool] | None = None,
-    selected: str | None = None,
-    db: float = 0.0,
-    level: int | None = None,
-    mark_user_change: bool = False,
-    **kwargs,
-):
-    """Coordinator over a fresh on-disk record; returns (coord, cam, store).
-
-    ``level`` seeds both the in-memory canonical level and the persisted one,
-    which is what a coordinator that has already served a set looks like.
-    """
-    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
-    cam = _FakeCamilla(db=db)
-    coord = cls(
-        camilla=cam,
-        persistence=persistence,
-        backend=_FakeBackend(active=active, selected=selected),
-        **kwargs,
-    )
-    if level is not None:
-        coord._level = level
-        persistence.save_listening_level(
-            level, mark_user_change=mark_user_change,
-        )
-    return coord, cam, persistence
-
-
-def _coord(tmp_path, **kwargs):
-    """Recording coordinator, for tests about what dispatch chose."""
-    kwargs.setdefault("handoff_settle_sec", 0.0)
-    return _build(_RecordingCoordinator, tmp_path, **kwargs)
-
-
-def _real_coord(tmp_path, **kwargs):
-    """Production coordinator, for tests whose subject is its own dispatch."""
-    return _build(VolumeCoordinator, tmp_path, **kwargs)
-
-
-def _assert_persisted(
-    persistence,
-    *,
-    level: int | None = None,
-    db: float | None = None,
-    db_abs: float | None = None,
-) -> None:
-    """Read back the shared record and assert the fields named."""
-    record = persistence.load()
-    assert record is not None
-    if level is not None:
-        assert record.listening_level == level
-    if db is not None:
-        assert record.main_volume_db == pytest.approx(db, abs=db_abs)
+# ---------- log readers ----------------------------------------------------
 
 
 def _warnings(caplog) -> list[str]:
@@ -322,8 +153,7 @@ def _event_fields(caplog, event: str) -> dict[str, str]:
 async def test_set_volume_idle_writes_camilla(tmp_path):
     coord, cam, _ = _coord(tmp_path, active={})
     await coord.set_listening_level(70)
-    assert coord.camilla_writes == [70]
-    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(70))
+    assert cam.set_calls == [pytest.approx(percent_to_db(70))]
     assert cam.mute_calls[-1] is False
 
 
@@ -333,9 +163,8 @@ async def test_set_volume_zero_hard_mutes_camilla_master(tmp_path):
 
     await coord.set_listening_level(0)
 
-    assert coord.camilla_writes == [0]
     assert cam.mute_calls[-1] is True
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
+    assert cam.set_calls == [pytest.approx(percent_to_db(0))]
     _assert_persisted(persistence, level=0, db=percent_to_db(0))
 
 
@@ -353,76 +182,74 @@ async def test_set_volume_nonzero_clears_mute_after_volume_write(tmp_path):
     ]
 
 
-async def test_set_volume_airplay_active_routes_to_camilla(tmp_path):
+async def test_set_volume_airplay_active_routes_to_camilla(tmp_path, pushes):
     """AirPlay is camilla-as-master: remote/voice/HTTP changes must be
     audible even though modern AirPlay 2 sender slider reflection via
     shairport-sync is unavailable."""
-    coord, _, _ = _coord(tmp_path, active={"aplactive": True})
+    coord, cam, _ = _coord(tmp_path, active={"aplactive": True})
     await coord.set_listening_level(50)
-    assert coord.airplay_writes == [50]
-    assert coord.camilla_writes == [50]
+    assert cam.set_calls == [pytest.approx(percent_to_db(50))]
+    assert pushes.calls == []
 
 
-async def test_manual_selected_source_overrides_raw_renderer_probe(tmp_path):
+async def test_manual_selected_source_overrides_raw_renderer_probe(
+    tmp_path, pushes,
+):
     """Source selection gates what the speaker actually passes, so
     volume dispatch follows mux's manual selection over raw activity."""
-    coord, _, _ = _coord(
+    coord, cam, _ = _coord(
         tmp_path, active={"aplactive": True}, selected="spotify",
     )
 
     await coord.set_listening_level(55)
 
-    assert coord.spotify_writes == [55]
-    assert coord.airplay_writes == []
+    assert pushes.spotify == [55]
+    assert cam.set_calls == []  # the AirPlay carrier was never written
 
 
-async def test_set_volume_spotify_active_routes_to_spotify(tmp_path):
+async def test_set_volume_spotify_active_routes_to_spotify(tmp_path, pushes):
     coord, cam, _ = _coord(tmp_path, active={"spotactive": True}, db=-25.0)
     await coord.set_listening_level(40)
-    assert coord.spotify_writes == [40]
+    assert pushes.spotify == [40]
     assert cam.set_calls == []  # Spotify is push-mode; camilla untouched
 
 
-async def test_push_mode_zero_sets_final_mute_after_source_push(tmp_path):
+async def test_push_mode_zero_sets_final_mute_after_source_push(tmp_path, pushes):
     coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
 
     await coord.set_listening_level(0)
 
-    assert coord.spotify_writes == [0]
+    assert pushes.spotify == [0]
     assert cam.mute_calls[-1] is True
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
     _assert_persisted(persistence, db=percent_to_db(0))
 
 
-async def test_push_mode_nonzero_clears_stale_final_mute(tmp_path):
+async def test_push_mode_nonzero_clears_stale_final_mute(tmp_path, pushes):
     coord, cam, _ = _coord(tmp_path, active={"spotactive": True}, db=-50.0)
     cam.muted = True
 
     await coord.set_listening_level(75)
 
-    assert coord.spotify_writes == [75]
+    assert pushes.spotify == [75]
     assert cam.events[-2:] == [
         ("volume", pytest.approx(0.0)),
         ("mute", False),
     ]
 
 
-async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
+async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path, pushes):
     """If the active push source cannot accept volume, normal user
     volume changes still keep the audible path guarded by Camilla."""
     coord, cam, _ = _coord(tmp_path, active={"spotactive": True})
-
-    async def fail_spotify(_level: int) -> bool:
-        return False
-
-    coord._set_spotify = fail_spotify
+    pushes.ok[Source.SPOTIFY] = False
 
     await coord.set_listening_level(25)
 
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(25))
 
 
-# ---------- _set_spotify's own device walk (every other test above stubs it) --
+# ---------- the real Spotify/Bluetooth pushes (every other test stubs them) --
 
 
 def _spotify_account(*, devices_fn, volume_fn=None) -> AccountClient:
@@ -475,20 +302,24 @@ async def test_set_spotify_push_result_and_echo_stamp(
         )
 
     router = Router(clients={"primary": ac}, default_name="primary")
-    coord, _, _ = _real_coord(
-        tmp_path, active={}, spotify_router=router, spotify_device_name="JTS",
+    _use_real_pushes(monkeypatch)
+    coord, cam, _ = _real_coord(
+        tmp_path, active={"spotactive": True},
+        spotify_router=router, spotify_device_name="JTS",
     )
     try:
-        result = await asyncio.wait_for(coord._set_spotify(55), timeout=5.0)
+        await asyncio.wait_for(coord.set_listening_level(55), timeout=5.0)
     finally:
         release.set()
 
-    assert result is expect_ok
+    # The push result: only a refused push leaves Camilla guarding the level.
+    assert cam.set_calls == (
+        [] if expect_ok else [pytest.approx(percent_to_db(55))]
+    )
+    # The echo stamp: only a delivered push makes the next reading our echo.
+    assert await coord.observe_source_volume(Source.SPOTIFY, 30) is (not expect_ok)
     if case == "ok":
-        assert Source.SPOTIFY in coord._last_outbound
         assert volume_calls == [listening_level_to_spotify_percent(55)]
-    else:
-        assert Source.SPOTIFY not in coord._last_outbound
 
 
 @pytest.mark.parametrize("ok", [True, False], ids=["ok", "failure"])
@@ -500,9 +331,10 @@ async def test_set_bluetooth_push_result_and_echo_stamp(tmp_path, monkeypatch, o
     )
     set_property = AsyncMock(return_value=ok)
     monkeypatch.setattr(vps_mod.busctl, "set_property", set_property)
-    coord, _, _ = _real_coord(tmp_path, active={})
+    _use_real_pushes(monkeypatch)
+    coord, cam, _ = _real_coord(tmp_path, active={"btactive": True})
 
-    assert await coord._set_bluetooth(55) is ok
+    await coord.set_listening_level(55)
 
     set_property.assert_awaited_once_with(
         "org.bluealsa",
@@ -513,7 +345,9 @@ async def test_set_bluetooth_push_result_and_echo_stamp(tmp_path, monkeypatch, o
         str(listening_level_to_bt_volume(55)),
         bus="--system",
     )
-    assert (Source.BLUETOOTH in coord._last_outbound) is ok
+    assert cam.set_calls == ([] if ok else [pytest.approx(percent_to_db(55))])
+    observed = listening_level_to_bt_volume(30)
+    assert await coord.observe_source_volume(Source.BLUETOOTH, observed) is (not ok)
 
 
 def _assert_push_failure_warning(
@@ -525,37 +359,26 @@ def _assert_push_failure_warning(
     assert len(_warnings(caplog)) == 1
 
 
-def _stub_failed_push(monkeypatch, coord, setter_name: str, guard_confirmed: bool):
+def _stub_failed_push(
+    monkeypatch, pushes, coord, source: Source, guard_confirmed: bool,
+):
     """Refuse the source push; record what the camilla guard was asked for."""
     guard_calls: list[tuple[float, str, bool]] = []
-
-    async def fail_push(_level: int) -> bool:
-        return False
 
     async def guard_camilla(db: float, *, context: str, persist: bool) -> bool:
         guard_calls.append((db, context, persist))
         return guard_confirmed
 
-    monkeypatch.setattr(coord, setter_name, fail_push)
+    pushes.ok[source] = False
     monkeypatch.setattr(coord, "_set_camilla_db", guard_camilla)
     return guard_calls
 
 
 @pytest.mark.parametrize(
-    ("source", "active_key", "setter_name", "context"),
+    ("source", "active_key", "context"),
     [
-        (
-            Source.SPOTIFY,
-            "spotactive",
-            "_set_spotify",
-            "dispatch_spotify_degraded",
-        ),
-        (
-            Source.BLUETOOTH,
-            "btactive",
-            "_set_bluetooth",
-            "dispatch_bluetooth_degraded",
-        ),
+        (Source.SPOTIFY, "spotactive", "dispatch_spotify_degraded"),
+        (Source.BLUETOOTH, "btactive", "dispatch_bluetooth_degraded"),
     ],
 )
 @pytest.mark.parametrize("guard_confirmed", [True, False])
@@ -563,16 +386,16 @@ async def test_push_dispatch_failure_guard_preserves_guard_and_warning(
     tmp_path,
     monkeypatch,
     caplog,
+    pushes,
     source: Source,
     active_key: str,
-    setter_name: str,
     context: str,
     guard_confirmed: bool,
 ):
     coord, _, persistence = _coord(tmp_path, active={active_key: True}, level=70)
     persistence.save_now(-7.5)
     guard_calls = _stub_failed_push(
-        monkeypatch, coord, setter_name, guard_confirmed,
+        monkeypatch, pushes, coord, source, guard_confirmed,
     )
     level = 25
     guard_db = percent_to_db(level)
@@ -591,52 +414,54 @@ async def test_push_dispatch_failure_guard_preserves_guard_and_warning(
     )
 
 
-async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path):
+async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path, pushes):
     coord, cam, _ = _coord(tmp_path, active={"btactive": True}, db=-25.0)
     await coord.set_listening_level(60)
-    assert coord.bt_writes == [60]
+    assert pushes.bluetooth == [60]
     assert cam.set_calls == []  # BT is push-mode; camilla untouched
 
 
 # Each row: the renderer set before the set, the fader dB it starts at, the
-# level set on it, the renderer set mux flips to (None = unchanged), the
-# transition reported, then what the transition itself wrote to camilla
-# ("carrier" None = camilla was never written at all) and what each source
-# recorder holds at the end.
+# level set on it and what that set wrote to camilla ("setup"), the renderer
+# set mux flips to (None = unchanged), the transition reported, then what the
+# transition itself wrote to camilla ("carrier" None = camilla was never
+# written at all) and what each source received at the end.
 _TRANSITION_CARRIERS = [
     dict(
         id="idle_to_push", before={"spotactive": True}, db=-25.0, level=50,
-        after=None, prev=Source.IDLE, current=Source.SPOTIFY,
-        writes=[0.0], carrier=0.0, spotify=[50, 50], bt=[], airplay=[],
+        setup=[], after=None, prev=Source.IDLE, current=Source.SPOTIFY,
+        writes=[0.0], carrier=0.0, spotify=[50, 50], bt=[],
     ),
     dict(
         id="camilla_master_to_push", before={"aplactive": True}, db=0.0,
-        level=60, after={"spotactive": True},
+        level=60, setup=[percent_to_db(60)], after={"spotactive": True},
         prev=Source.AIRPLAY, current=Source.SPOTIFY,
-        writes=[0.0], carrier=0.0, spotify=[60], bt=[], airplay=[60],
+        writes=[0.0], carrier=0.0, spotify=[60], bt=[],
     ),
     dict(
         id="push_to_idle", before={}, db=0.0, level=60,
-        after=None, prev=Source.SPOTIFY, current=Source.IDLE,
-        writes=[], carrier=percent_to_db(60), spotify=[], bt=[], airplay=[],
+        setup=[percent_to_db(60)], after=None,
+        prev=Source.SPOTIFY, current=Source.IDLE,
+        writes=[], carrier=percent_to_db(60), spotify=[], bt=[],
     ),
     dict(
         id="push_to_camilla_master", before={"spotactive": True}, db=0.0,
-        level=50, after={"aplactive": True},
+        level=50, setup=[], after={"aplactive": True},
         prev=Source.SPOTIFY, current=Source.AIRPLAY,
         writes=[percent_to_db(50)], carrier=percent_to_db(50),
-        spotify=[50], bt=[], airplay=[],
+        spotify=[50], bt=[],
     ),
     dict(
         id="idle_to_camilla_master", before={}, db=0.0, level=40,
-        after={"aplactive": True}, prev=Source.IDLE, current=Source.AIRPLAY,
-        writes=[], carrier=percent_to_db(40), spotify=[], bt=[], airplay=[],
+        setup=[percent_to_db(40)], after={"aplactive": True},
+        prev=Source.IDLE, current=Source.AIRPLAY,
+        writes=[], carrier=percent_to_db(40), spotify=[], bt=[],
     ),
     dict(
         id="push_to_push", before={"spotactive": True}, db=0.0, level=55,
-        after={"btactive": True},
+        setup=[], after={"btactive": True},
         prev=Source.SPOTIFY, current=Source.BLUETOOTH,
-        writes=[], carrier=None, spotify=[55], bt=[55], airplay=[],
+        writes=[], carrier=None, spotify=[55], bt=[55],
     ),
 ]
 
@@ -645,7 +470,7 @@ _TRANSITION_CARRIERS = [
     "case", _TRANSITION_CARRIERS, ids=lambda case: case["id"],
 )
 async def test_which_attenuator_carries_the_level_across_a_transition(
-    tmp_path, case,
+    tmp_path, pushes, case,
 ):
     """A camilla-master lane keeps percent_to_db(level) on the fader; a
     push-mode lane pins the fader to 0 dB and puts the level on the source's
@@ -654,6 +479,7 @@ async def test_which_attenuator_carries_the_level_across_a_transition(
     coord, cam, _ = _coord(tmp_path, active=case["before"], db=case["db"])
     await coord.set_listening_level(case["level"])
     before = len(cam.set_calls)
+    assert cam.set_calls == [pytest.approx(db) for db in case["setup"]]
     if case["after"] is not None:
         coord._backend = _FakeBackend(active=case["after"])
 
@@ -666,13 +492,12 @@ async def test_which_attenuator_carries_the_level_across_a_transition(
         assert cam.set_calls == []
     else:
         assert cam.set_calls[-1] == pytest.approx(case["carrier"])
-    assert coord.spotify_writes == case["spotify"]
-    assert coord.bt_writes == case["bt"]
-    assert coord.airplay_writes == case["airplay"]
+    assert pushes.spotify == case["spotify"]
+    assert pushes.bluetooth == case["bt"]
 
 
 async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
-    tmp_path,
+    tmp_path, pushes,
 ):
     """The observer resolves the source before the cross-daemon lease. A
     handoff that commits while the verdict queues must not end with camilla
@@ -689,11 +514,11 @@ async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
     assert await coord._active_source() is Source.SPOTIFY
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
-    assert coord.spotify_writes == []
+    assert pushes.spotify == []
     assert cam.set_calls == before
 
 
-async def test_transition_suppressed_during_voice_session(tmp_path):
+async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
     """note_voice_session(True) gates apply_active_source_transition
     so the ducker's additive math isn't corrupted by absolute writes."""
     coord, cam, _ = _coord(tmp_path, active={}, selected="spotify")
@@ -705,7 +530,7 @@ async def test_transition_suppressed_during_voice_session(tmp_path):
     coord.note_voice_session(False)
     await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
 
-    assert coord.spotify_writes[-1] == coord.get_listening_level()
+    assert pushes.spotify[-1] == coord.get_listening_level()
     assert cam.muted is False
 
 
@@ -723,46 +548,47 @@ async def test_transition_suppressed_during_voice_session(tmp_path):
     ],
 )
 async def test_airplay_outranks_every_other_active_renderer(
-    tmp_path, active, level,
+    tmp_path, pushes, active, level,
 ):
     """Several renderers can report active during a mux transition window.
     The chain is airplay > spotify > bluetooth > usbsink, matching mux's
     first-source-defined-wins behaviour: a phone-controlled AirPlay session
     is not silently overridden by a Mac plugged into the USB port."""
-    coord, _, _ = _coord(tmp_path, active=active)
+    coord, cam, _ = _coord(tmp_path, active=active)
 
     await coord.set_listening_level(level)
 
-    assert coord.airplay_writes == [level]
-    assert coord.camilla_writes == [level]
-    assert coord.spotify_writes == []
-    assert coord.bt_writes == []
+    assert cam.set_calls == [pytest.approx(percent_to_db(level))]
+    assert pushes.calls == []
+    # AirPlay, not the USB sink, is the source whose readings count.
+    assert await coord.observe_source_volume(Source.USBSINK, level) is False
+    assert await coord.observe_source_volume(Source.AIRPLAY, level) is True
 
 
-async def test_adjust_volume(tmp_path):
+async def test_adjust_volume(tmp_path, pushes):
     """Push-mode adjust path: each set/adjust pushes a fresh value
     to the source's slider."""
     coord, _, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(50)
     await coord.adjust_listening_level(15)
-    assert coord.spotify_writes == [50, 65]
+    assert pushes.spotify == [50, 65]
 
 
-async def test_adjust_clamps_to_0_and_100(tmp_path):
+async def test_adjust_clamps_to_0_and_100(tmp_path, pushes):
     coord, _, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(95)
     await coord.adjust_listening_level(20)
-    assert coord.spotify_writes[-1] == 100
+    assert pushes.spotify[-1] == 100
     await coord.adjust_listening_level(-200)
-    assert coord.spotify_writes[-1] == 0
+    assert pushes.spotify[-1] == 0
 
 
-async def test_mute_then_unmute(tmp_path):
+async def test_mute_then_unmute(tmp_path, pushes):
     coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(70)
     saved = await coord.mute()
     assert saved == 70
-    assert coord.spotify_writes[-1] == 0  # silence
+    assert pushes.spotify[-1] == 0  # silence
     assert cam.mute_calls[-1] is True
     assert coord.is_muted()
     # The canonical level remains the restore target; every external surface
@@ -776,13 +602,16 @@ async def test_mute_then_unmute(tmp_path):
     assert record.pre_mute_level == 70
     restored = await coord.unmute()
     assert restored == 70
-    assert coord.spotify_writes[-1] == 70
+    assert pushes.spotify[-1] == 70
     assert cam.mute_calls[-1] is False
     assert not coord.is_muted()
 
 
-async def test_push_observer_preserves_cross_process_mute_restore_level(tmp_path):
+async def test_push_observer_preserves_cross_process_mute_restore_level(
+    tmp_path, monkeypatch,
+):
     """A remote mute's renderer-side 0% echo cannot overwrite its restore level."""
+    _use_real_pushes(monkeypatch)
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"spotactive": True})
@@ -814,27 +643,36 @@ async def test_push_observer_preserves_cross_process_mute_restore_level(tmp_path
 
 
 async def test_push_observer_rejects_stale_nonzero_while_mute_push_pending(
-    tmp_path,
+    tmp_path, pushes,
 ):
     """A pre-push renderer reading cannot cancel another process's mute."""
     state_path = str(tmp_path / "speaker_volume.json")
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"spotactive": True})
-    control_coord = _BlockingMuteCoordinator(
+    control_coord = VolumeCoordinator(
         camilla=cam,
         persistence=VolumePersistence(state_path),
         backend=backend,
     )
-    observer_coord = _RecordingCoordinator(
+    observer_coord = VolumeCoordinator(
         camilla=cam,
         persistence=VolumePersistence(state_path),
         backend=backend,
     )
+    mute_push_started = asyncio.Event()
+    release_mute_push = asyncio.Event()
+
+    async def hold_the_mute_push(_source: Source, level: int) -> None:
+        if level == 0:
+            mute_push_started.set()
+            await release_mute_push.wait()
+
+    pushes.hook = hold_the_mute_push
     await control_coord.set_listening_level(60)
 
     mute_task = asyncio.create_task(control_coord.mute())
     await wait_signalled(
-        control_coord.mute_push_started,
+        mute_push_started,
         "mute push began",
         producer=mute_task,
     )
@@ -849,7 +687,7 @@ async def test_push_observer_rejects_stale_nonzero_while_mute_push_pending(
     await asyncio.sleep(0)
     assert observation.done() is False
 
-    control_coord.release_mute_push.set()
+    release_mute_push.set()
     await mute_task
     accepted = await observation
     assert accepted is False
@@ -872,7 +710,7 @@ async def test_push_observer_requires_zero_for_each_new_mute_token(tmp_path):
     """Confirmation from an older mute cannot authorize a newer transition."""
     state_path = str(tmp_path / "speaker_volume.json")
     writer = VolumePersistence(state_path)
-    observer = _RecordingCoordinator(
+    observer = VolumeCoordinator(
         camilla=_FakeCamilla(db=0.0),
         persistence=VolumePersistence(state_path),
         backend=_FakeBackend(active={"spotactive": True}),
@@ -907,7 +745,7 @@ async def test_unmute_without_prior_mute_uses_fallback(tmp_path):
 
 
 @pytest.mark.parametrize("observed", [60, 30])
-async def test_observe_within_echo_window_ignored(tmp_path, observed):
+async def test_observe_within_echo_window_ignored(tmp_path, pushes, observed):
     """A poll can briefly see either our own value echoed back or stale
     source state right after our write, especially during source handoff;
     ignore the whole echo window regardless of what it reports."""
@@ -917,10 +755,12 @@ async def test_observe_within_echo_window_ignored(tmp_path, observed):
     await coord.observe_source_volume(Source.SPOTIFY, observed)
 
     assert coord.get_listening_level() == 60
-    assert coord.spotify_writes == [60]
+    assert pushes.spotify == [60]
 
 
-async def test_observe_outside_echo_window_becomes_canonical(tmp_path, monkeypatch):
+async def test_observe_outside_echo_window_becomes_canonical(
+    tmp_path, monkeypatch, pushes,
+):
     coord, cam, persistence = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(60)
     # Fast-forward past the echo window without sleeping.
@@ -932,7 +772,7 @@ async def test_observe_outside_echo_window_becomes_canonical(tmp_path, monkeypat
     assert coord.get_listening_level() == 40
     _assert_persisted(persistence, level=40)
     # An observation must NOT trigger an outbound dispatch (no echo).
-    assert coord.spotify_writes == [60]
+    assert pushes.spotify == [60]
 
 
 @pytest.mark.parametrize("seeded_level", [50, 100])
@@ -1017,7 +857,7 @@ async def test_observe_spotify_repairs_live_guard_after_false_clear(tmp_path):
     _assert_persisted(persistence, level=90, db=0.0)
 
 
-async def test_successful_push_dispatch_clears_degraded_guard(tmp_path):
+async def test_successful_push_dispatch_clears_degraded_guard(tmp_path, pushes):
     """If a later outbound push succeeds, Camilla should stop carrying
     the degraded fallback attenuation."""
     coord, cam, persistence = _coord(
@@ -1029,7 +869,7 @@ async def test_successful_push_dispatch_clears_degraded_guard(tmp_path):
 
     await coord.set_listening_level(50)
 
-    assert coord.spotify_writes == [50]
+    assert pushes.spotify == [50]
     assert cam.set_calls[-1] == pytest.approx(0.0)
     _assert_persisted(persistence, level=50, db=0.0)
 
@@ -1117,19 +957,20 @@ async def test_user_change_bumps_last_used_at(tmp_path):
 async def test_set_airplay_delegates_to_camilla_without_subprocess(
     tmp_path, monkeypatch,
 ):
-    """Real _set_airplay path: use CamillaDSP as the reliable audible
+    """Real AirPlay dispatch: use CamillaDSP as the reliable audible
     AirPlay volume surface, not shairport-sync DACP/DBus."""
-    coord, cam, _ = _real_coord(tmp_path, active={})
+    coord, cam, _ = _real_coord(tmp_path, active={"aplactive": True})
 
     async def fail_spawn(*args, **kwargs):
         raise AssertionError("AirPlay should not spawn a control subprocess")
 
-    monkeypatch.setattr(vc_mod.asyncio, "create_subprocess_exec", fail_spawn)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_spawn)
 
-    await coord._set_airplay(75)
+    await coord.set_listening_level(75)
 
     assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(75))
-    assert Source.AIRPLAY not in coord._last_outbound
+    # No outbound stamp: the sender's next reading is an edit, not our echo.
+    assert await coord.observe_source_volume(Source.AIRPLAY, 30) is True
 
 
 async def test_observe_airplay_moves_the_camilla_master(tmp_path):
@@ -1202,7 +1043,7 @@ async def test_observe_inactive_source_is_ignored(
 # ---------- source handoff -------------------------------------------------
 
 
-async def test_observer_transition_push_failure_preserves_guard(tmp_path):
+async def test_observer_transition_push_failure_preserves_guard(tmp_path, pushes):
     """The observer backstop must not undo mux's degraded-safe guard.
 
     If Spotify/Bluetooth cannot accept a source-side volume write,
@@ -1212,10 +1053,7 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path):
     coord, cam, _ = _coord(tmp_path, active={"aplactive": True})
     await coord.set_listening_level(40)
 
-    async def fail_spotify(_level: int) -> bool:
-        return False
-
-    coord._set_spotify = fail_spotify
+    pushes.ok[Source.SPOTIFY] = False
     coord._backend = _FakeBackend(active={"spotactive": True})
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
@@ -1226,19 +1064,17 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("prev_source", "current_source", "setter_name", "context", "pair"),
+    ("prev_source", "current_source", "context", "pair"),
     [
         (
             Source.AIRPLAY,
             Source.SPOTIFY,
-            "_set_spotify",
             "active_source_transition_push_degraded",
             "airplay → spotify",
         ),
         (
             Source.SPOTIFY,
             Source.BLUETOOTH,
-            "_set_bluetooth",
             "active_source_transition_push_push_degraded",
             "spotify → bluetooth (push→push)",
         ),
@@ -1249,9 +1085,9 @@ async def test_transition_push_failure_guard_preserves_guard_and_warning(
     tmp_path,
     monkeypatch,
     caplog,
+    pushes,
     prev_source: Source,
     current_source: Source,
-    setter_name: str,
     context: str,
     pair: str,
     guard_confirmed: bool,
@@ -1262,7 +1098,7 @@ async def test_transition_push_failure_guard_preserves_guard_and_warning(
     )
     persistence.save_now(-7.5)
     guard_calls = _stub_failed_push(
-        monkeypatch, coord, setter_name, guard_confirmed,
+        monkeypatch, pushes, coord, current_source, guard_confirmed,
     )
     guard_db = percent_to_db(level)
 
@@ -1431,7 +1267,9 @@ async def test_dispatch_publishes_absolute_canonical_and_downstream_facts(tmp_pa
     assert all(context.muted is False for context in published)
 
 
-async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(tmp_path):
+async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(
+    tmp_path, pushes,
+):
     published = []
     cloud_started = asyncio.Event()
     release_cloud = asyncio.Event()
@@ -1439,17 +1277,16 @@ async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(tmp_path):
     async def publish(context):
         published.append(context)
 
-    async def blocked_spotify(_level: int) -> bool:
+    async def blocked_cloud(_source: Source, _level: int) -> None:
         cloud_started.set()
         await release_cloud.wait()
-        return True
 
     coord, _, _ = _real_coord(
         tmp_path,
         active={"spotactive": True},
         volume_context_publisher=publish,
     )
-    coord._set_spotify = blocked_spotify
+    pushes.hook = blocked_cloud
 
     operation = asyncio.create_task(coord.set_listening_level(67))
     await wait_signalled(cloud_started, "spotify dispatch started", producer=operation)
@@ -1467,7 +1304,7 @@ async def test_nonzero_intent_publishes_before_slow_spotify_dispatch(tmp_path):
 
 @pytest.mark.parametrize("blocker", ["source_push", "camilla_mute"])
 async def test_mute_intent_is_local_and_published_before_the_slow_write(
-    tmp_path, blocker,
+    tmp_path, pushes, blocker,
 ):
     """The mute is local intent. Whichever downstream write is slow — the
     Spotify cloud round trip or Camilla's own main_mute — the muted context
@@ -1487,12 +1324,11 @@ async def test_mute_intent_is_local_and_published_before_the_slow_write(
         volume_context_publisher=publish,
     )
     if blocker == "source_push":
-        async def blocked_spotify(_level: int) -> bool:
+        async def blocked_cloud(_source: Source, _level: int) -> None:
             started.set()
             await release.wait()
-            return True
 
-        coord._set_spotify = blocked_spotify
+        pushes.hook = blocked_cloud
     else:
         real_set_mute = coord._set_camilla_main_mute
         first_call = True
@@ -1523,7 +1359,7 @@ async def test_mute_intent_is_local_and_published_before_the_slow_write(
 
 
 async def test_overlapping_push_writes_keep_source_persistence_and_context_aligned(
-    tmp_path,
+    tmp_path, pushes,
 ):
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     persistence.save_listening_level(50)
@@ -1534,12 +1370,11 @@ async def test_overlapping_push_writes_keep_source_persistence_and_context_align
     applied = []
     published = []
 
-    async def push(level: int) -> bool:
+    async def push(_source: Source, level: int) -> None:
         if level == 20:
             first_started.set()
             await release_first.wait()
         applied.append(level)
-        return True
 
     async def publish(context):
         published.append(context)
@@ -1556,8 +1391,7 @@ async def test_overlapping_push_writes_keep_source_persistence_and_context_align
         backend=backend,
         volume_context_publisher=publish,
     )
-    first._set_spotify = push
-    second._set_spotify = push
+    pushes.hook = push
 
     older = asyncio.create_task(first.set_listening_level(20))
     await wait_signalled(first_started, "older push write started", producer=older)
@@ -1815,9 +1649,7 @@ async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
 
 @pytest.mark.parametrize("source", [Source.SPOTIFY, Source.IDLE])
 async def test_every_tick_refreshes_the_level_another_process_saved(tmp_path, source):
-    coord, _cam, persistence = _build(
-        _RecordingCoordinator, tmp_path, selected=source.value, level=40, handoff_settle_sec=0.0,
-    )
+    coord, _cam, persistence = _coord(tmp_path, selected=source.value, level=40)
     persistence.save_listening_level(70, mark_user_change=True)
 
     await coord.maybe_reconcile_camilla(source=source)
@@ -2381,7 +2213,7 @@ async def test_env_target_and_registered_provider_read_current_persisted_intent(
         assert await camilla._canonical_target_db_provider() == pytest.approx(percent_to_db(level))
 
 
-async def test_transition_refreshes_from_disk(tmp_path):
+async def test_transition_refreshes_from_disk(tmp_path, pushes):
     """The same cross-process staleness guard on the transition path, which
     is observer-triggered and so never refreshes as a side effect."""
     coord, _, persistence = _coord(
@@ -2392,11 +2224,13 @@ async def test_transition_refreshes_from_disk(tmp_path):
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
-    assert coord.spotify_writes == [80]
+    assert pushes.spotify == [80]
     assert coord.get_listening_level() == 80
 
 
-async def test_transition_uses_effective_level_while_temporarily_muted(tmp_path):
+async def test_transition_uses_effective_level_while_temporarily_muted(
+    tmp_path, pushes,
+):
     coord, _, persistence = _coord(
         tmp_path,
         active={"spotactive": True},
@@ -2407,7 +2241,7 @@ async def test_transition_uses_effective_level_while_temporarily_muted(tmp_path)
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
-    assert coord.spotify_writes == [0]
+    assert pushes.spotify == [0]
     assert coord.get_volume_state().restore_percent == 80
 
 
@@ -2437,16 +2271,14 @@ async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
 # ---------- USB sink (camilla-master, host-slider observed inbound) --------
 
 
-async def test_set_volume_usbsink_active_routes_to_camilla(tmp_path):
+async def test_set_volume_usbsink_active_routes_to_camilla(tmp_path, pushes):
     """USB sink behaves like AirPlay for outbound: remote/voice writes
     land on CamillaDSP. The gadget mixer is NOT written back to (the
     host's slider is observed-only)."""
     coord, cam, _ = _coord(tmp_path, active={"usbsinkactive": True})
     await coord.set_listening_level(60)
-    assert coord.camilla_writes == [60]
-    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(60))
-    assert coord.spotify_writes == []
-    assert coord.bt_writes == []
+    assert cam.set_calls == [pytest.approx(percent_to_db(60))]
+    assert pushes.calls == []
 
 
 async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
@@ -2701,59 +2533,6 @@ async def test_bluez_transport_path_honours_the_shared_probe_backoff(
 
 
 # ---------- graph-swap duck vs. the 1 Hz reconciler -------------------------
-
-
-class _MinimalCamillaClient:
-    """Just enough pycamilladsp surface to run a REAL `CamillaController`."""
-
-    def __init__(self, db: float) -> None:
-        self.volume = SimpleNamespace(
-            main_volume=self.main_volume, main_mute=self.main_mute,
-            set_main_volume=self.set_main_volume, set_main_mute=self.set_main_mute,
-        )
-        self.config = self
-        self.general = self
-        self.db = float(db)
-        self.muted = False
-        self.reload_count = 0
-
-    def main_volume(self) -> float:
-        return self.db
-
-    def main_mute(self) -> bool:
-        return self.muted
-
-    def set_main_volume(self, value: float) -> None:
-        self.db = float(value)
-
-    def set_main_mute(self, value: bool) -> None:
-        self.muted = bool(value)
-
-    def reload(self) -> None:
-        self.reload_count += 1
-
-
-def _real_controller(client: _MinimalCamillaClient, tmp_path):
-    cam = CamillaController("127.0.0.1", 1234)
-    cam._graph_mutation_lock_path = tmp_path / ".dsp_apply.lock"
-
-    async def call(fn):
-        return fn(client)
-
-    cam._call = call  # type: ignore[method-assign]
-    return cam
-
-
-def _owned_coord(tmp_path, db: float):
-    """Recording coordinator over a REAL CamillaController and volume owner."""
-    client = _MinimalCamillaClient(db=db)
-    cam = _real_controller(client, tmp_path)
-    coord = _RecordingCoordinator(
-        camilla=cam,
-        persistence=VolumePersistence(str(tmp_path / "speaker_volume.json")),
-        backend=_FakeBackend(active={}),
-    )
-    return coord, cam, client
 
 
 async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):

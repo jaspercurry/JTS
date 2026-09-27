@@ -132,7 +132,7 @@ from jasper.output_topology_store import (
     save_output_topology,
 )
 from .sound_camilla_fixtures import FakeCamilla
-from .test_volume_coordinator import (
+from .volume_coordinator_fixtures import (
     _FakeBackend,
     _MinimalCamillaClient,
     _real_controller,
