@@ -88,7 +88,7 @@ async def apply_candidate(
             baseline_apply.apply_started(topology, prepared)
             async with baseline_apply.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
                     load_config=load_config, get_current_config_path=get_current_config_path) as (applied, profile):
-                with v2state.v2_state_locked():
+                with v2state.v2_state_locked(timeout_s=v2state.POST_COMMIT_STATE_LOCK_TIMEOUT_S):
                     v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=incumbent,
                         previous_candidate_fingerprint=((incumbent or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)
                     update: dict[str, Any] = {"status": "unchanged"}
