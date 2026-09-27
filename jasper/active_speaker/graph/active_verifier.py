@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping
 
 import yaml
 
@@ -25,7 +25,7 @@ from jasper.speaker_layout import (
     measurement_target_id,
 )
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
-from ..camilla_yaml import BASELINE_HEADROOM_DB, BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
+from ..camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
     baseline_protection_name,
@@ -44,7 +44,6 @@ from ..camilla_names import (
     sub_lowpass_name as _sub_lowpass_name,
     sub_startup_limiter_name as _sub_startup_limiter_name,
 )
-from ..crossover_section import CrossoverSection
 from ..graph_evidence import filter_params as _filter_params, filter_type as _filter_type
 from ..graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
@@ -62,6 +61,7 @@ from ..graph_safety import (
     tweeter_guard_present,
     view_from_yaml_dict,
 )
+from ..graph_transfer import GraphTransferError
 from ..output_contract import (
     ACTIVE_BASELINE_SOURCE,
     ACTIVE_DRIVER_DOMAIN_SOURCE,
@@ -73,6 +73,7 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
+from ..program_headroom import program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
@@ -87,17 +88,17 @@ _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 ACTIVE_SPLIT_MIXER_PREFIX = "split_active_"
 
 
-# Float slack (dB) on the boost-vs-headroom proof. The emitter writes both
-# numbers with 3-decimal formatting, so an exactly-absorbed boost can read a
-# hair over its allowance after the YAML round-trip; this keeps a graph that
-# is correct by construction from failing its own proof on the last digit.
-_LINEARIZATION_BOOST_EPS_DB: float = 1e-3
+# Float slack (dB) on the charged peak. The emitter spells every gain,
+# frequency and q to 4 decimals, so a graph charged exactly can read a hair
+# above unity after the YAML round-trip.
+_CHARGED_PEAK_EPS_DB: float = 1e-3
 
 #: The one NUMERIC refusal in this walk, named apart from the shape refusals
 #: because two other seams key on it rather than re-deriving the condition. A
 #: shape refusal says the graph is not the emitter's; this one says the graph IS
 #: the emitter's and its arithmetic no longer holds — a different remedy
-#: (re-emit, not re-commission).
+#: (re-emit, not re-commission). It judges the whole graph; the string stays
+#: stable for the seams that key on it (#5909).
 LINEARIZATION_HEADROOM_UNPROVEN_CODE = "active_linearization_headroom_unproven"
 
 #: Journal name for the same event — a grep contract, so a rename is visible as
@@ -551,113 +552,29 @@ def _baseline_gain_limiter_safe(
     )
 
 
-def _linearization_boost_allowance_db(payload: dict[str, Any]) -> float:
-    """How much branch-chain peak THIS graph has already paid for.
+def _program_headroom_issues(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """The numeric refusal: with its own headroom gain applied, the graph must
+    not lift any output above unity on the grid (#5909, ADR-0324).
 
-    The magnitude of the program-domain ``active_baseline_headroom`` gain —
-    the pre-split common attenuation the emitter folds baseline headroom,
-    room-correction boost and linearization boost into — MINUS the contributors
-    that are not linearization's. A branch whose peak is no more than what is
-    left cannot drive the chain past unity, so the CamillaDSP 0 dB ceiling holds
-    by arithmetic rather than by a policy number written down twice.
-
-    Attributing the share matters: reading the whole magnitude let a tampered
-    +5 dB linearization filter "spend" headroom already committed to the room
-    PEQs, and prove safe while the two together could clip. Room-PEQ boost is
-    recoverable from the graph, so it is subtracted exactly as the emitter added
-    it.
-
-    **Residual slack, stated rather than hidden**: ``output_trim_db`` and the
-    cardioid stage's evaluated peak
-    (``branch_chain.rear_branch_sum_headroom_db``) are folded into the same gain
-    and are NOT recoverable, so with preference EQ or a cardioid stage present
-    this allowance is generous by at most those terms — never tight. The emitter
-    also adds a caller-supplied ``baseline_headroom_db`` while this subtracts
-    the module default; they agree only because every production path takes the
-    default 0.0, which a test pins.
-
-    Returns 0.0 when the filter is absent or non-negative — the driver-domain
-    (follower) graph, which has no program-domain headroom and therefore proves
-    the original cut-only invariant: a follower has nothing to absorb a boost.
+    Asked only of a graph whose shape already proved, so this code never rides
+    along with a shape refusal.
     """
-    if _filter_type(payload, "active_baseline_headroom") != "Gain":
-        return 0.0
-    gain = finite_float(
-        _filter_params(payload, "active_baseline_headroom").get("gain")
-    )
-    if gain is None or gain >= 0.0:
-        return 0.0
-    absorbed_db = -float(gain)
-    filters = payload.get("filters")
-    room_boost_db = 0.0
-    if isinstance(filters, Mapping):
-        for name in filters:
-            if not isinstance(name, str) or not name.startswith("room_peq"):
-                continue
-            room_gain = finite_float(
-                _filter_params(payload, name).get("gain")
-            )
-            if room_gain is not None and room_gain > 0.0:
-                room_boost_db += float(room_gain)
-    return max(0.0, absorbed_db - BASELINE_HEADROOM_DB - room_boost_db)
-
-
-def _linearization_biquad(payload: dict[str, Any], name: str) -> dict[str, Any]:
-    """One emitted linearization Biquad reduced to the plain
-    ``{biquad_type, freq, q, gain}`` record
-    :func:`jasper.active_speaker.branch_chain.chain_response` evaluates.
-
-    Read straight off the graph text — this module never trusts a candidate's
-    claim about what it emitted.
-    """
-    params = _filter_params(payload, name)
-    return {
-        "biquad_type": str(params.get("type") or ""),
-        "freq": finite_float(params.get("freq")) or 0.0,
-        "q": finite_float(params.get("q")) or 0.0,
-        "gain": finite_float(params.get("gain")) or 0.0,
-    }
-
-
-def _linearization_chain_peak_db(
-    payload: dict[str, Any],
-    *,
-    filters: Sequence[Mapping[str, Any]],
-    crossovers: Sequence[tuple[str, str]],
-    gain_name: str,
-) -> tuple[float, float]:
-    """The realized peak of this branch's emitted chain — ``(dB, Hz)``,
-    re-derived from the graph, never from the candidate that produced it.
-
-    ``crossover ⊗ linearization ⊗ trim``, through the same
-    :func:`jasper.active_speaker.branch_chain.branch_chain_peak` the emitter
-    charges ``active_baseline_headroom`` with, so a graph correct by
-    construction cannot fail its own proof on a modelling difference. The
-    frequency rides along so a refusal can NAME where the chain peaks.
-
-    A trim that is absent or unreadable is treated as 0 dB, which over-states
-    the peak — the safe direction for a proof.
-    """
-    from ..branch_chain import branch_chain_peak  # lazy: import cost (numpy)
-
-    sections: list[CrossoverSection] = []
-    for direction, name in crossovers:
-        params = _filter_params(payload, name)
-        freq = finite_float(params.get("freq"))
-        order = params.get("order")
-        if freq is None or isinstance(order, bool) or not isinstance(order, int):
-            continue
-        sections.append(
-            CrossoverSection(
-                fc_hz=float(freq), order=int(order), highpass=direction == "highpass",
-            )
+    try:
+        peak = program_peak(payload, charged=True)
+    except GraphTransferError as exc:
+        fields: dict[str, Any] = {"error": str(exc)}
+        detail = f"the graph's program peak cannot be evaluated: {exc}"
+    else:
+        if peak.db <= _CHARGED_PEAK_EPS_DB:
+            return []
+        output = "" if peak.output is None else f" on DAC output {peak.output + 1}"
+        fields = {"output": peak.output, "peak_db": round(peak.db, 4), "peak_hz": round(peak.hz, 1)}
+        detail = (
+            f"the program peaks {peak.db:.4f} dB above unity{output} at "
+            f"{peak.hz:.1f} Hz with this graph's own headroom gain applied"
         )
-    trim_db = finite_float(_filter_params(payload, gain_name).get("gain"))
-    return branch_chain_peak(
-        filters,
-        sections=tuple(sections),
-        trim_db=min(0.0, float(trim_db)) if trim_db is not None else 0.0,
-    )
+    log_event(logger, EVENT_LINEARIZATION_HEADROOM_UNPROVEN, level=logging.WARNING, **fields)
+    return [_issue("blocker", LINEARIZATION_HEADROOM_UNPROVEN_CODE, detail)]
 
 
 def _linearization_filter_safe(
@@ -666,7 +583,7 @@ def _linearization_filter_safe(
     name: str,
     biquad_types: tuple[str, ...],
 ) -> bool:
-    """Check slot shape and finite gain; the composed branch owns headroom."""
+    """Check slot shape and finite gain; the whole-graph check owns headroom."""
 
     if _filter_type(payload, name) != "Biquad":
         return False
@@ -682,55 +599,27 @@ def _consume_linearization_chain(
     cursor: int,
     payload: dict[str, Any],
     role: str,
-    *,
-    crossovers: Sequence[tuple[str, str]] = (),
-    notes: list[dict[str, str]] | None = None,
 ) -> tuple[int, bool]:
-    """Advance ``cursor`` past a well-formed, provably-safe Layer-1a
-    linearization run for ``role``: an optional named leading shelf, then 0..N
-    named peaking filters, then an optional trailing Highshelf taper, in the
-    emitter's own naming convention.
-
-    SELF-PROVING from the graph text alone — a linearization filter's full shape
-    is recoverable from its own name and params, so unlike bass-extension no
-    external evidence parameter needs threading through this module's public
-    entry points or their callers.
-
-    ``notes`` is an optional sink for the ONE refusal a caller cannot
-    reconstruct from a bare ``False``: the headroom proof is a NUMERIC
-    comparison, and its failure otherwise surfaced as the caller's shape
-    refusal. An issue appended here carries the peak, the allowance and the
-    FREQUENCY.
+    """Advance ``cursor`` past a well-formed Layer-1a linearization run for
+    ``role``: an optional named leading shelf, then 0..N named peaking filters,
+    then an optional trailing Highshelf taper, in the emitter's own naming
+    convention.
 
     Returns ``(new_cursor, ok)``; ``ok`` is False iff a recognized
-    linearization-named filter proves UNSAFE (wrong Biquad subtype for its slot,
-    or gain outside what the graph can carry). A name at ``cursor`` outside the
-    convention is not an error: zero filters are consumed and the caller's tail
-    check decides whether what remains is a legal chain.
-
-    **Boost accounting.** Cuts are unconditionally safe. A boost is safe only if
-    the graph attenuates the program by at least as much ahead of the split, so
-    this walk EVALUATES the branch chain whose shape it just proved — the
-    crossover BiquadCombos, the linearization biquads and the branch's own
-    baseline Gain — against :func:`_linearization_boost_allowance_db`. The peak,
-    not the sum of positive gains: emitter and prover must agree about one
-    number, and charging the loose sum once cost a real profile 22.458 dB of
-    program attenuation for a branch peaking at +4.00 dB. It newly permits a
-    boost its own crossover fully removes, which is physically correct and is
-    separately prevented from being GENERATED by the fit-band bound.
+    linearization-named filter has the wrong Biquad subtype for its slot or a
+    non-finite gain. A name at ``cursor`` outside the convention is not an
+    error: zero filters are consumed and the caller's tail check decides whether
+    what remains is a legal chain. A boost is judged with the whole graph by
+    :func:`_program_headroom_issues`.
     """
 
     index = cursor
-    allowance_db = _linearization_boost_allowance_db(payload)
-    emitted: list[dict[str, Any]] = []
-
     shelf_name = _linearization_shelf_name(role)
     if index < len(chain) and chain[index] == shelf_name:
         if not _linearization_filter_safe(
             payload, name=shelf_name, biquad_types=("Highshelf", "Lowshelf"),
         ):
             return index, False
-        emitted.append(_linearization_biquad(payload, shelf_name))
         index += 1
     peak_number = 1
     while index < len(chain):
@@ -741,7 +630,6 @@ def _consume_linearization_chain(
             payload, name=peak_name, biquad_types=("Peaking",),
         ):
             return index, False
-        emitted.append(_linearization_biquad(payload, peak_name))
         index += 1
         peak_number += 1
     taper_name = _linearization_taper_name(role)
@@ -750,41 +638,7 @@ def _consume_linearization_chain(
             payload, name=taper_name, biquad_types=("Highshelf",),
         ):
             return index, False
-        emitted.append(_linearization_biquad(payload, taper_name))
         index += 1
-    # A chain with no positive gain cannot exceed unity through a
-    # Linkwitz-Riley section and a non-positive trim, so the ordinary cut-only
-    # graph is proved without evaluating anything — and without this module
-    # importing numpy, which it otherwise does not (see branch_chain).
-    if not any(float(entry["gain"]) > 0.0 for entry in emitted):
-        return index, True
-    peak_db, peak_hz = _linearization_chain_peak_db(
-        payload,
-        filters=emitted,
-        crossovers=crossovers,
-        gain_name=_baseline_gain_name(role),
-    )
-    if peak_db > allowance_db + _LINEARIZATION_BOOST_EPS_DB:
-        detail = (
-            f"{role} linearization chain peaks {peak_db:.4f} dB at "
-            f"{peak_hz:.1f} Hz, past the {allowance_db:.4f} dB this graph set "
-            "aside for it ahead of the split; the chain's ORDER is correct and "
-            "the headroom arithmetic is what failed"
-        )
-        log_event(
-            logger,
-            EVENT_LINEARIZATION_HEADROOM_UNPROVEN,
-            level=logging.WARNING,
-            role=role,
-            peak_db=round(peak_db, 4),
-            peak_hz=round(peak_hz, 1),
-            allowance_db=round(allowance_db, 4),
-        )
-        if notes is not None:
-            notes.append(_issue(
-                "blocker", LINEARIZATION_HEADROOM_UNPROVEN_CODE, detail,
-            ))
-        return index, False
     return index, True
 
 
@@ -795,14 +649,8 @@ def _baseline_output_chain(
     channel: int,
     bass_management_highpass: bool,
     rear_stage_lead: int = 0,
-    notes: list[dict[str, str]] | None = None,
 ) -> tuple[tuple[str, str], ...] | None:
-    """Prove the exact emitter-owned chain before the canonical limiter.
-
-    ``notes`` is handed straight to :func:`_consume_linearization_chain`, the
-    one refusal here that is arithmetic rather than shape — see its docstring.
-    Every other ``None`` this returns genuinely means "not the emitter's
-    chain", which the caller's own issue already says."""
+    """Prove the exact emitter-owned chain before the canonical limiter."""
 
     names = _post_split_filter_names(payload, channel=channel)[rear_stage_lead:]
     if assignment.role == "subwoofer":
@@ -866,11 +714,9 @@ def _baseline_output_chain(
         crossovers.append((direction, name))
         cursor += 1
     # Layer-1a driver linearization: immediately after the crossover HP/LP,
-    # before bass-extension, and SELF-PROVING from the graph text alone (see
-    # _consume_linearization_chain).
+    # before bass-extension.
     cursor, linearization_ok = _consume_linearization_chain(
         chain, cursor, payload, assignment.role,
-        crossovers=tuple(crossovers), notes=notes,
     )
     if not linearization_ok:
         return None
@@ -1955,7 +1801,6 @@ def _active_graph_evidence(
                 if role == "subwoofer"
                 else _baseline_limiter_name(role)
             )
-            chain_notes: list[dict[str, str]] = []
             crossovers = _baseline_output_chain(
                 payload,
                 assignment=assignment,
@@ -1964,24 +1809,16 @@ def _active_graph_evidence(
                     contract.subwoofer_present and index in mains_low_outputs
                 ),
                 rear_stage_lead=rear_lead.get(index, 0),
-                notes=chain_notes,
             )
             if crossovers is None:
-                # The NUMERIC refusal reports itself, with the peak, the
-                # allowance and the frequency; fall back to the shape sentence
-                # only when the shape is genuinely what failed, or a reader is
-                # sent after the wrong defect.
-                if chain_notes:
-                    issues.extend(chain_notes)
-                else:
-                    issues.append(_issue(
-                        "blocker",
-                        "active_output_driver_chain_unrecognized",
-                        (
-                            "active graph does not use the exact ordered emitter "
-                            f"chain on DAC output {index + 1} ({role})"
-                        ),
-                    ))
+                issues.append(_issue(
+                    "blocker",
+                    "active_output_driver_chain_unrecognized",
+                    (
+                        "active graph does not use the exact ordered emitter "
+                        f"chain on DAC output {index + 1} ({role})"
+                    ),
+                ))
             else:
                 prior = crossovers_by_role.setdefault(role, crossovers)
                 if prior != crossovers:
@@ -2132,6 +1969,8 @@ def _active_graph_evidence(
                     "high-pass must share one finite corner and LR order"
                 ),
             ))
+        if not issues:
+            issues.extend(_program_headroom_issues(payload))
 
     return {
         "safe": not issues,
