@@ -173,8 +173,9 @@ impl CushionDecay {
 
     // Only a continuously observed, configured physical USB connection may
     // reuse a buffer. Capture-handle reopen is not a physical disconnect.
-    pub fn context(&mut self, connection: u64, failed: bool, locked: bool) {
-        if connection != self.connection || failed && !self.failed {
+    pub fn context(&mut self, connection: u64, failed: bool, locked: bool) -> bool {
+        let invalidated = connection != self.connection || failed && !self.failed;
+        if invalidated {
             self.last_good = None;
             self.interrupted_at = None;
             self.reused = false;
@@ -187,6 +188,12 @@ impl CushionDecay {
         }
         self.connection = connection;
         self.failed = failed;
+        invalidated
+    }
+
+    pub fn hold_for_reopen(&mut self) {
+        self.motion_ppm = 0.0;
+        self.frozen_reason = Some(DecayFrozenReason::Unlocked);
     }
 
     pub fn snap_back(&mut self, reason: DecayFrozenReason) {
