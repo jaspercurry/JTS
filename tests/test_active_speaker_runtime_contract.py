@@ -19,7 +19,7 @@ import yaml
 from pathlib import Path
 
 from jasper.active_speaker import runtime_contract
-from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE, _linearization_boost_allowance_db as allowance
+from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     ActiveSpeakerConfigError,
@@ -392,7 +392,9 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     _, topology, applied = _cardioid_baseline(linearization={"woofer": [
         {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 3.0}]})
     compare = rear_compare_yaml(applied, rear_muted=muted, trim_db=MAX_COMPARE_TRIM_DB)
-    assert allowance(yaml.safe_load(compare)) - allowance(yaml.safe_load(applied)) == pytest.approx(MAX_COMPARE_TRIM_DB)
+    applied_db, compare_db = (yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+                              for text in (applied, compare))
+    assert applied_db - compare_db == pytest.approx(MAX_COMPARE_TRIM_DB)
     cam = _controller(_FakeClient(), tmp_path)
     for text in (applied, compare):
         assert cam._admit_graph(text, source="test", best_effort=False)
@@ -2292,29 +2294,19 @@ def _under_charged_boosted_baseline() -> str:
     return _dump_baseline(text, payload)
 
 
-def test_the_headroom_refusal_names_the_numbers_not_the_chain_order() -> None:
-    """SF-2/S5: the chain's ORDER is right and a NUMERIC comparison failed.
-
-    Before this the only issue said "does not use the exact ordered emitter
-    chain", which is a different defect with a different remedy. The refusal
-    now carries the peak, the allowance and the FREQUENCY the peak sits at —
-    the last being what tells a cascade extremum nobody predicted from the
-    boost somebody asked for.
-    """
+def test_the_headroom_refusal_names_the_numbers_not_the_chain_order(caplog) -> None:
+    """SF-2/S5: the chain's ORDER is right and a NUMERIC comparison failed, a
+    different defect with a different remedy. The refusal is the numeric code
+    alone, and its event carries the output, the peak and the FREQUENCY the
+    peak sits at."""
     graph = _classify_baseline(_under_charged_boosted_baseline())
 
     assert graph.allowed is False
-    codes = [issue["code"] for issue in graph.issues]
-    assert LINEARIZATION_HEADROOM_UNPROVEN_CODE in codes
-    assert "active_output_driver_chain_unrecognized" not in codes, (
-        "the shape sentence must not ride along with the arithmetic one"
-    )
-    message = next(
-        issue["message"] for issue in graph.issues
-        if issue["code"] == LINEARIZATION_HEADROOM_UNPROVEN_CODE
-    )
-    assert "dB at" in message and "Hz" in message
-    assert "set aside" in message
+    assert [issue["code"] for issue in graph.issues] == [LINEARIZATION_HEADROOM_UNPROVEN_CODE]
+    fields = event_fields(caplog, "active_speaker.linearization_headroom_unproven")
+    assert fields["output"] == "1"
+    assert float(fields["peak_db"]) == pytest.approx(2.0, abs=1e-3)
+    assert float(fields["peak_hz"]) == pytest.approx(6245.0, abs=0.1)
 
 
 def test_a_graph_that_stops_proving_its_headroom_blocks_instead_of_silencing(
