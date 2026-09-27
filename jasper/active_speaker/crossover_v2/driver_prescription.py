@@ -16,7 +16,7 @@ The band bounds a boost only (ADR-0367).
 from __future__ import annotations
 
 from ._prescription_common import (
-    RATIONALE_MAX_CHARS, _refuse, _finite_number, _prescriber, _rationale,
+    RATIONALE_MAX_CHARS, refuse, finite_number, read_prescriber, read_rationale,
 )
 
 import math
@@ -506,7 +506,7 @@ def check_driver_document_size(payload: bytes) -> None:
     vocabulary. See :data:`DRIVER_PRESCRIPTION_MAX_BYTES`.
     """
     if len(payload) > DRIVER_PRESCRIPTION_MAX_BYTES:
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_TOO_LARGE,
             f"a per-driver prescription may be at most "
             f"{DRIVER_PRESCRIPTION_MAX_BYTES} bytes, got {len(payload)}",
@@ -518,28 +518,28 @@ def check_driver_document_size(payload: bytes) -> None:
 def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
     """Parse the filter list and its per-role count."""
     if raw is None:
-        _refuse(FILTER_MALFORMED, "a prescription must state a filters list")
+        refuse(FILTER_MALFORMED, "a prescription must state a filters list")
     if isinstance(raw, Mapping) or isinstance(raw, (str, bytes)):
-        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+        refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
     if not isinstance(raw, Sequence):
-        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+        refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
     out: list[dict[str, Any]] = []
     per_role: dict[str, int] = {}
     for position, entry in enumerate(raw):
         if not isinstance(entry, Mapping):
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must be an object, got {type(entry).__name__}",
             )
         unknown = sorted(set(entry) - _FILTER_FIELDS)
         if unknown:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} carries unknown field(s): {', '.join(unknown)}",
             )
         role = entry.get("role")
         if not isinstance(role, str) or not role.strip():
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must name the driver role it belongs to",
             )
@@ -549,15 +549,15 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
             # The EMITTER's set, consumed: what the graph can be built out of,
             # so a type outside it cannot be accepted here and raise at
             # emission.
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must be one of "
                 f"{sorted(LINEARIZATION_BIQUAD_TYPES)}, got {biquad_type!r}",
             )
-        freq = _finite_number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"filter {position} freq")
-        gain = _finite_number(entry.get("gain"), reason=FILTER_MALFORMED, field=f"filter {position} gain")
+        freq = finite_number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"filter {position} freq")
+        gain = finite_number(entry.get("gain"), reason=FILTER_MALFORMED, field=f"filter {position} gain")
         if biquad_type == "Peaking":
-            q = _finite_number(entry.get("q"), reason=FILTER_MALFORMED, field=f"filter {position} q")
+            q = finite_number(entry.get("q"), reason=FILTER_MALFORMED, field=f"filter {position} q")
         else:
             # A SHELF carries no steepness of its own: the emitter's shelf
             # `FilterSpec` has no `q` and the evaluator forces this number, so
@@ -565,10 +565,10 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
             # record because `_validated_biquad_entry` requires a positive `q`.
             q = SHELF_Q
         if freq <= 0.0:
-            _refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
+            refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
         per_role[role] = per_role.get(role, 0) + 1
         if per_role[role] > DRIVER_MAX_FILTERS_PER_ROLE:
-            _refuse(
+            refuse(
                 FILTER_COUNT_EXCEEDED,
                 f"role {role!r} carries {per_role[role]} filters; a driver's "
                 f"branch may carry at most {DRIVER_MAX_FILTERS_PER_ROLE}",
@@ -612,7 +612,7 @@ def _check_shelf_placement(filters: Sequence[dict[str, Any]]) -> None:
                 continue
             if linearization_slot(index, count, role_filters) != "peak":
                 continue
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} is a {biquad_type} at position {index} of "
                 f"the {role}'s {count} filter(s), which the emitter cannot "
@@ -719,7 +719,7 @@ def _check_bounds(
     """
     prescription_class = "boost" if any(float(e["gain"]) > 0.0 for e in filters) else "cut"
     if prescription_class == "boost" and not passbands:
-        _refuse(
+        refuse(
             PASSBAND_UNAVAILABLE,
             "this speaker's evidence declares no per-driver band, so there is "
             "nothing a per-driver prescription could be checked against. The "
@@ -735,7 +735,7 @@ def _check_bounds(
         band = passbands.get(role)
         if band is None:
             if passbands:
-                _refuse(
+                refuse(
                     ROLE_UNKNOWN,
                     f"filter {position} names role {role!r}, which this speaker's "
                     "evidence declares no band for; the roles it does declare are "
@@ -744,11 +744,11 @@ def _check_bounds(
                     declared_roles=sorted(passbands),
                 )
             if role not in branch_roles:
-                _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
+                refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
                         speaker_roles=sorted(branch_roles))
         elif gain > 0.0 and _outside_band(band, freq):
             lo, hi = band
-            _refuse(
+            refuse(
                 FILTER_OUTSIDE_PASSBAND,
                 f"filter {position} at {freq:.1f} Hz is outside the {role}'s own "
                 f"declared band {lo:.1f}-{hi:.1f} Hz",
@@ -759,7 +759,7 @@ def _check_bounds(
         # Past these edges the emitter refuses the corner or, at Q up to
         # EVALUABLE_Q_MAX, round-off rises above the 24-bit floor. See ADR-0367.
         if _outside_band(band, freq) and not _GRID_EDGE_LO_HZ <= freq <= _GRID_EDGE_HI_HZ:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} at {freq:g} Hz is a cut outside any band the "
                 f"{role} declares, so it must sit within {_GRID_EDGE_LO_HZ:g}-"
@@ -773,7 +773,7 @@ def _check_bounds(
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
         # not a shape this system can realize, whatever the gain's sign.
         if q < EVALUABLE_Q_MIN:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} q {q:g} is below {EVALUABLE_Q_MIN:g}: "
                 "spelled 'q: 0.0000' by the emitter and clamped by the "
@@ -781,7 +781,7 @@ def _check_bounds(
             )
         q_max = driver_max_q_for_gain(gain)
         if q > q_max:
-            _refuse(
+            refuse(
                 FILTER_Q_OUT_OF_RANGE,
                 f"filter {position} Q {q:g} is past {q_max:g} for a "
                 f"{'boost' if gain > 0.0 else 'cut'}",
@@ -791,7 +791,7 @@ def _check_bounds(
         # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
         if gain / 40.0 > math.log10(float(np.finfo(np.float64).max)) or 10.0 ** (gain / 40.0) == 0.0:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} gain {gain:g} dB exceeds finite 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
@@ -838,7 +838,7 @@ def _check_composed(
             continue
         peak_boost = branch_chain_peak_db(role_filters)
         if not math.isfinite(peak_boost):
-            _refuse(FILTER_MALFORMED, "cascade cannot be evaluated in finite arithmetic", role=role)
+            refuse(FILTER_MALFORMED, "cascade cannot be evaluated in finite arithmetic", role=role)
         if peak_boost > 0.0 and (worst_role is None or peak_boost > worst_boost):
             worst_boost, worst_role = peak_boost, role
     return worst_boost, worst_role
@@ -950,7 +950,7 @@ def _pre_registration(raw: Mapping[str, Any]) -> tuple[float | None, float | Non
             return None
         number = finite_float(value)
         if number is None or abs(number) > bound:
-            _refuse(
+            refuse(
                 DRIVER_EXPECTATION_MALFORMED,
                 f"{field} must be a finite number between {-bound:g} and "
                 f"{bound:g}, got {value!r}",
@@ -971,7 +971,7 @@ def _parse_pinned_trim(
     if raw is None:
         return ()
     if not isinstance(raw, Mapping):
-        _refuse(
+        refuse(
             TRIM_PIN_MALFORMED,
             f"pinned_trim_db must be an object keyed by driver role, got "
             f"{type(raw).__name__}",
@@ -980,18 +980,18 @@ def _parse_pinned_trim(
     out: dict[str, float] = {}
     for key, value in raw.items():
         if not isinstance(key, str) or not key.strip():
-            _refuse(TRIM_PIN_MALFORMED, "pinned_trim_db keys must name a driver role")
+            refuse(TRIM_PIN_MALFORMED, "pinned_trim_db keys must name a driver role")
         role = key.strip()
         if role in out:
             # Two keys differing only in whitespace strip to one role; a silent
             # last-wins would ship whichever the dict iterated last.
-            _refuse(
+            refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db names role {role!r} more than once",
                 role=role,
             )
         if filters and role not in named:
-            _refuse(
+            refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db names role {role!r}, which this document "
                 "neither replaces nor clears the chain for",
@@ -1000,14 +1000,14 @@ def _parse_pinned_trim(
             )
         db = finite_float(value)
         if db is None:
-            _refuse(
+            refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db[{role!r}] must be a finite number of dB, got "
                 f"{value!r}",
                 role=role,
             )
         if db > 0.0 or db < MAX_ATTENUATION_DB:
-            _refuse(
+            refuse(
                 TRIM_PIN_MALFORMED,
                 f"pinned_trim_db[{role!r}] must be between {MAX_ATTENUATION_DB} "
                 "and 0 dB: a per-driver trim attenuates, and the emitted graph "
@@ -1027,7 +1027,7 @@ def _parse_prescription(
 ]:
     """Parse the prescription shape, identity and provenance."""
     if not isinstance(raw, Mapping):
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
@@ -1036,7 +1036,7 @@ def _parse_prescription(
     # `role_attenuations_db` as a typo.
     prohibited = sorted(set(find_prohibited_keys(raw)))
     if prohibited:
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_PROHIBITED_FIELD,
             f"a prescription may not name {', '.join(prohibited)}: it supplies "
             "numbers into a fixed shape, never configuration, coefficients, or "
@@ -1045,19 +1045,19 @@ def _parse_prescription(
         )
     unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
     if raw.get("kind") != DRIVER_PRESCRIPTION_KIND:
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_MALFORMED,
             f"a prescription must name kind={DRIVER_PRESCRIPTION_KIND!r}, got "
             f"{raw.get('kind')!r}",
         )
     version = raw.get("artifact_schema_version")
     if version != DRIVER_PRESCRIPTION_SCHEMA_VERSION:
-        _refuse(
+        refuse(
             DRIVER_PRESCRIPTION_SCHEMA_UNSUPPORTED,
             f"this build speaks driver-prescription schema "
             f"{DRIVER_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
@@ -1066,8 +1066,8 @@ def _parse_prescription(
     filters = _parse_filters(raw.get("filters"))
     fingerprint = raw.get(PACKET_FINGERPRINT_FIELD, "")
     fingerprint = fingerprint.strip() if isinstance(fingerprint, str) else ""
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, dropped = _rationale(raw.get("rationale"), reason=DRIVER_PRESCRIPTION_MALFORMED)
+    model, operator = read_prescriber(raw.get("prescriber"))
+    rationale, dropped = read_rationale(raw.get("rationale"), reason=DRIVER_PRESCRIPTION_MALFORMED)
     return (
         filters,
         _parse_pinned_trim(raw.get("pinned_trim_db"), filters),
@@ -1110,7 +1110,7 @@ def read_driver_prescription(
     # _check_bounds has judged those.
     for role, _ in pinned_trim_db:
         if not filters and role not in passbands and role not in branch_context:
-            _refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
+            refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
                     speaker_roles=sorted(set(passbands) | set(branch_context)))
     context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
     for role, trim in pinned_trim_db:
@@ -1122,7 +1122,7 @@ def read_driver_prescription(
     headroom = boost_headroom_by_role(branch_context=context, linearization=proposed, room_peqs=room_peqs)
     cost = headroom[composed_boost_role] if composed_boost_role else next(iter(headroom.values()))
     if cost["program_headroom_spent_db"] > MAX_PROGRAM_HEADROOM_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
-        _refuse(COMPOSED_BOOST_EXCEEDED, "program headroom exhausted",
+        refuse(COMPOSED_BOOST_EXCEEDED, "program headroom exhausted",
                 role=composed_boost_role, **cost)
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(

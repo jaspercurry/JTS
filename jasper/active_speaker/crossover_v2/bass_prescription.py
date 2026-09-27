@@ -15,7 +15,7 @@ from jasper.bass_extension.dynamic import (
     DYNAMIC_BASS_REFUSAL_REASONS, DynamicBassDescriptorError, validate_dynamic_bass_descriptor,
 )
 
-from ._prescription_common import _refuse
+from ._prescription_common import refuse
 
 BASS_EVIDENCE_UNAVAILABLE = "bass_evidence_unavailable"
 
@@ -64,7 +64,7 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
                                                        if key != "round_id"}
                                                       if isinstance(raw, Mapping) else raw, new_section=True)
     except DynamicBassDescriptorError as exc:
-        _refuse(exc.reason, str(exc), field=exc.field)
+        refuse(exc.reason, str(exc), field=exc.field)
     bound = _bound(evidence)
     round_id = bound.get("round_id")
     lower = max(BASS_BANDS_HZ[0][0], descriptor["delta_highpass_hz"])

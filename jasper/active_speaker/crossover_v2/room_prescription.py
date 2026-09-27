@@ -22,7 +22,7 @@ meaning is identical, and the exception class.
 
 from __future__ import annotations
 
-from ._prescription_common import _prescriber, _rationale, _refuse
+from ._prescription_common import read_prescriber, read_rationale, refuse
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -177,7 +177,7 @@ _PRESCRIPTION_FIELDS = frozenset({
 
 
 def _unavailable(detail: str, **evidence: Any) -> NoReturn:
-    _refuse(ROOM_MEDIAN_UNAVAILABLE, detail, **evidence)
+    refuse(ROOM_MEDIAN_UNAVAILABLE, detail, **evidence)
 
 
 def _median_array(raw: Any, field: str, *, length: int | None = None) -> np.ndarray:
@@ -209,7 +209,7 @@ def read_room_median(raw: Mapping[str, Any]) -> RoomMedian:
     if not isinstance(raw, Mapping):
         _unavailable(f"a room median must be a mapping, got {type(raw).__name__}")
     if raw.get("code") == ROOM_NOT_BANKED:
-        _refuse(ROOM_NOT_BANKED, "this round's bank holds no room view; one run after the bank is not its evidence")
+        refuse(ROOM_NOT_BANKED, "this round's bank holds no room view; one run after the bank is not its evidence")
     freqs = _median_array(raw.get("freqs_hz"), "freqs_hz")
     if freqs.size < 2 or not np.all(np.diff(freqs) > 0.0) or freqs[0] <= 0.0:
         _unavailable("freqs_hz must be a strictly increasing positive grid")
@@ -466,7 +466,7 @@ def _number(value: Any, *, reason: str, field: str) -> float:
     """One numeric field, strictly — no coercion, no bools, no strings."""
     number = finite_float(value)
     if number is None:
-        _refuse(reason, f"{field} must be a finite number")
+        refuse(reason, f"{field} must be a finite number")
     return float(number)
 
 
@@ -474,20 +474,20 @@ def _parse_filter(side: str, position: int, entry: Any) -> dict[str, Any]:
     """One filter's SHAPE, and none of its bounds."""
     where = f"side {side!r} filter {position}"
     if not isinstance(entry, Mapping):
-        _refuse(FILTER_MALFORMED, f"{where} must be an object")
+        refuse(FILTER_MALFORMED, f"{where} must be an object")
     unknown = sorted(set(entry) - _FILTER_FIELDS)
     if unknown:
-        _refuse(
+        refuse(
             FILTER_MALFORMED, f"{where} carries unknown field(s): {', '.join(unknown)}"
         )
     if entry.get("biquad_type", "Peaking") != "Peaking":
-        _refuse(
+        refuse(
             FILTER_MALFORMED,
             f"{where} must be a Peaking biquad, got {entry.get('biquad_type')!r}",
         )
     freq = _number(entry.get("freq"), reason=FILTER_MALFORMED, field=f"{where} freq")
     if freq <= 0.0:
-        _refuse(FILTER_MALFORMED, f"{where} freq must be positive")
+        refuse(FILTER_MALFORMED, f"{where} freq must be positive")
     return {
         "freq": freq,
         "q": _number(entry.get("q"), reason=FILTER_MALFORMED, field=f"{where} q"),
@@ -501,7 +501,7 @@ def _parse_sides(raw: Any) -> dict[str, tuple[dict[str, Any], ...]]:
     """The per-side filter lists' shape; the door checks the NAMES against the
     layout's own sides once the shape is known."""
     if not isinstance(raw, Mapping) or not raw:
-        _refuse(
+        refuse(
             SIDE_MALFORMED,
             "a room prescription must state a non-empty sides object keyed by "
             "side name",
@@ -510,15 +510,15 @@ def _parse_sides(raw: Any) -> dict[str, tuple[dict[str, Any], ...]]:
     for name, entries in raw.items():
         side = " ".join(str(name).split())
         if not side:
-            _refuse(SIDE_MALFORMED, "a side name must be non-blank")
+            refuse(SIDE_MALFORMED, "a side name must be non-blank")
         if side in sides:
-            _refuse(
+            refuse(
                 SIDE_MALFORMED,
                 f"side {side!r} is named more than once",
                 side=side,
             )
         if isinstance(entries, (str, bytes)) or not isinstance(entries, Sequence):
-            _refuse(SIDE_MALFORMED, f"side {side!r} must carry a list of filters")
+            refuse(SIDE_MALFORMED, f"side {side!r} must carry a list of filters")
         sides[side] = tuple(
             _parse_filter(side, position, entry)
             for position, entry in enumerate(entries)
@@ -531,7 +531,7 @@ def _parse_prescription(
 ) -> tuple[dict[str, tuple[dict[str, Any], ...]], Any, str, str, str, int]:
     """Shape, identity and provenance — and none of the bounds."""
     if not isinstance(raw, Mapping):
-        _refuse(
+        refuse(
             PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
@@ -540,7 +540,7 @@ def _parse_prescription(
     # `volume_db` as a typo.
     prohibited = sorted(set(find_prohibited_keys(raw)))
     if prohibited:
-        _refuse(
+        refuse(
             PRESCRIPTION_PROHIBITED_FIELD,
             f"a prescription may not name {', '.join(prohibited)}: it supplies "
             "numbers into a fixed shape, never configuration, coefficients, or "
@@ -549,27 +549,27 @@ def _parse_prescription(
         )
     unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
-        _refuse(
+        refuse(
             PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
     if raw.get("kind") != ROOM_PRESCRIPTION_KIND:
-        _refuse(
+        refuse(
             PRESCRIPTION_MALFORMED,
             f"a prescription must name kind={ROOM_PRESCRIPTION_KIND!r}, got "
             f"{raw.get('kind')!r}",
         )
     version = raw.get("artifact_schema_version")
     if version != ROOM_PRESCRIPTION_SCHEMA_VERSION:
-        _refuse(
+        refuse(
             PRESCRIPTION_SCHEMA_UNSUPPORTED,
             "this build speaks room prescription schema "
             f"{ROOM_PRESCRIPTION_SCHEMA_VERSION}, got {version!r}",
             supported=ROOM_PRESCRIPTION_SCHEMA_VERSION,
         )
     echoed = raw.get(ROOM_MEDIAN_FIELD)
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, dropped = _rationale(raw.get("rationale"), reason=PRESCRIPTION_MALFORMED)
+    model, operator = read_prescriber(raw.get("prescriber"))
+    rationale, dropped = read_rationale(raw.get("rationale"), reason=PRESCRIPTION_MALFORMED)
     return _parse_sides(raw.get("sides")), echoed, model, operator, rationale, dropped
 
 
@@ -601,7 +601,7 @@ def _check_bounds(
             where = f"side {side!r} filter {position}"
             freq, q, gain = entry["freq"], entry["q"], entry["gain"]
             if not lo <= freq <= hi:
-                _refuse(
+                refuse(
                     FILTER_OUTSIDE_REGION,
                     f"{where} at {freq:.1f} Hz is outside the room band "
                     f"{lo:.1f}-{hi:.1f} Hz",
@@ -609,7 +609,7 @@ def _check_bounds(
                     band_hz=[lo, hi],
                 )
             if not ROOM_PEQ_Q_MIN <= q <= ROOM_PEQ_Q_MAX:
-                _refuse(
+                refuse(
                     FILTER_Q_OUT_OF_RANGE,
                     f"{where} Q {q:g} is outside {ROOM_PEQ_Q_MIN:g}-"
                     f"{ROOM_PEQ_Q_MAX:g}",
@@ -620,7 +620,7 @@ def _check_bounds(
             # ~+12330 dB: a gain past the absolute cap can never be legal, so
             # it refuses by slug rather than raising out of the arithmetic.
             if gain > ROOM_MAX_FILTER_BOOST_DB:
-                _refuse(
+                refuse(
                     FILTER_BOOST_TOO_HIGH,
                     f"{where} boosts {gain:.2f} dB, past the "
                     f"{ROOM_MAX_FILTER_BOOST_DB:g} dB a room filter may spend",
@@ -631,7 +631,7 @@ def _check_bounds(
             # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and the biquad
             # evaluator divides by it.
             if 10.0 ** (gain / 40.0) == 0.0:
-                _refuse(
+                refuse(
                     FILTER_MALFORMED,
                     f"{where} gain {gain:g} dB underflows 64-bit arithmetic "
                     "and cannot be evaluated or emitted",
@@ -639,7 +639,7 @@ def _check_bounds(
             if gain > 0.0:
                 cap = float(boost_cap_db(freq, median.ceiling_hz))
                 if gain > cap:
-                    _refuse(
+                    refuse(
                         FILTER_BOOST_TOO_HIGH,
                         f"{where} boosts {gain:.2f} dB, past the {cap:.2f} dB "
                         f"allowed at {freq:.1f} Hz",
@@ -672,7 +672,7 @@ def _check_boosts(
                 n_positions=median.n_positions,
             )
             if not finding.admitted:
-                _refuse(
+                refuse(
                     BOOST_NOT_ADMITTED,
                     f"the cloud does not admit a boost at {entry['freq']:.1f} "
                     f"Hz: {finding.reason}",
@@ -692,7 +692,7 @@ def _check_composed(
     spend = 0.0
     for side, entries in sides.items():
         if len(entries) > ROOM_MAX_FILTERS_PER_SIDE:
-            _refuse(
+            refuse(
                 FILTER_COUNT_EXCEEDED,
                 f"side {side!r} carries {len(entries)} filters, past the "
                 f"{ROOM_MAX_FILTERS_PER_SIDE} a side may hold",
@@ -701,7 +701,7 @@ def _check_composed(
             )
         boost = total_positive_boost_db(PeqFilter(**entry) for entry in entries)
         if boost > ROOM_MAX_TOTAL_BOOST_DB:
-            _refuse(
+            refuse(
                 COMPOSED_BOOST_EXCEEDED,
                 f"side {side!r} spends {boost:.2f} dB of boost, past the "
                 f"{ROOM_MAX_TOTAL_BOOST_DB:g} dB ceiling",
@@ -714,7 +714,7 @@ def _check_composed(
     boosted = [row for row in bins if row["composed_db"] - row["boost_cap_db"] > tolerance]
     if boosted:
         worst = max(boosted, key=lambda row: row["composed_db"] - row["boost_cap_db"])
-        _refuse(TAPER_VIOLATED, "the composed room response exceeds the boost taper", **worst,
+        refuse(TAPER_VIOLATED, "the composed room response exceeds the boost taper", **worst,
                 tolerance_db=tolerance, bins=boosted)
     beyond: dict[tuple[str, int], float] = {}
     for row in bins:
@@ -736,7 +736,7 @@ def _room_inputs(
 ) -> tuple[dict[str, tuple[dict[str, Any], ...]], bool | None, str, str, str, int, RoomMedian]:
     prescribed, echoed, model, operator, rationale, dropped = _parse_prescription(raw)
     if set(prescribed) != set(sides):
-        _refuse(
+        refuse(
             SIDE_MALFORMED,
             f"this speaker declares {sorted(sides)}, so a prescription must "
             f"key its sides by exactly those names, not {sorted(prescribed)}",
@@ -745,7 +745,7 @@ def _room_inputs(
     median = _checked_median(room_median, room_median_sha256, round_id)
     measured_side = (median.evidence or {}).get("basis", {}).get("side")
     if measured_side is not None and set(sides) != {measured_side}:
-        _refuse(SIDE_MALFORMED, "the median measures another side", measured_side=measured_side)
+        refuse(SIDE_MALFORMED, "the median measures another side", measured_side=measured_side)
     answers_median = echoed == room_median_sha256 if ROOM_MEDIAN_FIELD in raw else None
     return prescribed, answers_median, model, operator, rationale, dropped, median
 
@@ -760,7 +760,7 @@ def preview_room_prescription(raw: Mapping[str, Any], *, room_median: RoomMedian
         return {**room_composition(prescribed, median, floor_db).preview(median, ROOM_COMPOSED_TOLERANCE_DB),
                 ROOM_MEDIAN_FIELD: room_median_sha256, "round_id": round_id, "answers_median": answers_median}
     except (ValueError, OverflowError, ZeroDivisionError) as exc:
-        _refuse(FILTER_MALFORMED, str(exc))
+        refuse(FILTER_MALFORMED, str(exc))
 
 
 def read_room_prescription(

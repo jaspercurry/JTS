@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from ._prescription_common import (
     PRESCRIPTION_MALFORMED as _PRESCRIPTION_MALFORMED,
-    RATIONALE_MAX_CHARS, BlendPrescriptionRefused, _refuse, _finite_number, _prescriber, _rationale,
+    RATIONALE_MAX_CHARS, BlendPrescriptionRefused, refuse, finite_number, read_prescriber, read_rationale,
 )
 
 import hashlib
@@ -420,13 +420,13 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
     what only the request boundary applies.
     """
     if raw is None:
-        _refuse(FILTER_MALFORMED, "a prescription must state a filters list")
+        refuse(FILTER_MALFORMED, "a prescription must state a filters list")
     if isinstance(raw, Mapping) or isinstance(raw, (str, bytes)):
-        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+        refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
     if not isinstance(raw, Sequence):
-        _refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
+        refuse(FILTER_MALFORMED, f"filters must be a list, got {type(raw).__name__}")
     if len(raw) > BLEND_MAX_FILTERS:
-        _refuse(
+        refuse(
             FILTER_COUNT_EXCEEDED,
             f"a prescription may carry at most {BLEND_MAX_FILTERS} filters, "
             f"got {len(raw)}",
@@ -436,35 +436,35 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
     out: list[dict[str, Any]] = []
     for position, entry in enumerate(raw):
         if not isinstance(entry, Mapping):
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must be an object, got {type(entry).__name__}",
             )
         unknown = sorted(set(entry) - _FILTER_FIELDS)
         if unknown:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} carries unknown field(s): {', '.join(unknown)}",
             )
         if entry.get("biquad_type") != "Peaking":
             # Peaking only, matching the emitter's own type allowlist. A shelf
             # across the blend region re-levels it, which is the trim's fact.
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} must be a Peaking biquad, got "
                 f"{entry.get('biquad_type')!r}",
             )
-        freq = _finite_number(
+        freq = finite_number(
             entry.get("freq"), reason=FILTER_MALFORMED, field=f"filter {position} freq"
         )
-        q = _finite_number(
+        q = finite_number(
             entry.get("q"), reason=FILTER_MALFORMED, field=f"filter {position} q"
         )
-        gain = _finite_number(
+        gain = finite_number(
             entry.get("gain"), reason=FILTER_MALFORMED, field=f"filter {position} gain"
         )
         if freq <= 0.0:
-            _refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
+            refuse(FILTER_MALFORMED, f"filter {position} freq must be positive")
         out.append({"biquad_type": "Peaking", "freq": freq, "q": q, "gain": gain})
     return tuple(out)
 
@@ -480,7 +480,7 @@ def _check_bounds(
         q = float(entry["q"])
         gain = float(entry["gain"])
         if not lo <= freq <= hi:
-            _refuse(
+            refuse(
                 FILTER_OUTSIDE_REGION,
                 f"filter {position} at {freq:.1f} Hz is outside the crossover "
                 f"region {lo:.1f}-{hi:.1f} Hz",
@@ -491,7 +491,7 @@ def _check_bounds(
         # silently clamps eff_q and the emitter spells the filter "q: 0.0000" —
         # not a shape this system can realize, whatever the gain's sign.
         if q < EVALUABLE_Q_MIN:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} q {q:g} is below {EVALUABLE_Q_MIN:g}: "
                 "spelled 'q: 0.0000' by the emitter and clamped by the "
@@ -499,7 +499,7 @@ def _check_bounds(
             )
         q_max = max_q_for_gain(gain)
         if q > q_max:
-            _refuse(
+            refuse(
                 FILTER_Q_OUT_OF_RANGE,
                 f"filter {position} Q {q:g} is past {q_max:g} for a "
                 f"{'boost' if gain > 0.0 else 'cut'}",
@@ -509,13 +509,13 @@ def _check_bounds(
         # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
         if 10.0 ** (gain / 40.0) == 0.0:
-            _refuse(
+            refuse(
                 FILTER_MALFORMED,
                 f"filter {position} gain {gain:g} dB underflows 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
             )
         if gain > PRESCRIPTION_MAX_FILTER_BOOST_DB:
-            _refuse(
+            refuse(
                 FILTER_BOOST_TOO_HIGH,
                 f"filter {position} boosts {gain:.2f} dB, past the "
                 f"{PRESCRIPTION_MAX_FILTER_BOOST_DB:g} dB per-filter ceiling",
@@ -571,7 +571,7 @@ def _check_composed(
     )
     peak_boost = float(np.max(composed))
     if peak_boost > PRESCRIPTION_MAX_TOTAL_BOOST_DB:
-        _refuse(
+        refuse(
             COMPOSED_BOOST_EXCEEDED,
             f"the composed cascade boosts {peak_boost:.2f} dB at its peak over "
             f"the region, past the {PRESCRIPTION_MAX_TOTAL_BOOST_DB:g} dB ceiling",
@@ -589,7 +589,7 @@ def _parse_prescription(
     only thing that differs between those two is their gate policy.
     """
     if not isinstance(raw, Mapping):
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must be a mapping, got {type(raw).__name__}",
         )
@@ -598,7 +598,7 @@ def _parse_prescription(
     # `volume_db` as a typo.
     prohibited = sorted(set(find_prohibited_keys(raw)))
     if prohibited:
-        _refuse(
+        refuse(
             PRESCRIPTION_PROHIBITED_FIELD,
             f"a prescription may not name {', '.join(prohibited)}: it supplies "
             "numbers into a fixed shape, never configuration, coefficients, or "
@@ -607,19 +607,19 @@ def _parse_prescription(
         )
     unknown = sorted(set(raw) - _PRESCRIPTION_FIELDS)
     if unknown:
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
         )
     if raw.get("kind") != PRESCRIPTION_KIND:
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must name kind={PRESCRIPTION_KIND!r}, got "
             f"{raw.get('kind')!r}",
         )
     version = raw.get("artifact_schema_version")
     if version != PRESCRIPTION_SCHEMA_VERSION:
-        _refuse(
+        refuse(
             PRESCRIPTION_SCHEMA_UNSUPPORTED,
             f"this build speaks prescription schema {PRESCRIPTION_SCHEMA_VERSION}, "
             f"got {version!r}",
@@ -627,8 +627,8 @@ def _parse_prescription(
         )
     fingerprint = raw.get(PACKET_FINGERPRINT_FIELD, "")
     fingerprint = fingerprint.strip() if isinstance(fingerprint, str) else ""
-    model, operator = _prescriber(raw.get("prescriber"))
-    rationale, rationale_dropped = _rationale(raw.get("rationale"), reason=BLEND_PRESCRIPTION_MALFORMED)
+    model, operator = read_prescriber(raw.get("prescriber"))
+    rationale, rationale_dropped = read_rationale(raw.get("rationale"), reason=BLEND_PRESCRIPTION_MALFORMED)
     return (
         _parse_filters(raw.get("filters")),
         fingerprint,
@@ -672,7 +672,7 @@ def read_blend_prescription(
     ) = _parse_prescription(raw)
 
     if band_hz is None:
-        _refuse(
+        refuse(
             REGION_UNAVAILABLE,
             "the blend contract names no band (bounds.band_hz), so there is no "
             "band a prescription could be checked against",
@@ -705,7 +705,7 @@ def read_blend_prescription(
     # every boost.
     vouched = blend_filters_from_mapping([dict(f) for f in filters])
     if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
-        _refuse(
+        refuse(
             STRICT_READER_DISAGREEMENT,
             "the shipped persisted-correction reader would not vouch for "
             "this filter list, so it is not one this system can persist",
@@ -736,7 +736,7 @@ def prescription_route(prescription: BlendPrescription) -> str:
     """
     if not prescription.is_boost:
         return BLEND_CANDIDATE_FIELD
-    _refuse(
+    refuse(
         BOOST_ROUTE_UNAVAILABLE,
         "this boost clears every shape and evidence bar, and there is still no "
         "seam THIS class can carry it on: the summed blend stage refuses a "
@@ -784,7 +784,7 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
     cap enforced after parsing has already paid what it exists to avoid.
     """
     if len(payload) > PRESCRIPTION_MAX_BYTES:
-        _refuse(
+        refuse(
             PRESCRIPTION_TOO_LARGE,
             f"a prescription may be at most {PRESCRIPTION_MAX_BYTES} bytes, got "
             f"{len(payload)}",
@@ -794,9 +794,9 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
     try:
         document = json.loads(payload.decode("utf-8"))
     except UnicodeDecodeError:
-        _refuse(BLEND_PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
+        refuse(BLEND_PRESCRIPTION_MALFORMED, "a prescription must be UTF-8 text")
     except json.JSONDecodeError as exc:
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must be valid JSON: {exc.msg}",
         )
@@ -804,11 +804,11 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
         # Deeply nested arrays exhaust the interpreter stack inside the parser,
         # well under the byte cap: ~20 KB of `[[[[...]]]]` does it. A
         # RecursionError is a RuntimeError, so it matches neither arm above.
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED, "a prescription is nested too deeply to parse"
         )
     if not isinstance(document, dict):
-        _refuse(
+        refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"a prescription must be a JSON object, got {type(document).__name__}",
         )
