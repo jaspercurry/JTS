@@ -52,11 +52,11 @@ from jasper.audio_measurement.program_analysis import (
     SegmentLocation,
     _global_offset,
     _locate_segments,
-    _pilot_ambient_samples,
-    _verify_capture_integrity,
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
+from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
+from jasper.audio_measurement.program_analysis.check import _pilot_ambient_samples
 from tests._log_events import event_fields, event_records
 
 SR = 48_000

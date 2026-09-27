@@ -70,9 +70,9 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     RoleGainSolve,
     SegmentLocation,
-    _verify_capture_integrity,
     solve_branch_trims,
 )
+from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset

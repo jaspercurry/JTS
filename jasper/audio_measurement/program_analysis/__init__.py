@@ -13,8 +13,8 @@ policy, and no ``jasper.active_speaker`` import
 crossover transfers arrive as host-evaluated per-role callables on
 :class:`MeasurementPriors`.
 
-The analysis is split across this package by phase; the names below are the
-surface every importer outside it uses.
+The analysis is split across this package by phase; the names below are its
+public surface, and a test reaches a private helper through its own submodule.
 """
 
 from __future__ import annotations
@@ -100,48 +100,27 @@ from .model import (
     VERIFY_NOTCH_EXCLUSION_DB,
     VERIFY_TRACKING_SMOOTHING_FRACTION,
 )
-from .signals import _band_average_db, _complex_tf, _peak_dbfs
-from .locate import (
-    _earliest_strong_peak,
-    _global_offset,
-    _locate_in_window,
-    _locate_segments,
-    _stimulus_shape,
-)
-from .drift import _estimate_drift, _locate_discontinuity, _sweep_occurrence_index
-from .verify_integrity import _verify_capture_integrity
+from .locate import _global_offset, _locate_segments
+from .drift import _estimate_drift
 from .response import (
-    _aligned_branch_tf,
     branch_level_bands_hz,
     _deconvolve_window,
     _driver_response,
-    _gate_floor_hz,
     half_period_us,
     _n_fft_for,
     polarity_label,
     predicted_branch_sum,
-    _raw_sweep_segment,
     recorded_impulse,
     ripple_at_trim,
-    _ripple_db,
-    _select_alignment_pair,
     solve_branch_trims,
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
 from .check import (
-    _aggregate_linearity_ok,
-    _aggregate_tri_state_ok,
-    _ambient_from_capture,
     AMBIENT_MIN_USABLE_FRACTION,
     _ambient_rows_in_band,
-    _band_exclusive_pieces,
-    _band_rms_dbfs,
     channel_map_isolation_db,
-    _channel_map_ok,
-    _pilot_ambient_samples,
     _snr_floor_ok,
-    _solve_gain_plan,
 )
 from .dispatch import (
     ABSOLUTE_NO_CROSSOVER_TOPOLOGY,
@@ -149,8 +128,6 @@ from .dispatch import (
     ABSOLUTE_NO_TARGET,
     ABSOLUTE_NO_TRUSTED_BAND,
     analyze_program_capture,
-    _build_candidate,
-    _compose_configured_path_ir,
     MEASURE_PAIR_SINGLE_DRIVER,
 )
 from .summary import (
@@ -164,9 +141,6 @@ __all__ = [
     "ABSOLUTE_NO_FC",
     "ABSOLUTE_NO_TARGET",
     "ABSOLUTE_NO_TRUSTED_BAND",
-    "_aggregate_linearity_ok",
-    "_aggregate_tri_state_ok",
-    "_aligned_branch_tf",
     "ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR",
     "ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION",
     "ALIGNMENT_ESTIMATED_FLAT_SUM",
@@ -177,7 +151,6 @@ __all__ = [
     "ALIGNMENT_OK",
     "ALIGNMENT_SNR_REFUSAL_VERDICT",
     "AlignmentEstimate",
-    "_ambient_from_capture",
     "AMBIENT_MIN_USABLE_FRACTION",
     "AMBIENT_NONSTATIONARITY_DB",
     "_ambient_rows_in_band",
@@ -185,20 +158,13 @@ __all__ = [
     "analyze_program_capture",
     "ANCHOR_DISCRIMINATION_RATIO",
     "AppliedAlignment",
-    "_band_average_db",
-    "_band_exclusive_pieces",
-    "_band_rms_dbfs",
     "branch_level_bands_hz",
-    "_build_candidate",
     "CAPTURE_BOUND_MARGIN_S",
     "CaptureIntegrity",
     "channel_map_isolation_db",
     "CHANNEL_MAP_MIN_ISOLATION_DB",
-    "_channel_map_ok",
     "CHANNEL_MAP_TARGET_RISE_DB",
-    "_complex_tf",
     "DELTA_IMPLAUSIBLE_GAP_DB",
-    "_compose_configured_path_ir",
     "ConfiguredPathConditioningError",
     "CrossoverCandidate",
     "DECONV_PRE_GUARD_S",
@@ -210,7 +176,6 @@ __all__ = [
     "DRIVER_SNR_ALIGNMENT_KEY",
     "driver_snr_verdict",
     "DriverResponse",
-    "_earliest_strong_peak",
     "_estimate_drift",
     "GAIN_BOUND_CAPTURE_FLOOR",
     "GAIN_BOUND_DEGENERATE_AMBIENT",
@@ -221,7 +186,6 @@ __all__ = [
     "GAIN_BOUNDS",
     "GAIN_MAX_DIGITAL_PEAK_DBFS",
     "GainPlan",
-    "_gate_floor_hz",
     "GCC_SNAP_RADIUS_PERIODS",
     "GLITCH_RESIDUAL_SAMPLES",
     "_global_offset",
@@ -244,8 +208,6 @@ __all__ = [
     "KIND_SWEEP",
     "LINEARITY_SNR_BIAS_BUDGET_FRACTION",
     "LINEARITY_TOLERANCE_DB",
-    "_locate_discontinuity",
-    "_locate_in_window",
     "_locate_segments",
     "LOCATOR_RATE_HZ",
     "MAX_DRIFT_PPM",
@@ -255,19 +217,15 @@ __all__ = [
     "MeasurementPriors",
     "_n_fft_for",
     "parabolic_peak",
-    "_peak_dbfs",
-    "_pilot_ambient_samples",
     "PILOT_MIN_SNR_DB",
     "PilotObservation",
     "polarity_label",
     "predicted_branch_sum",
     "ProgramAnalysis",
-    "_raw_sweep_segment",
     "REALIZED_LEVEL_MATCH_TOLERANCE_DB",
     "RecordedImpulse",
     "recorded_impulse",
     "ripple_at_trim",
-    "_ripple_db",
     "RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB",
     "RIPPLE_TRIM_MAX_DB",
     "RIPPLE_TRIM_MIN_DB",
@@ -276,19 +234,14 @@ __all__ = [
     "RoleGainSolve",
     "SEGMENT_SEARCH_S",
     "SegmentLocation",
-    "_select_alignment_pair",
     "_snr_floor_ok",
     "solve_branch_trims",
-    "_solve_gain_plan",
     "solve_ripple_optimal_trim",
-    "_stimulus_shape",
     "summed_model_residual_delay_us",
     "sweep_band_crest_factor_db",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
-    "_sweep_occurrence_index",
     "SWEEP_PEAK_TO_RMS_DB",
     "SWEEP_SCHEDULE_RESIDUAL_CEILING_MS",
-    "_verify_capture_integrity",
     "VERIFY_NOTCH_EXCLUSION_DB",
     "VERIFY_TRACKING_SMOOTHING_FRACTION",
 ]

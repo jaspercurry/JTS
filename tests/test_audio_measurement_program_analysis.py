@@ -35,7 +35,14 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
-from jasper.audio_measurement.program_analysis.response import _alignment_delay_grid
+from jasper.audio_measurement.program_analysis.response import (
+    _aligned_branch_tf,
+    _alignment_delay_grid,
+    _gate_floor_hz,
+    _ripple_db,
+    _select_alignment_pair,
+    _select_summed_alignment_pair,
+)
 from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
 from jasper.active_speaker.crossover_v2.planning import analysis_json
@@ -81,7 +88,6 @@ from jasper.audio_measurement.comparison_bands import (
 )
 from jasper.audio_measurement.program_analysis import alignment_pairs, dispatch
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, DriverResponse, SummedAlignmentReference
-from jasper.audio_measurement.program_analysis.response import _select_summed_alignment_pair
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
@@ -113,31 +119,17 @@ from jasper.audio_measurement.program_analysis import (
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
     RIPPLE_TRIM_MIN_DB,
-
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
     MeasurementGeometry,
     MeasurementPriors,
     PilotObservation,
-    _aligned_branch_tf,
-    _ambient_from_capture,
-    _band_average_db,
-    _band_exclusive_pieces,
-    _build_candidate,
-    _complex_tf,
-    _compose_configured_path_ir,
     _deconvolve_window,
-    _gate_floor_hz,
     _global_offset,
     _locate_segments,
     _n_fft_for,
-    _peak_dbfs,
-    _ripple_db,
-    _select_alignment_pair,
     _snr_floor_ok,
-    _solve_gain_plan,
-    _sweep_occurrence_index,
     ABSOLUTE_NO_FC,
     ABSOLUTE_NO_TARGET,
     ABSOLUTE_NO_TRUSTED_BAND,
@@ -153,6 +145,10 @@ from jasper.audio_measurement.program_analysis import (
     solve_ripple_optimal_trim,
     summed_model_residual_delay_us,
 )
+from jasper.audio_measurement.program_analysis.check import _ambient_from_capture, _band_exclusive_pieces, _solve_gain_plan
+from jasper.audio_measurement.program_analysis.dispatch import _build_candidate, _compose_configured_path_ir
+from jasper.audio_measurement.program_analysis.drift import _sweep_occurrence_index
+from jasper.audio_measurement.program_analysis.signals import _band_average_db, _complex_tf, _peak_dbfs
 from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
     radiating_band_hz,
@@ -1179,7 +1175,7 @@ def test_raw_sweep_segment_clamps_instead_of_raising(
         sweep_durations={"woofer": 0.6, "tweeter": 0.5},
     )
     seg = prog.segment("sweep_w")
-    got = program_analysis._raw_sweep_segment(np.zeros(capture_len), seg, anchor)
+    got = program_analysis.response._raw_sweep_segment(np.zeros(capture_len), seg, anchor)
     assert got.size == expected, label
 
 
@@ -1195,7 +1191,7 @@ def test_raw_sweep_segment_returns_the_whole_scheduled_segment():
     )
     seg = prog.segment("sweep_w")
     full = np.zeros(seg.n_samples + 200)
-    assert program_analysis._raw_sweep_segment(full, seg, 100).size == seg.n_samples
+    assert program_analysis.response._raw_sweep_segment(full, seg, 100).size == seg.n_samples
 
 
 def test_measure_no_drift_delay_is_tight():
@@ -1855,7 +1851,7 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
     # The fit now measures positions out of the capture itself (sub-sample,
     # so it can gate), which is why the capture is an argument and the fit
     # rides back as a third return value.
-    step, after, _fit = program_analysis._locate_discontinuity(
+    step, after, _fit = program_analysis.drift._locate_discontinuity(
         prog, spliced, sweep_locs
     )
     if expect_unresolved:
@@ -4556,7 +4552,7 @@ def test_pilot_linearity_aggregate_is_tri_state():
             linearity_ok=linearity_ok, channel_map_ok=True,
         )
 
-    aggregate = program_analysis._aggregate_linearity_ok
+    aggregate = program_analysis.check._aggregate_linearity_ok
     assert aggregate([]) is None
     assert aggregate([_pilot("w", True), _pilot("t", True)]) is True
     assert aggregate([_pilot("w", True), _pilot("t", None)]) is None
@@ -4748,12 +4744,12 @@ def _isolation_pilot(
         (other_band, cross_rise_db),
     )
     for band, rise_db in commands:
-        want = program_analysis._band_rms_dbfs(ambient, SR, *band) + rise_db
+        want = program_analysis.check._band_rms_dbfs(ambient, SR, *band) + rise_db
         content = fftconvolve(
             rng.normal(0.0, 1.0, seg.n_samples),
             _deep_plant(_MASK_DELAY, band[0], band[1], 1.0),
         )[: seg.n_samples]
-        have = program_analysis._band_rms_dbfs(content, SR, *band)
+        have = program_analysis.check._band_rms_dbfs(content, SR, *band)
         out = out + content * 10.0 ** ((want - have) / 20.0)
     return out
 
@@ -4770,7 +4766,7 @@ def _isolation_case(role: str, target_rise_db: float, cross_rise_db: float, seed
         seg, other_band, ambient,
         target_rise_db=target_rise_db, cross_rise_db=cross_rise_db, seed=seed + 1,
     )
-    return program_analysis._channel_map_ok(
+    return program_analysis.check._channel_map_ok(
         pilot, SR, seg, ambient_samples=ambient, other_bands=(other_band,),
     )
 
@@ -4967,7 +4963,7 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
 
     def _run(cross_rise: float):
         monkeypatch.setattr(program_analysis.check, "_band_rms_dbfs", _script(cross_rise))
-        return program_analysis._channel_map_ok(
+        return program_analysis.check._channel_map_ok(
             pilot, SR, seg, ambient_samples=ambient, other_bands=(other,),
         )
 
@@ -5085,13 +5081,13 @@ def test_channel_map_fallback_pass_is_unknown_and_fail_is_a_finding():
     in_band = fftconvolve(noise, _band_impulse(0, 150.0, 1200.0, 1.0))[: seg.n_samples]
     out_of_band = fftconvolve(noise, _band_impulse(0, 4000.0, 20000.0, 1.0))[: seg.n_samples]
 
-    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+    ok, target_rise, cross_rise = program_analysis.check._channel_map_ok(
         in_band, SR, seg, ambient_samples=None,
     )
     assert ok is None                       # cleared the fraction — not evidence
     assert target_rise is None and cross_rise is None
 
-    ok, target_rise, cross_rise = program_analysis._channel_map_ok(
+    ok, target_rise, cross_rise = program_analysis.check._channel_map_ok(
         out_of_band, SR, seg, ambient_samples=None,
     )
     assert ok is False                      # missed its own band — a finding
@@ -5170,7 +5166,7 @@ def test_channel_map_aggregate_is_tri_state():
     ``channel_map_mismatch``: a hard stop telling a household to rewire its
     speaker, decided on evidence nobody took.
     """
-    aggregate = program_analysis._aggregate_tri_state_ok
+    aggregate = program_analysis.check._aggregate_tri_state_ok
     assert aggregate([]) is None
     assert aggregate([True, True]) is True
     assert aggregate([True, None]) is None
@@ -6068,7 +6064,7 @@ def test_build_candidate_threads_overlap_band_into_trim_and_ripple(monkeypatch):
         confidence=0.9, status=ALIGNMENT_OK,
     )
     seen_lo_hi = []
-    real_ripple_db = program_analysis._ripple_db
+    real_ripple_db = program_analysis.response._ripple_db
 
     def _spy_ripple_db(freqs, magnitude, lo, hi):
         seen_lo_hi.append((lo, hi))
