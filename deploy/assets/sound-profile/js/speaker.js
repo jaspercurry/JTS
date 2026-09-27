@@ -4,6 +4,7 @@
 import { h } from '/assets/shared/js/dom.js';
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
 import { copyText } from '/assets/shared/js/copy.js';
+import { fmtFreq } from '/assets/shared/js/frequency-scale.js';
 import { jtsConfirm } from '/assets/shared/js/dialog.js';
 
 const root = document.getElementById('view-body');
@@ -121,6 +122,14 @@ function layoutCard() {
     }, 'Layout saved.'), true));
 }
 
+// crossover_preview warns when a proposed crossover sits above this ceiling (#4990).
+function usableRange(target, driver) {
+  const custom = driver.usable_frequency_range_hz;
+  const range = custom || target.values.usable_frequency_range_hz;
+  return h('dl.deflist', {}, h('dt', {}, 'Usable range'), h('dd', {}, Array.isArray(range)
+    ? `${fmtFreq(range[0])} – ${fmtFreq(range[1])} (${custom ? 'custom' : 'research'})` : 'Not specified'));
+}
+
 function driverCard(target) {
   const driver = driverEdits(target);
   const pad = driver.pad || { kind: 'none' };
@@ -142,7 +151,7 @@ function driverCard(target) {
       value => edit(driver, 'pad.shunt_ohm', value), { type: 'number' }),
     pad.kind === 'direct_db' && field('Attenuation (dB)', pad.attenuation_db,
       value => edit(driver, 'pad.attenuation_db', value), { type: 'number' }),
-    h('details', {}, h('summary', {}, 'More driver details'),
+    h('details', {}, h('summary', {}, 'More driver details'), usableRange(target, driver),
       Object.entries(view.draft.installation_fields).filter(([key, spec]) => key !== 'horn_model' &&
         (!spec.enclosure || spec.enclosure === driver.cabinet?.enclosure_kind)).map(([key, spec]) =>
         field(spec.label, driver.installation?.[key], value => edit(driver, `installation.${key}`, value), { type: spec.type })),
