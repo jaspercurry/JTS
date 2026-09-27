@@ -2,8 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Userspace-liveness supervisor — Tier 4.6 of the JTS resilience
-ladder, closing the gap exposed by the 2026-05-23 incident.
+"""Userspace-liveness supervisor — Tier 4.6 of the JTS resilience ladder.
 
 Background
 ----------
@@ -11,11 +10,8 @@ systemd PID 1 patting `/dev/watchdog0` is a very weak liveness signal
 — it just means PID 1's main loop got CPU at least once in the last
 60 s. It does not confirm that sshd accepts connections, that
 jasper-control answers HTTP, or that the kernel can satisfy a read
-of `/proc/loadavg` within a reasonable time. On 2026-05-23 a PIO
-compile pushed the 1 GB Pi 5 into zram-thrash for >2 minutes; PID 1
-stayed alive enough to keep patting the hardware watchdog (Tier 5
-never fired), but sshd banner exchange timed out — userspace was
-effectively dead. Manual power-cycle was the only recovery.
+of `/proc/loadavg` within a reasonable time. On the 1 GB Pi 5, zram
+thrash can starve userspace while PID 1 keeps the hardware watchdog alive.
 
 What this supervisor does
 -------------------------
@@ -398,10 +394,8 @@ class SystemSupervisor:
         except (OSError, asyncio.TimeoutError):
             return False
         try:
-            # Optionally: read the SSH banner ("SSH-2.0-OpenSSH_..."
-            # within ~1 s). On a wedged userspace, sshd accepts the
-            # TCP connection (kernel-side) but doesn't write the
-            # banner — which is exactly the 2026-05-23 shape.
+            # A wedged userspace can accept TCP in the kernel without
+            # scheduling sshd to write its banner.
             data = await asyncio.wait_for(
                 reader.read(64), timeout=self._probe_timeout,
             )
@@ -455,10 +449,7 @@ class SystemSupervisor:
         return _control_health_response_alive(data)
 
     async def probe_loadavg(self) -> bool:
-        """Can we read /proc/loadavg within 1 s? Kernel I/O stall
-        (the 2026-05-23 shape was zram thrash starving readers)
-        manifests as ridiculously slow /proc reads. This catches
-        that without trying to schedule actual work."""
+        """Bound /proc/loadavg reads to catch kernel I/O stalls from zram thrash."""
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(_read_loadavg),
