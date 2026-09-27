@@ -58,6 +58,7 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     topology_prescription_response_format,
 )
 from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
+from jasper.active_speaker.crossover_section import sections_by_role
 
 # --------------------------------------------------------------------------- #
 # jts3's own declarations, and the candidates they were meant to serve
@@ -723,8 +724,6 @@ def test_a_pinned_order_reaches_both_branches_filters():
     hop that carries it to the filters.
     """
     import dataclasses
-
-    from jasper.active_speaker.branch_chain import sections_by_role
 
     @dataclasses.dataclass(frozen=True)
     class _Preset:

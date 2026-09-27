@@ -62,10 +62,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_chain import (
-    crossover_response_complex,
-    sections_by_role,
-)
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,

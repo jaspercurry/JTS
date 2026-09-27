@@ -76,8 +76,8 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests.test_active_speaker_profile import _two_way_preset
-from jasper.active_speaker.crossover_section import CrossoverSection
-from jasper.active_speaker.branch_chain import crossover_response_db, sections_by_role
+from jasper.active_speaker.crossover_section import CrossoverSection, sections_by_role
+from jasper.active_speaker.branch_chain import crossover_response_db
 
 SESSION = "cap_test_session_1"
 
