@@ -1465,7 +1465,7 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "purposes", "banked_at", "status", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "status", "sets", "applied_identity"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [
