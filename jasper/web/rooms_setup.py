@@ -59,6 +59,7 @@ from ..platform import systemd
 from ..identity import reader as identity
 from ..control import household_credential
 from ..multiroom.airplay_latency import with_airplay_latency_fit
+from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
 from ..multiroom.state import read_grouping_state
 from ..peering import config as peering_config
 from ..log_event import log_event
@@ -904,8 +905,6 @@ def _balance_trims_from_db(balance_db: float) -> tuple[float, float, bool]:
     louder side stays at 0 dB and the opposite side is attenuated, so the pair
     keeps as much digital headroom as the requested relative balance allows.
     """
-    from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
-
     requested = float(balance_db)
     left = min(TRIM_DB_MAX, -requested)
     right = min(TRIM_DB_MAX, requested)
