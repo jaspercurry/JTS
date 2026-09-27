@@ -60,7 +60,6 @@ from jasper.audio_runtime_settings import (
     OUTPUTD_DAC_BUFFER_KEY,
     OUTPUTD_LATENCY_KEYS,
     OUTPUTD_PERIOD_KEY,
-    RETIRED_FANIN_INPUT_RESAMPLER_KEY,
     RuntimeEnvAction,
     RuntimeSetting,
     positive_int,
@@ -475,9 +474,8 @@ def route_owned_env_actions(
         if isinstance(route, str)
         else route
     )
-    retired = (RuntimeEnvAction("unset", RETIRED_FANIN_INPUT_RESAMPLER_KEY),)
     if not profile.fanin_input_resampler_required:
-        return retired + (
+        return (
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_LANE_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_TARGET_KEY),
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_MAX_ADJUST_KEY),
@@ -485,7 +483,7 @@ def route_owned_env_actions(
             RuntimeEnvAction("unset", FANIN_INPUT_RESAMPLER_RING_KEY),
         )
 
-    return retired + (
+    return (
         RuntimeEnvAction(
             "set", FANIN_INPUT_RESAMPLER_LANE_KEY, USB_LOW_LATENCY_SOURCE_ID
         ),

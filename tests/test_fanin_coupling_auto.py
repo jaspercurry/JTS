@@ -35,7 +35,6 @@ from jasper import ring_conf
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
-from jasper.fanin.coupling_reconcile import _LEGACY_FANIN_COUPLING_ENV
 from jasper.fanin import latency_mode as lm
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
@@ -391,7 +390,8 @@ def _stub_ring_geometry_heals(monkeypatch):
     covered separately (the F6 tests below run the REAL slot heal).
     """
     monkeypatch.setattr(
-        cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: (snap, False)
+        cr, "_migrate_stale_fanin_ring_slots",
+        lambda path, reason: (cr.read_snapshot(path), False)
     )
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
@@ -511,7 +511,6 @@ def test_auto_gadget_box_with_intent_arms_ring_and_combo(
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "enabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "enabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "enabled"
-    assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
     assert r.restarted_fanin_for_combo is False
 
 
@@ -583,7 +582,6 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
     assert read_value(text, "JASPER_UNRELATED_SOURCE_SENTINEL") == "enabled"
-    assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
     assert restarts == ["camilla_stop", "fanin", "camilla_start"]
     assert result.combo_armed is False
     assert result.usb_combo_changed is True
@@ -775,7 +773,6 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
-    assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
@@ -806,7 +803,6 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     _auto(fanin, outputd, gadget=False, restarts=restarts)
 
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
-    assert read_value(fanin.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 # --------------------------------------------------------------------------

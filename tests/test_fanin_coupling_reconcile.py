@@ -20,10 +20,6 @@ SHIPPED_RING_CONF_D = (
 from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
-    _LEGACY_FANIN_COUPLING_ENV,
-    _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV,
-    _apply_action,
-    _outputd_actions,
     _write_env_actions,
     reconcile_coupling,
 )
@@ -880,7 +876,6 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
     assert result.ok
     # Ordered spine: outputd (Ring B reader) -> fanin (Ring A writer) -> camilla.
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
     outputd_text = outputd_env.read_text()
     assert read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR) == "shm_ring"
 
@@ -1049,7 +1044,6 @@ def test_arm_converges_the_content_format_before_any_restart(
         "fanin",
         "camilla:shm_ring",
     ]
-    assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
@@ -1079,7 +1073,6 @@ def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
     assert "jasper-audio-hardware-reconcile" in result.detail
     # No daemon is bounced at all: the refusal lands ahead of the spine.
     assert calls == []
-    assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
 
 
 def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypatch):
@@ -1113,7 +1106,6 @@ def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypa
 
     assert result.ok is True, result.detail
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
     # The stale =8 line was overridden in fanin.env (the later systemd env file).
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
@@ -1152,7 +1144,6 @@ def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, mo
 
     assert result.ok is True, result.detail
     assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_value(fanin_env.read_text(), _LEGACY_FANIN_COUPLING_ENV) is None
     assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
 
@@ -1978,57 +1969,6 @@ def test_crash_budget_units_are_broker_reset_failed_permitted():
     assert "reset-failed" in rb.ALLOWED_VERBS
     for unit in cr._CRASH_BUDGET_UNITS:
         assert rb._unit_allowed_for_verb(unit, "reset-failed") is True, unit
-
-
-# --- one-way migration sweeps of deleted selectors (ADR-0100) ----------------
-
-
-def test_outputd_actions_unset_legacy_local_content_pipe(tmp_path):
-    """The outputd-action set sweeps the legacy JASPER_OUTPUTD_LOCAL_CONTENT_PIPE
-    key (a removed coupling's outputd content source) so a migrating box
-    converges clean."""
-    sweeps = [
-        a
-        for a in _outputd_actions("")
-        if a.action == "unset" and a.key == _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV
-    ]
-    assert sweeps
-    assert _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV == "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
-
-
-@pytest.mark.parametrize(
-    "seed",
-    ["", f"{_LEGACY_FANIN_COUPLING_ENV}=shm_ring\n", f"{_LEGACY_FANIN_COUPLING_ENV}=loopback\n"],
-    ids=["absent", "ring_token", "retired_token"],
-)
-def test_a_pass_sweeps_the_retired_fanin_coupling_key(
-    tmp_path, _ring_assets_present, seed
-):
-    """A pass leaves fanin.env carrying no transport selector, whatever it held.
-
-    jasper-fanin still REFUSES a value it cannot serve (exit 78), so a persisted
-    `loopback` would park the unit; the sweep is what clears it. An absent key is
-    already the converged state and must not be re-written."""
-    fanin_env = _write(tmp_path / "fanin.env", f"KEEP=1\n{seed}")
-    outputd_env = tmp_path / "outputd.env"
-    _calls, ro, rf, rc = _recorder()
-
-    res = _reconcile(
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert res.ok
-    text = fanin_env.read_text(encoding="utf-8")
-    assert read_value(text, _LEGACY_FANIN_COUPLING_ENV) is None
-    assert read_value(text, "KEEP") == "1"
-    assert (
-        _apply_action(text, RuntimeEnvAction("unset", _LEGACY_FANIN_COUPLING_ENV))[1]
-        is False
-    )
 
 
 def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
