@@ -66,29 +66,11 @@ _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
 _AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
-_AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
+AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"
 _USB_MIC_APPLY_UNIT = "jasper-usbmic-apply.service"
 # /aec is polled every 3 s; a wedged manager must not hold a worker.
 _PROBE_TIMEOUT_SEC = 2.0
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
-_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
-_usb_mic_leg_apply_lock = threading.Lock()
-_usb_mic_leg_apply_pending: tuple[str, float] | None = None
-# Serializes POST /aec/commission's check-then-start across
-# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
-# probe before either start lands.
-_aec_commission_start_lock = threading.Lock()
-
-
-def _run_unit_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["systemctl", *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=5.0,
-    )
-
 
 # These kicks (and jasper.control.handlers.aec's AEC-bridge restart) answer a
 # POST jasper-web proxies with a `proxy_post` timeout
@@ -337,11 +319,11 @@ def _memoized_unit_state(unit: str) -> str | None:
 
 def _aec_bridge_active() -> bool:
     """True if jasper-aec-bridge.service is currently active."""
-    state = _memoized_unit_state(_AEC_BRIDGE_SERVICE)
+    state = _memoized_unit_state(AEC_BRIDGE_SERVICE)
     if state is not None:
         return systemd_probe.state_is_live(state, activating_is_live=False)
     return systemd_probe.unit_active(
-        _AEC_BRIDGE_SERVICE,
+        AEC_BRIDGE_SERVICE,
         timeout=_PROBE_TIMEOUT_SEC,
         activating_is_live=False,
     )
@@ -432,7 +414,7 @@ def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
     )
 
 
-def _fresh_jasper_env() -> dict[str, str]:
+def fresh_jasper_env() -> dict[str, str]:
     """Fresh view of /etc/jasper/jasper.env.
 
     jasper-control is long-lived while the AEC reconciler mutates this
@@ -498,7 +480,7 @@ def _enhanced_aec_status(
     """Optional-engine status using this domain's applied AEC truth."""
 
     if aec_payload is None:
-        aec_payload = _aec_full_status()
+        aec_payload = aec_full_status()
     audio_profile = aec_payload.get("audio_profile")
     active_profile = (
         str(audio_profile.get("active") or "")
@@ -515,9 +497,9 @@ def _enhanced_aec_status(
     )
 
 
-def _aec_full_status() -> dict:
+def aec_full_status() -> dict:
     with _batched_unit_probes(
-        _AEC_BRIDGE_SERVICE,
+        AEC_BRIDGE_SERVICE,
         _XVF_FIRMWARE_UPDATE_SERVICE,
         _AEC_COMMISSION_SERVICE,
     ):
@@ -540,7 +522,7 @@ def _build_aec_full_status() -> dict:
     /assistant/wake/ toggle stays disabled when the connected geometry has no plan."""
     state = _read_aec_state()
     bridge_active = _aec_bridge_active()
-    env = _fresh_jasper_env()
+    env = fresh_jasper_env()
     runtime = runtime_env_from_mapping(env, process_env=os.environ)
     mic_probe = probe_xvf_mic()
     chip_gate = _chip_aec_gate(

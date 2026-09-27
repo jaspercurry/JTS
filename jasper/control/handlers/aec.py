@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from typing import Any, cast
 
@@ -23,6 +24,15 @@ from ...usb_mic import (
 from .. import aec_endpoints
 from .. import restart_broker
 from ._base import ControlHandlerMixin, logger
+
+
+_USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
+_usb_mic_leg_apply_lock = threading.Lock()
+_usb_mic_leg_apply_pending: tuple[str, float] | None = None
+# Serializes POST /aec/commission's check-then-start across
+# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
+# probe before either start lands.
+_aec_commission_start_lock = threading.Lock()
 
 
 def _commission_start_body(*, running: bool) -> dict[str, Any]:
@@ -49,7 +59,7 @@ class AecRoutes(ControlHandlerMixin):
         # /system's Diagnostics disclosure runs jasper-doctor
         # which has check_aec_bridge_dtln_engine for the
         # silent-failure case.
-        self._send_json(aec_endpoints._aec_full_status())
+        self._send_json(aec_endpoints.aec_full_status())
 
     def _get_enhanced_aec(self) -> None:
         self._send_json(aec_endpoints._enhanced_aec_status())
@@ -114,7 +124,7 @@ class AecRoutes(ControlHandlerMixin):
             enabled=enabled_val,
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_profile(self) -> None:
@@ -157,7 +167,7 @@ class AecRoutes(ControlHandlerMixin):
             profile=normalize_audio_input_profile(profile, default=""),
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_usb_mic(self) -> None:
@@ -173,7 +183,7 @@ class AecRoutes(ControlHandlerMixin):
                 status=400,
             )
             return
-        current = aec_endpoints._aec_full_status()
+        current = aec_endpoints.aec_full_status()
         usb_mic = current.get("usb_mic") or {}
         if enabled and not bool(usb_mic.get("toggle_enabled")):
             self._send_json(
@@ -202,7 +212,7 @@ class AecRoutes(ControlHandlerMixin):
         if not aec_endpoints._schedule_usb_gadget_recompose():
             # A descriptor recompose is not a broker verb: there is no result
             # to answer, only the scheduler's own refusal.
-            failed_status = aec_endpoints._aec_full_status()
+            failed_status = aec_endpoints.aec_full_status()
             self._send_refused(
                 error=(
                     "USB microphone preference was saved, but its "
@@ -214,11 +224,13 @@ class AecRoutes(ControlHandlerMixin):
                 usb_mic=failed_status.get("usb_mic") or {},
             )
             return
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_usb_mic_leg(self) -> None:
         """Persist the computer-mic source, then restart its producer only."""
+
+        global _usb_mic_leg_apply_pending
 
         body = self._read_json()
         leg = body.get("leg")
@@ -231,7 +243,7 @@ class AecRoutes(ControlHandlerMixin):
         leg = leg.strip()
         # Match GET /aec's fresh reconciler-owned view. jasper-control is
         # long-lived, so its process environment can lag a mic hotplug.
-        choices = usb_mic_leg_choices(aec_endpoints._fresh_jasper_env())
+        choices = usb_mic_leg_choices(aec_endpoints.fresh_jasper_env())
         allowed = {
             str(choice.get("value") or "")
             for choice in choices
@@ -254,16 +266,16 @@ class AecRoutes(ControlHandlerMixin):
         # value clears systemd's crash-loop counter before restart so rapid
         # authenticated changes cannot spend StartLimitAction=reboot's
         # recovery budget (the reconciler uses the same safety contract).
-        with aec_endpoints._usb_mic_leg_apply_lock:
+        with _usb_mic_leg_apply_lock:
             persisted_matches = read_usb_mic_leg() == leg
             if persisted_matches:
-                current_status = aec_endpoints._aec_full_status()
+                current_status = aec_endpoints.aec_full_status()
                 selection = (current_status.get("usb_mic") or {}).get(
                     "source_selection"
                 ) or {}
                 applied = selection.get("applied") or {}
                 if applied.get("value") == leg:
-                    aec_endpoints._usb_mic_leg_apply_pending = None
+                    _usb_mic_leg_apply_pending = None
                     log_event(
                         logger,
                         "usb_mic.leg_unchanged",
@@ -272,12 +284,12 @@ class AecRoutes(ControlHandlerMixin):
                     )
                     self._send_json(current_status)
                     return
-                pending = aec_endpoints._usb_mic_leg_apply_pending
+                pending = _usb_mic_leg_apply_pending
                 if (
                     pending is not None
                     and pending[0] == leg
                     and time.monotonic() - pending[1]
-                    < aec_endpoints._USB_MIC_LEG_APPLY_COALESCE_SECONDS
+                    < _USB_MIC_LEG_APPLY_COALESCE_SECONDS
                 ):
                     log_event(
                         logger,
@@ -306,7 +318,7 @@ class AecRoutes(ControlHandlerMixin):
                 client=self.address_string(),
             )
             restart = restart_broker.reset_then_manage(
-                aec_endpoints._AEC_BRIDGE_SERVICE,
+                aec_endpoints.AEC_BRIDGE_SERVICE,
                 verb="restart",
                 reason="usb_mic_leg",
                 no_block=True,
@@ -316,7 +328,7 @@ class AecRoutes(ControlHandlerMixin):
                 reset_timeout=aec_endpoints._ONESHOT_KICK_TIMEOUT_SEC,
             )
             if not restart.get("ok"):
-                failed_status = aec_endpoints._aec_full_status()
+                failed_status = aec_endpoints.aec_full_status()
                 self._send_refused(
                     error=(
                         "Computer microphone source was saved, but the "
@@ -328,8 +340,8 @@ class AecRoutes(ControlHandlerMixin):
                     usb_mic=failed_status.get("usb_mic") or {},
                 )
                 return
-            aec_endpoints._usb_mic_leg_apply_pending = (leg, time.monotonic())
-        self._send_accepted(**aec_endpoints._aec_full_status())
+            _usb_mic_leg_apply_pending = (leg, time.monotonic())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_threshold(self) -> None:
@@ -396,7 +408,7 @@ class AecRoutes(ControlHandlerMixin):
         # Button-initiated only — nothing else starts this unit. Token-gated
         # like the other high-impact /aec mutations. The lock makes
         # check-then-start atomic across worker threads.
-        with aec_endpoints._aec_commission_start_lock:
+        with _aec_commission_start_lock:
             if aec_endpoints._aec_commission_running():
                 self._send_json(
                     {
@@ -419,11 +431,11 @@ class AecRoutes(ControlHandlerMixin):
             "aec.commission.start",
             client=self.address_string(),
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_aec_firmware_update(self) -> None:
-        status = aec_endpoints._aec_full_status()
+        status = aec_endpoints.aec_full_status()
         firmware = status.get("firmware_update")
         action = firmware.get("action") if isinstance(firmware, dict) else {}
         if not isinstance(action, dict) or not action.get("enabled"):
@@ -450,7 +462,7 @@ class AecRoutes(ControlHandlerMixin):
             if isinstance(firmware, dict)
             else "",
         )
-        self._send_accepted(**aec_endpoints._aec_full_status())
+        self._send_accepted(**aec_endpoints.aec_full_status())
         return
 
     def _post_enhanced_aec_install(self) -> None:
