@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import re
 import stat as stat_module
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -221,27 +223,38 @@ def test_dayton_fetch_follows_query_param_download_link():
     assert len(calls) == 2
 
 
-def test_dayton_fetch_never_follows_non_http_links():
-    """SSRF/LFI guard: a non-http(s) link in the (external) vendor response
-    must never be fetched. urljoin lets an absolute href override the scheme,
-    so without the guard a file:// link would be opened by the fetch.
-    """
-    followed: list[str] = []
+def test_the_vendor_opener_refuses_a_redirect_off_its_own_https_host():
+    """A redirect is followed only where a page's link would be: over https to
+    the host that sent it. Cleartext is refused, and its target never asked."""
+    reached: list[str] = []
 
-    def fake_open(req, timeout):
-        if isinstance(req, urllib.request.Request):
-            # Only link is a file:// URL whose path ends in a cal suffix.
-            return b'<html><a href="file:///etc/passwd.txt">x</a></html>'
-        followed.append(req)
-        return b"20 -1\n100 0\n1000 1\n"
+    class Redirecting(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - the stdlib's name
+            if self.path == "/cal.txt":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/moved.txt")
+                self.end_headers()
+                return
+            reached.append(self.path)
+            body = b"20 -1\n100 0\n1000 1\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
-    with pytest.raises(vendor.CalibrationUpstreamError):
-        vendor.fetch_dayton_calibration_text(
-            vendor_model="iMM-6",
-            serial="cmm31555",
-            opener=fake_open,
-        )
-    assert followed == []  # the file:// link was never opened
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(vendor.CalibrationLinkRefused):
+            vendor._default_urlopen(f"http://127.0.0.1:{server.server_port}/cal.txt", 5.0)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert reached == []
 
 
 def test_minidsp_fetch_uses_serial_url_candidates():

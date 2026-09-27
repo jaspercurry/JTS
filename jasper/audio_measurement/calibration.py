@@ -204,6 +204,11 @@ _NUMBER_RE = re.compile(
 )
 
 
+#: A tag anywhere makes the text a page: markup is never a calibration file,
+#: however many of its lines open with a number (a CSS keyframe does).
+_MARKUP_RE = re.compile(r"<[A-Za-z!/]")
+
+
 def parse_calibration_text(
     text: str,
     *,
@@ -221,6 +226,8 @@ def parse_calibration_text(
         raise ValueError(
             "sign_convention must be 'correction' or 'response'"
         )
+    if _MARKUP_RE.search(text):
+        raise ValueError("calibration file is markup, not a curve")
 
     rows: list[tuple[float, float]] = []
     for raw_line in text.splitlines():

@@ -11,6 +11,7 @@ by :mod:`jasper.audio_measurement.calibration`.
 from __future__ import annotations
 
 import html
+import http.client
 import logging
 import re
 import urllib.error
@@ -33,6 +34,8 @@ from jasper.audio_measurement.mic_identity import (
 )
 from jasper.log_event import log_event
 
+from .mic_calibration import MAX_UPLOAD_BYTES
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,12 +51,68 @@ class CalibrationUpstreamError(CalibrationLookupError):
     """Vendor lookup could not be completed because the provider failed."""
 
 
+class CalibrationTooLargeError(CalibrationUpstreamError):
+    """The vendor answered with more than :data:`MAX_UPLOAD_BYTES`."""
+
+
+class CalibrationLinkRefused(CalibrationUpstreamError):
+    """The vendor sends this lookup somewhere other than its own https host."""
+
+
 UrlOpen = Callable[[urllib.request.Request | str, float], bytes]
+
+#: Every way a request can fail short of an answer. ``IncompleteRead`` and its
+#: ``http.client`` siblings are not ``OSError``s; a link urllib cannot encode
+#: raises ``UnicodeError``.
+_FETCH_ERRORS = (OSError, http.client.HTTPException, UnicodeError)
+
+
+def _on_vendor_host(base_url: str, link: str) -> bool:
+    """Whether ``link`` is https to ``base_url``'s own host and port.
+
+    urljoin lets an absolute href, and a server its redirect, replace the
+    scheme and host, so a vendor could otherwise send this lookup to a local
+    file, a LAN or loopback service, or over cleartext.
+    """
+    try:
+        base, target = urllib.parse.urlsplit(base_url), urllib.parse.urlsplit(link)
+        base_port, target_port = base.port or 443, target.port or 443
+    except ValueError:
+        return False
+    return (
+        target.scheme == "https"
+        and (target.hostname or "").rstrip(".") == (base.hostname or "").rstrip(".")
+        and target_port == base_port
+    )
+
+
+class _VendorHostRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only where :func:`_on_vendor_host` follows a link."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _on_vendor_host(req.full_url, newurl):
+            raise CalibrationLinkRefused(
+                "the vendor redirected this lookup off its own https host"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_VendorHostRedirects)
 
 
 def _default_urlopen(req: urllib.request.Request | str, timeout: float) -> bytes:
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    with _OPENER.open(req, timeout=timeout) as resp:
+        body = resp.read(MAX_UPLOAD_BYTES + 1)
+        owed = getattr(resp, "length", None)
+    if len(body) > MAX_UPLOAD_BYTES:
+        raise CalibrationTooLargeError(
+            f"the vendor answered with more than {MAX_UPLOAD_BYTES} bytes"
+        )
+    if owed:
+        # A capped read stops short without raising when the body is cut off;
+        # the bytes its declared length still owes say so.
+        raise http.client.IncompleteRead(body, owed)
+    return body
 
 
 def _decode_body(body: bytes) -> str:
@@ -75,13 +134,11 @@ def _extract_links(base_url: str, text: str) -> list[str]:
     links: list[str] = []
     for raw in re.findall(r"""href=["']([^"']+)["']""", text, flags=re.I):
         href = html.unescape(raw)
-        resolved = urllib.parse.urljoin(base_url, href)
-        # Only ever follow http(s): urljoin lets an absolute href override the
-        # scheme, so a `file://…txt` link in the external vendor response would
-        # otherwise read a local file.
-        if urllib.parse.urlsplit(resolved).scheme not in ("http", "https"):
+        try:
+            resolved = urllib.parse.urljoin(base_url, href)
+            split = urllib.parse.urlsplit(href.lower())
+        except ValueError:
             continue
-        split = urllib.parse.urlsplit(href.lower())
         # The calibration filename can live in the URL path (…/abc.txt) or, as
         # Dayton's tool does, only in a query parameter
         # (…/Download?CalibrationFileName=abc.txt&…), so both are checked.
@@ -121,7 +178,7 @@ def fetch_dayton_calibration_text(
     )
     try:
         body = opener(req, timeout)
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except _FETCH_ERRORS as e:
         raise CalibrationUpstreamError(f"Dayton lookup failed: {e}") from e
     text = _decode_body(body)
     if "Unable To find a Calibration File" in text:
@@ -130,10 +187,16 @@ def fetch_dayton_calibration_text(
         )
     if _looks_like_calibration(text):
         return text, url
-    for link in _extract_links(url, text):
+    links = _extract_links(url, text)
+    followable = [link for link in links if _on_vendor_host(url, link)]
+    if links and not followable:
+        raise CalibrationLinkRefused(
+            "Dayton's page links its calibration file off its own https host"
+        )
+    for link in followable:
         try:
             linked = _decode_body(opener(link, timeout))
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except _FETCH_ERRORS:
             continue
         if _looks_like_calibration(linked):
             return linked, link
@@ -211,12 +274,7 @@ def fetch_minidsp_calibration_text(
     opener = opener or _default_urlopen
     errors: list[str] = []
     saw_not_found = False
-    candidates = _minidsp_candidate_urls(
-        vendor_model, serial, orientation=orientation,
-    )
-    if not candidates:
-        raise ValueError("miniDSP serial must contain digits")
-    for url in candidates:
+    for url in _minidsp_candidate_urls(vendor_model, serial, orientation=orientation):
         # miniDSP blanket-blocks urllib's default "Python-urllib/x.y" User-Agent
         # site-wide (a 403, not the real 404), so every request needs an
         # explicit non-default header.
@@ -231,7 +289,7 @@ def fetch_minidsp_calibration_text(
             else:
                 errors.append(f"HTTP {e.code}")
             continue
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
+        except _FETCH_ERRORS as e:
             errors.append(str(e))
             continue
         if _looks_like_calibration(text):
@@ -246,6 +304,18 @@ def fetch_minidsp_calibration_text(
     )
 
 
+def lookup_invalid(model_key: str, serial: str) -> str | None:
+    """Why no vendor lookup can be made for ``model_key`` and ``serial``, or None."""
+    spec = SUPPORTED_MODELS.get(model_key)
+    if spec is None:
+        return f"unsupported calibration model: {model_key}"
+    if not serial.strip():
+        return "serial number is required"
+    if spec["provider"] == "minidsp" and not _minidsp_candidate_urls(spec["vendor_model"], serial):
+        return "miniDSP serial must contain digits"
+    return None
+
+
 def fetch_vendor_calibration(
     *,
     model_key: str,
@@ -254,10 +324,9 @@ def fetch_vendor_calibration(
     root: Path = DEFAULT_CALIBRATION_DIR,
     opener: UrlOpen | None = None,
 ) -> CalibrationRecord:
-    if model_key not in SUPPORTED_MODELS:
-        raise ValueError(f"unsupported calibration model: {model_key}")
-    if not serial.strip():
-        raise ValueError("serial number is required")
+    problem = lookup_invalid(model_key, serial)
+    if problem:
+        raise ValueError(problem)
     spec = SUPPORTED_MODELS[model_key]
     provider = spec["provider"]
     vendor_model = spec["vendor_model"]
