@@ -42,7 +42,7 @@ use jasper_daemon::DaemonHooks;
 use jasper_tts_protocol::assistant_reference;
 use log::{error, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, INPUT_LANES};
 use crate::mixer::Mixer;
 use crate::state::{sched_policy_name, StateServer, StateServerConfig};
 use crate::tts::{spawn_tts_server, tts_channels, TtsInput};
@@ -122,7 +122,7 @@ fn run() -> Result<()> {
     let config = Config::from_env()?;
     info!(
         "event=fanin.config_loaded inputs={} sample_rate={} period_frames={} input_buffer_frames={}",
-        config.input_renderers.len(),
+        INPUT_LANES.len(),
         config.sample_rate,
         config.period_frames,
         config.input_buffer_frames,
@@ -205,15 +205,11 @@ fn run() -> Result<()> {
             (None, None, None)
         };
 
-    // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
-    // required in the production fan-in topology; a missing lane means
-    // one renderer can silently play without entering the summed music
-    // reference.
     let mut mixer = Mixer::new(&config, tts_input).context("opening ALSA PCMs")?;
     info!(
         "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
         mixer.input_count(),
-        config.input_renderers.len(),
+        INPUT_LANES.len(),
     );
     let source_notify_signals = mixer.source_notify_signals();
 

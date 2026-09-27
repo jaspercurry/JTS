@@ -371,7 +371,7 @@ def test_fanin_music_output_tap_stays_deleted():
     # assertion above passes vacuously on an empty string. One surviving,
     # load-bearing name per file — each the direct neighbour of a deleted one.
     for filename, needle in (
-        ("config.rs", "JASPER_FANIN_INPUT_PCMS"),
+        ("config.rs", "INPUT_LANES"),
         ("mixer/pcm_open.rs", "configure_pcm"),
         ("state.rs", "push_output_json"),
     ):
@@ -435,28 +435,23 @@ def test_step_fills_the_ring_payload_once_above_the_ring_publish():
 
 
 def _compiled_fanin_lane_labels() -> list[str]:
-    """Scrape fan-in's compiled-in default ``input_renderers`` array."""
     rs = _config_rs_text()
-    m = re.search(r'"JASPER_FANIN_INPUT_RENDERERS",\s*&\[(.*?)\]', rs, re.S)
-    assert m, "could not find the JASPER_FANIN_INPUT_RENDERERS default in config.rs"
+    m = re.search(r"pub const INPUT_LANES:.*?= \[(.*?)\];", rs, re.S)
+    assert m, "could not find INPUT_LANES in config.rs"
     # Entries are either a bare "label" literal or a named const spelled
     # via a `pub const NAME: &str = "...";` reference (issue #3461).
     consts = dict(re.findall(r'pub const (\w+): &str = "([^"]+)";', rs))
-    raw_items = [x.strip().strip('"') for x in m.group(1).split(",") if x.strip()]
+    raw_items = [x.strip('"') for x in re.findall(r'\(\s*("[^"]+"|\w+),', m.group(1))]
     return [consts.get(item, item) for item in raw_items]
 
 
 @pytest.mark.parametrize("spec", MUSIC_SOURCE_SPECS, ids=lambda s: s.id.value)
 def test_every_music_source_names_a_real_fanin_lane(spec):
-    """A label absent from fan-in's compiled-in default input_renderers is
-    refused at config (ConfigClassError -> park) UNLESS
-    JASPER_FANIN_INPUT_RENDERERS overrides it in the deployed env — this pins
-    the compiled-in default, not the guaranteed runtime outcome."""
     fanin_labels = _compiled_fanin_lane_labels()
     assert spec.fanin_label in fanin_labels, (
         f"MUSIC_SOURCE_SPECS[{spec.id.value}].fanin_label "
-        f"{spec.fanin_label!r} is missing from fan-in's compiled-in default "
-        f"input_renderers {fanin_labels} (scraped from {_FANIN_CONFIG_RS.name})"
+        f"{spec.fanin_label!r} is missing from fan-in's compiled "
+        f"INPUT_LANES {fanin_labels} (scraped from {_FANIN_CONFIG_RS.name})"
     )
 
 
@@ -473,6 +468,6 @@ def test_every_source_to_fanin_label_entry_names_a_real_fanin_lane(source):
     fanin_labels = _compiled_fanin_lane_labels()
     assert label in fanin_labels, (
         f"SOURCE_TO_FANIN_LABEL[{source.value}] = {label!r} is missing from "
-        f"fan-in's compiled-in default input_renderers {fanin_labels} "
+        f"fan-in's compiled INPUT_LANES {fanin_labels} "
         f"(scraped from {_FANIN_CONFIG_RS.name})"
     )

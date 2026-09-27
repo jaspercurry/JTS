@@ -146,9 +146,7 @@ pub struct InputSnapshotSource {
     pub catchup_resync_frames: Arc<AtomicU64>,
     /// Cumulative catch-up resync events (high-water crossings) on this lane.
     pub catchup_events: Arc<AtomicU64>,
-    /// OPTIONAL per-input adaptive-resampler observability. `Some` only on the
-    /// clock-crossing lane [`crate::config::Config::lane_wants_resampler`]
-    /// names (the USB DIRECT lane); `None` (and absent from STATUS) otherwise.
+    /// USB capture crosses the host/DAC clock boundary; aloop lanes do not.
     pub resampler: Option<LaneResamplerObservability>,
     /// Per-lane MIX MUTE flag, shared with the mixer work thread. The
     /// `MUTE`/`UNMUTE <label>` command flips it; the work loop's SUM stage skips

@@ -75,6 +75,16 @@ pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32
 /// stimuli are never onset-shaped, because the measurement loop deconvolves
 /// against the signal it believes it played (`mixer::lane_fade`).
 pub const MEASUREMENT_LANE: &str = "correction";
+pub const USB_DIRECT_LANE: &str = "usbsink";
+
+/// STATUS order; USB has no aloop pair, and correction keeps pair 4 (ADR-0281).
+pub const INPUT_LANES: [(&str, &str); 5] = [
+    ("spotify", "hw:Loopback,1,0"),
+    ("airplay", "hw:Loopback,1,1"),
+    ("bluealsa", "hw:Loopback,1,2"),
+    (USB_DIRECT_LANE, ""),
+    (MEASUREMENT_LANE, "hw:Loopback,1,4"),
+];
 
 /// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
 /// target — a small working cushion the outer DLL always has to steer within.
@@ -110,20 +120,6 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Per-input PCMs — the capture side of each renderer or internal
-    /// test lane's dedicated snd-aloop substream. Order matters: the STATUS
-    /// endpoint reports inputs in this order, and `input_renderers`
-    /// labels align positionally.
-    ///
-    /// Pipe-delimited in `JASPER_FANIN_INPUT_PCMS` (see [`env_list`] for why
-    /// the delimiter is a pipe).
-    pub input_pcms: Vec<String>,
-
-    /// Human-readable labels for each input PCM, in the same order. Surfaced via
-    /// the STATUS endpoint and the structured `event=` log lines; no effect on
-    /// audio. Pipe-delimited in the env var to match `input_pcms`.
-    pub input_renderers: Vec<String>,
-
     /// PCM sample rate. All inputs and the output use this rate; the
     /// per-renderer plug wrappers in `/etc/asound.conf` convert each renderer's
     /// native rate to 48 kHz before the substream.
@@ -195,15 +191,6 @@ pub struct Config {
     /// backstop. Env: `JASPER_FANIN_RING_SLOTS`.
     pub ring_slots: u32,
 
-    /// The lane LABEL (matched against `input_renderers`) that crosses the
-    /// foreign USB clock: the one lane that reads no aloop substream, gets a
-    /// `LaneResampler` (`src/lane_resampler.rs`), and is either the
-    /// `hw:UAC2Gadget` direct capture (`usb_direct_enabled`) or absent —
-    /// rendered as silence. Only ONE lane crosses a foreign clock, so this is a
-    /// single label, not a set. Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
-    /// (default `usbsink`).
-    pub input_resampler_lane_label: String,
-
     /// Target buffered frames the input resampler holds the armed lane's ring
     /// at — the small fixed fill that replaces the catch-up sawtooth. Smaller =
     /// lower latency but less jitter headroom before an underfill→silence.
@@ -246,16 +233,8 @@ pub struct Config {
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
     pub input_resampler_cushion_decay_floor_frames: u32,
 
-    /// DEFAULT-OFF USB DIRECT capture. When `true`, the lane labelled
-    /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
-    /// snd-aloop substream; the mixer opens `usb_direct_device`
-    /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
-    /// `LaneResampler` the gadget's `i32` untouched. This deletes the usbsink
-    /// bridge hop and the aloop cable — ~25 ms measured — from the USB path.
-    /// Direct mode IMPLIES a resampler on that lane (see
-    /// [`Config::lane_wants_resampler`]); with direct off the lane opens
-    /// nothing at all. Env: `JASPER_FANIN_USB_DIRECT` (only the literal
-    /// `enabled` arms it).
+    /// USB capture crosses the host/DAC clock boundary and needs a resampler.
+    /// Only the literal `enabled` arms `JASPER_FANIN_USB_DIRECT`.
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
@@ -294,15 +273,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Whether the lane labelled `label` should be constructed with a
-    /// `LaneResampler`. Only the USB DIRECT lane: it has no aloop catch-up
-    /// fallback to reconcile the host↔DAC rate gap, so it MUST own a
-    /// resampler. Off with direct disabled — that lane then opens nothing and
-    /// renders silence.
-    pub fn lane_wants_resampler(&self, label: &str) -> bool {
-        self.usb_direct_enabled && label == self.input_resampler_lane_label
-    }
-
     /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
     /// combo-mode host-slaved USB clock. True only when the host-clock DLL is
     /// armed AND USB direct capture is on, because fan-in must own the gadget
@@ -326,7 +296,6 @@ impl Config {
     }
 
     fn parse_env() -> Result<Self> {
-        let (input_pcms, input_renderers, input_resampler_lane_label) = parse_lanes()?;
         let (sample_rate, period_frames, input_buffer_frames) = parse_capture_geometry()?;
         let (ring_path, ring_slots) = parse_ring(period_frames)?;
         let input_resampler_target_frames =
@@ -359,8 +328,6 @@ impl Config {
         let (tts_program_duck_db, tts_cue_duck_db, tts_duck_attack_ms, tts_duck_release_ms) =
             parse_tts_duck()?;
         Ok(Self {
-            input_pcms,
-            input_renderers,
             sample_rate,
             period_frames,
             input_buffer_frames,
@@ -384,7 +351,6 @@ impl Config {
             ),
             ring_path,
             ring_slots,
-            input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
             input_resampler_warmup_cushion_frames,
@@ -398,46 +364,6 @@ impl Config {
             host_clock_probe_ppm,
         })
     }
-}
-
-fn parse_lanes() -> Result<(Vec<String>, Vec<String>, String)> {
-    // USB reads the gadget directly, so aloop substream 3 stays unused.
-    let input_pcms = env_list(
-        "JASPER_FANIN_INPUT_PCMS",
-        &[
-            "hw:Loopback,1,0",
-            "hw:Loopback,1,1",
-            "hw:Loopback,1,2",
-            "hw:Loopback,1,4",
-        ],
-    );
-    let input_renderers = env_list(
-        "JASPER_FANIN_INPUT_RENDERERS",
-        &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
-    );
-    let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
-    let aloop_lanes = input_renderers
-        .iter()
-        .filter(|label| *label != &input_resampler_lane_label)
-        .count();
-    if input_pcms.len() != aloop_lanes {
-        anyhow::bail!(
-            "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
-             aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
-             substream) — must match positionally",
-            input_pcms.len(),
-            aloop_lanes,
-            input_renderers.len(),
-            input_resampler_lane_label,
-        );
-    }
-    if input_pcms.is_empty() {
-        anyhow::bail!(
-            "JASPER_FANIN_INPUT_PCMS is empty — daemon needs at least \
-             one input substream to mix"
-        );
-    }
-    Ok((input_pcms, input_renderers, input_resampler_lane_label))
 }
 
 fn parse_capture_geometry() -> Result<(u32, u32, u32)> {
@@ -712,24 +638,10 @@ fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
     }
 }
 
-/// Parse a pipe-delimited list env var. Pipe rather than comma
-/// because ALSA hw PCM names contain commas (`hw:Loopback,1,0`);
-/// a comma-delimited shape would silently split one PCM name into
-/// three entries.
-fn env_list(name: &str, default: &[&str]) -> Vec<String> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .split('|')
-            .map(|e| e.trim().to_string())
-            .filter(|e| !e.is_empty())
-            .collect(),
-        _ => default.iter().map(|s| s.to_string()).collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mixer::{planned_lane_source, LaneSource};
 
     use std::sync::Mutex;
 
@@ -802,8 +714,6 @@ mod tests {
     fn from_env_uses_documented_defaults() {
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_PCMS", None),
-                ("JASPER_FANIN_INPUT_RENDERERS", None),
                 ("JASPER_FANIN_SAMPLE_RATE", None),
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
@@ -824,16 +734,16 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
-                // FOUR aloop PCMs for FIVE labels: the usbsink lane reads the
-                // gadget capture or nothing, never an aloop substream, and the
-                // surviving pairs do not renumber around the gap.
-                assert_eq!(cfg.input_pcms.len(), 4);
-                assert!(!cfg.input_pcms.iter().any(|p| p == "hw:Loopback,1,3"));
-                assert_eq!(cfg.input_pcms[3], "hw:Loopback,1,4");
-                assert_eq!(cfg.input_renderers.len(), 5);
-                assert_eq!(cfg.input_renderers[0], "spotify");
-                assert_eq!(cfg.input_renderers[3], "usbsink");
-                assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
+                assert_eq!(
+                    INPUT_LANES,
+                    [
+                        ("spotify", "hw:Loopback,1,0"),
+                        ("airplay", "hw:Loopback,1,1"),
+                        ("bluealsa", "hw:Loopback,1,2"),
+                        ("usbsink", ""),
+                        ("correction", "hw:Loopback,1,4"),
+                    ]
+                );
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
@@ -856,7 +766,6 @@ mod tests {
                     cfg.assistant_reference_path,
                     "/var/lib/jasper/assistant_volume_reference.json"
                 );
-                assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
@@ -999,7 +908,7 @@ mod tests {
             let cfg = Config::from_env().unwrap();
             assert!(!cfg.usb_direct_enabled);
             assert!(
-                !cfg.lane_wants_resampler("usbsink"),
+                planned_lane_source(&cfg, "") != LaneSource::Direct,
                 "no resampler on any lane with direct off"
             );
         });
@@ -1013,36 +922,27 @@ mod tests {
             let cfg = Config::from_env().unwrap();
             assert!(cfg.usb_direct_enabled);
             assert!(
-                cfg.lane_wants_resampler("usbsink"),
+                planned_lane_source(&cfg, "") == LaneSource::Direct,
                 "direct mode must imply a resampler on the usbsink lane"
             );
             assert!(
-                !cfg.lane_wants_resampler("airplay"),
-                "only the resampler lane label gets one"
+                planned_lane_source(&cfg, "hw:Loopback,1,1") != LaneSource::Direct,
+                "only direct capture needs a resampler"
             );
         });
     }
 
     #[test]
-    fn planned_lane_source_follows_the_resampler_predicate() {
-        use crate::mixer::{planned_lane_source, LaneSource};
-
-        // The three transports a lane can be planned with. Pinned here rather
-        // than in mixer.rs: the decision reads a `Config`, which only these
-        // env-backed tests can build.
-        for (direct, label, expected) in [
-            (None, "usbsink", LaneSource::Disabled),
-            (Some("enabled"), "usbsink", LaneSource::Direct),
-            (None, "airplay", LaneSource::Lane),
-            (Some("enabled"), "airplay", LaneSource::Lane),
+    fn planned_lane_source_follows_pcm_and_direct_enablement() {
+        for (direct, pcm, expected) in [
+            (None, "", LaneSource::Disabled),
+            (Some("enabled"), "", LaneSource::Direct),
+            (None, "hw:Loopback,1,1", LaneSource::Lane),
+            (Some("enabled"), "hw:Loopback,1,1", LaneSource::Lane),
         ] {
             with_env(&[("JASPER_FANIN_USB_DIRECT", direct)], || {
                 let cfg = Config::from_env().unwrap();
-                assert_eq!(
-                    planned_lane_source(&cfg, label),
-                    expected,
-                    "lane {label} with JASPER_FANIN_USB_DIRECT={direct:?}"
-                );
+                assert_eq!(planned_lane_source(&cfg, pcm), expected);
             });
         }
     }
@@ -1051,11 +951,6 @@ mod tests {
     fn input_resampler_knobs_parse_overrides() {
         with_env(
             &[
-                // The lane label picks WHICH label reads no aloop substream, so
-                // the roster moves with it.
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("spotify|usbsink2")),
-                ("JASPER_FANIN_INPUT_PCMS", Some("hw:Loopback,1,0")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
                 (
@@ -1066,7 +961,6 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("parses");
-                assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
                 assert_eq!(cfg.input_resampler_target_frames, 768);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 384);
@@ -1286,74 +1180,6 @@ mod tests {
                 Config::from_env().expect_err("positive duck gain must be rejected");
             });
         }
-    }
-
-    #[test]
-    fn mismatched_pcm_and_renderer_lengths_error() {
-        with_env(
-            &[
-                (
-                    "JASPER_FANIN_INPUT_PCMS",
-                    Some("hw:Loopback,1,0|hw:Loopback,1,1"),
-                ),
-                (
-                    "JASPER_FANIN_INPUT_RENDERERS",
-                    Some("spotify|airplay|bluealsa"),
-                ),
-            ],
-            || {
-                let err = Config::from_env().expect_err("mismatched lengths must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("must match"),
-                    "expected length-mismatch error, got: {}",
-                    msg,
-                );
-            },
-        );
-    }
-
-    /// hw PCM names contain commas (`hw:Loopback,1,0`), which a comma-delimited
-    /// parser splits into three entries; the pipe delimiter avoids the collision.
-    #[test]
-    fn pipe_delimiter_preserves_commas_inside_hw_pcm_names() {
-        with_env(
-            &[
-                (
-                    "JASPER_FANIN_INPUT_PCMS",
-                    Some("hw:Loopback,1,5|hw:Loopback,1,6"),
-                ),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("test_a|test_b")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("pipe-delimited hw names must parse");
-                assert_eq!(cfg.input_pcms.len(), 2);
-                assert_eq!(cfg.input_pcms[0], "hw:Loopback,1,5");
-                assert_eq!(cfg.input_pcms[1], "hw:Loopback,1,6");
-                assert_eq!(cfg.input_renderers.len(), 2);
-            },
-        );
-    }
-
-    #[test]
-    fn whitespace_only_input_pcms_errors() {
-        // `env_list` drops empty/whitespace entries, so a string of only
-        // delimiters parses to an empty Vec.
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
-            ],
-            || {
-                let err = Config::from_env().expect_err("whitespace-only PCM list must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("empty") || msg.contains("at least one"),
-                    "expected empty-list error, got: {}",
-                    msg,
-                );
-            },
-        );
     }
 
     #[test]
@@ -1885,10 +1711,6 @@ mod tests {
             vec![("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some("1025"))],
             vec![("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", Some("3.0"))],
             vec![("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", Some("invalid"))],
-            vec![
-                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
-            ],
             vec![
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
