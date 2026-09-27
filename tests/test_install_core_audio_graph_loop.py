@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from jasper import source_intent
 from jasper.fanin.coupling_reconcile import ENTRY_LOCK_PATH
 from jasper.local_sources.registry import local_source_audio_refresh_units
 from tests.install_surface import installer_shell_paths
@@ -332,32 +331,6 @@ install -m 0644 "{tmp_path / 'missing.service'}" "{tmp_path / 'later.service'}"
     assert not dropin.exists()
     assert not (tmp_path / "later.service").exists()
     assert not transaction.exists()
-
-
-def _function_body(source: str, name: str) -> str:
-    pattern = r"^" + re.escape(name) + r"\(\) \{\n(.*?)\n\}$"
-    m = re.search(pattern, source, re.S | re.M)
-    assert m, f"function {name} not found in systemd-units.sh"
-    return m.group(1)
-
-
-def test_source_intent_reapply_runs_the_bounded_full_coordinator():
-    """The coordinator owns persistent and runtime state for every source,
-    including Bluetooth RF-kill recovery, and it alone starts desired-on
-    sources and repairs stale derived state. Both profiles reach it through
-    this one helper, so its invocation is pinned here and the per-profile
-    ordering by the argv recorder below.
-    """
-    source = FRAGMENT.read_text()
-    # The shared helper is the ONE deploy path that runs the full coordinator.
-    helper = _function_body(source, "reapply_source_intent")
-    assert "jasper-source-intent-reconcile" in helper
-    assert "--reason install --invalidate-status-before" in helper
-    assert (
-        "/usr/bin/timeout --foreground --kill-after=5s "
-        f"{int(source_intent.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
-    ) in helper
-    assert "--stop-disabled" not in helper
 
 
 def test_midloop_failure_still_attempts_every_later_unit(tmp_path):

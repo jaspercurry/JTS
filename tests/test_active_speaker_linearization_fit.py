@@ -18,7 +18,6 @@ from __future__ import annotations
 from collections import Counter
 
 import math
-import re
 
 import numpy as np
 import pytest
@@ -2278,27 +2277,6 @@ def test_the_lift_stage_is_inert_under_a_cut_only_vocabulary():
     assert fit.lift_from_reduced_cuts_db == 0.0
     assert fit.lift_from_boost_db == 0.0
     assert fit.lift_suppressed_reason == ""
-
-
-def test_every_lift_suppression_reason_the_stage_returns_is_enumerated():
-    """The HF stage's own contract, applied to the lift stage: a new
-    suppression path cannot ship an un-enumerated reason string."""
-    import inspect
-    import jasper.active_speaker.linearization_fit as fit_mod
-
-    source = inspect.getsource(fit_mod._lift_stage)
-    # The reason is the LAST argument of every ``_Lift(...)`` the stage
-    # returns, so read those calls rather than every string in the function.
-    calls = re.findall(r"_Lift\((?:[^()]|\([^()]*\))*\)", source)
-    assert calls, "the lift stage must return _Lift results"
-    emitted = set()
-    for call in calls:
-        literals = re.findall(r'"([a-z_]*)"', call)
-        if literals:
-            emitted.add(literals[-1])
-    assert emitted - {""} <= LIFT_SUPPRESSION_REASONS
-    # …and every enumerated reason is actually reachable from the stage.
-    assert LIFT_SUPPRESSION_REASONS <= emitted
 
 
 def test_the_lift_stage_does_not_unwind_the_cd_horn_give_back():

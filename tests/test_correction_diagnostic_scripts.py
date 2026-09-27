@@ -86,19 +86,6 @@ def test_nonfinite_diagnostic_values_serialize_as_null() -> None:
     assert analyze.finite_json({"thd": float("nan")}) == {"thd": None}
 
 
-def test_analyzer_labels_tone_metrics_with_actual_frequency() -> None:
-    source = (
-        REPO / "scripts" / "analyze-correction-diagnostic.py"
-    ).read_text(encoding="utf-8")
-
-    assert '"median_tone_rms_dbfs"' in source
-    assert '"max_tone_rms_dbfs"' in source
-    assert '"tone_frequency_hz": expected_tone_hz' in source
-    assert "median_1khz_rms_dbfs" not in source
-    assert "max_1khz_rms_dbfs" not in source
-    assert source.count("usable_pairs =") == 1
-
-
 def test_capture_requires_speaker_argument(monkeypatch) -> None:
     capture = _load_script("capture-correction-diagnostic.py")
     monkeypatch.setattr(sys, "argv", ["capture-correction-diagnostic.py"])

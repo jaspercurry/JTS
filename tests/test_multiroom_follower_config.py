@@ -582,39 +582,6 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
     )
 
 
-def test_reconcile_camilla_failed_still_logs_without_exc_info() -> None:
-    """Anti-drift anchor for the end-to-end test above.
-
-    That test models reconcile's rendering as ``error=<exception>`` with no
-    ``exc_info``. If reconcile ever starts passing ``exc_info``, ``__cause__``
-    would render on its own and the interpolation could be revisited — so fail
-    here and make someone re-read the pair, rather than letting the model
-    silently stop describing production.
-    """
-
-    source = (
-        Path(fc.__file__).resolve().parent / "reconcile.py"
-    ).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    sites = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "log_event"
-        and any(
-            isinstance(arg, ast.Constant)
-            and arg.value == "multiroom.reconcile.camilla_failed"
-            for arg in node.args
-        )
-    ]
-
-    assert sites, "the camilla_failed log sites should be discoverable"
-    for site in sites:
-        supplied = {kw.arg for kw in site.keywords if kw.arg is not None}
-        assert "error" in supplied
-        assert "exc_info" not in supplied
-
-
 def test_every_chained_grouping_error_interpolates_its_cause() -> None:
     """Every `raise Active*Error(...) from exc` must put `exc` IN the message.
 

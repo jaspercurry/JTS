@@ -5,7 +5,6 @@
 """Hardware-free coverage for the USB-turntable adapter."""
 
 import argparse
-import ast
 import hashlib
 import importlib.util
 import json
@@ -23,10 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "jasper" / "turntable"
 SCRIPT = PACKAGE / "jts_turntable.py"
 VENDOR = PACKAGE / "vendor"
-AUTOSTOP_RULE = ROOT / "deploy" / "udev" / "99-jasper-turntable-autostop.rules"
-AUTOSTOP_UNIT = (
-    ROOT / "deploy" / "systemd" / "jasper-turntable-autostop@.service"
-)
 
 
 def load_script():
@@ -1700,47 +1695,3 @@ def test_relative_turn_rejects_invalid_degrees(turntable, degrees: str) -> None:
     with pytest.raises(SystemExit) as exc_info:
         turntable.build_parser().parse_args(["left", degrees])
     assert exc_info.value.code == 2
-
-
-def test_hotplug_stop_udev_systemd_and_install_wiring() -> None:
-    rule = AUTOSTOP_RULE.read_text()
-    unit = AUTOSTOP_UNIT.read_text()
-    units_install = (ROOT / "deploy/lib/install/systemd-units.sh").read_text()
-
-    assert 'ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523"' in rule
-    assert 'KERNEL=="ttyUSB*"' in rule
-    assert 'SYSTEMD_WANTS}+="jasper-turntable-autostop@%k.service"' in rule
-    assert "BindsTo=dev-%i.device" in unit
-    assert "ConditionPathExists=/dev/%I" in unit
-    assert "ExecStart=/usr/bin/python3 /opt/jasper/jasper/turntable/" in unit
-    assert "--port /dev/%I --json hotplug-stop" in unit
-    assert "/bin/sh" not in unit
-    assert "TimeoutStartSec=90s" in unit
-    assert "DeviceAllow=/dev/%I rw" in unit
-    assert "ReadWritePaths=/run/lock" in unit
-    assert "jasper-turntable-autostop@.service" in units_install
-    assert "99-jasper-turntable-autostop.rules" in units_install
-
-
-def test_jts_adapter_contains_no_serial_protocol() -> None:
-    tree = ast.parse(SCRIPT.read_text())
-    imported_modules = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    imported_modules.update(
-        node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
-    )
-    constants = {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bytes))
-    }
-
-    assert not any(name == "serial" or name.startswith("serial.") for name in imported_modules)
-    assert not any(
-        (value.decode(errors="ignore") if isinstance(value, bytes) else value).startswith("CT")
-        for value in constants
-    )

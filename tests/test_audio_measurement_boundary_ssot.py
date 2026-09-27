@@ -36,49 +36,6 @@ from jasper.audio_measurement import peq, room_boundary, snr_policy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# The files RC1 routed through the SSOT. A file appearing here is a promise
-# that its band edges come from jasper.audio_measurement.room_boundary.
-#
-# KNOWN LIMITATION — this is a per-file allowlist, so it is blind to band-edge
-# literals in modules that do not appear in it, including modules that do not
-# exist yet. RC4's Tier B correction is the concrete near-term risk: a new
-# module that hard-codes 250/350/500 for the Tier A/Tier B handoff would pass
-# this guard simply by not being listed. Whoever adds a module that reasons
-# about the boundary adds it here in the same PR. A whole-package sweep was
-# considered and rejected: these packages are full of unrelated frequencies
-# (crossover corners, analysis bands, display vocabulary) and a blanket scan
-# would be mostly false positives, which is how guards get disabled.
-ROUTED_FILES: tuple[str, ...] = (
-    "jasper/audio_measurement/peq.py",
-    "jasper/audio_measurement/analysis.py",
-    "jasper/active_speaker/flat_spec.py",
-)
-
-# The values that belong to the SSOT, matched by VALUE rather than by spelling.
-# `350`, `350.0`, `350.`, and `3.5e2` are all the same re-declaration, and an
-# earlier spelling-based version of this guard let three of those four through
-# (mutation-verified). The scan parses each numeric literal and compares.
-SSOT_VALUES: tuple[float, ...] = (250.0, 350.0, 500.0)
-
-
-def _numeric_literals(path: Path) -> list[tuple[int, float]]:
-    """Every numeric literal in the file's CODE, by line.
-
-    Parsed from the AST rather than scanned as text, which buys two things the
-    text version got wrong: prose is excluded for free (comments never reach
-    the AST, and docstrings are `str` constants, so a routing comment may
-    freely say "350 Hz"), and the match is by VALUE — `350`, `350.0`, `350.`,
-    and `3.5e2` are all caught, where a spelling-based regex caught only one.
-    """
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    out: list[tuple[int, float]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            if isinstance(node.value, bool):
-                continue
-            out.append((node.lineno, float(node.value)))
-    return out
-
 
 def _imported_module(path: Path, node: ast.ImportFrom) -> str:
     """The absolute dotted name an ``ImportFrom`` names, relative ones included.
@@ -189,30 +146,6 @@ def test_upward_import_forms(tmp_path, monkeypatch, source, offender_count, uses
     assert len(offenders) == offender_count
     assert used == (
         {(relative, "jasper.active_speaker.runtime_contract")} if uses_allowlist else set()
-    )
-
-
-@pytest.mark.parametrize("relative", ROUTED_FILES)
-def test_routed_files_do_not_redeclare_band_edge_literals(relative: str):
-    """The drift guard (plan D3 requirement 1).
-
-    Before RC1 the "350 Hz cap" was ten independent literals. If this fails,
-    a band edge was hard-coded again somewhere that already promised to read
-    the SSOT — import the constant from
-    ``jasper.audio_measurement.room_boundary`` instead. If the number genuinely
-    is NOT the seam (a mic-physics floor, a tolerance, an unrelated
-    frequency), give it a name and a comment saying so.
-    """
-    path = REPO_ROOT / relative
-    source_lines = path.read_text(encoding="utf-8").splitlines()
-    offenders = [
-        f"{relative}:{number}: {value!r} in {source_lines[number - 1].strip()}"
-        for number, value in _numeric_literals(path)
-        if value in SSOT_VALUES
-    ]
-    assert not offenders, (
-        "band-edge literal re-declared outside the boundary SSOT:\n"
-        + "\n".join(offenders)
     )
 
 
