@@ -32,7 +32,7 @@ from ..tts_playout import (
     tts_wire_is_wide as _tts_wire_is_wide,
 )
 from ..config import Config
-from ..cues import AudioCueManager
+from ..cues import AudioCueManager, registry
 from ..cues.manager import (
     REASON_BUSY,
     REASON_OUTPUT_ACTIVE,
@@ -282,8 +282,7 @@ class AssistantOutput:
         cues = self._cues
         if cues is None:
             return "cues_not_configured"
-        from ..cues.registry import find as _find
-        if _find(slug) is None:
+        if registry.find(slug) is None:
             return REASON_UNKNOWN_SLUG
         refusal = self.admission_refusal()
         if refusal is not None:

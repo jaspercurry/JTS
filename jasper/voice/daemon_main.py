@@ -236,14 +236,11 @@ def _make_connection(
     code below it talks only to the `LiveConnection` / `LiveTurn`
     Protocols and works equally for any provider that implements them.
 
-    Adapter modules are imported lazily inside each branch. Loading
-    `gemini_session` pulls in `google.genai` (~49 MB resident); loading
-    `openai_session`/`grok_session` skips that cost when the active
-    provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
+    Load only the selected provider SDK to bound the daemon's memory use."""
     if speech_policy is None:
         speech_policy = build_effective_speech_input_policy(cfg)
     if cfg.voice_provider == "gemini":
-        from .gemini_session import GeminiLiveConnection
+        from .gemini_session import GeminiLiveConnection  # lazy: optional provider SDK and import cost
         return GeminiLiveConnection(
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
@@ -257,7 +254,7 @@ def _make_connection(
             voice=cfg.openai_live_voice, backend_model=cfg.openai_live_backend_model,
         )
     if cfg.voice_provider == "openai":
-        from .openai_session import OpenAIRealtimeConnection
+        from .openai_session import OpenAIRealtimeConnection  # lazy: optional provider SDK and import cost
         return OpenAIRealtimeConnection(
             api_key=cfg.openai_api_key,
             model=cfg.openai_model,
@@ -269,7 +266,7 @@ def _make_connection(
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
         )
     if cfg.voice_provider == "grok":
-        from .grok_session import GrokRealtimeConnection
+        from .grok_session import GrokRealtimeConnection  # lazy: optional provider SDK and import cost
         return GrokRealtimeConnection(
             api_key=cfg.grok_api_key,
             model=cfg.grok_model,
