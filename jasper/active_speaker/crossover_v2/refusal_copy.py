@@ -13,7 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
-from jasper.speaker_layout import measurement_target_name
+from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -310,9 +310,17 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
 CHANNEL_MAP_FAILED_PREFIX = "channel_map_failed."
 
 
+def _low_to_high(target_id: str) -> tuple[int, bool, str]:
+    """A driver's place low to high in the speaker layout's role order, whose widest
+    mode lists every active role; a primary output before its rear one."""
+    role, variant = measurement_target_parts(target_id)
+    roles = max(MAIN_DRIVER_ROLES_BY_MODE.values(), key=len)
+    return roles.index(role) if role in roles else len(roles), variant != "primary", target_id
+
+
 def channel_map_failed_roles(*evidence: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(sorted({key.removeprefix(CHANNEL_MAP_FAILED_PREFIX) for each in evidence for key, value in each.items()
-                         if key.startswith(CHANNEL_MAP_FAILED_PREFIX) and value is True}))
+                         if key.startswith(CHANNEL_MAP_FAILED_PREFIX) and value is True}, key=_low_to_high))
 
 
 def channel_map_mismatch_message(failed_roles: Sequence[str]) -> str:

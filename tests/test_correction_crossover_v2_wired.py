@@ -689,10 +689,10 @@ async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, 
     assert fakes.graph.restores == 1
 
 
-@pytest.mark.parametrize("failed, kept", [(("tweeter",), True), (("tweeter", "woofer"), True), (("tweeter",), False)])
+@pytest.mark.parametrize("failed, kept", [(("tweeter",), True), (("woofer", "tweeter"), True), (("tweeter",), False)])
 async def test_a_channel_map_stop_names_its_drivers_on_the_page(monkeypatch, tmp_path, box, failed, kept):
-    """The drivers whose CHECK pilots failed the channel map reach the durable failure, the
-    page's sentence and the round's lines; a verdict from before they were kept names none (#1922)."""
+    """The drivers whose CHECK pilots failed the channel map reach the durable failure, low to
+    high, the page's sentence and the round's lines; a verdict from before they were kept names none (#1922)."""
     persist, terminal = v2state.persist_conductor_state, v2state.persist_terminal_failure
     runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
