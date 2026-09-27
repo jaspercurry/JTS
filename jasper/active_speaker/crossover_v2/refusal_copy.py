@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
+from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
 from .spatial import GEOMETRY_RETRY_POSITIONS
 
@@ -304,6 +305,37 @@ def locate_failed_message(pilot_heard: bool | None) -> str:
     return f"{diagnosis} {LOCATE_RETRY_ACTION}"
 
 
+#: A ``channel_map_mismatch`` verdict's evidence names each driver whose pilot failed
+#: the check under this prefix (``channel_map_failed.tweeter``).
+CHANNEL_MAP_FAILED_PREFIX = "channel_map_failed."
+
+
+def _low_to_high(target_id: str) -> tuple[int, bool, str]:
+    """A driver's place low to high in the speaker layout's role order, whose widest
+    mode lists every active role; a primary output before its rear one."""
+    role, variant = measurement_target_parts(target_id)
+    roles = max(MAIN_DRIVER_ROLES_BY_MODE.values(), key=len)
+    return roles.index(role) if role in roles else len(roles), variant != "primary", target_id
+
+
+def channel_map_failed_roles(*evidence: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(sorted({key.removeprefix(CHANNEL_MAP_FAILED_PREFIX) for each in evidence for key, value in each.items()
+                         if key.startswith(CHANNEL_MAP_FAILED_PREFIX) and value is True}, key=_low_to_high))
+
+
+def channel_map_mismatch_message(failed_roles: Sequence[str]) -> str:
+    """``REASON_CHANNEL_MAP_MISMATCH``'s household sentence, naming each driver whose
+    pilot failed; the registry holds the rendering that names none (#1922)."""
+    names = [f"the {measurement_target_name(role)}" for role in failed_roles]
+    if not names:
+        fact = "the drivers played in the expected order"
+    elif len(names) == 1:
+        fact = f"{names[0]} played on its own output"
+    else:
+        fact = f"{', '.join(names[:-1])} and {names[-1]} played on their own outputs"
+    return f"JTS could not confirm that {fact}. Return to speaker setup and check the wiring before measuring again."
+
+
 @dataclass(frozen=True)
 class RetryableReasonCopy:
     """One retryable reason's diagnosis and still-available action.
@@ -562,8 +594,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # The numbers behind the refusal are on
         # `event=correction.crossover_v2_check_diag`, which publishes each
         # role's raw rises, isolation ratio, and bound.
-        "JTS could not confirm that the drivers played in the expected order. "
-        "Return to speaker setup and check the wiring before measuring again.",
+        channel_map_mismatch_message(()),
     ),
     REASON_ANCHOR_AMBIGUOUS: _retriable_reason(
         REASON_ANCHOR_AMBIGUOUS, TEMPLATE_FIX_AND_RETRY, 1,
@@ -1104,11 +1135,11 @@ def exception_detail(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def refusal_copy_for(code: str | None) -> tuple[str, dict[str, Any] | None]:
+def refusal_copy_for(code: str | None, *, failed_roles: Sequence[str] = ()) -> tuple[str, dict[str, Any] | None]:
     """Household copy and an action; unknown codes use internal-error copy."""
     fallback = REASON_REGISTRY[REASON_INTERNAL_ERROR]
     spec = fallback if code is None else REASON_REGISTRY.get(code, fallback)
-    return reason_message(spec.code, spec), dict(spec.next_action) if spec.next_action else None
+    return reason_message(spec.code, spec, failed_roles=failed_roles), dict(spec.next_action) if spec.next_action else None
 
 
 # The transient codes whose first retry is automatic (a banner, no decision
@@ -1125,6 +1156,7 @@ def reason_message(
     *,
     pilot_heard: bool | None = None,
     reflection_measured: bool | None = None,
+    failed_roles: Sequence[str] = (),
 ) -> str:
     """The household sentence for ``code``, given what the capture measured.
 
@@ -1152,6 +1184,8 @@ def reason_message(
         message = locate_failed_message(pilot_heard)
     elif code == REASON_VERIFY_INCONCLUSIVE:
         message = verify_inconclusive_message(reflection_measured)
+    elif code == REASON_CHANNEL_MAP_MISMATCH:
+        message = channel_map_mismatch_message(failed_roles)
     else:
         # ``or spec.banner`` for the silent-auto-retry codes, whose household
         # text IS the banner and whose ``message`` is empty by construction.

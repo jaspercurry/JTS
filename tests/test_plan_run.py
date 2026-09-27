@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferr
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS,
+    REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
     REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
@@ -1479,6 +1479,19 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
 
 
+def _ladder_execute(monkeypatch, box, levels, *, manifest=None, production=None):
+    """A one-rung ladder host's ``execute``, with ``levels`` standing in for ``run_levels``."""
+    monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
+    monkeypatch.setattr(correction_run_host, "run_levels", levels)
+    return correction_run_host.bind_run_door(
+        host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)) if manifest is None else manifest,
+        production=FakeSeams() if production is None else production, conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
+        camilla_factory=lambda: box,
+        ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
+    )[3]
+
+
 async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatch, box):
     """The ladder's last published facts count from the joined manifest that
     ``wait`` reprints once banked, so the two "Measured" lines agree."""
@@ -1487,20 +1500,25 @@ async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatc
               "not_measured": [{"pose": {"deg": 0}, "reason": "summed_sweep_heard"}] * 3}
     packet = SimpleNamespace(runs={}, to_dict=lambda: joined, finish=AsyncMock(), update_schedule=AsyncMock())
     monkeypatch.setattr(correction_run_host, "RoundPacket", lambda *_args: packet)
-    monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
-    monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
-    monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(return_value=[]))
     gate = AnsweredGate()
-    _, _, _, execute = correction_run_host.bind_run_door(
-        host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)),
-        production=FakeSeams(), conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
-        camilla_factory=lambda: box,
-        ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
-    )
+    execute = _ladder_execute(monkeypatch, box, AsyncMock(return_value=[]))
     await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
     ended = gate.progress[-1]
     assert (ended["takes"], ended["not_measured"]) == (1, 3)
     assert round_lines(ended)[0] == coverage_lines({}, joined)[0]
+
+
+async def test_a_ladder_stopped_on_the_channel_map_keeps_the_drivers_it_named(monkeypatch, box):
+    child = RunManifest("packet-level-1", _Store(FakeSeams().records))
+    child.failed_roles = ("tweeter",)
+
+    async def levels(_ladder, *, signals, **_kwargs):
+        signals.request_stop(REASON_CHANNEL_MAP_MISMATCH)
+        return (child,)
+
+    execute = _ladder_execute(monkeypatch, box, levels)
+    result = await execute(None, gate=AnsweredGate(), signals=plan_run.RunSignals(), captures=())
+    assert (result.reason, result.failed_roles) == (REASON_CHANNEL_MAP_MISMATCH, ("tweeter",))
 
 
 @pytest.mark.parametrize("site", ["transaction", "executor", "ladder"])
@@ -1516,15 +1534,7 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
     outer = RunManifest("packet", store)
     gate = AnsweredGate()
     if site == "ladder":
-        monkeypatch.setattr(correction_run_host, "bind_plan_analysis", lambda *a, **kw: (None, None))
-        monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", lambda _: None)
-        monkeypatch.setattr(correction_run_host, "run_levels", AsyncMock(side_effect=failure))
-        _, _, _, execute = correction_run_host.bind_run_door(
-            host=None, device=None, evidence_store=None, manifest=outer, production=fakes,
-            conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
-            camilla_factory=lambda: box,
-            ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
-        )
+        execute = _ladder_execute(monkeypatch, box, AsyncMock(side_effect=failure), manifest=outer, production=fakes)
         with pytest.raises(ProgramPlaybackRefused):
             await execute(None, gate=gate, signals=plan_run.RunSignals(), captures=())
     else:

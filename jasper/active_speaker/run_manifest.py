@@ -85,6 +85,8 @@ class RunManifest:
     wall_s: list[float] = field(default_factory=list)
     reason: str = ""
     detail: str = ""
+    #: The drivers the stopping verdict names (``channel_map_mismatch``).
+    failed_roles: tuple[str, ...] = ()
     stopped_at: Mapping[str, int] | None = None
     cancelled: bool = False
     finalized: bool = False

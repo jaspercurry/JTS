@@ -44,7 +44,7 @@ from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
     CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_RETRIES_SPENT, REASON_USER_STOPPED, TakeVerdict,
-    exception_detail,
+    channel_map_failed_roles, exception_detail,
 )
 from .crossover_v2.session import TuningSession
 from .crossover_v2.spatial import analysis_curve_records
@@ -554,6 +554,7 @@ async def _run(
                     gate.publish({**progress, "fault": verdict.fault, "next_action": verdict.next})
                 if verdict.next == "stop":
                     manifest.reason = verdict.fault or "take_stopped"
+                    manifest.failed_roles = channel_map_failed_roles(verdict.evidence)
                     break
                 if signals.complete.is_set():
                     if offset + 1 < len(work):

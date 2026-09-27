@@ -538,14 +538,21 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
     return heard if isinstance(heard, bool) else None
 
 
+def _failure_failed_roles(status: Mapping[str, Any]) -> tuple[str, ...]:
+    """The drivers the failed capture names; empty for a record written before they were kept."""
+    roles = _mapping(_v2(status).get("failure")).get("failed_roles")
+    return tuple(str(role) for role in roles) if isinstance(roles, list) else ()
+
+
 def _reason_message(
     code: str, spec: ReasonSpec, status: Mapping[str, Any],
 ) -> str:
-    """Use the registry's copy with recorded evidence (issues #1974, #2085)."""
+    """Use the registry's copy with recorded evidence (issues #1974, #2085, #1922)."""
     return reason_message(
         code, spec,
         pilot_heard=_failure_pilot_heard(status),
         reflection_measured=_verify_gate_reflection_measured(status),
+        failed_roles=_failure_failed_roles(status),
     )
 
 
