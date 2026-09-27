@@ -15,6 +15,7 @@ from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.capture_source import CaptureStopped
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.web.correction_crossover_v2_wired import build_v2_wired_run_and_consume
+from tests._async_wait import wait_signalled
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_field_maps
 
@@ -71,7 +72,7 @@ async def test_a_cancelled_run_stays_cancelled_when_its_terminal_persists_time_o
 
     with spawn_lock_holder(tmp_path / "state.json", hold_seconds=60):
         run = asyncio.ensure_future(runner(SimpleNamespace(session_id="run")))
-        await started.wait()
+        await wait_signalled(started, "the run's plan start", producer=run)
         run.cancel()
         with pytest.raises(asyncio.CancelledError):
             await run
