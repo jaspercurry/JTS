@@ -5516,7 +5516,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
         config_dir=config_dir,
         camilla_factory=lambda: fake,
     )
-    body = json.dumps({"enabled": True}).encode()
+    body = json.dumps(SoundProfile().to_dict()).encode()
     raw = (
         b"POST /apply HTTP/1.1\r\nHost: jts.local\r\n"
         + f"Content-Length: {len(body)}\r\n".encode()

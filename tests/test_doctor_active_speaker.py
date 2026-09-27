@@ -349,7 +349,7 @@ def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path)
 _SAVED_SOUND_PROFILE = {
     "enabled": True,
     "curve_id": "harman",
-    "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+    "simple_eq": {"sub_bass_db": 0.0, "bass_db": 1.0, "mid_db": 0.0, "presence_db": 0.0, "treble_db": 0.0},
 }
 
 

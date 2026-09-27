@@ -15,6 +15,7 @@ from jasper.sound.profile import (
     ProfileLibraryEntry,
     SimpleEq,
     SoundProfile,
+    SoundProfileRefused,
     build_sound_filter_slots,
     build_sound_filters,
     delete_named_profile,
@@ -58,15 +59,6 @@ def test_profile_input_is_clamped_and_normalized():
         freq_hz=20.0,
         gain_db=12.0,
         q=10.0,
-    )
-
-
-def test_simple_eq_migrates_legacy_three_band_profile():
-    # Old persisted profiles only carried bass/mid/treble. They must load
-    # unchanged, with the two new bands defaulting to 0 dB.
-    eq = SimpleEq.from_mapping({"bass_db": 3.0, "mid_db": -2.0, "treble_db": 1.0})
-    assert eq == SimpleEq(
-        sub_bass_db=0.0, bass_db=3.0, mid_db=-2.0, presence_db=0.0, treble_db=1.0,
     )
 
 
@@ -141,6 +133,7 @@ def test_disabled_profile_emits_no_sound_filters():
 def test_string_false_is_parsed_as_disabled():
     profile = SoundProfile.from_mapping({
         "enabled": "false",
+        "simple_eq": SimpleEq().to_dict(),
         "parametric_bands": [{"enabled": "false", "gain_db": 6.0}],
     })
 
@@ -321,7 +314,9 @@ def test_missing_profile_has_no_applied_timestamp(tmp_path):
     assert profile.updated_at == ""
 
 
-@pytest.mark.parametrize("content", [b"{not json", b"\xff"])
+# An old shape falls back too, as a profile and as a library entry, so /sound/eq/ still opens (#2902).
+@pytest.mark.parametrize("content", [b"{not json", b"\xff", json.dumps(
+    {"profiles": [{"id": "custom_0123456789ab", "profile": {"simple_eq": {"bass_db": 3.0}}}]}).encode()])
 @pytest.mark.parametrize("load, expected", [
     (load_profile, SoundProfile(updated_at="")), (load_profile_library, ()),
 ])
@@ -329,6 +324,18 @@ def test_corrupt_profile_data_falls_back(tmp_path, content, load, expected):
     path = tmp_path / "sound_profile.json"
     path.write_bytes(content)
     assert load(path) == expected
+
+
+@pytest.mark.parametrize("field", ["simple_eq", *(f"simple_eq.{name}" for name in SIMPLE_EQ_FIELDS)])
+def test_a_profile_missing_a_simple_eq_field_refuses_by_that_field(field):
+    raw = SoundProfile(simple_eq=SimpleEq(bass_db=3.0)).to_dict()
+    if field == "simple_eq":
+        raw.update(raw.pop("simple_eq"))
+    else:
+        del raw["simple_eq"][field.removeprefix("simple_eq.")]
+    with pytest.raises(SoundProfileRefused) as refused:
+        SoundProfile.from_mapping(raw)
+    assert (refused.value.code, refused.value.field) == ("sound_profile_field_missing", field)
 
 
 # ---------------------------------------------------------------------------

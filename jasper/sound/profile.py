@@ -30,6 +30,7 @@ from typing import Any, Iterable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
 from jasper.biquad import GAINLESS_BIQUAD_TYPES, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_db, freq_trig
+from jasper.json_fields import CodedFieldError
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,7 @@ PROFILE_LIBRARY_PATH = "/var/lib/jasper/sound_profiles.json"
 # Per-band limit for Simple mode. ±12 dB matches the 5-band sliders in
 # the redesigned /sound/ UI. Clip safety at that boost is not automatic —
 # it depends on the user's opt-in headroom trim (default 0 dB; see
-# camilla_stereo_prefix.py). The calibration advisor shares this bound
-# (via response.py), so model-proposed simple_eq edits get the same range.
+# camilla_stereo_prefix.py).
 SIMPLE_EQ_LIMIT_DB = 12.0
 ADVANCED_GAIN_LIMIT_DB = 12.0
 MAX_PARAMETRIC_BANDS = 8
@@ -152,6 +152,16 @@ CURVE_PRESETS: tuple[CurvePreset, ...] = (
 _CURVE_BY_ID = {preset.id: preset for preset in CURVE_PRESETS}
 
 
+class SoundProfileRefused(CodedFieldError):
+    """A profile without a field its writer always writes; no old shape is read (#2902)."""
+
+    code = "sound_profile_field_missing"
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"sound profile has no {field}; save it again at /sound/eq/")
+        self.field = field
+
+
 @dataclass(frozen=True)
 class SimpleEq:
     """Five-band consumer EQ: Sub-bass / Bass / Mid / Presence / Treble.
@@ -161,11 +171,6 @@ class SimpleEq:
     SIMPLE_BANDS so the model, the CamillaDSP emitter, and the web UI all
     render from one source. Bounded to ±SIMPLE_EQ_LIMIT_DB; room
     correction and hardware fault compensation live elsewhere.
-
-    Older 3-band profiles (bass/mid/treble only) load unchanged — the two
-    new bands default to 0 dB. Note the band centres shifted with the
-    redesign (bass 105->150 Hz, treble shelf 4k->10k), so a migrated
-    profile's bass/treble values now shape slightly different frequencies.
     """
 
     sub_bass_db: float = 0.0
@@ -176,25 +181,15 @@ class SimpleEq:
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SimpleEq":
-        raw = raw if isinstance(raw, dict) else {}
-
-        def band(*keys: str) -> float:
-            for key in keys:
-                if key in raw:
-                    return _clip(
-                        _coerce_float(raw.get(key), 0.0),
-                        -SIMPLE_EQ_LIMIT_DB,
-                        SIMPLE_EQ_LIMIT_DB,
-                    )
-            return 0.0
-
-        return cls(
-            sub_bass_db=band("sub_bass_db", "sub_bass"),
-            bass_db=band("bass_db", "bass"),
-            mid_db=band("mid_db", "mid"),
-            presence_db=band("presence_db", "presence"),
-            treble_db=band("treble_db", "treble"),
-        )
+        if not isinstance(raw, dict):
+            raise SoundProfileRefused("simple_eq")
+        missing = [name for name in SIMPLE_EQ_FIELDS if name not in raw]
+        if missing:
+            raise SoundProfileRefused(f"simple_eq.{missing[0]}")
+        return cls(**{
+            name: _clip(_coerce_float(raw[name], 0.0), -SIMPLE_EQ_LIMIT_DB, SIMPLE_EQ_LIMIT_DB)
+            for name in SIMPLE_EQ_FIELDS
+        })
 
     def to_dict(self) -> dict[str, float]:
         return {
@@ -237,8 +232,6 @@ SIMPLE_BANDS: tuple[SimpleBand, ...] = (
                "Highshelf", 10000.0),
 )
 
-# Field names in canonical order. The calibration advisor's validator
-# range-checks exactly these, so deriving it here keeps the two in sync.
 SIMPLE_EQ_FIELDS: tuple[str, ...] = tuple(b.field for b in SIMPLE_BANDS)
 
 
@@ -355,7 +348,7 @@ class SoundProfile:
         return cls(
             enabled=_coerce_bool(raw.get("enabled"), True),
             curve_id=curve_id,
-            simple_eq=SimpleEq.from_mapping(raw.get("simple_eq", raw)),
+            simple_eq=SimpleEq.from_mapping(raw.get("simple_eq")),
             parametric_bands=bands,
             updated_at=str(raw.get("updated_at") or _utc_now_iso()),
             profile_id=profile_id,
@@ -550,7 +543,11 @@ def load_profile_library(path: str | Path | None = None) -> tuple[ProfileLibrary
     entries: list[ProfileLibraryEntry] = []
     seen: set[str] = set()
     for item in raw_profiles:
-        entry = ProfileLibraryEntry.from_mapping(item)
+        try:
+            entry = ProfileLibraryEntry.from_mapping(item)
+        except SoundProfileRefused as e:
+            logger.warning("sound profile library %s: skipped an entry: %s", library_path, e)
+            continue
         if entry is None or entry.id in seen:
             continue
         entries.append(entry)
@@ -848,8 +845,8 @@ def response_preview(
 
 def estimate_headroom_db(profile: SoundProfile) -> float:
     """Peak-boost metric: attenuation that WOULD be needed before preference
-    boosts to avoid clipping. Advisory only — surfaced by doctor / `/state`
-    / the calibration advisor; nothing applies it. The actual applied
+    boosts to avoid clipping. Advisory only — surfaced by doctor and
+    `/state`; nothing applies it. The actual applied
     attenuation is the user-set ``headroom_trim_db`` in
     jasper/sound/settings.py.
     """
@@ -913,7 +910,7 @@ def load_profile(path: str | Path | None = None) -> SoundProfile:
         return SoundProfile.from_mapping(json.loads(profile_path.read_text()))
     except FileNotFoundError:
         return SoundProfile(updated_at="")
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, SoundProfileRefused) as e:
         logger.warning("could not read sound profile %s: %s", profile_path, e)
         return SoundProfile(updated_at="")
 

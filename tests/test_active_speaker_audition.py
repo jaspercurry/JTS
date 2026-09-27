@@ -163,6 +163,7 @@ def test_the_household_layers_survive_the_reduction(
         json.dumps({
             "enabled": True,
             "curve_id": "flat",
+            "simple_eq": dict.fromkeys(("sub_bass_db", "bass_db", "mid_db", "presence_db", "treble_db"), 0.0),
             "parametric_bands": [
                 {"type": "peaking", "freq_hz": 640.0, "gain_db": -2.0, "q": 1.5},
             ],
