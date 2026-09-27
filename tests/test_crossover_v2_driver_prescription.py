@@ -99,11 +99,11 @@ TWEETER_FEATURE_HZ = 5000.0
 
 def _draft() -> dict[str, Any]:
     return design_draft_view(build_design_draft(mono_output_topology(), manual_settings={"drivers": [
-        {"role": "woofer", "measurement_band_hz": [40, 4000],
+        {"role": "woofer", "target_id": "mono:woofer", "measurement_band_hz": [40, 4000],
          "hard_excitation_band_hz": [30, 5000],
          "required_protection_filters": [{"kind": "lowpass", "cutoff_hz": 3000,
                                           "minimum_slope_db_per_octave": 24}]},
-        {"role": "tweeter", "measurement_band_hz": [1000, 20000],
+        {"role": "tweeter", "target_id": "mono:tweeter", "measurement_band_hz": [1000, 20000],
          "hard_excitation_band_hz": [900, 22000],
          "required_protection_filters": [{"kind": "highpass", "cutoff_hz": 1600,
                                           "minimum_slope_db_per_octave": 24}]},

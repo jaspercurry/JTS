@@ -749,22 +749,15 @@ def _summary(
     for target_id, role in target_role.items():
         role_target_ids.setdefault(role, []).append(target_id)
 
-    def resolved_target_ids(
-        drivers: list[dict[str, Any]],
-        *,
-        allow_legacy_role_fanout: bool = False,
-    ) -> set[str]:
+    def resolved_target_ids(drivers: list[dict[str, Any]]) -> set[str]:
         resolved: set[str] = set()
         for driver in drivers:
             explicit = driver.get("target_id")
             if explicit in target_role:
                 resolved.add(str(explicit))
                 continue
-            role = str(driver.get("role") or "")
-            matches = role_target_ids.get(role, [])
-            if allow_legacy_role_fanout:
-                resolved.update(matches)
-            elif len(matches) == 1:
+            matches = role_target_ids.get(str(driver.get("role") or ""), [])
+            if len(matches) == 1:
                 resolved.add(matches[0])
         return resolved
 
@@ -783,10 +776,7 @@ def _summary(
     )
     research_drivers = driver_research.get("drivers", []) if driver_research else []
     research_target_ids = resolved_target_ids(research_drivers)
-    manual_target_ids = resolved_target_ids(
-        manual_drivers,
-        allow_legacy_role_fanout=True,
-    )
+    manual_target_ids = resolved_target_ids(manual_drivers)
     combined_target_ids = research_target_ids | manual_target_ids
     manual_roles = []
     for driver in manual_drivers:

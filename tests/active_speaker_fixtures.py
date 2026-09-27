@@ -314,13 +314,18 @@ def standard_driver_research(*, tweeter_gain_db: float = -18.5) -> dict:
     }
 
 
+def bind_role_rows(topology: OutputTopology, rows: list[dict]) -> list[dict]:
+    """Each role's row once per researchable target of that role; a row no target takes fails loudly."""
+    targets = driver_research_targets(topology)
+    by_role = {row["role"]: row for row in rows}
+    unplaced = set(by_role) - {target["role"] for target in targets}
+    assert not unplaced, f"no researchable target for the {sorted(unplaced)} rows"
+    return [{**by_role[target["role"]], "target_id": target["target_id"]} for target in targets]
+
+
 def current_research(topology: OutputTopology, research: dict) -> tuple[dict, dict]:
     """``research``'s role rows answered for every researchable target, and the models that asks for."""
-    targets = driver_research_targets(topology)
-    by_role = {driver["role"]: driver for driver in research["drivers"]}
-    unplaced = set(by_role) - {target["role"] for target in targets}
-    assert not unplaced, f"no researchable target for the {sorted(unplaced)} research rows"
-    drivers = [{**by_role[target["role"]], "target_id": target["target_id"]} for target in targets]
+    drivers = bind_role_rows(topology, research["drivers"])
     return ({**research, "artifact_schema_version": 2, "drivers": drivers},
             {"target_models": {driver["target_id"]: driver["model"] for driver in drivers}})
 

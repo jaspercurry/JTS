@@ -47,7 +47,7 @@ from tests.test_crossover_v2_driver_prescription import _draft, applied_profile
 from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
 from tests.run_manifest_fixture import write_manifest
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import bind_role_rows, mono_output_topology
 from tests.test_rear_output_foundation import _rear_pair
 from tests.test_active_speaker_runtime_contract import _active_topology
 
@@ -75,7 +75,9 @@ def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, caps
     artifact = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json"
     artifact.write_text(json.dumps(candidate))
     draft_path = bank / "design-draft.json"
-    draft_path.write_text(json.dumps({**json.loads(draft_path.read_text()), "topology": box.to_dict()}))
+    draft = json.loads(draft_path.read_text())
+    draft["manual_settings"]["drivers"] = bind_role_rows(box, draft["manual_settings"]["drivers"])
+    draft_path.write_text(json.dumps({**draft, "topology": box.to_dict()}))
     monkeypatch.setattr(cli, "load_output_topology", lambda: box)
     for args in ([], ["--round", str(bank)]):
         assert cli.main(["contract", *args]) == cli.EXIT_OK

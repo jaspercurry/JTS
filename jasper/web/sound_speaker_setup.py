@@ -14,7 +14,7 @@ from jasper.active_speaker import commissioning_coordinator, design_draft
 from jasper.active_speaker.design_inputs import resolve_design_inputs
 from jasper.active_speaker.driver_pad import PAD_KINDS
 from jasper.active_speaker.driver_safety import (
-    build_driver_research_context, SUPPORTED_ENCLOSURE_KINDS,
+    build_driver_research_context, driver_research_targets, SUPPORTED_ENCLOSURE_KINDS,
 )
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.installation import INSTALLATION_FIELDS
@@ -69,6 +69,14 @@ def preview_layout(raw: Mapping[str, Any]) -> dict[str, Any]:
     return layout_view(build_speaker_layout(load_output_topology(), raw))
 
 
+def _page_manual(topology, manual_settings: Any) -> dict[str, Any]:
+    """The manual rows a driver card shows; a refusal lists the values of any other row."""
+    manual = resolve_design_inputs(topology, manual_settings, None)
+    bindings = manual.pop("bindings")
+    manual["drivers"] = [driver for driver in manual["drivers"] if bindings[driver["target_id"]] != "ambiguous"]
+    return manual
+
+
 def _research_refuses(research: Any) -> bool:
     try:
         design_draft.normalise_driver_research(research)
@@ -92,26 +100,21 @@ def load_setup_view() -> SpeakerSetupView:
         refused = [{**issue("blocker", getattr(exc, "code", "invalid_design_draft"), str(exc)),
                     **({"declared": declared} if declared else {})}]
         coordinator = {"applied_profile": {}, "programs": ()}
-    resolved = resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research"))
-    manual = resolve_design_inputs(topology, draft.get("manual_settings"), None)
-    bindings = manual.pop("bindings")
-    ambiguous_roles = {driver["role"] for driver in manual["drivers"]
-                       if bindings[driver["target_id"]] == "ambiguous"}
-    manual["drivers"] = [driver for driver in manual["drivers"]
-                         if bindings[driver["target_id"]] != "ambiguous"] + [
-        driver for driver in (draft.get("manual_settings") or {}).get("drivers", [])
-        if not driver.get("target_id") and driver["role"] in ambiguous_roles
-    ]
+    manual = _page_manual(topology, draft.get("manual_settings"))
+    resolved = resolve_design_inputs(topology, manual, draft.get("driver_research"))
     preview = {} if refused else build_crossover_preview(draft)
     applied = coordinator["applied_profile"]
     layers = applied_layers(load_applied_baseline_profile_state())
     models = (draft.get("operator_inputs") or {}).get("target_models") or {}
     facts = {driver["target_id"]: driver for driver in resolved["drivers"]}
+    researchable = {target["target_id"] for target in driver_research_targets(topology)}
     targets = []
     for group in topology.speaker_groups:
         rear = any(channel.output_variant == "rear" for channel in group.channels)
         for channel in group.channels:
             target_id = channel.target_id(group.id)
+            if target_id not in researchable:
+                continue
             values = facts.get(target_id, {})
             name = ("Rear woofer" if channel.output_variant == "rear" else "Front woofer") if rear and channel.role == "woofer" else _label(channel.role)
             targets.append({"target_id": target_id, "role": channel.role,

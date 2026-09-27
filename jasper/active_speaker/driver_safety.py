@@ -836,7 +836,6 @@ def validate_manual_target_bindings(
             str(physical_target["target_id"])
         )
     resolved_targets: set[str] = set()
-    legacy_roles: set[str] = set()
     for index, driver in enumerate(manual_settings.get("drivers") or []):
         if not isinstance(driver, Mapping):
             raise DriverSafetyProfileError(
@@ -869,18 +868,15 @@ def validate_manual_target_bindings(
                                     "manual_target_bound_twice")
             resolved_targets.add(target_id)
             continue
-        if role in legacy_roles:
-            raise _unplaced_row(index, driver, role, matches, f"repeats the {role} row", "manual_duplicate_legacy_role")
-        legacy_roles.add(role)
         if not matches:
             raise _unplaced_row(index, driver, role, matches, f"names no output, and this layout has no {role} output",
                                 "manual_role_unknown")
-        if len(matches) == 1:
-            resolved = matches[0]
-            if resolved in resolved_targets:
-                raise _unplaced_row(index, driver, role, matches, f"is a second row for output {resolved}",
-                                    "manual_target_bound_twice")
-            resolved_targets.add(resolved)
+        if len(matches) > 1:
+            raise _unplaced_row(index, driver, role, matches, "names no output", "manual_target_missing")
+        if matches[0] in resolved_targets:
+            raise _unplaced_row(index, driver, role, matches, f"is a second row for output {matches[0]}",
+                                "manual_target_bound_twice")
+        resolved_targets.add(matches[0])
 
 
 def _normalise_profile_manual_settings(

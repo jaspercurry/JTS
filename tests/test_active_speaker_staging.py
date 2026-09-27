@@ -35,7 +35,6 @@ from jasper.active_speaker.crossover_preview import (
 from jasper.active_speaker.design_draft import (
     DRIVER_RESEARCH_KIND,
     ActiveSpeakerDesignDraftError,
-    build_design_draft, design_draft_view,
     normalise_manual_settings,
 )
 from jasper.active_speaker.profile import (
@@ -514,31 +513,6 @@ def test_compile_preset_from_crossover_preview_omits_polarity_and_delay_by_defau
     assert region.upper_polarity == "non-inverted"
     assert region.delay_ms is None
     assert region.delay_target_driver is None
-
-
-def test_legacy_manual_role_rows_keep_stereo_preview_additive_but_not_confirmed() -> None:
-    topology = _stereo_topology(way_count=2)
-    legacy = _driver_research(frequency_hz=2500, way_count=2)
-    draft = design_draft_view(build_design_draft(
-        topology,
-        manual_settings={
-            "drivers": legacy["drivers"],
-            "crossover_candidates": legacy["crossover_candidates"],
-        },
-    ))
-    preview = build_crossover_preview(draft)
-    preset, issues, _gates = preset_binding.compile_preset_from_crossover_preview(topology, preview)
-
-    assert draft["status"] == "ready_for_review"
-    assert draft["summary"]["missing_driver_info_target_ids"] == []
-    assert any(i["code"] == "tweeter:required_highpass_missing"
-               for i in draft["driver_safety_profile"]["issues"])
-    assert {
-        target["target_values_binding"]
-        for target in draft["driver_safety_profile"]["targets"]
-    } == {"missing"}
-    assert preview["status"] == "ready_for_protected_staging"
-    assert preset is not None, issues
 
 
 def test_compile_preset_from_crossover_preview_stereo_polarity_mismatch_blocks() -> None:
