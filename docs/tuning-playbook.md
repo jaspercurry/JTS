@@ -487,7 +487,7 @@ rows, then `across_positions`: per-figure median, worst value and
   Otherwise read `geometry_reason`: `geometry_undeclared`,
   `front_baffle_geometry_undeclared` or `walls_undeclared`; a dip in the fallback
   `section_band` or `coverage` is not proof of a wall hole.
-- `ripple_db` is mean-removed RMS against the rear-muted reference trend;
+- `ripple_db` is RMS about the band median against the rear-muted reference trend;
   it also charges an intended broad re-tilt. `own_trend_ripple_db` measures
   roughness against the candidate's own trend. Smoothing and trend use
   `seat_figures.FIGURE_FRACTION` and `REFERENCE_FRACTION`.

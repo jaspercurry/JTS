@@ -14,7 +14,7 @@ from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 import numpy as np
 
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
-from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
+from jasper.audio_measurement.series_stats import curve_difference, deviation_summary, flatness
 from jasper.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
@@ -158,18 +158,10 @@ def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:
 
 
 def _own_deviation(curve: _Curve, band_hz: tuple[float, float]) -> dict[str, Any] | None:
-    """This candidate's curve as its deviation from its OWN median level: a
-    level difference between two applied graphs must not read as a shape one."""
-    mask = (curve.freqs_hz >= band_hz[0]) & (curve.freqs_hz <= band_hz[1])
-    if not np.any(mask):
-        return None
-    freqs_hz, magnitude_db = curve.freqs_hz[mask], curve.magnitude_db[mask]
-    median_db = float(np.median(magnitude_db))
-    return {
-        "take_path": curve.take_path,
-        "median_db": median_db,
-        **deviation_summary(freqs_hz, magnitude_db - median_db),
-    }
+    """This candidate's :func:`~jasper.audio_measurement.series_stats.flatness`:
+    a level difference between two applied graphs must not read as a shape one."""
+    flat = flatness(curve.freqs_hz, curve.magnitude_db, band_hz)
+    return None if flat is None else {"take_path": curve.take_path, **flat}
 
 
 def _pair_delta(

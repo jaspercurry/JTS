@@ -6,8 +6,9 @@
 """Listening-position figures and their reductions. See ADR-0325.
 
 The rule governing every figure: SHAPE figures (``dip``, ``ripple_db``,
-``handover.hole_db``) are read on the in-band-mean-removed difference, so
-they say nothing about output, and LEVEL figures (``band_level_db``,
+``handover.hole_db``) are read on the difference less its in-band median,
+the level ``series_stats.flatness`` reads ripple about, so they say nothing
+about output, and LEVEL figures (``band_level_db``,
 ``low_bass.level_db``, ``handover.level_db``) carry it. **Show a level figure
 beside every shape figure**, or a merely quieter candidate reads as an
 improvement. Level bands are half-open, ``[lo, hi)``; a dip is read over the
@@ -269,20 +270,20 @@ def position_figures(
         raise ValueError("rear_evidence_curves_unmatched")
     band = None if band_hz is None else (float(band_hz[0]), float(band_hz[1]))
     in_band = np.empty(0, dtype=int) if band is None else band_indices(freqs, band)
-    if band is None or in_band.size < 3 or freqs[0] > band[0] or freqs[-1] < band[1]:
+    level = figure_level_db(freqs, curve)
+    flat = None if band is None else series_stats.flatness(freqs, level - reference, band)
+    if band is None or flat is None or in_band.size < 3 or freqs[0] > band[0] or freqs[-1] < band[1]:
         return {"reason": REASON_COVERAGE_SHORT, "dip": None, "dip_shift": None,
                 "ripple_db": None, "own_trend_ripple_db": None,
                 "handover": None, "low_bass": None, "band_level_db": None}
-    level = figure_level_db(freqs, curve)
-    shape = level - reference
-    shape -= float(np.mean(shape[in_band]))
+    shape = level - reference - flat["median_db"]
     window = None if handover_hz is None else _clip(
         (handover_hz * 2.0**-HANDOVER_HALF_OCTAVES, handover_hz * 2.0**HANDOVER_HALF_OCTAVES),
         coverage_hz, coverage_hz[1])
     dip = _deepest_dip(freqs, shape, band, DIP_MIN_DEPTH_DB)
     return {
         "reason": "", "dip": dip, "dip_shift": _dip_shift(dip, incumbent),
-        "ripple_db": float(np.sqrt(np.mean(shape[in_band] ** 2))),
+        "ripple_db": flat["rms_db"],
         "own_trend_ripple_db": own_trend_ripple_db(freqs, curve, band_hz=band),
         "handover": _handover(freqs, level, reference, shape, handover_hz, window),
         "low_bass": _low_bass(
@@ -292,11 +293,12 @@ def position_figures(
     }
 
 
-def own_trend_ripple_db(freqs_hz: Any, curve_db: Any, *, band_hz: Sequence[float]) -> float:
-    """Mean-removed RMS against the candidate's own one-octave trend, dB."""
+def own_trend_ripple_db(freqs_hz: Any, curve_db: Any, *, band_hz: Sequence[float]) -> float | None:
+    """The curve's :func:`~jasper.audio_measurement.series_stats.flatness`
+    against its own one-octave trend: its RMS, dB."""
     freqs, curve = np.asarray(freqs_hz, dtype=np.float64), np.asarray(curve_db, dtype=np.float64)
-    shape = (figure_level_db(freqs, curve) - reference_curve_db(freqs, curve))[band_indices(freqs, band_hz)]
-    return float(np.sqrt(np.mean((shape - np.mean(shape)) ** 2)))
+    flat = series_stats.flatness(freqs, figure_level_db(freqs, curve) - reference_curve_db(freqs, curve), band_hz)
+    return None if flat is None else flat["rms_db"]
 
 
 def spread_rms_db(spread_db: Any, freqs_hz: Any, *, band_hz: Sequence[float]) -> float | None:

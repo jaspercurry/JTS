@@ -708,10 +708,10 @@ def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
 
 
 @pytest.mark.parametrize("window,level,ripple,expected", [
-    (None, 7, [0, 0, 0, 0], 0), (None, -3, [-1, 1, -1, 1], 1),
-    (7.0, 7, [0, 0, 0, 0], 0), (7.0, -3, [-1, 1, -1, 1], 1),
+    (None, 7, [0, 0, 0, 0], 0), (None, -3, [0, 0, 2, 0], 1),
+    (7.0, 7, [0, 0, 0, 0], 0), (7.0, -3, [0, 0, 2, 0], 1),
 ])
-def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, level, ripple, expected):
+def test_packet_stats_measure_flatness_about_the_series_median(tmp_path, window, level, ripple, expected):
 
     session, state = _live_session(tmp_path)
     group = {"set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
@@ -810,10 +810,11 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     expected_db = np.interp(hz, reference.freqs_hz[keep], gate_sweep.smooth_fractional_octave(
         reference.freqs_hz[keep], reference.magnitude_db[keep], gated["smoothing_fractional_octave"]))
     np.testing.assert_array_equal(db, expected_db)
-    band = db[(hz >= gated["trusted_floor_hz"]) & (hz <= 10000)]
+    plot_hz, plot_db = (np.asarray(gated["plot"][key], dtype=float) for key in ("freqs_hz", "deviation_db"))
+    band = plot_db[(plot_hz >= gated["trusted_floor_hz"]) & (plot_hz <= 10000)]
     assert packet["series"][1]["stats"]["flatness_rms_db"] == {
         "band_hz": [gated["trusted_floor_hz"], 10000],
-        "value": pytest.approx(float(np.std(band))),
+        "value": pytest.approx(float(np.sqrt(np.mean((band - np.median(band)) ** 2)))),
     }
     assert all(p.read_bytes() == content for p, content in before.items())
 

@@ -60,6 +60,21 @@ def local_minima(freqs_hz: Any, curve_db: Any, band_hz: Sequence[float]) -> np.n
     return inside[(curve[inside] <= curve[inside - 1]) & (curve[inside] < curve[inside + 1])]
 
 
+def flatness(freqs_hz: Any, curve_db: Any, band_hz: Sequence[float]) -> dict[str, Any] | None:
+    """How flat ``curve_db`` is over the closed band: its finite bins'
+    departure from the level most of them agree on, their median (ADR-0358's
+    level rule, read on one curve), as :func:`deviation_summary`'s scalars
+    beside that ``median_db``. Read at the curve's own smoothing. ``None``
+    with no finite bin there. See #5661."""
+    freqs = np.asarray(freqs_hz, dtype=float)
+    curve = np.asarray(curve_db, dtype=float)
+    inside = band_bins(freqs, band_hz) & np.isfinite(curve)
+    if not inside.any():
+        return None
+    median_db = float(np.median(curve[inside]))
+    return {"median_db": median_db, **deviation_summary(freqs[inside], curve[inside] - median_db)}
+
+
 @dataclass(frozen=True)
 class CurveDifference:
     """``curve_db - against_db`` on the curve's grid, after ``level_offset_db``
@@ -99,9 +114,7 @@ def curve_difference(
     return CurveDifference(freqs[mask], curve, against, offset)
 
 
-def series_stats(
-    curve: Mapping[str, Any], plot: Mapping[str, Any], trusted_floor_hz: float | None,
-) -> dict[str, Any]:
+def series_stats(plot: Mapping[str, Any], trusted_floor_hz: float | None) -> dict[str, Any]:
     def number(value: float | None, lo_hz: float) -> dict[str, Any]:
         return {"value": value, "below_trusted_floor": value is not None
                 and trusted_floor_hz is not None and lo_hz < trusted_floor_hz}
@@ -111,11 +124,8 @@ def series_stats(
     valid = np.isfinite(values) & (freqs > 0)
     tilt_lo_hz = max(SERIES_STATS_TILT_BAND_HZ[0], trusted_floor_hz or SERIES_STATS_TILT_BAND_HZ[0])
     measured = valid & (freqs >= tilt_lo_hz) & (freqs <= SERIES_STATS_TILT_BAND_HZ[1])
-    raw_freqs = np.asarray(curve["freqs_hz"], dtype=float)
-    raw = np.asarray(curve["display"]["deviation_db"], dtype=float)
     flatness_lo_hz = trusted_floor_hz if trusted_floor_hz is not None else SERIES_STATS_FLATNESS_BAND_HZ[0]
-    flatness_band = np.isfinite(raw) & (raw_freqs >= flatness_lo_hz) & (raw_freqs <= SERIES_STATS_FLATNESS_BAND_HZ[1])
-    centered = raw[flatness_band] - np.mean(raw[flatness_band]) if flatness_band.any() else raw[flatness_band]
+    flat = flatness(freqs, values, (flatness_lo_hz, SERIES_STATS_FLATNESS_BAND_HZ[1]))
     bands = {}
     for center, lo, hi in octave_bands_hz(20, 20000):
         band = values[valid & (freqs >= lo) & (freqs < hi)]
@@ -124,7 +134,7 @@ def series_stats(
         "tilt_db_per_decade": number(float(np.polyfit(np.log10(freqs[measured]), values[measured], 1)[0])
                                      if np.unique(freqs[measured]).size >= 2 else None, tilt_lo_hz),
         "flatness_rms_db": {
-            "value": float(np.sqrt(np.mean(centered ** 2))) if centered.size else None,
+            "value": None if flat is None else flat["rms_db"],
             "band_hz": [flatness_lo_hz, SERIES_STATS_FLATNESS_BAND_HZ[1]],
         },
         "band_means_db": bands,
