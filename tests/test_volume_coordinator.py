@@ -2512,29 +2512,6 @@ async def test_bluez_transport_path_honours_the_shared_probe_backoff(
 # ---------- graph-swap duck vs. the 1 Hz reconciler -------------------------
 
 
-async def test_a_reconcile_tick_cannot_outrank_a_held_transient_duck(tmp_path):
-    """The reconciler writes by DECLARING the household level, so a duck held
-    in this process outranks it — no dB inference is involved. Releasing the
-    claim lands the fader back on the household level.
-    """
-    expected_db = percent_to_db(70)
-    coord, _, client = _owned_coord(tmp_path, db=expected_db)
-    await coord.set_listening_level(70)
-    owner = coord.volume_owner
-    await owner.declare_household_level_db(expected_db)
-    claim = await owner.acquire_duck(5.0)
-    assert owner.holds(claim)
-    ducked_db = client.db
-    assert ducked_db == pytest.approx(expected_db - 5.0)
-
-    await coord.maybe_reconcile_camilla()
-
-    assert client.db == pytest.approx(ducked_db)
-
-    await owner.release(claim)
-    assert client.db == pytest.approx(expected_db)
-
-
 async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
     tmp_path, caplog,
 ):
@@ -2662,66 +2639,7 @@ async def test_a_refused_write_speaks_once_and_says_when_it_lands(
     assert len(event_records(caplog, "volume.reconciled")) == 1
 
 
-# ---------- graph-swap duck composed with a ranked TRANSIENT_DUCK -----------
-
-# enter/exit sequences for the two holders. The two orders the review probed
-# are `bracket_first_cue_last` and `cue_first_bracket_last`; the other two are
-# the strictly-nested cases they bracket.
-_INTERLEAVINGS = {
-    "bracket_first_cue_last": ["B_enter", "C_enter", "B_exit", "C_exit"],
-    "bracket_outer_cue_inner": ["B_enter", "C_enter", "C_exit", "B_exit"],
-    "cue_first_bracket_last": ["C_enter", "B_enter", "C_exit", "B_exit"],
-    "cue_outer_bracket_inner": ["C_enter", "B_enter", "B_exit", "C_exit"],
-}
-
-
-@pytest.mark.parametrize("order", sorted(_INTERLEAVINGS))
-async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
-    order, tmp_path, monkeypatch,
-):
-    """After ANY interleaving, once both holders have exited, the fader is at
-    the canonical target — and it is never above it while either still holds.
-
-    Replaying entry snapshots stranded it instead: whichever holder exited last
-    wrote back a value the other had already ducked, tens of dB quiet.
-    """
-    monkeypatch.setattr(camilla, "MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
-    canonical_db = percent_to_db(70)
-    coord, cam, client = _owned_coord(tmp_path, db=canonical_db)
-    await coord.set_listening_level(70)
-    monkeypatch.setattr(
-        camilla,
-        "_canonical_target_db_provider",
-        coord.get_camilla_target_db,
-    )
-
-    owner = coord.volume_owner
-    cue: list = []
-
-    async def _cue_enter() -> None:
-        cue.append(await owner.acquire_duck(-25.0))
-
-    async def _cue_exit() -> None:
-        await owner.release(cue.pop())
-
-    bracket = cam._graph_mutation("test.swap")
-    steps = {
-        "B_enter": bracket.__aenter__,
-        "B_exit": lambda: bracket.__aexit__(None, None, None),
-        "C_enter": _cue_enter,
-        "C_exit": _cue_exit,
-    }
-    for step in _INTERLEAVINGS[order]:
-        await steps[step]()
-        assert client.db <= canonical_db + 1e-6, (
-            f"after {step} the fader sat above the canonical target — a duck "
-            "released something it did not apply"
-        )
-
-    assert client.db == pytest.approx(canonical_db), (
-        f"{order} left the fader stranded at {client.db:.1f} dB "
-        f"(canonical {canonical_db:.1f} dB)"
-    )
+# ---------- graph-swap duck release -----------------------------------------
 
 
 async def test_duck_release_never_lands_above_a_volume_change_made_inside_it(

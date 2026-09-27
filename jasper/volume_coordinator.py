@@ -135,11 +135,8 @@ class VolumeCoordinator:
         push_settle_sec: float = 0.75,
     ) -> None:
         self._camilla = camilla
-        # The one thing in this process that writes the main fader. The
-        # coordinator holds the HOUSEHOLD claim — the standing level the
-        # speaker plays at when nothing outranks it — and hands the same owner
-        # to the transient-duck holders, so a duck and a volume twist are
-        # arbitrated rather than racing.
+        # The coordinator holds the HOUSEHOLD claim — the standing level the
+        # speaker plays at when nothing outranks it.
         self._volume_owner = VolumeOwner(
             set_fader_db=self._write_fader_db,
             get_fader_db=self._read_fader_db,
@@ -1593,8 +1590,7 @@ class VolumeCoordinator:
     def volume_owner(self) -> VolumeOwner:
         """This process's fader owner, for the claim holders that share it.
 
-        Transient-duck holders share this instance's owner; separate
-        coordinators have separate claim ledgers.
+        Separate coordinators have separate claim ledgers.
         """
         return self._volume_owner
 

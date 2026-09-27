@@ -44,8 +44,8 @@ def install_env_canonical_target_provider() -> None:
 
     Every process that performs a CamillaDSP graph swap needs one. A swap's
     duck release lands at ``min(canonical, current + own depth)``; with no
-    canonical target it falls back to the entry snapshot, which an interleaved
-    voice cue may already have ducked, landing the fader tens of dB quiet.
+    canonical target it falls back to the entry snapshot, which ignores a
+    volume change made during the swap.
     Every swap that ducks now uses the canonical target, with no exception.
 
     A process that already owns a long-lived coordinator registers that
