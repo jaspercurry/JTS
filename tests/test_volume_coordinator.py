@@ -11,6 +11,7 @@ duck-arbitration pins here sit on AGENTS.md non-negotiable 1.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -21,7 +22,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests._async_wait import wait_signalled
-from tests._log_events import event_field_maps, event_records
+from tests._log_events import (
+    event_field_maps,
+    event_fields,
+    event_records,
+    parse_event,
+)
 from tests.volume_coordinator_fixtures import (
     _assert_persisted,
     _coord,
@@ -34,7 +40,6 @@ from tests.volume_coordinator_fixtures import (
 )
 
 from jasper import bluealsa_probe, camilla, renderer, volume_process
-from jasper import volume_handoff as vh_mod
 from jasper import spotify_router as spotify_router_mod
 from jasper import volume_coordinator as vc_mod
 from jasper import volume_push_sources as vps_mod
@@ -126,25 +131,14 @@ def test_level_one_is_strictly_above_the_mute_floor():
 
 
 def _warnings(caplog) -> list[str]:
+    """Operator-facing prose warnings, whichever volume module words them."""
     return [
         record.getMessage()
         for record in caplog.records
-        if record.name in (vc_mod.__name__, vh_mod.__name__) and record.levelno >= logging.WARNING
+        if record.name.startswith("jasper")
+        and record.levelno >= logging.WARNING
+        and parse_event(record.getMessage()) is None
     ]
-
-
-def _event_fields(caplog, event: str) -> dict[str, str]:
-    """The ONE logfmt record for `event`, as its k=v field map."""
-    matches = [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == vc_mod.__name__
-        and record.getMessage().startswith(f"event={event} ")
-    ]
-    assert len(matches) == 1, matches
-    return dict(
-        token.split("=", 1) for token in matches[0].split() if "=" in token
-    )
 
 
 # ---------- outbound dispatch ----------------------------------------------
@@ -359,19 +353,26 @@ def _assert_push_failure_warning(
     assert len(_warnings(caplog)) == 1
 
 
-def _stub_failed_push(
-    monkeypatch, pushes, coord, source: Source, guard_confirmed: bool,
-):
-    """Refuse the source push; record what the camilla guard was asked for."""
-    guard_calls: list[tuple[float, str, bool]] = []
-
-    async def guard_camilla(db: float, *, context: str, persist: bool) -> bool:
-        guard_calls.append((db, context, persist))
-        return guard_confirmed
-
+def _refuse_push_and_guard(
+    pushes, cam, source: Source, guard_confirmed: bool, caplog,
+) -> None:
+    """Refuse the source push; an unconfirmed guard is Camilla refusing the
+    mute half, so the guard's dB and context still show."""
     pushes.ok[source] = False
-    monkeypatch.setattr(coord, "_set_camilla_db", guard_camilla)
-    return guard_calls
+    cam.mute_accepted = guard_confirmed
+    caplog.set_level(logging.DEBUG, logger="jasper")
+
+
+def _assert_guard(cam, caplog, persistence, *, guard_db, context, confirmed):
+    """One guard write at ``guard_db`` under ``context``; persisted once it
+    is confirmed, never before."""
+    assert cam.set_calls == [pytest.approx(guard_db)]
+    assert event_field_maps(caplog, "volume.main_mute") == [{
+        "muted": "false",
+        "context": context,
+        "result": "accepted" if confirmed else "failed",
+    }]
+    _assert_persisted(persistence, db=round(guard_db, 2) if confirmed else -7.5)
 
 
 @pytest.mark.parametrize(
@@ -384,7 +385,6 @@ def _stub_failed_push(
 @pytest.mark.parametrize("guard_confirmed", [True, False])
 async def test_push_dispatch_failure_guard_preserves_guard_and_warning(
     tmp_path,
-    monkeypatch,
     caplog,
     pushes,
     source: Source,
@@ -392,18 +392,18 @@ async def test_push_dispatch_failure_guard_preserves_guard_and_warning(
     context: str,
     guard_confirmed: bool,
 ):
-    coord, _, persistence = _coord(tmp_path, active={active_key: True}, level=70)
+    coord, cam, persistence = _coord(tmp_path, active={active_key: True}, level=70)
     persistence.save_now(-7.5)
-    guard_calls = _stub_failed_push(
-        monkeypatch, pushes, coord, source, guard_confirmed,
-    )
+    _refuse_push_and_guard(pushes, cam, source, guard_confirmed, caplog)
     level = 25
     guard_db = percent_to_db(level)
 
-    with caplog.at_level(logging.WARNING, logger="jasper"):
-        await coord.set_listening_level(level)
+    await coord.set_listening_level(level)
 
-    assert guard_calls == [(pytest.approx(guard_db), context, True)]
+    _assert_guard(
+        cam, caplog, persistence,
+        guard_db=guard_db, context=context, confirmed=guard_confirmed,
+    )
     _assert_push_failure_warning(
         caplog,
         guard_confirmed=guard_confirmed,
@@ -476,12 +476,13 @@ async def test_which_attenuator_carries_the_level_across_a_transition(
     push-mode lane pins the fader to 0 dB and puts the level on the source's
     own slider. The transition writes only what changing carriers needs.
     """
-    coord, cam, _ = _coord(tmp_path, active=case["before"], db=case["db"])
+    backend = _FakeBackend(active=case["before"])
+    coord, cam, _ = _coord(tmp_path, backend=backend, db=case["db"])
     await coord.set_listening_level(case["level"])
     before = len(cam.set_calls)
     assert cam.set_calls == [pytest.approx(db) for db in case["setup"]]
     if case["after"] is not None:
-        coord._backend = _FakeBackend(active=case["after"])
+        backend._active = dict(case["after"])
 
     await coord.apply_active_source_transition(case["prev"], case["current"])
 
@@ -502,13 +503,14 @@ async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
     """The observer resolves the source before the cross-daemon lease. A
     handoff that commits while the verdict queues must not end with camilla
     pinned to 0 dB against a lane whose own slider JTS never writes."""
-    coord, cam, _ = _coord(tmp_path, active={}, level=50, selected="spotify")
+    backend = _FakeBackend(active={}, selected="spotify")
+    coord, cam, _ = _coord(tmp_path, backend=backend, level=50)
     answers = ["spotify", "airplay"]
 
     async def selected_source() -> str:
         return answers.pop(0) if answers else "airplay"
 
-    coord._backend.selected_source = selected_source
+    backend.selected_source = selected_source
     before = list(cam.set_calls)
 
     assert await coord._active_source() is Source.SPOTIFY
@@ -784,9 +786,7 @@ async def test_observe_spotify_clears_degraded_guard(tmp_path, seeded_level):
     coord, cam, persistence = _coord(
         tmp_path, active={"spotactive": True}, db=-25.0, level=seeded_level,
     )
-    await coord._set_camilla_db(
-        -25.0, context="test_degraded_guard", persist=True,
-    )
+    persistence.save_now(-25.0)
 
     await coord.observe_source_volume(Source.SPOTIFY, 100)
 
@@ -822,15 +822,14 @@ async def test_equal_spotify_observation_publishes_only_when_guard_changes(tmp_p
 async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(tmp_path):
     """A push confirmation during an active duck is not a real carrier
     clear. Keep the guard persisted so the observer can retry later."""
-    coord, cam, persistence = _coord(
-        tmp_path, active={"spotactive": True}, db=-13.0, level=90,
-    )
-    persistence.save_now(-13.0)
-
     async def probe():
         return True
 
-    coord._duck_active_probe = probe
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0, level=90,
+        duck_active_probe=probe,
+    )
+    persistence.save_now(-13.0)
 
     await coord.observe_source_volume(Source.SPOTIFY, 90)
 
@@ -841,15 +840,14 @@ async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(tmp_path):
 async def test_observe_spotify_repairs_live_guard_after_false_clear(tmp_path):
     """Recover from the legacy split-brain: persistence claimed the push
     guard was clear, but live Camilla was still attenuating the path."""
-    coord, cam, persistence = _coord(
-        tmp_path, active={"spotactive": True}, db=-13.0, level=90,
-    )
-    persistence.save_now(0.0)
-
     async def probe():
         return False
 
-    coord._duck_active_probe = probe
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-13.0, level=90,
+        duck_active_probe=probe,
+    )
+    persistence.save_now(0.0)
 
     await coord.observe_source_volume(Source.SPOTIFY, 90)
 
@@ -863,9 +861,7 @@ async def test_successful_push_dispatch_clears_degraded_guard(tmp_path, pushes):
     coord, cam, persistence = _coord(
         tmp_path, active={"spotactive": True}, db=-25.0, level=50,
     )
-    await coord._set_camilla_db(
-        -25.0, context="test_degraded_guard", persist=True,
-    )
+    persistence.save_now(-25.0)
 
     await coord.set_listening_level(50)
 
@@ -885,8 +881,7 @@ async def test_observe_respects_recent_cross_process_write(tmp_path):
     # jasper-control in another process handling a knob twist.
     persistence.save_listening_level(80)
 
-    assert coord._is_recent_cross_process_write(70)
-    await coord.observe_source_volume(Source.SPOTIFY, 70)
+    assert await coord.observe_source_volume(Source.SPOTIFY, 70) is False
 
     assert coord.get_listening_level() == 80
     _assert_persisted(persistence, level=80)
@@ -894,13 +889,14 @@ async def test_observe_respects_recent_cross_process_write(tmp_path):
 
 async def test_observe_revalidates_active_source_at_mutation_boundary(tmp_path):
     """A queued observation cannot land after mux has switched lanes."""
-    coord, _, _ = _coord(tmp_path, active={"spotactive": True}, level=60)
-    active_sources = iter([Source.SPOTIFY, Source.BLUETOOTH])
+    backend = _FakeBackend(active={"spotactive": True})
+    coord, _, _ = _coord(tmp_path, backend=backend, level=60)
+    selections = iter([Source.SPOTIFY.value, Source.BLUETOOTH.value])
 
-    async def changing_active_source():
-        return next(active_sources)
+    async def changing_selection():
+        return next(selections)
 
-    coord._active_source = changing_active_source
+    backend.selected_source = changing_selection
 
     assert await coord.observe_source_volume(Source.SPOTIFY, 40) is False
     assert coord.get_volume_state().effective_percent == 60
@@ -923,10 +919,13 @@ async def test_initialize_does_not_bump_last_used_at(tmp_path):
     bedtime 90% never gets clamped."""
     coord, _, persistence = _coord(tmp_path, active={})
     old_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    persistence._current_main_volume_db = -25.0
-    persistence._current_listening_level = 90
-    persistence._current_last_used_at = old_ts
-    persistence._write_full()
+    persistence.path.write_text(json.dumps({
+        "version": 2,
+        "main_volume_db": -25.0,
+        "listening_level": 90,
+        "last_used_at": "2026-01-01T00:00:00Z",
+        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }))
 
     await coord.initialize(
         stale_after_sec=60.0,
@@ -1050,11 +1049,12 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path, pushes
     Camilla remains the fallback safety carrier instead of being
     cleared to 0 dB on the next active-source observer tick.
     """
-    coord, cam, _ = _coord(tmp_path, active={"aplactive": True})
+    backend = _FakeBackend(active={"aplactive": True})
+    coord, cam, _ = _coord(tmp_path, backend=backend)
     await coord.set_listening_level(40)
 
     pushes.ok[Source.SPOTIFY] = False
-    coord._backend = _FakeBackend(active={"spotactive": True})
+    backend._active = {"spotactive": True}
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
@@ -1083,7 +1083,6 @@ async def test_observer_transition_push_failure_preserves_guard(tmp_path, pushes
 @pytest.mark.parametrize("guard_confirmed", [True, False])
 async def test_transition_push_failure_guard_preserves_guard_and_warning(
     tmp_path,
-    monkeypatch,
     caplog,
     pushes,
     prev_source: Source,
@@ -1093,19 +1092,19 @@ async def test_transition_push_failure_guard_preserves_guard_and_warning(
     guard_confirmed: bool,
 ):
     level = 42
-    coord, _, persistence = _coord(
+    coord, cam, persistence = _coord(
         tmp_path, active={}, level=level, selected=current_source.value,
     )
     persistence.save_now(-7.5)
-    guard_calls = _stub_failed_push(
-        monkeypatch, pushes, coord, current_source, guard_confirmed,
-    )
+    _refuse_push_and_guard(pushes, cam, current_source, guard_confirmed, caplog)
     guard_db = percent_to_db(level)
 
-    with caplog.at_level(logging.WARNING, logger="jasper"):
-        await coord.apply_active_source_transition(prev_source, current_source)
+    await coord.apply_active_source_transition(prev_source, current_source)
 
-    assert guard_calls == [(pytest.approx(guard_db), context, True)]
+    _assert_guard(
+        cam, caplog, persistence,
+        guard_db=guard_db, context=context, confirmed=guard_confirmed,
+    )
     _assert_push_failure_warning(
         caplog,
         guard_confirmed=guard_confirmed,
@@ -1120,6 +1119,9 @@ async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
     """During a voice duck, a camilla-master target is only safe if the
     current ducked Camilla level is already below the target guard.
     The target is still persisted so the duck release lands safe."""
+    async def duck_active():
+        return True
+
     coord, cam, persistence = _coord(
         tmp_path,
         active={"spotactive": True},
@@ -1127,13 +1129,9 @@ async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
         db=-25.0,
         level=20,  # target guard is percent_to_db(20); the duck is too loud
         mark_user_change=True,
+        duck_active_probe=duck_active,
     )
     persistence.save_now(0.0)
-
-    async def duck_active():
-        return True
-
-    coord._duck_active_probe = duck_active
 
     handoff = await coord.prepare_source_handoff(
         Source.SPOTIFY, Source.AIRPLAY, reason="manual",
@@ -1148,6 +1146,9 @@ async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
 async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
     """If the duck has already made Camilla quiet enough, prepare may
     succeed and the duck release still targets the selected source level."""
+    async def duck_active():
+        return True
+
     coord, _, _ = _coord(
         tmp_path,
         active={"spotactive": True},
@@ -1155,12 +1156,8 @@ async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
         db=-45.0,
         level=20,
         mark_user_change=True,
+        duck_active_probe=duck_active,
     )
-
-    async def duck_active():
-        return True
-
-    coord._duck_active_probe = duck_active
 
     handoff = await coord.prepare_source_handoff(
         Source.SPOTIFY, Source.AIRPLAY, reason="manual",
@@ -1172,8 +1169,11 @@ async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
 
 @pytest.mark.parametrize("door", ["finalize_source_handoff", "abort_source_handoff"])
 @pytest.mark.parametrize("db", [-45.0, -5.0])
-async def test_handoff_restore_keeps_percent_write_semantics_during_duck(tmp_path, door, db):
-    coord, cam, persistence = _coord(tmp_path, db=db, level=20)
+async def test_handoff_restore_keeps_percent_write_semantics_during_duck(
+    tmp_path, caplog, pushes, door, db,
+):
+    backend = _FakeBackend()
+    coord, cam, persistence = _coord(tmp_path, backend=backend, db=db, level=20)
     persistence.save_now(0.0)
     handoff = await coord.prepare_source_handoff(Source.AIRPLAY, Source.AIRPLAY, reason="manual")
     coord.note_voice_session(True, camilla_volume_locked=True)
@@ -1183,26 +1183,33 @@ async def test_handoff_restore_keeps_percent_write_semantics_during_duck(tmp_pat
     assert cam.mute_calls == [False]
     _assert_persisted(persistence, db=0.0)
 
-    guard_ok = await coord._set_camilla_db(percent_to_db(20), context="test_guard", persist=True)
-    assert guard_ok is (db == -45.0)
+    # The raw-dB guard door under the same duck: a refused Spotify push asks
+    # it for percent_to_db(20), persisted either way, safe only when quieter.
+    backend._selected = Source.SPOTIFY.value
+    pushes.ok[Source.SPOTIFY] = False
+    caplog.set_level(logging.INFO, logger="jasper")
+    await coord.set_listening_level(20)
+    (deferred,) = event_field_maps(
+        caplog, "volume.deferred", context="dispatch_spotify_degraded",
+    )
+    assert deferred["result"] == ("already_safe" if db == -45.0 else "unsafe_for_handoff")
+    assert cam.set_calls == []
     _assert_persisted(persistence, db=round(percent_to_db(20), 2))
 
 
 async def test_get_camilla_target_db_preserves_degraded_push_guard(tmp_path):
     """Push-mode normally restores Camilla to 0 dB, but a degraded
     handoff guard is intentional safety state and must survive restore."""
-    coord, _, _ = _coord(
+    coord, _, persistence = _coord(
         tmp_path, active={"spotactive": True}, selected="spotify",
     )
     await coord.set_listening_level(35)
     guard_db = -32.5
-    await coord._set_camilla_db(
-        guard_db, context="test_degraded_guard", persist=True,
-    )
+    persistence.save_now(guard_db)
 
     assert await coord.get_camilla_target_db() == pytest.approx(guard_db)
 
-    await coord._set_camilla_db(0.0, context="test_normal_push", persist=True)
+    persistence.save_now(0.0)
     assert await coord.get_camilla_target_db() == pytest.approx(0.0)
 
 
@@ -1330,18 +1337,16 @@ async def test_mute_intent_is_local_and_published_before_the_slow_write(
 
         pushes.hook = blocked_cloud
     else:
-        real_set_mute = coord._set_camilla_main_mute
         first_call = True
 
-        async def blocked_set_mute(target: bool, *, context: str) -> bool:
+        async def blocked_set_mute(_target: bool) -> None:
             nonlocal first_call
             if first_call:
                 first_call = False
                 started.set()
                 await release.wait()
-            return await real_set_mute(target, context=context)
 
-        coord._set_camilla_main_mute = blocked_set_mute
+        cam.mute_hook = blocked_set_mute
 
     operation = asyncio.create_task(coord.mute())
     await wait_signalled(started, "slow downstream write started", producer=operation)
@@ -1421,11 +1426,7 @@ async def test_persisted_mute_intent_outranks_what_camilla_reports(
     )
     persistence.save_mute_state(59, None)
     cam.muted = False
-    if not camilla_readable:
-        async def unreadable():
-            return None, None
-
-        coord._read_camilla_volume_and_mute = unreadable
+    cam.unavailable = not camilla_readable
 
     context = await coord.effective_volume_context()
 
@@ -1465,18 +1466,16 @@ async def test_publisher_failure_never_breaks_volume_operation(tmp_path):
     async def fail(_context):
         raise OSError("fanin unavailable")
 
-    coord, _, _ = _coord(tmp_path)
-    coord._volume_context_publisher = fail
+    coord, _, _ = _coord(tmp_path, volume_context_publisher=fail)
     assert await coord.set_listening_level(47) == 47
 
 
 async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path):
-    coord, _, _ = _real_coord(
+    coord, cam, _ = _real_coord(
         tmp_path, active={}, db=percent_to_db(30), level=30,
     )
     read_started = asyncio.Event()
     release_read = asyncio.Event()
-    real_read = coord._read_camilla_volume_and_mute
     first = True
 
     async def blocked_read():
@@ -1485,9 +1484,9 @@ async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path)
             first = False
             read_started.set()
             await release_read.wait()
-        return await real_read()
+        return None
 
-    coord._read_camilla_volume_and_mute = blocked_read
+    cam.read_hook = blocked_read
     snapshot = asyncio.create_task(coord.effective_volume_context())
     await wait_signalled(
         read_started, "camilla volume/mute read started", producer=snapshot,
@@ -1503,7 +1502,7 @@ async def test_context_snapshot_retries_after_concurrent_volume_change(tmp_path)
 async def test_context_snapshot_stamp_is_bound_before_slow_probe(
     tmp_path, monkeypatch,
 ):
-    coord, _, _ = _real_coord(
+    coord, cam, _ = _real_coord(
         tmp_path, active={}, db=percent_to_db(30), level=30,
     )
     stamp_bound = False
@@ -1513,16 +1512,14 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
         stamp_bound = True
         return 123
 
-    real_read = coord._read_camilla_volume_and_mute
-
     async def verify_stamp_precedes_probe():
         assert stamp_bound is True
-        return await real_read()
+        return None
 
     monkeypatch.setattr(
         "jasper.volume_coordinator.volume_context_stamp_boot_ns", bind_stamp,
     )
-    coord._read_camilla_volume_and_mute = verify_stamp_precedes_probe
+    cam.read_hook = verify_stamp_precedes_probe
 
     context = await coord.effective_volume_context()
 
@@ -1574,7 +1571,7 @@ async def test_the_duck_probe_answer_decides_whether_the_camilla_write_defers(
         duck_active_probe=None if answer == "absent" else probe,
     )
 
-    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger="jasper"):
         await coord.set_listening_level(70)
 
     if expect_defer:
@@ -1631,10 +1628,10 @@ async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
         tmp_path, active={}, db=-40.0, duck_active_probe=probe,
     )
 
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    caplog.set_level(logging.INFO, logger="jasper")
     await coord.set_listening_level(70)
 
-    fields = _event_fields(caplog, "volume.deferred")
+    fields = event_fields(caplog, "volume.deferred")
     assert fields["reason"] == "session_signaled"
     assert fields["level"] == "70%"
     assert fields["target_db"] == f"{percent_to_db(70):.1f}"
@@ -1709,11 +1706,11 @@ async def test_observer_tick_resolves_active_source_once(
     reaches its in-lock re-read, which deliberately re-resolves fresh for
     correctness and is unrelated to this fork count.
     """
+    backend = _FakeBackend(active=active)
     coord, _, _ = _real_coord(
-        tmp_path, active=active, db=percent_to_db(70) - 0.3, level=70,
+        tmp_path, backend=backend, db=percent_to_db(70) - 0.3, level=70,
         mark_user_change=True,
     )
-    backend = coord._backend
     obs = VolumeObserver(
         coord, librespot_state_path=str(tmp_path / "missing.env"),
     )
@@ -1746,7 +1743,6 @@ async def test_reconcile_revalidates_after_cross_daemon_volume_change(tmp_path):
     )
     read_started = asyncio.Event()
     release_stale_read = asyncio.Event()
-    original_read = observer._read_camilla_volume_and_mute
     read_count = 0
 
     async def stale_first_read():
@@ -1756,9 +1752,9 @@ async def test_reconcile_revalidates_after_cross_daemon_volume_change(tmp_path):
             read_started.set()
             await release_stale_read.wait()
             return 0.0, False
-        return await original_read()
+        return None
 
-    observer._read_camilla_volume_and_mute = stale_first_read
+    cam.read_hook = stale_first_read
     reconcile = asyncio.create_task(observer.maybe_reconcile_camilla())
     await wait_signalled(
         read_started,
@@ -1804,7 +1800,7 @@ async def test_a_measurement_claim_outranks_a_household_volume_set(tmp_path):
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=percent_to_db(40), level=40,
     )
-    await coord._write_camilla_db_with_mute(percent_to_db(40), context="test_seed")
+    await coord.set_listening_level(40)
     claim = await coord.volume_owner.acquire_level(
         ClaimKind.SESSION_MEASUREMENT, -12.5,
     )
@@ -2007,11 +2003,11 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
         await coord.set_listening_level(20)
 
     now[0] = MEASUREMENT_AUTOCLEAR_SEC
-    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger="jasper"):
         assert await coord.set_listening_level(20) == 20
         assert await coord.adjust_listening_level(-5) == 15
-        # _event_fields asserts exactly one: once per lapse, not once per write.
-        assert _event_fields(caplog, "volume.measurement_flag_expired")
+        # event_fields asserts exactly one: once per lapse, not once per write.
+        assert event_fields(caplog, "volume.measurement_flag_expired")
 
         # A second window strands its flag too. The once-per-lapse latch is
         # reset by note_measurement_active(True), so this one is announced.
@@ -2021,7 +2017,7 @@ async def test_a_stranded_measurement_flag_lapses_at_the_autoclear(
             await coord.set_listening_level(30)
         now[0] += MEASUREMENT_AUTOCLEAR_SEC
         assert await coord.set_listening_level(30) == 30
-        assert _event_fields(caplog, "volume.measurement_flag_expired")
+        assert event_fields(caplog, "volume.measurement_flag_expired")
 
 
 async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
@@ -2049,10 +2045,10 @@ async def test_the_reconciler_tick_clears_a_stranded_measurement_flag(
     assert cam.set_calls == [], "a renewing window must stay paused"
 
     now[0] += MEASUREMENT_AUTOCLEAR_SEC
-    with caplog.at_level(logging.WARNING, logger=vc_mod.__name__):
+    with caplog.at_level(logging.WARNING, logger="jasper"):
         await coord.maybe_reconcile_camilla()
     assert cam.set_calls, "a stranded flag must not pause drift correction"
-    assert _event_fields(caplog, "volume.measurement_flag_expired")
+    assert event_fields(caplog, "volume.measurement_flag_expired")
 
 
 async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
@@ -2068,7 +2064,7 @@ async def test_reconcile_in_flight_stops_when_measurement_begins(tmp_path):
         await release_read.wait()
         return -3.15, False
 
-    coord._read_camilla_volume_and_mute = blocked_read
+    cam.read_hook = blocked_read
     reconcile = asyncio.create_task(coord.maybe_reconcile_camilla())
     await wait_signalled(
         read_started, "camilla volume/mute read started", producer=reconcile,
@@ -2120,10 +2116,10 @@ async def test_reconcile_emits_structured_event(tmp_path, caplog):
         tmp_path, active={}, db=-18.0, level=76, mark_user_change=True,
     )
 
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    caplog.set_level(logging.INFO, logger="jasper")
     await coord.maybe_reconcile_camilla()
 
-    fields = _event_fields(caplog, "volume.reconciled")
+    fields = event_fields(caplog, "volume.reconciled")
     assert fields["level"] == "76%"
     assert fields["current_db"] == "-18.00"
     assert fields["expected_db"] == f"{percent_to_db(76):.2f}"
@@ -2216,11 +2212,10 @@ async def test_env_target_and_registered_provider_read_current_persisted_intent(
 async def test_transition_refreshes_from_disk(tmp_path, pushes):
     """The same cross-process staleness guard on the transition path, which
     is observer-triggered and so never refreshes as a side effect."""
-    coord, _, persistence = _coord(
-        tmp_path, active={"aplactive": True}, level=50,
-    )
+    backend = _FakeBackend(active={"aplactive": True})
+    coord, _, persistence = _coord(tmp_path, backend=backend, level=50)
     persistence.save_listening_level(80)  # the control daemon, another process
-    coord._backend = _FakeBackend(active={"spotactive": True})
+    backend._active = {"spotactive": True}
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
@@ -2571,7 +2566,7 @@ async def test_reconciler_stands_down_while_a_dsp_writer_holds_the_graph(
     carve-out. The stand-down is one line per episode, not one per tick: the
     volume-floor audition holds the lock for minutes (ADR-0368).
     """
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    caplog.set_level(logging.INFO, logger="jasper")
     expected_db = percent_to_db(40)
     coord, cam, client = _owned_coord(tmp_path, db=expected_db)
     await coord.set_listening_level(40)
@@ -2606,7 +2601,7 @@ async def test_a_raise_waits_on_the_measurement_hold_and_a_lowering_never_does(
     """A measurement whose MEASURE_PAUSE never landed still holds
     jasper-control's hold: the reconciler raises the fader only once that hold
     is free and readable, and lowers it regardless (ADR-0368)."""
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
+    caplog.set_level(logging.INFO, logger="jasper")
     coord, cam, _ = _real_coord(
         tmp_path, active={}, db=current_db, level=70, mark_user_change=True,
     )
@@ -2669,20 +2664,11 @@ async def test_a_refused_write_speaks_once_and_says_when_it_lands(
     `volume.reconciled` claims only a write that landed. Delete with the
     events.
     """
-    caplog.set_level(logging.INFO, logger=vc_mod.__name__)
-    coord, _, _ = _real_coord(
+    caplog.set_level(logging.INFO, logger="jasper")
+    coord, cam, _ = _real_coord(
         tmp_path, active={}, db=-18.0, level=76, mark_user_change=True,
     )
-    writes = 0
-
-    async def refusing_write(db: float, *, context: str) -> bool:
-        nonlocal writes
-        writes += 1
-        if writes <= 3:
-            raise CamillaUnavailable("camilla restarting")
-        return True
-
-    coord._write_camilla_db_with_mute = refusing_write
+    cam.write_errors = [CamillaUnavailable("camilla restarting") for _ in range(3)]
 
     for _ in range(4):
         await coord.maybe_reconcile_camilla()

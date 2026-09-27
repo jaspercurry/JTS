@@ -4,9 +4,12 @@
 
 """Shared test doubles for jasper.volume_coordinator's tests.
 
-A CamillaDSP fake, a renderer backend fake, the recorder patched onto
-``volume_push_sources``' two push functions, the coordinator builders, and
-the minimal pycamilladsp client that runs a REAL ``CamillaController``. Consumed by name by tests/test_volume_coordinator.py and
+Every double sits at a public boundary, so a test reads the same when the
+coordinator's internals move: a CamillaDSP fake whose settings stand in for
+each way the real controller answers, a renderer backend fake, the recorder
+patched onto ``volume_push_sources``' two push functions, the coordinator
+builders, and the minimal pycamilladsp client that runs a REAL
+``CamillaController``. Consumed by name by tests/test_volume_coordinator.py and
 tests/test_sound_setup.py.
 """
 from __future__ import annotations
@@ -37,6 +40,15 @@ class _FakeCamilla:
         # False, reads return None) to simulate a camilla restart blip.
         # Non-best_effort calls raise CamillaUnavailable.
         self.unavailable = False
+        # Awaited before each volume+mute read; a non-None answer is what
+        # Camilla reports instead of its real state.
+        self.read_hook: Callable[[], Awaitable[tuple[float, bool] | None]] | None = None
+        # Awaited before each main_mute write, with the requested flag.
+        self.mute_hook: Callable[[bool], Awaitable[None]] | None = None
+        # False: Camilla refuses main_mute writes (best_effort answers False).
+        self.mute_accepted = True
+        # Raised, in order, by the next main_volume writes whatever best_effort.
+        self.write_errors: list[BaseException] = []
 
     async def get_volume_db(self, *, best_effort: bool = False) -> float | None:
         self.get_calls += 1
@@ -50,6 +62,10 @@ class _FakeCamilla:
         self, *, best_effort: bool = False,
     ) -> tuple[float, bool] | None:
         self.get_calls += 1
+        if self.read_hook is not None:
+            reported = await self.read_hook()
+            if reported is not None:
+                return reported
         if self.unavailable:
             if best_effort:
                 return None
@@ -59,6 +75,8 @@ class _FakeCamilla:
     async def set_volume_db(
         self, db: float, *, best_effort: bool = False,
     ) -> bool:
+        if self.write_errors:
+            raise self.write_errors.pop(0)
         if self.unavailable:
             if best_effort:
                 return False
@@ -71,7 +89,9 @@ class _FakeCamilla:
     async def set_main_mute(
         self, muted: bool, *, best_effort: bool = False,
     ) -> bool:
-        if self.unavailable:
+        if self.mute_hook is not None:
+            await self.mute_hook(bool(muted))
+        if self.unavailable or not self.mute_accepted:
             if best_effort:
                 return False
             raise CamillaUnavailable("test fake offline")
@@ -151,6 +171,7 @@ def _build(
     *,
     active: dict[str, bool] | None = None,
     selected: str | None = None,
+    backend: _FakeBackend | None = None,
     db: float = 0.0,
     level: int | None = None,
     mark_user_change: bool = False,
@@ -158,7 +179,7 @@ def _build(
 ):
     """Coordinator over a fresh on-disk record; returns (coord, cam, store).
 
-    ``level`` seeds both the in-memory canonical level and the persisted one,
+    ``level`` seeds both the persisted level and the coordinator's view of it,
     which is what a coordinator that has already served a set looks like.
     """
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
@@ -166,14 +187,14 @@ def _build(
     coord = VolumeCoordinator(
         camilla=cam,
         persistence=persistence,
-        backend=_FakeBackend(active=active, selected=selected),
+        backend=backend or _FakeBackend(active=active, selected=selected),
         **kwargs,
     )
     if level is not None:
-        coord._level = level
         persistence.save_listening_level(
             level, mark_user_change=mark_user_change,
         )
+        coord.load_persisted_level()
     return coord, cam, persistence
 
 
