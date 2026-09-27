@@ -41,6 +41,25 @@ def deviation_summary(freqs_hz: np.ndarray, deviation_db: np.ndarray) -> dict[st
     }
 
 
+def band_bins(freqs_hz: Any, band_hz: Sequence[float]) -> np.ndarray:
+    """The bins one band reads: the closed band, both edges included (#5661)."""
+    freqs = np.asarray(freqs_hz, dtype=float)
+    return (freqs >= float(band_hz[0])) & (freqs <= float(band_hz[1]))
+
+
+def local_minima(freqs_hz: Any, curve_db: Any, band_hz: Sequence[float]) -> np.ndarray:
+    """The dips of ``curve_db`` in ``band_hz``: its bins that sit at or below
+    the bin before and below the bin after, read on the whole curve. A
+    neighbour outside the band is measured data, so a dip on the band's edge
+    counts and a slope running out of the band does not; the curve's first
+    and last bins have one neighbour and never count. ``<=`` then ``<`` keeps
+    one bin of a flat bottom. Indices into the curve, ascending."""
+    curve = np.asarray(curve_db, dtype=float)
+    inside = np.flatnonzero(band_bins(freqs_hz, band_hz))
+    inside = inside[(inside > 0) & (inside < curve.size - 1)]
+    return inside[(curve[inside] <= curve[inside - 1]) & (curve[inside] < curve[inside + 1])]
+
+
 @dataclass(frozen=True)
 class CurveDifference:
     """``curve_db - against_db`` on the curve's grid, after ``level_offset_db``
@@ -71,7 +90,7 @@ def curve_difference(
     ``None`` when ``curve_db`` has no bin in the band.
     """
     freqs = np.asarray(freqs_hz, dtype=float)
-    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    mask = band_bins(freqs, band_hz)
     if not np.any(mask):
         return None
     curve = np.asarray(curve_db, dtype=float)[mask]

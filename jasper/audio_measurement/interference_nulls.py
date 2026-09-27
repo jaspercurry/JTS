@@ -20,7 +20,7 @@ import numpy as np
 from jasper.audio_measurement.alignment import parabolic_peak
 from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
 from jasper.audio_measurement.peq import bell_half_width_oct
-from jasper.audio_measurement.series_stats import power_mean_db
+from jasper.audio_measurement.series_stats import local_minima, power_mean_db
 
 # How far a flanking-maximum search may run, in octaves either side of a candidate minimum.
 # Beyond about half an octave the response's own shape (baffle step, driver rolloff, crossover)
@@ -71,39 +71,20 @@ class _Candidate:
     f_hi_hz: float
 
 
-def _locate_minima(diag: np.ndarray, band_idx: np.ndarray, min_sep_oct: float,
-                   freqs: np.ndarray) -> list[int]:
-    """Local minima of ``diag`` inside the band, thinned to one per ``min_sep_oct``, keeping
-    the lowest. Thinning is by *level*, not depth: depth needs flanks, flanks need the
-    neighbouring minima, so choosing by depth would close that loop. Separation is one
-    smoothing window (``1/diag_fraction`` octaves) — closer minima are not independently
-    resolved by the curve."""
-    y = diag[band_idx]
-    if y.size < 3:
-        return []
-    interior = np.flatnonzero((y[1:-1] <= y[:-2]) & (y[1:-1] < y[2:])) + 1
-    kept: list[int] = []
-    for p in sorted(interior, key=lambda q: (float(y[q]), int(q))):
-        f = freqs[band_idx[p]]
-        if any(abs(np.log2(f / freqs[band_idx[q]])) < min_sep_oct for q in kept):
-            continue
-        kept.append(int(p))
-    return sorted(kept)
-
-
 def _measure_candidates(
     freqs: np.ndarray,
     diag: np.ndarray,
     raw: np.ndarray,
     band_idx: np.ndarray,
-    min_sep_oct: float,
 ) -> tuple[list[_Candidate], list[float]]:
-    """Locate the band's minima and measure each one's depth and interval. Returns the
-    measurable candidates plus the frequencies of ones with no flanking maximum on one side —
-    only reachable on a grid coarse enough that ``FLANK_SEARCH_MAX_OCT`` falls inside one bin.
-    Refuses rather than reading a flank from whichever bin was nearest.
+    """Measure each of the band's :func:`~jasper.audio_measurement.series_stats.local_minima`:
+    its depth and interval. Returns the measurable candidates plus the frequencies of ones with
+    no flanking maximum on one side — a minimum on the band's own edge, or one on a grid coarse
+    enough that ``FLANK_SEARCH_MAX_OCT`` falls inside one bin. Refuses rather than reading a
+    flank from whichever bin was nearest.
     """
-    positions = _locate_minima(diag, band_idx, min_sep_oct, freqs)
+    positions = [] if band_idx.size < 3 else np.searchsorted(
+        band_idx, local_minima(freqs, diag, (freqs[band_idx[0]], freqs[band_idx[-1]]))).tolist()
     y = diag[band_idx]
     out: list[_Candidate] = []
     unmeasurable: list[float] = []
@@ -175,7 +156,7 @@ def feature_position_variance(
     for freqs, magnitude in curves:
         signed = magnitude if gain_db > 0 else -magnitude
         valid = np.flatnonzero((freqs >= flank_lo) & (freqs <= flank_hi) & np.isfinite(signed))
-        candidates, _ = _measure_candidates(freqs, signed, signed, valid, 0.0)
+        candidates, _ = _measure_candidates(freqs, signed, signed, valid)
         deepest = max((c for c in candidates if lo <= c.f_hz <= hi),
                       key=lambda c: c.depth_db, default=None)
         if deepest is not None and deepest.depth_db >= FEATURE_MIN_DEPTH_DB:

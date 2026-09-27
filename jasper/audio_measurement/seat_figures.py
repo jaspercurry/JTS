@@ -10,7 +10,8 @@ The rule governing every figure: SHAPE figures (``dip``, ``ripple_db``,
 they say nothing about output, and LEVEL figures (``band_level_db``,
 ``low_bass.level_db``, ``handover.level_db``) carry it. **Show a level figure
 beside every shape figure**, or a merely quieter candidate reads as an
-improvement. Bands are half-open, ``[lo, hi)``; missing or short data is
+improvement. Level bands are half-open, ``[lo, hi)``; a dip is read over the
+closed band (``series_stats.local_minima``); missing or short data is
 disclosed with a ``REASON_*`` code and a ``None`` figure, never filled in.
 """
 from __future__ import annotations
@@ -403,34 +404,25 @@ def _band_level_db(freqs: np.ndarray, level: np.ndarray,
 
 def _deepest_dip(freqs: np.ndarray, shape: np.ndarray, band_hz: Sequence[float],
                  min_depth_db: float) -> dict[str, float] | None:
-    """The deepest local minimum at least ``min_depth_db`` below the zero
-    inside the band, with its half-depth width. Every in-band sample is a
-    candidate — a dip ON the band's own edge is still a dip, and the sample
-    beside it is real data one bin outside the band — so only the ARRAY's two
-    end samples, which have no neighbour to compare, are skipped."""
-    idx = band_indices(freqs, band_hz)
-    if idx.size < 3:
+    """The deepest of the band's :func:`~jasper.audio_measurement.series_stats.local_minima`
+    when it sits at least ``min_depth_db`` below the zero, with its half-depth
+    width inside the band."""
+    idx = np.flatnonzero(series_stats.band_bins(freqs, band_hz))
+    minima = series_stats.local_minima(freqs, shape, band_hz)
+    if idx.size < 3 or not minima.size:
         return None
-    best: dict[str, float] | None = None
-    for position in idx:
-        i = int(position)
-        if i == 0 or i == freqs.size - 1:
-            continue
-        depth = -float(shape[i])
-        if depth < min_depth_db or (best is not None and depth <= best["depth_db"]):
-            continue
-        # `<=` left and `<` right keeps one sample of a flat bottom, not both.
-        if not (shape[i] <= shape[i - 1] and shape[i] < shape[i + 1]):
-            continue
-        half = -0.5 * depth
-        lo_edge = hi_edge = i
-        while lo_edge > idx[0] and shape[lo_edge - 1] <= half:
-            lo_edge -= 1
-        while hi_edge < idx[-1] and shape[hi_edge + 1] <= half:
-            hi_edge += 1
-        best = {"hz": float(freqs[i]), "depth_db": depth,
-                "width_octaves": float(math.log2(freqs[hi_edge] / freqs[lo_edge]))}
-    return best
+    i = int(minima[np.argmin(shape[minima])])
+    depth = -float(shape[i])
+    if depth < min_depth_db:
+        return None
+    half = -0.5 * depth
+    lo_edge = hi_edge = i
+    while lo_edge > idx[0] and shape[lo_edge - 1] <= half:
+        lo_edge -= 1
+    while hi_edge < idx[-1] and shape[hi_edge + 1] <= half:
+        hi_edge += 1
+    return {"hz": float(freqs[i]), "depth_db": depth,
+            "width_octaves": float(math.log2(freqs[hi_edge] / freqs[lo_edge]))}
 
 
 def _dip_shift(dip: Mapping[str, float] | None,

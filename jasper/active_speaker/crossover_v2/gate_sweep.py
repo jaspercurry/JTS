@@ -58,6 +58,7 @@ from jasper.audio_measurement.program_analysis.locate import locate_global_offse
 from jasper.audio_measurement.program_analysis.model import CAPTURE_BOUND_MARGIN_S, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
 from jasper.audio_measurement.program_analysis.response import deconvolve_window, driver_response, n_fft_for
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
+from jasper.audio_measurement.series_stats import local_minima
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
 from .feature_classification import UNCERTAINTY_UNSEPARATED
@@ -379,22 +380,23 @@ def fit_notch(
 ) -> NotchFit:
     """Centre, depth and Q of the feature at ``nominal_hz``, median of poses.
 
-    The centre is searched over +/-:data:`.feature_optics.CENTRE_SEARCH_OCT`
-    (1/6 octave), NOT the classifier's 1/3-octave neighbourhood: the wider
-    span walked off onto a neighbouring feature on half the poses (P1).
+    Each pose's centre is its largest local extremum (``series_stats.local_minima``'s
+    rule, on |dB|) within +/-:data:`.feature_optics.CENTRE_SEARCH_OCT` (1/6 octave),
+    NOT the classifier's 1/3-octave neighbourhood: the wider span walked off onto a
+    neighbouring feature on half the poses (P1); ``nominal_hz``'s bin with none there.
     """
-    lo = nominal_hz * 2.0**-CENTRE_SEARCH_OCT
-    hi = nominal_hz * 2.0**CENTRE_SEARCH_OCT
-    mask = (grid >= lo) & (grid <= hi)
+    band = (nominal_hz * 2.0**-CENTRE_SEARCH_OCT, nominal_hz * 2.0**CENTRE_SEARCH_OCT)
+    nominal = int(np.argmin(np.abs(grid - nominal_hz)))
     centres: list[float] = []
     depths: list[float] = []
     qs: list[float] = []
     for read in reads:
         curve = read.detrended[rung_ms]
-        index = int(np.argmax(np.abs(curve[mask])))
-        centre = float(grid[mask][index])
+        extrema = local_minima(grid, -np.abs(curve), band)
+        index = int(extrema[np.argmax(np.abs(curve[extrema]))]) if extrema.size else nominal
+        centre = float(grid[index])
         centres.append(centre)
-        depths.append(float(curve[mask][index]))
+        depths.append(float(curve[index]))
         qs.append(feature_q(curve, grid, centre))
     return NotchFit(
         centre_hz=float(np.median(centres)),

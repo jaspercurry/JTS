@@ -368,6 +368,21 @@ def test_a_named_frequency_is_read_the_way_a_worst_bin_is(
     )
 
 
+@pytest.mark.parametrize("shape", ["dip_beside_a_rising_skirt", "a_slope_through_the_window"])
+def test_the_notch_centre_is_an_extremum_inside_the_window_not_its_edge(shape: str) -> None:
+    """The window's top edge on a neighbour's rising skirt outweighs the dip
+    in |dB| and is no feature; with no extremum at all, the asked bin is read."""
+    grid = gate_sweep.analysis_grid()
+    nominal = float(grid[np.argmin(np.abs(grid - 1000.0))])
+    octaves = np.log2(grid / nominal)
+    curve = (
+        -2.0 * np.exp(-0.5 * (octaves / 0.03) ** 2) + 12.0 * np.exp(-0.5 * ((octaves - 0.3) / 0.08) ** 2)
+        if shape == "dip_beside_a_rising_skirt" else octaves
+    )
+    read = gate_sweep.SweepCurves(capture=None, reference_const_db=0.0, curves={}, detrended={20.0: curve})
+    assert gate_sweep.fit_notch([read], grid, rung_ms=20.0, nominal_hz=nominal).centre_hz == nominal
+
+
 def test_the_null_model_shows_its_fit_at_every_pose(
     anchored_reports: tuple[dict, dict],
 ) -> None:
