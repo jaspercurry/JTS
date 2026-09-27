@@ -51,7 +51,6 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
     return {
         "session": {
             "bundle_session_id": run_id,
-            "round_id": f"round-{run_id}",
             "started_at": 1000.0 + offset,
             "state": "applied",
         },
@@ -59,12 +58,6 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
             "topology_id": "speaker",
             "graph_fingerprint": "graph",
             "mic": {"calibration_id": "mic-a"},
-        },
-        "round": {
-            "entry_graph_fingerprint": "before",
-            "applied_graph_fingerprint": "after",
-            "adoption": {"outcome": "keep"},
-            "verification": {"spec": "passed"},
         },
         "spec": {"reference_db": -24.0},
         "curve": {

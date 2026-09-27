@@ -52,6 +52,7 @@ from jasper.active_speaker.crossover_v2.driver_prescription import (
     read_driver_prescription,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
+    DERIVED_VIEWS,
     build_crossover_evidence_packet,
     packet_driver_passbands_hz,
     packet_feature_classifications,
@@ -467,22 +468,6 @@ def test_a_declared_band_past_nyquist_is_clamped_not_dropped():
     assert bands["tweeter"] == (1000.0, RESPONSE_SAMPLE_RATE_HZ / 2.0)
 
 
-def test_the_band_is_not_the_crossover_region(packet):
-    """The class's whole point: a driver is correctable outside the handoff.
-
-    The packet's own crossover region is 824-3297 Hz. The tweeter's declared
-    band reaches 20 kHz, and a cut at 5 kHz — six times the region's own
-    centre — is accepted here and would be refused ``filter_outside_region`` by
-    the blend gate at any Q.
-    """
-    region = packet["crossover_region"]["band_hz"]
-    assert TWEETER_FEATURE_HZ > region[1]
-
-    prescription = _gate(packet, _document([_cut()], packet))
-
-    assert prescription.filters[0]["freq"] == TWEETER_FEATURE_HZ
-
-
 # --------------------------------------------------------------------------- #
 # the packet
 # --------------------------------------------------------------------------- #
@@ -494,8 +479,8 @@ def test_the_packet_carries_the_bands_and_the_verdicts(packet):
         "tweeter": [TWEETER_BAND[0], TWEETER_BAND[1]],
         "woofer": [WOOFER_BAND[0], WOOFER_BAND[1]],
     }
-    assert packet["feature_classification"]["available"] is True
-    assert packet["feature_classification"]["n_rows_readable"] == 2
+    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is True
+    assert packet[DERIVED_VIEWS]["feature_classification"]["n_rows_readable"] == 2
 
 
 def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
@@ -512,26 +497,8 @@ def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
 def test_a_missing_classification_is_reported_not_papered_over(tmp_path):
     packet = _speaker(tmp_path, classification=False)
 
-    assert packet["feature_classification"]["available"] is False
-    assert packet["feature_classification"]["reason"] == "source_absent"
-
-
-def test_the_not_built_disclosure_stops_being_printed_once_one_is_banked(
-    tmp_path, packet
-):
-    """"We did not look" must not be printed beside the thing we looked at.
-
-    The ``per_bin_minimum_phase_class`` entry was unconditional before a round
-    could carry banked verdicts. Left unconditional it would be the packet's own
-    honesty block telling a reader to disregard a block two keys above it.
-    """
-    without = _speaker(tmp_path / "b", classification=False)
-
-    fields = {entry["field"] for entry in packet["not_evaluated"]}
-    assert "per_bin_minimum_phase_class" not in fields
-    assert "per_bin_minimum_phase_class" in {
-        entry["field"] for entry in without["not_evaluated"]
-    }
+    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is False
+    assert packet[DERIVED_VIEWS]["feature_classification"]["reason"] == "source_absent"
 
 
 def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path):
@@ -547,7 +514,7 @@ def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path
         "not even a row",
     ]))
 
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
     assert block["n_rows_banked"] == 4
     assert block["n_rows_readable"] == 1
 
@@ -579,7 +546,7 @@ def test_the_packet_carries_the_whole_lab_row_beside_the_gate_view(tmp_path):
     """
     row = _lab_row(WOOFER_FEATURE_HZ)
     packet = _speaker(tmp_path, classification=_classification([row]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     # Imported, not restated: the gate view is whatever the register types.
     assert block["verdicts"] == [read_feature_verdicts([row])[0].to_dict()]
@@ -602,7 +569,7 @@ def test_a_lab_column_outside_the_allowlist_is_withheld_and_named(tmp_path):
     packet = _speaker(tmp_path, classification=_classification([
         {**row, "wav_path": path},
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["lab_rows"] == [row]
     # The NAME is published — that is the point of an allowlist that reports
@@ -626,7 +593,7 @@ def test_a_row_the_typed_reader_dropped_keeps_its_working_and_reaches_no_gate(
         _lab_row(WOOFER_FEATURE_HZ, classification="   "),
         "not even a row",
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["n_rows_banked"] == 3
     assert block["n_rows_readable"] == 1
@@ -651,7 +618,7 @@ def test_every_published_uncertainty_labels_itself_random_or_systematic(packet):
     ``gate_slack`` — the fixed dB bar a corrected depth change is TESTED
     against — is on the second list rather than labelled as either.
     """
-    uncertainty = packet["feature_classification"]["uncertainty"]
+    uncertainty = packet[DERIVED_VIEWS]["feature_classification"]["uncertainty"]
     fields = uncertainty["fields"]
     not_uncertainties = uncertainty["not_uncertainties"]
 
@@ -703,7 +670,7 @@ def test_a_non_finite_lab_column_becomes_null_and_is_named(tmp_path):
             is_dip=False,
         ),
     ]))
-    block = packet["feature_classification"]
+    block = packet[DERIVED_VIEWS]["feature_classification"]
 
     assert block["lab_rows"][0]["z_local"] is None
     assert block["lab_rows"][0]["frac_of_nmp"] is None

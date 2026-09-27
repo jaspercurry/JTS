@@ -44,25 +44,6 @@ def _fingerprint(packet: dict[str, Any]) -> str:
 # --- the readers the gate uses, so the packet owns its own shape ---
 
 
-def packet_region_band_hz(packet: Any) -> tuple[float, float] | None:
-    """The crossover region, or ``None`` when the packet does not carry one."""
-    if not isinstance(packet, dict):
-        return None
-    region = packet.get("crossover_region")
-    if not isinstance(region, dict) or not region.get("available"):
-        return None
-    band = region.get("band_hz")
-    if not isinstance(band, (list, tuple)) or len(band) != 2:
-        return None
-    try:
-        lo, hi = float(band[0]), float(band[1])
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not (lo > 0.0 and hi > lo):
-        return None
-    return (lo, hi)
-
-
 def packet_driver_passbands_hz(packet: Any) -> dict[str, tuple[float, float]]:
     """Each role's own declared band, or ``{}`` when the packet carries none."""
     if not isinstance(packet, dict):

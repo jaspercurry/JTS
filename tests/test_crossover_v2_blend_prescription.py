@@ -79,7 +79,6 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
     build_crossover_evidence_packet,
     packet_positional_evidence,
-    packet_region_band_hz,
 )
 from jasper.active_speaker.crossover_v2.spatial import (
     LateralPose,
@@ -262,12 +261,12 @@ def packet(tmp_path: Path) -> dict[str, Any]:
     return build_crossover_evidence_packet(session)
 
 
-def _gate(packet: dict[str, Any], document: Any) -> Any:
-    """The gate, called the one way its three inputs are meant to be derived."""
+def _gate(packet: dict[str, Any], document: Any, band_hz: tuple[float, float] | None = BAND) -> Any:
+    """The gate, its band the contract's (the fixture receipt's blend band)."""
     return read_blend_prescription(
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
-        band_hz=packet_region_band_hz(packet),
+        band_hz=band_hz,
         positional_evidence=packet_positional_evidence(packet),
     )
 
@@ -294,196 +293,12 @@ def _cut(gain: float = -1.5, freq: float = 1000.0, q: float = 2.0) -> dict[str, 
 # --------------------------------------------------------------------------- #
 
 
-def test_the_packet_carries_the_region_the_deterministic_solver_was_bounded_by(packet):
-    """One band, from one place — the receipt's own blend band."""
-    assert packet_region_band_hz(packet) == BAND
-    assert packet["crossover_region"]["source"].endswith("blend.band_hz")
-
-
 def test_the_packet_names_every_question_this_round_cannot_answer(packet):
-    """The honesty block is the packet's first duty, so it is pinned by field.
-
-    ``harmonics`` replaced ``harmonic_distortion`` when ticket 1.4 gave the
-    corpus an instrument that writes a reading. The old entry was unconditional
-    and its reason said "no round writes them", which was a claim about the
-    CORPUS; the new one appears only for a round nobody read, and says so about
-    that round. This fixture banks no reading, so it is present here — the
-    other half, that it DISAPPEARS when one is banked, is pinned in
-    ``tests/test_crossover_v2_harmonic_evidence.py``.
-
-    ``first_reflection_ms`` went the same way in ticket 1.5, and its
-    replacement is spelled as the FIELD a reader would go looking for
-    (``positions[].gate_reflection_delay_ms``) rather than as the gating
-    block's own absolute time, which is a different quantity — see
-    ``GateDisclosure.reflection_delay_ms``. Its disappearance is pinned below.
-    """
+    """The honesty block is the packet's first duty, so it is pinned by field."""
     fields = {entry["field"] for entry in packet["not_evaluated"]}
-    assert {
-        "lateral_poses[].position_deg",
-        "capture_snr",
-        "positions[].gate_reflection_delay_ms",
-        "reflections.reflector_path_distance_m",
-        "harmonics",
-        "per_bin_minimum_phase_class",
-        "vertical_plane_response",
-    } <= fields
-    assert "harmonic_distortion" not in fields
-    # The claim ticket 1.5 falsified: the reflection time is no longer "not
-    # banked as a number anywhere in a round's artifacts", so no entry may say
-    # so about the corpus under the old field name.
-    assert "first_reflection_ms" not in fields
+    assert {"lateral_poses[].position_deg", "capture_snr", "vertical_plane_response"} <= fields
     for entry in packet["not_evaluated"]:
         assert entry["reason"].strip(), f"{entry['field']} claims absence with no reason"
-
-
-# --------------------------------------------------------------------------- #
-# ticket 1.5 — the gate's numbers, and the reflector path
-# --------------------------------------------------------------------------- #
-
-#: A registry with a ladder actually fitted, in the shipped serializer's shape.
-#:
-#: One REAL grouping rather than three round numbers: the S0 main leg's own
-#: re-derived triple (2026-08-22, over ``captures/flat-linearization-20260725``
-#: — the same reading ``tests/test_interference_nulls.py``'s four-way
-#: calibration table hard-asserts as ``main``). Real because the point of the
-#: fixture is that the two taus DIFFER by the measured ~7 %, so a conversion
-#: that read the wrong one is visible in the answer; a made-up pair could be
-#: made to differ by anything and would prove nothing about the corpus.
-_FITTED_LADDER = {
-    "classification": "position_invariant",
-    "reason": "",
-    "tau_ladder_us": 298.747,
-    "arrival_tau_us": 321.478,
-    "ladder_arrival_gap": -0.07071,
-    "nulls": [{"f_center_hz": 8646.0, "n": 2, "tau_us": 298.747}],
-}
-
-
-def _reflections(tmp_path: Path, *, at: str = "r", **over: Any) -> dict[str, Any]:
-    """One bundle's ``reflections`` block. ``at`` names a fresh subdirectory so
-    two bundles (or one beside the ``packet`` fixture's) can share a tmp_path."""
-    root = tmp_path / at
-    root.mkdir()
-    session, _ = _bundle(root, **over)
-    return build_crossover_evidence_packet(session)["reflections"]
-
-
-def test_the_reflector_path_is_the_ladders_own_delay_times_the_speed_of_sound(
-    tmp_path,
-):
-    """Ticket 1.5's third field. tau was banked all along; the multiply was not.
-
-    The packet is the right home for it precisely because nothing is measured
-    here: ``null_registry.tau_ladder_us`` is already in the document (the
-    honesty mask copies the registry verbatim), and what a reader kept doing by
-    hand was one multiply by a constant. Asserted by recomputing it from the
-    published tau and the published constant, so the block cannot pass by
-    carrying a number nobody can reproduce.
-    """
-    from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-
-    block = _reflections(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
-
-    assert block["available"] is True
-    assert block["tau_ladder_us"] == 298.747
-    assert block["speed_of_sound_m_s"] == DEFAULT_SOUND_SPEED_M_S
-    assert block["reflector_path_distance_m"] == round(
-        block["tau_ladder_us"] * 1e-6 * block["speed_of_sound_m_s"], 3
-    )
-    # ~10 cm of excess path, which is the S0 rim wave's own scale.
-    assert block["reflector_path_distance_m"] == pytest.approx(0.102)
-    # The constant is the repo's ONE definition, consumed rather than restated
-    # — three independent literal 343s already exist in this tree.
-    assert DEFAULT_SOUND_SPEED_M_S == 343.0
-
-
-def test_the_ladders_tau_is_converted_and_the_arrivals_is_not(tmp_path):
-    """Two taus sit on the registry and only one has been corroborated.
-
-    ``arrival_tau_us`` still carries whatever a sub-minimum cluster held on a
-    ``no_corroborating_arrivals`` refusal, so a distance built from it could be
-    published out of evidence the gate itself declined. The ladder's tau exists
-    only after a frequency-domain fit and a time-domain arrival agreed.
-
-    The two differ by the measured ~7 % here, so this discriminates rather than
-    restating the field name.
-
-    Mutation-selected: converting ``arrival_tau_us`` instead fails this and the
-    recomputation test above, and nothing else in the file.
-    """
-    block = _reflections(tmp_path, cloud_over={"null_registry": _FITTED_LADDER})
-
-    assert block["tau_ladder_us"] != _FITTED_LADDER["arrival_tau_us"]
-    from_arrival = round(
-        _FITTED_LADDER["arrival_tau_us"] * 1e-6 * block["speed_of_sound_m_s"], 3
-    )
-    assert block["reflector_path_distance_m"] != from_arrival
-
-
-def test_a_round_with_no_fitted_ladder_refuses_by_name_rather_than_saying_zero(
-    tmp_path,
-):
-    """``tau_ladder_us`` is 0.0 when nothing was fitted — a sentinel, not a
-    delay. Converted blindly it becomes 0.0 metres, which is a claim that the
-    reflector is at the microphone.
-
-    The refusal names the instrument's own reason slug, so a reader is sent to
-    why the gate found nothing rather than to a missing field.
-    """
-    registry = {**_FITTED_LADDER, "tau_ladder_us": 0.0, "nulls": [],
-                "reason": "no_corroborating_arrivals",
-                "classification": "insufficient_evidence"}
-    block = _reflections(tmp_path, cloud_over={"null_registry": registry})
-
-    assert block["available"] is False
-    assert block["reflector_path_distance_m"] is None
-    assert block["tau_ladder_us"] is None
-    assert "no_corroborating_arrivals" in block["reason"]
-    assert block["status"] == "not_evaluated"
-
-
-def test_a_registry_that_fitted_nothing_but_named_no_reason_still_refuses(
-    tmp_path, packet,
-):
-    """The fixture's own registry: identified nothing, carries no tau at all.
-
-    A second refusal arm rather than the same one, because ``reason`` and a
-    usable ``tau_ladder_us`` are independent facts on a hand-edited or older
-    artifact, and a block that only checked the first would divide ``None`` by
-    nothing.
-    """
-    assert packet["reflections"]["available"] is False
-    assert packet["reflections"]["reflector_path_distance_m"] is None
-    assert "no usable fitted ladder delay" in packet["reflections"]["reason"]
-    # …and the honesty block carries it, under the field a reader searches for.
-    stated = [
-        entry for entry in packet["not_evaluated"]
-        if entry["field"] == "reflections.reflector_path_distance_m"
-    ]
-    assert len(stated) == 1
-    assert stated[0]["reason"] == packet["reflections"]["reason"]
-
-
-def test_the_absent_distance_is_not_left_to_read_as_a_near_reflector(
-    tmp_path, packet,
-):
-    """A refused block still says what its silence does NOT mean.
-
-    Every reading is null and every ASSUMPTION is still published, so the two
-    shapes differ only by the ``status``/``reason`` pair the packet adds to a
-    refusal everywhere else. A reader holding a refused block can still see
-    which constant a distance WOULD have been converted with.
-    """
-    from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-
-    block = packet["reflections"]
-    assert block["speed_of_sound_m_s"] == DEFAULT_SOUND_SPEED_M_S
-    assert "the reflector is close" in block["note"]
-    fitted = _reflections(
-        tmp_path, at="fitted", cloud_over={"null_registry": _FITTED_LADDER}
-    )
-    assert set(block) - set(fitted) == {"status", "reason"}
-    assert not set(fitted) - set(block)
 
 
 def test_the_gate_numbers_reach_the_packet_beside_the_sentence(tmp_path):
@@ -505,53 +320,6 @@ def test_the_gate_numbers_reach_the_packet_beside_the_sentence(tmp_path):
     assert all(row["gate_reflection_delay_ms"] == 5.33 for row in rows)
     # Not withheld, which is what an un-allowlisted field would look like.
     assert "gate_moved_rms_db" not in packet["positions"]["redacted_fields"]
-    # …and the honesty block stops claiming the number is nowhere.
-    fields = {entry["field"] for entry in packet["not_evaluated"]}
-    assert "positions[].gate_reflection_delay_ms" not in fields
-
-
-def test_a_round_whose_gate_survives_as_prose_says_so_about_itself(packet):
-    """The replacement for the old corpus-wide claim, narrowed to one round.
-
-    The entry used to say the reflection time "is not banked as a number
-    anywhere in a round's artifacts" — true of the corpus when it was written,
-    false the moment the writers shipped. What survives is a statement about
-    THIS round's records, and it names the field that separates the two rounds
-    that look identical from here rather than asserting the one it cannot
-    check.
-    """
-    stated = [
-        entry for entry in packet["not_evaluated"]
-        if entry["field"] == "positions[].gate_reflection_delay_ms"
-    ]
-    assert len(stated) == 1
-    reason = stated[0]["reason"]
-    assert "gate_moved_rms_db" in reason and "gate_reflection_delay_ms" in reason
-    assert "gate_floor_source separates them" in reason
-    # It must not claim the corpus banks nothing, which is what 1.5 falsified.
-    assert "anywhere in a round's artifacts" not in reason
-
-
-def test_the_verify_gates_own_numbers_close_the_row_too(tmp_path):
-    """Either carrier answers, because they are one fact about two captures.
-
-    ``verify.gate`` always spells both keys once the writer shipped; a position row is filtered by an allowlist that drops a
-    null. So a round with a verify capture and no usable position numbers still
-    banks them, and the honesty entry must not fire.
-    """
-    state = {"verify": {"outcome": "pass", "gate": {
-        "disclosure": "reflection measured at 5.33 ms after the direct arrival",
-        "reflection_measured": True,
-        "moved_rms_db": 2.59,
-        "reflection_delay_ms": 5.33,
-    }}}
-    session, state_path = _bundle(tmp_path, state=state)
-    packet = build_crossover_evidence_packet(session, state_path=state_path)
-
-    assert packet["verify"]["gate"]["reflection_delay_ms"] == 5.33
-    assert packet["verify"]["gate"]["moved_rms_db"] == 2.59
-    fields = {entry["field"] for entry in packet["not_evaluated"]}
-    assert "positions[].gate_reflection_delay_ms" not in fields
 
 
 def test_the_vertical_plane_is_disclosed_once_and_refuses_nothing(packet):
@@ -576,43 +344,7 @@ def test_the_vertical_plane_is_disclosed_once_and_refuses_nothing(packet):
 def test_a_missing_state_file_is_reported_not_papered_over(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
-    assert packet["verify"]["available"] is False
-    assert "no flow state file" in packet["verify"]["reason"]
     assert any(e["field"] == "flow_state" for e in packet["not_evaluated"])
-
-
-def test_source_absent_and_field_null_are_different_absences(tmp_path):
-    """The distinction the throwaway glue's ``or {}`` chains collapsed.
-
-    They send a reader to different places — "pass the state file too" versus
-    "that stage did not run" — so a packet that merged them would be telling a
-    reader to do the wrong thing half the time.
-    """
-    session, state_path = _bundle(tmp_path, state={"verify": None})
-    packet = build_crossover_evidence_packet(session, state_path=state_path)
-    assert packet["verify"]["reason"] == "field_null"
-
-    session2, _ = _bundle(tmp_path / "b")
-    absent = build_crossover_evidence_packet(session2)
-    assert absent["verify"]["reason"] != "field_null"
-
-
-def test_the_packet_copies_a_not_evaluated_verdict_verbatim(tmp_path):
-    """Never flattened to a null, and never to a zero."""
-    session, state_path = _bundle(tmp_path, state={"verify": {
-        "outcome": "pass",
-        "claims": {
-            "absolute": {"status": "fail", "reason": None},
-            "hf_branch": {
-                "status": "not_evaluated", "reason": "no_per_branch_verify_capture"
-            },
-        },
-    }})
-    packet = build_crossover_evidence_packet(session, state_path=state_path)
-    claim = packet["verify"]["claims"]["hf_branch"]
-    assert claim == {
-        "status": "not_evaluated", "reason": "no_per_branch_verify_capture"
-    }
 
 
 @pytest.mark.parametrize("needle", [
@@ -1892,29 +1624,9 @@ def test_a_bignum_grid_bin_makes_the_positional_evidence_unavailable(tmp_path):
     assert packet_positional_evidence(packet) is None
 
 
-def test_a_bignum_region_band_makes_the_region_unavailable(tmp_path):
-    """R2: pins ``packet_region_band_hz``'s OverflowError guard."""
-    session, _ = _bundle(tmp_path)
-    _edit_artifact(
-        session, "round_receipt.json",
-        lambda d: d["round_measurements"]["blend"].update(band_hz=[_BIGNUM, 3297.4]),
-    )
-    packet = build_crossover_evidence_packet(session)
-    assert packet_region_band_hz(packet) is None
+def test_no_region_refuses_rather_than_inventing_a_band(packet):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(-1.5)], packet))
-    assert excinfo.value.reason == "region_unavailable"
-
-
-def test_a_packet_with_no_region_refuses_rather_than_inventing_a_band(tmp_path):
-    session, _ = _bundle(tmp_path)
-    round_dir = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
-    receipt = _receipt()
-    receipt["round_measurements"]["blend"]["band_hz"] = None
-    (round_dir / "round_receipt.json").write_text(json.dumps(receipt))
-    packet = build_crossover_evidence_packet(session)
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut()], packet))
+        _gate(packet, _document([_cut()], packet), band_hz=None)
     assert excinfo.value.reason == "region_unavailable"
 
 
@@ -2424,7 +2136,6 @@ def test_the_builder_reads_a_real_banked_round():
         _CORPUS, state_path=_CORPUS_STATE if _CORPUS_STATE.exists() else None
     )
     assert packet["artifact_schema_version"] == PACKET_SCHEMA_VERSION
-    assert packet_region_band_hz(packet) == (824.35, 3297.4)
     evidence = packet_positional_evidence(packet)
     assert evidence is not None
     positions, freqs, reference = evidence

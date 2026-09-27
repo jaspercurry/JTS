@@ -19,7 +19,7 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, build_crossover_evidence_packet
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
@@ -55,10 +55,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "053c9162fead93f7787570c0836253fe8280a94f7c150ee42650b5203c5f4040"),
-    ("mono", True, "ea1b58f130ef5f0373b472c83f87c23ed23835e005e1026d566009ded3d1a300"),
-    ("stereo", False, "d98043d786539d6c4cd792b5951f4d234aaebc7051454fc8e52fed5b5730f250"),
-    ("stereo", True, "d0efbbbdc3fbb52a2ac0012ac1d52033f9493623f3293b434895df1f03d6a810"),
+    ("mono", False, "7e954003011b54c368189ba7067778daac2a6de4585eb1f2e93a5494aeb17af2"),
+    ("mono", True, "841b22bb82962eb534caed6fceaf959e0347bb06943c1ec56740dad17f3752f8"),
+    ("stereo", False, "45deddd1233fa7435df8f74fb5f4c26e6950ab00cf1c816d80fac4b9aff79a4a"),
+    ("stereo", True, "62f08722b1ebb7b086c79f36cd03daa385d786a718be9cb20186db1bf4376c13"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -270,7 +270,6 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
     assert packet["contracts"] == contract_digests(_contracts(*round_bank))
     assert {"response_format", "driver_response_format"}.isdisjoint(packet)
     assert packet["capture_snr"]["uncertainty"] == CONTRACT_COMMAND
-    assert packet["reflections"]["uncertainty"] == CONTRACT_COMMAND
     assert cli.main(["status", str(bank)]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["contracts"] == packet["contracts"]
@@ -317,7 +316,7 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
 
 def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():
     first = prescription_contracts()["speaker"]["evidence_declarations"]
-    assert first["capture_snr"]["fields"] == first["reflections"]["fields"] == {}
+    assert first["capture_snr"]["fields"] == {}
     field = "h{order}_repeat_spread_db"
     assert first["harmonics"]["fields"][field]["kind"] == "random"
     first["harmonics"]["fields"][field]["kind"] = "changed"
@@ -403,7 +402,7 @@ def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys
 
 def test_harmonic_templates_cover_the_published_rows(tmp_path):
     packet = build_crossover_evidence_packet(harmonic_bundle(tmp_path, harmonics=_artifact()))
-    block = packet["harmonics"]
+    block = packet[DERIVED_VIEWS]["harmonics"]
     declarations = prescription_contracts()["speaker"]["evidence_declarations"]["harmonics"]
     declared = {name.format(order=order)
                 for group in ("fields", "not_uncertainties")

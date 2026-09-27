@@ -194,21 +194,13 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
 
 
 def _incumbent_block(
-    receipt: dict[str, Any],
-    reason: str,
     profile: dict[str, Any] | None,
     profile_reason: str,
     state: Mapping[str, Any],
     statefile_path: Path | None,
 ) -> dict[str, Any]:
-    """What the speaker is PLAYING — three records, two questions.
-
-    The BLEND correction is recorded in two places and reported side by side
-    rather than reconciled: the receipt's
-    ``round_measurements.blend.incumbent`` (what the round said it derived
-    from) and the applied profile's ``blend_correction`` (what the graph
-    carried). They should agree, and reconciling them is a judgement this
-    module does not make.
+    """What the speaker is PLAYING: the applied profile's ``blend_correction``
+    (what the graph carried).
 
     ``linearization`` is the same question asked of the other prescription
     class, read through
@@ -234,12 +226,9 @@ def _incumbent_block(
     bank time and not the reading machine's own state. ``None`` (no statefile
     supplied) reads as unknown, not as agreement.
 
-    ``trim`` is a fourth record, LEVEL rather than shape: see
-    :func:`_incumbent_trim_block`.
+    ``trim`` answers LEVEL rather than shape: see :func:`_incumbent_trim_block`.
     """
 
-    blend = _mapping(_mapping(receipt.get("round_measurements")).get("blend"))
-    from_receipt = blend.get("incumbent")
     # ``profile_blend_correction`` and not an attribute read: it owns the same
     # snapshot-first authority rule ``profile_linearization`` owns, and it
     # keeps ``None`` (no readable profile) apart from ``()`` (a profile that
@@ -248,11 +237,6 @@ def _incumbent_block(
     linearization = profile_linearization(profile)
     trim = _incumbent_trim_block(profile, state)
     return {
-        "from_round_receipt": (
-            from_receipt
-            if from_receipt is not None
-            else _absence(reason, False, "round_measurements.blend.incumbent")
-        ),
         "from_applied_profile": (
             list(from_profile)
             if from_profile is not None

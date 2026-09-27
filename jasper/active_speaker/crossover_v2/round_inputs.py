@@ -53,7 +53,7 @@ __all__ = [
     'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
-    'round_inputs', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
+    'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
     'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
@@ -341,9 +341,14 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
     return default_out(inputs, banked_round_of(inputs.session_dir) or inputs.session_dir, name, set_id)
 
 
+def bank_of(inputs: RoundInputs) -> Path | None:
+    """The bank holding the round, whether it is named by its bank or by its bundle."""
+    return inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
+
+
 def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     """The ``packet.json`` the round's bank wrote, or ``{}`` for a round banked without one."""
-    round_dir = inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
+    round_dir = bank_of(inputs)
     return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
 
 
@@ -361,7 +366,7 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     banked_rooms = banked_packet(inputs).get("room")
     room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
             else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
-    if not room and inputs.banked:
+    if not room and (inputs.banked or isinstance(banked_rooms, list)):
         room = {"median": {"code": ROOM_NOT_BANKED}}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
