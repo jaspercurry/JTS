@@ -21,7 +21,8 @@ copy, and a new DSP feature re-derived the same primitives (which is
 how the multi-room crossover was first written as two cascaded `Biquad`
 sections instead of the canonical native `BiquadCombo`).
 
-This module is the **format contract**, nothing more. It owns *how* a
+This module is the **format contract**, plus the one ``devices:`` block,
+whose ``volume_limit`` is fixed at :data:`DEFAULT_VOLUME_LIMIT_DB`. It owns *how* a
 gain/biquad/crossover/mixer is spelled in YAML. It does NOT own *what*
 config to build — the per-channel chains, gain-staging policy, PEQ
 design, crossover regions, and channel routing stay in each subsystem's

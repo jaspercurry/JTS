@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+from jasper.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from jasper.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
@@ -117,7 +118,7 @@ def ensure_volume_limit_db(value: float) -> float:
         raise ValueError("volume_limit_db must be numeric") from e
     if not math.isfinite(out):
         raise ValueError("volume_limit_db must be finite")
-    if out > 0:
+    if out > DEFAULT_VOLUME_LIMIT_DB:
         raise ValueError("volume_limit_db must not exceed 0 dB")
     return out
 
