@@ -15,6 +15,8 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S
+
 from jasper.control.server import _make_handler
 from jasper.volume_state import VolumeState
 from jasper.output_topology_store import save_output_topology
@@ -326,7 +328,7 @@ def _maybe_json(raw: bytes) -> dict:
 def _get(url: str, *, headers: dict[str, str] | None = None) -> tuple[int, dict]:
     req = urllib.request.Request(url, headers=headers or {}, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
@@ -347,7 +349,7 @@ def _post(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
@@ -366,7 +368,7 @@ def _post_raw(
         url, data=data, headers=req_headers, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=DEFAULT_SIGNAL_TIMEOUT_S) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
