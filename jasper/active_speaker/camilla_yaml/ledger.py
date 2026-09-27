@@ -11,7 +11,7 @@ from jasper.biquad import PeqFilter, total_positive_boost_db
 
 from ..profile import ActiveSpeakerPreset
 
-from ..crossover_section import CrossoverSection
+from ..crossover_section import CrossoverSection, sections_by_role
 from .topology import _ordered_regions
 
 BASELINE_HEADROOM_DB = 0.0
@@ -128,7 +128,7 @@ def linearization_headroom_db(
     # A branch with no positive gain cannot reach unity through a crossover and
     # a non-positive trim, so a cut-only graph is charged 0.0 without evaluating
     # anything — and without importing numpy, kept lazy on a 1 GB Pi.
-    if not linearization_has_boost(linearization):
+    if not _linearization_has_boost(linearization):
         return 0.0
     from ..branch_chain import (
         branch_headroom_db,  # lazy: numpy import cost (fanin imports this module for one constant)
@@ -147,19 +147,13 @@ def linearization_headroom_db(
     return worst
 
 
-def linearization_has_boost(
+def _linearization_has_boost(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> bool:
     """Does any emitted linearization filter carry positive gain?
 
-    The guard that keeps a cut-only graph off the chain-evaluation path
-    entirely, so neither this emitter nor the runtime contract imports numpy for
-    it. Sound because a cut cascade, a Linkwitz-Riley section and a non-positive
-    trim are each <= 0 dB everywhere.
-
-    Public because the adoption table asks the same question of the APPLIED
-    candidate (a boosted intervention whose measured benefit is indeterminate
-    fails closed): "does this graph put energy in" has one definition here.
+    Without one there is nothing to evaluate: a cut cascade, a Linkwitz-Riley
+    section and a non-positive trim are each <= 0 dB everywhere.
     """
     for filters in (linearization or {}).values():
         if not isinstance(filters, Sequence) or isinstance(filters, (str, bytes)):
@@ -182,7 +176,7 @@ def _branch_context(
     Built from the same two sources the graph itself is — the preset's crossover
     regions and ``corrections``' per-driver ``gain_db`` — so the chain this
     charge is computed over IS the chain the next few lines emit. The role ->
-    sections half is :func:`jasper.active_speaker.branch_chain.sections_by_role`,
+    sections half is :func:`jasper.active_speaker.crossover_section.sections_by_role`,
     shared with the session that stamps the disclosed ``headroom_cost_db``.
 
     Deliberately omits the bass-management and protective tweeter high-passes,
@@ -190,14 +184,10 @@ def _branch_context(
     rather than under-charges, and keeps this identical to what the runtime
     contract can re-derive without walking optional filters.
     """
-    from ..branch_chain import (
-        sections_by_role,  # lazy: numpy import cost (fanin imports this module for one constant)
-    )
-
     return {
         role: (
             role_sections,
-            float(_correction_value(corrections, role, "gain_db", 0.0)),
+            _correction_value(corrections, role, "gain_db", 0.0),
         )
         for role, role_sections in sections_by_role(
             _ordered_regions(preset)

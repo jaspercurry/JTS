@@ -116,7 +116,6 @@ from .ledger import (
     _correction_bool as _correction_bool,
     _correction_value as _correction_value,
     boost_headroom_by_role as boost_headroom_by_role,
-    linearization_has_boost as linearization_has_boost,
     linearization_headroom_db as linearization_headroom_db,
     program_headroom_db as program_headroom_db,
 )

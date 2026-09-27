@@ -44,6 +44,7 @@ from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
 from tests._async_wait import wait_signalled
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
+from jasper.active_speaker.crossover_section import sections_by_role
 
 ENTRY_CONFIG = "entry.yml"
 VOLUME_STATE = "session_volume.json"
@@ -91,8 +92,6 @@ def _profile() -> MeasurementGraphProfile:
     already carries its own zeroed delay lane and a second mapping key would
     play with no delay and bank as a delayed take.
     """
-    from jasper.active_speaker.branch_chain import sections_by_role
-
     preset = _preset()
     return MeasurementGraphProfile(
         preset=preset,

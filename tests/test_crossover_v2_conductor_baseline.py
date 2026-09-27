@@ -26,8 +26,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
-from jasper.active_speaker.branch_chain import crossover_response_complex, sections_by_role
-from jasper.active_speaker.crossover_section import CrossoverSection
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.active_speaker.flat_spec import (

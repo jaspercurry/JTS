@@ -15,7 +15,8 @@ from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology_strict
 
-from .branch_chain import branch_headroom_db, sections_by_role
+from .branch_chain import branch_headroom_db
+from .crossover_section import sections_by_role
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate, load_applied_candidate
 from .baseline_profile import (
     load_applied_baseline_profile_state,

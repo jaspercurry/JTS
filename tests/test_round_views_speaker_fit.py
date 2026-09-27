@@ -16,7 +16,8 @@ from jasper.active_speaker.crossover_envelope_v2 import _envelope
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.round_bank import bank_round
-from jasper.active_speaker.branch_chain import radiating_band_hz, sections_by_role
+from jasper.active_speaker.branch_chain import radiating_band_hz
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.branch_target import branch_target
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compose_sigma_db, fit_branches
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed

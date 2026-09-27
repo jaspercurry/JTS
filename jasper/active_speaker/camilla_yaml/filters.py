@@ -52,7 +52,6 @@ from .ledger import (
     _branch_context,
     _correction_bool,
     _correction_value,
-    linearization_has_boost,
     program_headroom_db,
 )
 from .topology import _ordered_regions, _output_count
@@ -714,7 +713,7 @@ def _emit_baseline_filter_definitions(
         linearization, baseline_headroom_db=baseline_headroom_db,
         room_peqs=room_peqs, output_trim_db=output_trim_db,
         rear_calibration=rear_calibration,
-        branch_context=_branch_context(preset, corrections) if linearization_has_boost(linearization) else {},
+        branch_context=_branch_context(preset, corrections),
     )
     if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
         raise ActiveSpeakerConfigError(

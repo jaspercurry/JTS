@@ -17,7 +17,8 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from ..branch_chain import crossover_response_complex, radiating_band_hz, sections_by_role
+from ..branch_chain import crossover_response_complex, radiating_band_hz
+from ..crossover_section import sections_by_role
 from ..camilla_yaml import role_polarity
 from jasper.audio_measurement.program_analysis.model import SummedAlignmentReference
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
