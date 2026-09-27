@@ -65,7 +65,6 @@ import logging
 import shutil
 from pathlib import Path
 
-from .. import atomic_io
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
 from ..log_event import log_event
 from . import _stash, follower_config
@@ -349,9 +348,7 @@ async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
         # Stash the prior solo-active config for the unwind — but only a
         # genuinely different (solo) config, never the bake itself.
         if current and current != LEADER_BAKE_CONFIG_PATH:
-            atomic_io.atomic_write_text(
-                LEADER_BAKE_PRIOR_STASH, current + "\n", mode=0o644,
-            )
+            _stash.write_stash(current, LEADER_BAKE_PRIOR_STASH)
     log_event(
         logger,
         "multiroom.camilla_apply",
