@@ -29,7 +29,7 @@ from jasper.audio_measurement.admission.excitation_admission import (
     FrequencyBand,
 )
 from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
@@ -106,9 +106,8 @@ def _sha256(value: Any, *, field: str) -> str:
 
 
 def _finite(value: Any, *, field: str) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise ExcitationSafetyPlanError(f"{field} must be finite")
+    number = require_finite(value, field=field, error=ExcitationSafetyPlanError)
+    # -0.0 and 0.0 are one value, and the plan's fingerprint must say so.
     return 0.0 if number == 0.0 else number
 
 

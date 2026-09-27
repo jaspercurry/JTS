@@ -21,7 +21,7 @@ from dataclasses import dataclass, fields
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 from jasper.speaker_layout import measurement_target_id
 
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS
@@ -395,13 +395,6 @@ _NUMBERS = frozenset({"delay_us", "sweep_s"})
 _PASSTHROUGH = _FIELD_NAMES - _TRIMMED_STRINGS - _ARRAYS - _NUMBERS
 
 
-def _finite(name: str, value: Any) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise ValueError(f"{name} must be a finite number, got {value!r}")
-    return number
-
-
 def _from_json(name: str, value: Any) -> Any:
     """One banked value, typed as the flag door would have typed it.
 
@@ -428,10 +421,10 @@ def _from_json(name: str, value: Any) -> Any:
         ):
             raise ValueError(f"{name} entries must be strings, got {value!r}")
         if name in ("level_ladder_dbfs", "sweep_band_hz"):
-            return tuple(_finite(name, entry) for entry in value)
+            return tuple(require_finite(entry, field=name) for entry in value)
         return tuple(value)
     if name in _NUMBERS:
-        return None if value is None else _finite(name, value)
+        return None if value is None else require_finite(value, field=name)
     return value
 
 

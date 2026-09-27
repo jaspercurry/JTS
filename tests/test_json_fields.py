@@ -23,6 +23,7 @@ from jasper.json_fields import (
     as_float,
     finite_float,
     json_fingerprint,
+    require_finite,
     sha256_file,
     utc_now_iso,
 )
@@ -46,6 +47,24 @@ def test_finite_float_reads_only_a_real_number(value, expected):
     result = finite_float(value)
     assert result == expected
     assert result is None or type(result) is float
+
+
+class _Refused(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize("value,positive,expected", [
+    (2.5, False, 2.5), (0, False, 0.0), (-1, False, -1.0), (3, True, 3.0),
+    (True, False, _Refused), ("1.5", False, _Refused), (None, False, _Refused),
+    (float("nan"), False, _Refused), (10**400, False, _Refused),
+    (0.0, True, _Refused), (-2.0, True, _Refused),
+])
+def test_require_finite_answers_a_real_number_or_the_callers_refusal(value, positive, expected):
+    if expected is _Refused:
+        with pytest.raises(_Refused):
+            require_finite(value, field="x", error=_Refused, positive=positive)
+    else:
+        assert require_finite(value, field="x", error=_Refused, positive=positive) == expected
 
 
 @pytest.mark.parametrize(

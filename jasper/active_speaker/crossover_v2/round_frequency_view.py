@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.json_fields import as_mapping
 from jasper.audio_measurement.spatial_combine import (
     DEFAULT_DIAG_FRACTION,
     DEFAULT_SPEC_FRACTION,
@@ -24,10 +25,6 @@ from jasper.active_speaker.frequency_view import (
 )
 
 MEASUREMENT_FAMILY = "summed_cloud"
-
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
 
 def _curve(
     *,
@@ -103,18 +100,18 @@ def _baseline_frame(entry: Mapping[str, Any]) -> tuple[float | None, list[list[f
 def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
     """Adapt one retained crossover evidence packet; perform no file I/O."""
 
-    session = _mapping(packet.get("session"))
+    session = as_mapping(packet.get("session"))
     run_id = str(session.get("bundle_session_id") or "").strip()
     if not run_id:
         raise FrequencyViewError("evidence packet has no bundle session id")
 
-    spec = _mapping(packet.get("spec"))
+    spec = as_mapping(packet.get("spec"))
     reference_db = spec.get("reference_db")
-    curve = _mapping(packet.get("curve"))
-    positions = _mapping(packet.get("positions"))
-    grid = _mapping(positions.get("curve_grid"))
-    honesty = _mapping(packet.get("honesty_mask"))
-    identity = _mapping(packet.get("identity"))
+    curve = as_mapping(packet.get("curve"))
+    positions = as_mapping(packet.get("positions"))
+    grid = as_mapping(positions.get("curve_grid"))
+    honesty = as_mapping(packet.get("honesty_mask"))
+    identity = as_mapping(packet.get("identity"))
 
     series: list[FrequencySeries] = []
     average = _curve(
@@ -132,7 +129,7 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
     if average is not None:
         series.append(average)
 
-    entry = _mapping(packet.get("entry_baseline"))
+    entry = as_mapping(packet.get("entry_baseline"))
     if entry.get("available"):
         baseline_reference_db, baseline_excluded = _baseline_frame(entry)
         baseline = _curve(
@@ -161,7 +158,7 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
     if not isinstance(position_smoothing, int) or isinstance(position_smoothing, bool):
         position_smoothing = DEFAULT_DIAG_FRACTION
     for index, raw in enumerate(positions.get("positions") or []):
-        row = _mapping(raw)
+        row = as_mapping(raw)
         position_id = str(row.get("position_id") or f"position_{index + 1}")
         member = _curve(
             series_id=position_id,
@@ -188,8 +185,8 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
         if member is not None:
             series.append(member)
 
-    angles = _mapping(positions.get("angle_deg"))
-    mic = _mapping(identity.get("mic"))
+    angles = as_mapping(positions.get("angle_deg"))
+    mic = as_mapping(identity.get("mic"))
     return FrequencyRun(
         id=run_id,
         measurement_family=MEASUREMENT_FAMILY,

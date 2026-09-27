@@ -9,7 +9,7 @@ import logging
 from typing import Any, Mapping
 
 from .driver_safety import driver_floor_issues
-from ..json_fields import finite_float as _finite
+from ..json_fields import as_mapping, finite_float as _finite
 from ..log_event import log_event
 from .measurement_view import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
@@ -82,16 +82,12 @@ _PHASE_STEP = {
 }
 
 
-def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
-
-
 def _verify_gate(status: Mapping[str, Any]) -> Mapping[str, Any]:
     """VERIFY's persisted gate record (``{"disclosure",
     "reflection_measured"}``). Empty when the state carries none — a
     legacy file, or a capture that could not be gated.
     """
-    return _mapping(_mapping(_v2(status).get("verify")).get("gate"))
+    return as_mapping(as_mapping(_v2(status).get("verify")).get("gate"))
 
 
 def _verify_gate_reflection_measured(status: Mapping[str, Any]) -> bool | None:
@@ -271,7 +267,7 @@ def _flatness_details_lines(status: Mapping[str, Any]) -> list[str]:
     block = _cloud_verify_block(status)
     if not block:
         return _pre_apply_flatness_lines(status)
-    flatness = _mapping(block.get("flatness"))
+    flatness = as_mapping(block.get("flatness"))
     if not flatness:
         return _flatness_unavailable_line(block)
     if not flatness.get("evaluable"):
@@ -305,7 +301,7 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
     verify is exactly the state where both are true.
     """
     block = _cloud_measure_block(status)
-    flatness = _mapping(block.get("flatness"))
+    flatness = as_mapping(block.get("flatness"))
     if not flatness:
         return []
     if not flatness.get("evaluable"):
@@ -320,7 +316,7 @@ def _pre_apply_flatness_lines(status: Mapping[str, Any]) -> list[str]:
         + _per_band_flatness_lines(block.get("spec_bands"))
     )
     line = f"Measured before tuning: {numeric}"
-    if _mapping(_v2(status).get("verify")).get("outcome") == "pass":
+    if as_mapping(_v2(status).get("verify")).get("outcome") == "pass":
         line += (
             ". The applied correction targets these; the result was confirmed "
             "at the mark only"
@@ -372,7 +368,7 @@ def _cloud_verify_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     ``PHASE_CLOUD_VERIFY`` is spelled through the shared phase constant, not
     a literal, so this and the session cannot drift apart on the key name.
     """
-    return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
+    return as_mapping(as_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_VERIFY))
 
 
 def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -381,7 +377,7 @@ def _cloud_measure_block(status: Mapping[str, Any]) -> Mapping[str, Any]:
     The only cloud group until the post-apply walk closes (#1965) — see
     :func:`_pre_apply_flatness_lines`.
     """
-    return _mapping(_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
+    return as_mapping(as_mapping(_v2(status).get("cloud")).get(PHASE_CLOUD_MEASURE))
 
 
 def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
@@ -405,7 +401,7 @@ def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
 
 
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
-    return _mapping(status.get("crossover_v2"))
+    return as_mapping(status.get("crossover_v2"))
 
 
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:
@@ -442,7 +438,7 @@ def _done_before(active_step: str) -> set[str]:
 
 def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
     """Durable applied-crossover chip — reuse the legacy contract shape."""
-    contract = _mapping(_mapping(status.get("setup")).get("applied_crossover"))
+    contract = as_mapping(as_mapping(status.get("setup")).get("applied_crossover"))
     if contract.get("valid") is not True:
         return {"state": "none", "label": "No speaker profile applied"}
     owner = str(contract.get("owner") or "")
@@ -454,8 +450,8 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _setup_ready(status: Mapping[str, Any]) -> bool:
-    setup = _mapping(status.get("setup"))
-    safety = _mapping(status.get("driver_safety_profile"))
+    setup = as_mapping(status.get("setup"))
+    safety = as_mapping(status.get("driver_safety_profile"))
     if safety:
         return not driver_floor_issues(safety)
     return setup.get("active") is True and setup.get("status") == "ready"
@@ -478,7 +474,7 @@ def _envelope(
 ) -> dict[str, Any]:
     resting = screen in {"awaiting_plan", "finished"}
     # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632 F3).
-    timing_action = dict(_mapping(_mapping(status.get("timing")).get("next_action"))) or None
+    timing_action = dict(as_mapping(as_mapping(status.get("timing")).get("next_action"))) or None
     if timing_action and timing_action.get("id") == "reset_timing":
         alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
         next_action = timing_action
@@ -501,9 +497,9 @@ def _envelope(
         "action_note": TIMING_RESET_NOTE if any(
             action and action.get("id") == "reset_timing" for action in actions
         ) else None,
-        "timing": dict(_mapping(status.get("timing"))),
+        "timing": dict(as_mapping(status.get("timing"))),
         "busy": bool(busy),
-        **round_capture(_mapping(status.get("capture")), verdict, advertise_capture=advertise_capture),
+        **round_capture(as_mapping(status.get("capture")), verdict, advertise_capture=advertise_capture),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
         "round": None,
@@ -534,13 +530,13 @@ def _failure_pilot_heard(status: Mapping[str, Any]) -> bool | None:
     ``locate_failed``'s copy branches on this (#2085). ``None`` is a third
     state, not falsy — a failure that ran no capture simply does not say.
     """
-    heard = _mapping(_v2(status).get("failure")).get("pilot_heard")
+    heard = as_mapping(_v2(status).get("failure")).get("pilot_heard")
     return heard if isinstance(heard, bool) else None
 
 
 def _failure_failed_roles(status: Mapping[str, Any]) -> tuple[str, ...]:
     """The drivers the failed capture names; empty for a record written before they were kept."""
-    roles = _mapping(_v2(status).get("failure")).get("failed_roles")
+    roles = as_mapping(_v2(status).get("failure")).get("failed_roles")
     return tuple(str(role) for role in roles) if isinstance(roles, list) else ()
 
 
@@ -563,7 +559,7 @@ def _reset_action() -> dict[str, Any]:
 
 def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
     spec = REASON_REGISTRY.get(code)
-    capture = _mapping(status.get("capture"))
+    capture = as_mapping(status.get("capture"))
     live = bool(capture) and capture.get("status") not in SESSION_ENDED_STATUSES
     action: dict[str, Any] | None = _reset_action()
     if spec:
@@ -603,11 +599,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "steps": [],
             "verdict_text": "This speaker has no active crossover.",
             "nudges": [],
-            "capture": _mapping(status.get("capture")) or None,
+            "capture": as_mapping(status.get("capture")) or None,
             "next_action": None,
             "alternate_actions": [],
             "action_note": None,
-            "timing": dict(_mapping(status.get("timing"))),
+            "timing": dict(as_mapping(status.get("timing"))),
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
             "round": None,
@@ -648,11 +644,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
 
-    capture = _mapping(status.get("capture"))
+    capture = as_mapping(status.get("capture"))
     terminal = capture.get("status")
-    run = _mapping(capture.get("run"))
+    run = as_mapping(capture.get("run"))
     # A staged capture is a new session; the durable failure is the previous session's.
-    durable_failure = {} if terminal == "awaiting_join" else _mapping(v2.get("failure"))
+    durable_failure = {} if terminal == "awaiting_join" else as_mapping(v2.get("failure"))
     failure_code = str(run.get("fault") or durable_failure.get("code") or "")
     durable_complete = not capture and phase in {PHASE_REVIEW, PHASE_APPLYING, PHASE_DONE}
     if terminal in SESSION_ENDED_STATUSES or durable_complete:

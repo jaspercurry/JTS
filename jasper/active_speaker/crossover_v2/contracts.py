@@ -19,7 +19,7 @@ from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
 )
-from jasper.json_fields import finite_float
+from jasper.json_fields import require_finite
 
 from ..crossover_section import CrossoverSection
 
@@ -105,17 +105,11 @@ class CandidateFcDisagreementError(CrossoverV2ContractError):
 
 
 def _finite(value: Any, *, field_name: str) -> float:
-    number = finite_float(value)
-    if number is None:
-        raise CrossoverV2ContractError(f"{field_name} must be a finite real number")
-    return number
+    return require_finite(value, field=field_name, error=CrossoverV2ContractError)
 
 
 def _positive(value: Any, *, field_name: str) -> float:
-    number = _finite(value, field_name=field_name)
-    if number <= 0.0:
-        raise CrossoverV2ContractError(f"{field_name} must be positive")
-    return number
+    return require_finite(value, field=field_name, error=CrossoverV2ContractError, positive=True)
 
 
 def _text(value: Any, *, field_name: str) -> str:

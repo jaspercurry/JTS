@@ -14,7 +14,7 @@ import re
 import time
 from calendar import timegm
 from dataclasses import dataclass
-from typing import Any, Collection, Mapping
+from typing import Any, Callable, Collection, Mapping
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 
@@ -43,6 +43,19 @@ def finite_float(value: Any) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
+
+
+def require_finite(
+    value: Any, *, field: str, error: Callable[[str], Exception] = ValueError, positive: bool = False,
+) -> float:
+    """:func:`finite_float`, or ``error`` naming ``field``; ``positive`` also
+    refuses zero and below."""
+    number = finite_float(value)
+    if number is None:
+        raise error(f"{field} must be a finite number")
+    if positive and number <= 0.0:
+        raise error(f"{field} must be positive")
+    return number
 
 
 def as_float(value: Any) -> float | None:
