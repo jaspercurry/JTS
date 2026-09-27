@@ -51,6 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..accounts import ACCOUNT_NAME_PATTERN, valid_account_name
 from ..atomic_io import write_env_file
 from ..env_file import read_env_file
@@ -1017,7 +1018,6 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build a configured server. `target` is socket/tuple/int per
     systemd.make_http_server's contract."""
-    from ..platform import systemd
     cfg = {
         "creds_path": creds_path,
         "redirect_uri": redirect_uri or resolved_google_redirect_uri(),

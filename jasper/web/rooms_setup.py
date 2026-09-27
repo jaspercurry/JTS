@@ -55,6 +55,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from ..identity import reader as identity
 from ..control import household_credential
 from ..multiroom.airplay_latency import with_airplay_latency_fit
@@ -1224,5 +1225,4 @@ def make_server(target) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer. `target` is either an (host, port)
     tuple (direct bind) or an already-bound socket (from systemd socket
     activation — see jasper/web/__main__.py)."""
-    from ..platform.systemd import make_http_server
-    return make_http_server(target, _make_handler())
+    return systemd.make_http_server(target, _make_handler())
