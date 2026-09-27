@@ -164,6 +164,19 @@ def _room_peq_filter_names(view: GraphView) -> tuple[str, ...]:
     return tuple(sorted(name for name in view.filters if name.startswith("room_peq")))
 
 
+def _program_layers_behind_headroom(view: GraphView) -> tuple[str, ...]:
+    """Room and blend filters wired at or behind the headroom gain, where
+    ``program_peak`` reads them as preference EQ, which rides uncharged
+    (ADR-0121)."""
+    behind: list[str] = []
+    seen = False
+    for step in view.pipeline_steps:
+        seen = seen or PROGRAM_HEADROOM_FILTER in step.names
+        if seen:
+            behind.extend(name for name in step.names if name.startswith(("room_peq", "as_blend_")))
+    return tuple(behind)
+
+
 def _driver_domain_pair_trim_between_select_and_split(
     payload: dict[str, Any],
 ) -> bool:
@@ -1626,6 +1639,14 @@ def _active_graph_evidence(
                     "blocker",
                     "active_baseline_headroom_invalid",
                     "active baseline headroom gain is missing or positive",
+                ))
+            behind = _program_layers_behind_headroom(view)
+            if behind:
+                issues.append(_issue(
+                    "blocker",
+                    "active_baseline_program_layer_behind_headroom",
+                    "room and blend filters must run ahead of the shared headroom gain: "
+                    + ", ".join(behind),
                 ))
         else:
             # Driver-domain (follower) prefix: the leader baked Layer B/C, so

@@ -840,13 +840,17 @@ def test_linearized_baseline_reproves_as_approved_active_runtime():
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
+def _dumped(text: str, payload: dict) -> str:
+    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
+    return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+
+
 def _edited(text: str, *edits: tuple[str, str, float]) -> str:
     """``text`` with each ``(filter, parameter, value)`` written into its YAML."""
     payload = yaml.safe_load(text)
     for name, field, value in edits:
         payload["filters"][name]["parameters"][field] = value
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    return f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    return _dumped(text, payload)
 
 
 _TWEETER_1 = driver_linearization_peak_name("tweeter", 1)
@@ -923,6 +927,28 @@ def test_reproof_refuses_exactly_a_program_above_unity(emit_kwargs, edits, refus
     assert [issue["code"] for issue in graph.issues] == (
         [LINEARIZATION_HEADROOM_UNPROVEN_CODE] if refused else []
     )
+
+
+def test_a_room_boost_behind_the_headroom_gain_is_refused():
+    """The steps between the headroom gain and the split ride uncharged as
+    preference EQ (ADR-0121), so the room layer must run ahead of the gain."""
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM, room_peqs=_ROOM_BOOST,
+    )
+    payload = yaml.safe_load(text)
+    pipeline = payload["pipeline"]
+    room = next(step for step in pipeline if room_peq_name(1) in step.get("names", ()))
+    pipeline.remove(room)
+    pipeline.insert(1 + next(
+        index for index, step in enumerate(pipeline)
+        if "active_baseline_headroom" in step.get("names", ())
+    ), room)
+    graph = classify_camilla_graph(
+        topology=_active_topology("mono", "active_2_way"), text=_dumped(text, payload),
+    )
+    assert [issue["code"] for issue in graph.issues] == [
+        "active_baseline_program_layer_behind_headroom"
+    ]
 
 
 @pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.1, True)])
@@ -1004,8 +1030,7 @@ def test_reproof_blocks_tampered_wrong_biquad_subtype():
     payload = yaml.safe_load(text)
     name = driver_linearization_peak_name("tweeter", 1)
     payload["filters"][name]["parameters"]["type"] = "Highshelf"
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
@@ -1035,8 +1060,7 @@ def test_reproof_blocks_reversed_shelf_and_peak_order():
             break
     else:
         raise AssertionError("no pipeline step for channel 1")
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
@@ -1061,8 +1085,7 @@ def test_reproof_allows_unrelated_filter_name_between_crossover_and_tail():
     for step in payload["pipeline"]:
         if step.get("channels") == [1]:
             step["names"].insert(1, "as_tweeter_mystery")
-    source = next(line for line in text.splitlines() if line.startswith("# Source:"))
-    tampered = f"{source}\n{yaml.safe_dump(payload, sort_keys=False)}"
+    tampered = _dumped(text, payload)
 
     graph = classify_camilla_graph(topology=topology, text=tampered)
     assert graph.allowed is False
