@@ -388,8 +388,7 @@ def _travel_refusal(controller: Any, args: argparse.Namespace) -> dict[str, Any]
 #: ``_SubParsersAction``), so an ordinary default would overwrite a ``--json``
 #: already set before the subcommand with this subparser's unset default.
 #: SUPPRESS means "not passed here" adds no key, so the copy has nothing to
-#: overwrite with. Previously ``--json`` worked only before the subcommand;
-#: placing it after was an argparse "unrecognized arguments" error.
+#: overwrite with.
 _JSON_PARENT = argparse.ArgumentParser(add_help=False)
 _JSON_PARENT.add_argument(
     "--json", action="store_true", default=argparse.SUPPRESS, help="emit compact JSON"

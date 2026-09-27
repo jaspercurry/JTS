@@ -48,9 +48,7 @@ Not once at some module top, and never "the daemon already imported a
 module that did it." The guard has to be in place in whichever process
 reaches openWakeWord first, and the processes differ: jasper-voice,
 jasper-doctor, and the offline wake-training tools each have their own
-entry point. Relying on import order is what previously let
-jasper-doctor and a standalone ``jasper.vad`` import pay the full
-scikit-learn cost while looking protected.
+entry point.
 
 ``tests/test_lazy_imports.py`` discovers openWakeWord import sites
 across the tree — every directory except a short, self-checking
