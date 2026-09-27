@@ -20,15 +20,15 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import signal as scipy_signal
 
-# NOT empirically derived; tuning it needs on-device sweeps. Nothing in
-# deploy/ or scripts/ sets this per rig, so it is a plain constant.
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+
+# Not empirically derived; tuning needs on-device sweeps.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.40
 # Exclude the main correlation lobe (~a few ms) when picking the competing peak.
 DEFAULT_EXCLUDE_RADIUS_S = 0.005
 # Cost/memory backstop mirroring deconv.DEFAULT_MAX_CAPTURE_SECONDS; the
 # stimulus always lands well within it, so truncation never drops it.
 DEFAULT_MAX_CAPTURE_S = 20.0
-DEFAULT_SAMPLE_RATE = 48000
 
 # GCC-PHAT sub-sample refinement (design §5.6.5).
 GCC_UPSAMPLE = 16
@@ -76,7 +76,7 @@ def correlation(
     captured: np.ndarray,
     stimulus: np.ndarray,
     *,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    sample_rate: int = RESPONSE_SAMPLE_RATE_HZ,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
     matched_span: bool = False,
 ) -> np.ndarray:
@@ -143,7 +143,7 @@ def cross_correlation_alignment(
     captured: np.ndarray,
     stimulus: np.ndarray,
     *,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    sample_rate: int = RESPONSE_SAMPLE_RATE_HZ,
     exclude_radius: int | None = None,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> AlignmentResult:
@@ -168,7 +168,7 @@ def assert_alignment_confident(
     *,
     require: bool = True,
     threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    sample_rate: int = RESPONSE_SAMPLE_RATE_HZ,
     exclude_radius: int | None = None,
     max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
 ) -> AlignmentResult:

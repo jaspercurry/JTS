@@ -37,6 +37,7 @@ from jasper.audio_measurement.sweep import (
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as PROGRAM_SAMPLE_RATE_HZ
 from jasper.json_fields import json_fingerprint
 from jasper.log_event import log_event
 
@@ -47,9 +48,6 @@ logger = logging.getLogger(__name__)
 
 PROGRAM_SCHEMA_VERSION = 1
 PROGRAM_KIND = "jts_excitation_program"
-
-# Fixed program sample rate — matches CamillaDSP / the sweep kernel.
-PROGRAM_SAMPLE_RATE_HZ = 48_000
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
 # — string VALUES must match between the two, NAMES must stay

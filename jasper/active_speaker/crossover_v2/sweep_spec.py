@@ -29,6 +29,7 @@ from jasper.active_speaker.capture_geometry import (
     reference_axis_driver_acknowledgement_label,
     summed_acknowledgement_label,
 )
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
 from jasper.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
     CapturePlan,
@@ -48,9 +49,6 @@ SCHEMA_VERSION = 1
 CAPTURE_PROTOCOL_VERSION = 3
 
 
-# The format the measurement analysis demands of every capture
-# (`jasper/web/correction_runtime.py`: MAX_WAV_BODY_BYTES caps the upload).
-REQUIRED_SAMPLE_RATE_HZ = 48000
 REQUIRED_CHANNELS = 1
 
 # Per-kind measurement-validity policy vocabulary.
