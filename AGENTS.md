@@ -169,7 +169,8 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
   explicit wontfix; there is no zero-findings requirement. Run `/simplify`
   occasionally after a feature lands.
 - **Non-negotiable tier** (a diff touching the clamps above, DSP math on the
-  output path, secrets handling, or `deploy/install.sh`): also run
+  output path, secrets handling, or `deploy/install.sh` and its
+  `deploy/lib/install/` libs): also run
   [/adversarial-review](.claude/commands/adversarial-review.md) and fix its
   blockers before merge.
 - Docs, mechanical cleanups, test-only changes: author judgment plus a
