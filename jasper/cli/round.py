@@ -18,7 +18,9 @@ from jasper.net.http_security import is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
-from jasper.active_speaker.measurement_programs import REFERENCE_PROGRAMS, RUNNABLE_PROGRAMS, available_programs
+from jasper.active_speaker.measurement_programs import (
+    RUNNABLE_PROGRAMS, LayoutNotOfferedError, RetiredProgramError, available_programs,
+)
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
 from jasper.active_speaker.wizard_client import (
@@ -108,6 +110,8 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
 
     try:
         report = resolve_run(args)
+    except (RetiredProgramError, LayoutNotOfferedError) as exc:
+        return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
     except PermissionError as exc:
         return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
                       code="local_state_unreadable", next_action={
@@ -171,7 +175,8 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
         run = f"jasper-round run --program <program> --candidates base,{banked.fingerprint}"
         return failed(EXIT_REFUSED, "trial_program_unknown", {"fingerprint": banked.fingerprint, "sections": sections},
                       code="trial_program_unknown", next_action={"id": "run_program", "label": f"name the program: {run}"})
-    args.program, args.poses = selected.program_id, args.poses or selected.layout
+    args.program = f"{selected.program_id}/{selected.size}"
+    args.layout = args.layout or (None if args.poses else selected.layout)
     args.candidates = args.candidates or f"base,{banked.fingerprint}"
     return _cmd_run(client, args)
 
@@ -370,15 +375,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_args.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
     run_args.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
     poses = run_args.add_mutually_exclusive_group()
-    pose_sets = ", ".join(f"{name}/{size}" for name, size in available_programs())
-    poses.add_argument("--poses", help=f"named pose set ({pose_sets}), comma-separated bearings in degrees, "
-                                      "or a JSON list of poses")
-    poses.add_argument("--layout", dest="poses", help="named layout from the program registry")
+    poses.add_argument("--poses", help="comma-separated bearings in degrees, or a JSON list of poses")
+    poses.add_argument("--layout", help="a named layout the preset offers")
     run_args.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run_args.add_argument("--mover", choices=MOVERS)
     run_args.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
-    run.add_argument("--program", choices=(*RUNNABLE_PROGRAMS, *REFERENCE_PROGRAMS))
+    presets = ", ".join(f"{name}/{size}" for name, size in available_programs())
+    run.add_argument("--program", help=f"a preset ({presets}); a program name runs its default preset")
     run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
     run.set_defaults(func=_cmd_run)
     trial_help = ("Test a banked candidate with the program its document states; --mover picks that program's "

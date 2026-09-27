@@ -28,7 +28,7 @@ from jasper.active_speaker.frequency_view import (
     FREQUENCY_VIEW_FILENAME, FrequencyRun, FrequencySeries, build_frequency_view,
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
-from jasper.active_speaker.measurement_programs import program
+from jasper.active_speaker.measurement_programs import run_program
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
 
 from tests.crossover_v2_banked_round import bank_measure_round
@@ -60,7 +60,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
     builds from the records, so no take is compared against another seat."""
     round_dir = tmp_path / "r1"
     session_dir = round_dir / "bundle" / "sess1"
-    poses = program("seat", "express").poses if layout == "seat" else program("room", "arm").poses
+    poses = run_program("room", "seat_express" if layout == "seat" else "room_quick").poses
     grid = np.array([500.0, 1000.0, 4000.0])
     records, expected = [], {}
     for index, pose in enumerate(poses):

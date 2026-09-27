@@ -239,7 +239,7 @@ Room correction is a layer of this toolbox, not a separate product.
 `0259-room-correction-and-bass-extension-are-layers-of-the-one-tuning-toolbox.md`
 establishes that room correction and bass extension share this toolbox.
 The room is measured where it is heard. The room program defaults to
-`room/seat`, the three `seat_express` poses; `room/cloud` uses the 11-pose
+`room/seat`, the three `seat_express` poses; `--layout seat_cloud` uses the 11-pose
 `seat_cloud` grid. `measurement_plans.json` owns these layouts and the default.
 Each pose is one summed sweep through the applied
 tune, analyzed ungated so the reflections stay in. A seat take records its

@@ -21,7 +21,9 @@ from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitati
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.measurement_programs import gate_exemption, load_programs, program, validated_capture_purpose
+from jasper.active_speaker.measurement_programs import (
+    gate_exemption, load_programs, program, run_program, validated_capture_purpose,
+)
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
@@ -97,14 +99,15 @@ def _replay(bass, raw, tmp_path, monkeypatch):
 
 def test_registry_stimulus_reaches_the_capture_spec():
     rows = load_programs().values()
-    bass = [row for row in rows if row.purpose == "bass"]
-    assert {row.layout for row in bass} == {"bass_axis", "seat_cloud", "room_quick"}
     for row in rows:
         assert (row.stimulus is not None) == (row.purpose == "bass")
-    for row in bass:
-        assert row.stimulus == {"ceiling_hz": 1100.0}
-        request = request_for_program(row, mover=row.mover or "human", candidates=("trial",))
-        assert all(capture.spec.stimulus == row.stimulus for capture in prepare_plan_captures(request))
+    bass, = (row for row in rows if row.purpose == "bass")
+    assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")
+    for layout in bass.layouts:
+        run = run_program("bass", layout)
+        assert run.stimulus == {"ceiling_hz": 1100.0}
+        request = request_for_program(run, mover=run.mover or "human", candidates=("trial",))
+        assert all(capture.spec.stimulus == run.stimulus for capture in prepare_plan_captures(request))
 
 
 @pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", False), ("branches", False), ("per_driver", False), ("reference_axis", False)])

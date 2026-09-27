@@ -80,12 +80,17 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
         assert report.issues == ()
 
 
-@pytest.mark.parametrize("layout,name,size", [
-    (layout, name, size)
+@pytest.mark.parametrize("layout,name,preset,poses", [
+    (layout, name, preset, poses)
     for layout in ("full_range_passive", "active_2_way", "active_3_way", "cardioid")
-    for name, size in (("rear", "express"), ("rear", "wide"), ("rear", "behind"), ("rear", "pair"), ("rear", "pair_behind"), ("front_rear", "express"), ("branches", "express"))
-] + [("active_2_way", name, size) for name, size in (("speaker", "mark"), ("room", "arm"), ("bass", "axis"))])
-def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, size):
+    for name, preset, poses in (
+        ("rear", "rear/express", "rear_express"), ("rear", "rear/express", "rear_wide"),
+        ("rear", "rear/express", "rear_behind"), ("rear", "rear/pair", "rear_express"),
+        ("rear", "rear/pair", "rear_behind"), ("front_rear", "front_rear/express", "tournament_express"),
+        ("branches", "branches/express", "tournament_express"))
+] + [("active_2_way", name, preset, poses) for name, preset, poses in (
+    ("speaker", "speaker/mark", "speaker_mark"), ("room", "room/seat", "room_quick"), ("bass", "bass/axis", "bass_axis"))])
+def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, preset, poses):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
     role_targets = {measurement_target_id(t["role"], t.get("output_variant", "primary")): t["target_fingerprint"]
@@ -93,7 +98,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     roles = tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
                   if t.get("output_variant", "primary") == "primary")
     candidate = _room_candidate(tuning_profile)
-    selected = program(name, size)
+    selected = run_program(preset, poses)
     plan = request_for_program(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
     ready = ready_facts(plan)
@@ -162,16 +167,12 @@ def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
     assert report.price["captures"] == 1
 
 
-@pytest.mark.parametrize("program_id,poses,banks", [
-    ("nearfield", "nearfield/woofer", True),
-    ("nearfield", None, True),
-    ("tournament", "speaker_mark", False),
-])
-def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, poses, banks):
+@pytest.mark.parametrize("program_id,banks", [("nearfield/woofer", True), ("nearfield", True), ("nearfield/mark", False)])
+def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks):
     """A round banks under its program id, so a plan naming one the registry
     does not hold is refused before it plays, whichever door it came through
     (ADR-0277)."""
-    plan = request_for_program(run_program(program_id, poses))
+    plan = replace(request_for_program(run_program("nearfield")), program=program_id)
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer", "woofer:rear")))
     assert [issue.code for issue in report.issues if issue.code == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED] == (
         [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])

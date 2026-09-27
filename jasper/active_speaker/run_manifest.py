@@ -75,6 +75,7 @@ class RunManifest:
     calibration: Mapping[str, Any] = field(default_factory=lambda: {"id": None, "curve_fingerprint": None})
     incumbent: Mapping[str, Any] = field(default_factory=lambda: {"speaker": None, "room": None, "bass": None})
     program: str = ""
+    layout: str = ""
     request_fingerprint: str = ""
     asked: dict[str, Any] = field(default_factory=dict)
     level: dict[str, Any] = field(default_factory=dict)
@@ -259,7 +260,7 @@ class RunManifest:
         chosen = set(self._chosen.values())
         return {
             "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
-            "program": self.program, "request_fingerprint": self.request_fingerprint,
+            "program": self.program, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
             "level": self.level,
             "honoured": {"spl_monitor": self.spl_monitor, "mic_moves": self.mic_moves,

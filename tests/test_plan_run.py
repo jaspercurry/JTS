@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    MeasurementProgram, ProgramPose, run_program, program as measurement_program,
+    MeasurementProgram, ProgramPose, run_program,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -672,7 +672,7 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     assert not graph.installs
 
 
-@pytest.mark.parametrize("layout,poses", [("baseline/express", 5), ("baseline/full", 13)])
+@pytest.mark.parametrize("layout,poses", [("baseline_express", 5), ("baseline_full", 13)])
 def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, poses):
     program = run_program("speaker", layout)
     request = ac.request_for_program(program, repeats=2)
@@ -703,7 +703,7 @@ def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
 
 
 def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
-    program = run_program("speaker", "room_quick")
+    program = run_program("speaker", poses="0,-20,20")
     request = ac.request_for_program(program, mover=ac.MOVER_ARM)
     _, safety, targets = _profile_and_targets(woofer_floor=30)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
@@ -982,8 +982,8 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
-    ("speaker", "baseline/express", True, 5), ("room", "seat_express", False, 3),
-    ("rear", "rear/express", False, 3),
+    ("speaker", "baseline_express", True, 5), ("room", "seat_express", False, 3),
+    ("rear", "rear_express", False, 3),
 ])
 def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_program(run_program(purpose, layout))
@@ -992,6 +992,13 @@ def test_program_entry_baseline_and_placement_count(purpose, layout, entry, pose
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     assert any(c.spec.program_phase == "entry_baseline" for c in captures) is entry
     assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
+
+
+async def test_a_run_banks_its_preset_and_its_layout():
+    """The banked record names the preset and, in its own field, the layout it walked (ADR-0366 §6)."""
+    result, _ = await _run_gated(ac.request_for_program(run_program("tournament", "tournament_full")))
+    assert {key: result.to_dict()[key] for key in ("program", "layout")} == {
+        "program": "tournament/express", "layout": "tournament_full"}
 
 
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
@@ -1466,7 +1473,7 @@ def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
 def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    request = ac.request_for_program(measurement_program("tournament", "full"), repeats=repeats)
+    request = ac.request_for_program(run_program("tournament", "tournament_full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
     assert facts["measurements"] == len(captures) == walk_price(request, roles_bands=context.roles_bands)["captures"]

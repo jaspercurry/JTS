@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-import argparse
 import re
 from dataclasses import replace
 from types import SimpleNamespace
@@ -15,9 +14,8 @@ from tests.crossover_v2_fixtures import _roles
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
-from jasper.active_speaker.measurement_programs import REFERENCE_PROGRAMS, RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker import tuning_handoff
-from jasper.cli.round import build_parser
 from jasper.active_speaker.crossover_v2 import round_inputs
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.doctor_contract import check_row
@@ -134,21 +132,12 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     assert "driver_values" in view
 
 
-@pytest.mark.parametrize("consumer", ["cli", "coordinator"])
-def test_program_order_consumers(consumer):
-    if consumer == "cli":
-        commands = next(action for action in build_parser()._actions
-                        if isinstance(action, argparse._SubParsersAction))
-        order = next(action.choices for action in commands.choices["run"]._actions
-                     if action.dest == "program")
-        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("drivers", "nearfield")
-        order = order[:len(RUNNABLE_PROGRAMS)]
-    else:
-        order = tuple(next_program_action(
-            _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
-            {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
-        )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
-    assert tuple(order) == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
+def test_the_coordinator_walks_the_programs_in_tuning_order():
+    order = tuple(next_program_action(
+        _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
+        {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
+    )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
+    assert order == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
 
 
 @pytest.mark.parametrize("rear,passive", [(False, False), (True, False), (False, True)])
@@ -167,11 +156,11 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     choices = round_choices({}, "front_rear/express")
     ids = {choice["id"] for choice in choices if choice.get("code") != REASON_MEASUREMENT_PROGRAM_NOT_OFFERED}
     assert (len(ids) < len(choices)) is not rear
-    rear_ids = {"rear/express", "rear/wide", "rear/behind", "rear/pair", "rear/pair_behind", "front_rear/express"}
+    rear_ids = {"rear/express", "rear/pair", "front_rear/express"}
     assert ids & rear_ids == (rear_ids if rear else set())
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
-    assert {"seat/cube", "room/cloud", "room/seat"} <= ids
+    assert "room/seat" in ids
     near_field = {"nearfield/woofer", "nearfield/rear", "nearfield/cardioid"}
     assert ids & near_field == (set() if passive else near_field if rear else {"nearfield/woofer"})
     assert sum(choice["default"] for choice in choices) == 1
