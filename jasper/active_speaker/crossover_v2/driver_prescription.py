@@ -28,7 +28,7 @@ import numpy as np
 
 from jasper.json_fields import finite_float
 from jasper.biquad import (
-    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_SAMPLE_RATE_HZ, SHELF_Q,
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_NYQUIST_HZ, SHELF_Q,
     PeqFilter,
 )
 
@@ -180,14 +180,6 @@ _COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
 #: ``camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
 #: past it cannot be accepted here and refused at emission.
 DRIVER_MAX_FILTERS_PER_ROLE = 8
-
-#: Nyquist, where a declared band's upper edge is clamped. It binds because a
-#: driver's DECLARED band is a datasheet fact and the evaluator's is an
-#: arithmetic one — a supertweeter published to 40 kHz is honest, and a bound
-#: evaluated past Nyquist is aliased rather than conservative. The declared
-#: upper edge is CLAMPED, never dropped, and the packet publishes the clamped
-#: value so a prescriber is shown the band it is judged against.
-_NYQUIST_HZ = RESPONSE_SAMPLE_RATE_HZ / 2.0
 
 
 # --------------------------------------------------------------------------- #
@@ -455,7 +447,7 @@ def driver_passbands_from_safety_profile(
 
     ``measurement_band_hz`` (the driver's published response range) narrowed by
     the declared protective high-pass and low-pass, then clamped at
-    :data:`_NYQUIST_HZ`. Neither protection edge is INVENTED where none
+    Nyquist. Neither protection edge is INVENTED where none
     is declared — an undeclared floor leaves the published lower edge standing,
     on ``declared_protection_highpass_floor_hz``'s never-nanny rule. A target
     with no readable band, or whose composed edges cross, is OMITTED rather
@@ -485,7 +477,10 @@ def driver_passbands_from_safety_profile(
         ceiling = declared_protection_lowpass_ceiling_hz(target)
         if ceiling is not None and ceiling < hi:
             hi = ceiling
-        hi = min(hi, _NYQUIST_HZ)
+        # A declared band is a datasheet fact and the evaluator's is arithmetic: a
+        # supertweeter published to 40 kHz is honest, but a bound past Nyquist is
+        # aliased. The edge is clamped, never dropped, and the packet publishes it.
+        hi = min(hi, RESPONSE_NYQUIST_HZ)
         if not 0.0 < lo < hi:
             continue
         out[role.strip()] = (lo, hi)
@@ -755,12 +750,13 @@ def _check_bounds(
                 freq_hz=freq,
                 passband_hz=[lo, hi],
             )
-        # Past these edges the emitter refuses the corner or, at Q up to
-        # EVALUABLE_Q_MAX, round-off rises above the 24-bit floor. See ADR-0367.
-        if gain <= 0.0 and not EVALUABLE_HZ_MIN <= freq <= EVALUABLE_HZ_MAX:
+        # Past these edges the emitter refuses the corner, round-off at Q up to
+        # EVALUABLE_Q_MAX rises above the 24-bit floor, and a boost's realized
+        # peak outruns the f64 evaluator. See ADR-0374.
+        if not EVALUABLE_HZ_MIN <= freq <= EVALUABLE_HZ_MAX:
             refuse(
                 FILTER_MALFORMED,
-                f"filter {position} at {freq:g} Hz is a cut outside "
+                f"filter {position} at {freq:g} Hz is outside "
                 f"{EVALUABLE_HZ_MIN:g}-{EVALUABLE_HZ_MAX:g} Hz, where this system "
                 "builds and evaluates it faithfully",
                 role=role,
@@ -1354,8 +1350,9 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "protective high-pass it declares and capped by any protective "
                 "low-pass. A cut outside that band, or on a speaker that "
                 "declares none, is admitted and counted onto "
-                "prescription.cuts_outside_passband (ADR-0367); it must still "
-                f"sit within {EVALUABLE_HZ_MIN:g}-{EVALUABLE_HZ_MAX:g} Hz"
+                "prescription.cuts_outside_passband (ADR-0367). Every filter, "
+                f"cut or boost, must sit within {EVALUABLE_HZ_MIN:g}-"
+                f"{EVALUABLE_HZ_MAX:g} Hz (ADR-0374)"
             ),
             "composed_cap_is_evaluated": (
                 "the composed cap is checked per role on the evaluated biquad "

@@ -20,6 +20,7 @@ from typing import Iterable
 # (``camilla_config_contract.DEFAULT_SAMPLE_RATE`` aliases this), so a response
 # evaluated here is the response the speaker realises.
 RESPONSE_SAMPLE_RATE_HZ = 48000
+RESPONSE_NYQUIST_HZ = 0.5 * RESPONSE_SAMPLE_RATE_HZ
 
 
 @dataclass(frozen=True)
@@ -134,8 +135,8 @@ EVALUABLE_Q_MIN = 1e-4
 # algebra that assumes infinite precision.
 EVALUABLE_Q_MAX = 1e6
 
-# The frequency span every chain peak is taken over, and the one a per-driver
-# prescribed cut must sit in, Hz: essentially DC to Nyquist. At its edges a
+# The frequency span every chain peak is taken over, and the one every
+# per-driver prescribed filter must sit in, Hz: essentially DC to Nyquist. At its edges a
 # Peaking cut at EVALUABLE_Q_MAX lifts f64 round-off to about -146 dBFS, under
 # the 24-bit floor; at the extremes the emitter spells (1e-4 Hz,
 # 23,999.9999 Hz), to about -28 dBFS (ADR-0367).

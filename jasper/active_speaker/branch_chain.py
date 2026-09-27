@@ -21,7 +21,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.biquad import (
-    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec,
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
+    FilterSpec,
     filter_response_complex, freq_trig,
 )
 
@@ -47,10 +48,6 @@ HEADROOM_MARGIN_DB: float = 1.0
 # biquads evaluate a cascade's analytic zero to a residue of order 1e-4 dB; 0.01 dB is
 # two orders above that.
 _PEAK_EPS_DB: float = 0.01
-
-# Top of the representable band, where a filter may still SIT (not where background
-# samples stop -- see ``_evaluation_grid``).
-_NYQUIST_HZ: float = 0.5 * RESPONSE_SAMPLE_RATE_HZ
 
 # BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
@@ -117,7 +114,7 @@ def _evaluation_grid(
     extra = [EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX]
     centres = sorted(
         freq for entry in filters
-        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < _NYQUIST_HZ
+        if 0.0 < (freq := float(entry.get("freq") or 0.0)) < RESPONSE_NYQUIST_HZ
     )
     extra.extend(centres)
     extra.extend(
@@ -143,7 +140,7 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
             continue
         out.append(
             freq / _SHELF_ASYMPTOTE_RATIO if kind == "Lowshelf"
-            else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
+            else min(freq * _SHELF_ASYMPTOTE_RATIO, RESPONSE_NYQUIST_HZ)
         )
     return out
 
@@ -403,7 +400,7 @@ def camilla_evaluation_grid(filters: Sequence[Mapping[str, Any]]) -> np.ndarray:
         for octaves in _CENTRE_NEIGHBOUR_OCTAVES:
             for ratio in (2.0 ** octaves, 2.0 ** -octaves):
                 freq = record["freq"] * ratio
-                if 0.0 < freq <= _NYQUIST_HZ:
+                if 0.0 < freq <= RESPONSE_NYQUIST_HZ:
                     neighbours.append(freq)
     grid = _evaluation_grid(records, None)
     if not neighbours:
