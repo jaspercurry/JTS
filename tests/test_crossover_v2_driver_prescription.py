@@ -57,7 +57,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     packet_driver_passbands_hz,
     packet_feature_classifications,
 )
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import _mapping
+from jasper.json_fields import as_mapping
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
@@ -267,13 +267,13 @@ def packet_incumbent_linearization(
 
     if not isinstance(packet, dict):
         return None
-    block = _mapping(packet.get("incumbent")).get("linearization")
+    block = as_mapping(packet.get("incumbent")).get("linearization")
     if not isinstance(block, dict):
         return None
     roles = block.get("from_applied_profile")
     if not isinstance(roles, dict):
         return None
-    # The builder writes an ``_absence`` here when no profile reached it, and
+    # The builder writes an ``absence`` here when no profile reached it, and
     # that shape is checked by name rather than inferred from its contents —
     # ``_incumbent_record``'s rule, for the same reason: an absence and a role
     # map are both dicts, and telling them apart by duck-typing would make a

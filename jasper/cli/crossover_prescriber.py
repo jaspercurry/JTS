@@ -251,7 +251,7 @@ def _reason(block: dict[str, Any], packet_error: str) -> str:
     """Why a section has nothing to report, from whichever layer knows.
 
     The packet builder's failure wins when there is one; below that, the
-    block's own ``_absence`` reason, passed through untranslated. "not
+    block's own ``absence`` reason, passed through untranslated. "not
     reported" only when a block says unavailable and names no reason.
     """
     if packet_error:

@@ -10,6 +10,7 @@ from typing import Any
 
 from jasper.active_speaker.linearization_envelope import _MIC_TRUST_TABLE_HZ
 from jasper.audio_measurement.mic_identity import MIC_TIERS
+from jasper.json_fields import as_mapping
 
 from ...repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from ..contracts import POSITION_EVIDENCE_KIND
@@ -20,9 +21,9 @@ from ..feature_classification import (
 from ..prescription_contract import CONTRACT_COMMAND, snr_shape
 from ..record_index import Measurement
 from ..round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
-from .incumbent import _read_candidate
-from .offline_reads import _exact_json_value, _mapping, _read_json
-from .positions import _POSITIONS_SUBDIR, _banked_takes
+from .incumbent import read_candidate
+from .offline_reads import exact_json_value, read_json
+from .positions import POSITIONS_SUBDIR, banked_takes
 
 #: What :func:`_capture_snr_block` reads off one banked take: the two
 #: identities the packet's other take rows already carry, the digest of the
@@ -47,7 +48,7 @@ def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
 
     Takes every phase, because an SNR is an SNR whichever capture produced it.
     """
-    raw, _ = _read_json(path)
+    raw, _ = read_json(path)
     if not isinstance(raw, dict):
         return None
     if raw.get("kind") != POSITION_EVIDENCE_KIND:
@@ -75,9 +76,9 @@ def _capture_snr_block(
     undeclared: set[str] = set()
     declared_as: dict[str, str] = {}
     seen = 0
-    for take in _banked_takes(session_dir, rows, None, _read_take_diagnostic):
+    for take in banked_takes(session_dir, rows, None, _read_take_diagnostic):
         seen += 1
-        diagnostic = _mapping(take.get("diagnostic"))
+        diagnostic = as_mapping(take.get("diagnostic"))
         if not diagnostic:
             continue
         snr = {}
@@ -89,7 +90,7 @@ def _capture_snr_block(
                 undeclared.add(column)
             else:
                 declared_as[column] = shape
-            snr[column] = _exact_json_value(value, column, non_finite)
+            snr[column] = exact_json_value(value, column, non_finite)
         captures.append({
             "take_id": take.get("take_id"),
             "wav_sha256": take.get("wav_sha256"),
@@ -116,7 +117,7 @@ def _capture_snr_block(
         "non_finite_fields": sorted(non_finite),
         "undeclared_fields": sorted(undeclared),
         "declared_as": dict(sorted(declared_as.items())),
-        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json, the diagnostic block",
+        "source": f"{POSITIONS_SUBDIR}/<take_id>.json, the diagnostic block",
         "uncertainty": CONTRACT_COMMAND,
         "note": (
             "one row per banked take that carried an analysis, named by the "
@@ -167,7 +168,7 @@ def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]
     record = load_repeat_floor(state_path=path)
     if record is not None:
         return record, ""
-    _, reason = _read_json(path)
+    _, reason = read_json(path)
     return None, reason or f"not a {REPEAT_FLOOR_KIND} record"
 
 
@@ -247,8 +248,8 @@ def _accuracy_budget_block(
     No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
     """
 
-    candidate = _read_candidate(round_dir) if round_dir is not None else {}
-    linearization = _mapping(candidate.get("linearization"))
+    candidate = read_candidate(round_dir) if round_dir is not None else {}
+    linearization = as_mapping(candidate.get("linearization"))
     # Per role, never elected: two roles fitted under different tiers is a
     # fact this block discloses, not a tie one entry silently wins.
     tier_by_role = {
