@@ -170,7 +170,7 @@ def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.code, exc.detail, code=exc.code)
     sections = sorted(name for name, source in banked.candidate.analysis.get("resolution", {}).items()
                       if source in ("document", "cleared"))
-    selected = trial_program(sections, args.mover)
+    selected = trial_program(sections, args.mover, args.layout)
     if selected is None:
         run = f"jasper-round run --program <program> --candidates base,{banked.fingerprint}"
         return failed(EXIT_REFUSED, "trial_program_unknown", {"fingerprint": banked.fingerprint, "sections": sections},

@@ -483,6 +483,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"driver": "document", "room": "base"}, (), "speaker/mark", "speaker_mark", "human"),
     ({"driver": "document"}, ("--mover", "arm"), "speaker/mark", "speaker_mark", "arm"),
     ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "rear_express", "arm"),
+    ({"rear_calibration": "document"}, ("--layout", "rear_express"), "rear/express", "rear_express", "human"),
     ({"alignment": "cleared"}, (), "speaker/mark", "speaker_mark", "human"),
     ({"bass": "document"}, ("--mover", "human"), "bass/axis", "seat_express", "human"),
     ({"room": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),

@@ -498,8 +498,8 @@ rows, then `across_positions`: per-figure median, worst value and
   and level. Seat trials disclose `too_few_repeats`; cross-seat spread cannot replace it.
 - Room `spread_rms_db`, beside `median`, is RMS of per-bin cross-seat standard
   deviations from coverage floor to ceiling. Read `median.n_positions` with it.
-  Three seats make this estimate noisy; seven or eleven use `run --layout seat_cube`
-  or `run --layout seat_cloud` (counts: `measurement_plans.json`'s named layouts).
+  Three seats make this estimate noisy; seven or eleven use `run --program room --layout seat_cube`
+  or `--layout seat_cloud` (counts: `measurement_plans.json`'s named layouts).
 
 `room-grade` across this trial's candidate sets is not a candidate comparison:
 rear weight also changes band level. For a plain box, skip the rear pair and

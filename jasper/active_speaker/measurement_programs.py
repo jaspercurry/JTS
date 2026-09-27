@@ -273,7 +273,7 @@ RETIRED_PROGRAMS = MappingProxyType({
     "room/custom": RetiredProgram(PURPOSE_ROOM, "room/seat", CUSTOM_SIZE),
     "bass/cloud": RetiredProgram(PURPOSE_BASS, "bass/axis", "seat_cloud"),
     "bass/quick": RetiredProgram(PURPOSE_BASS, "bass/axis", "room_quick"),
-    "bass/nearfield": RetiredProgram(PURPOSE_BASS, "bass/axis", "seat_express"),
+    "bass/nearfield": RetiredProgram(PURPOSE_BASS),
     "bass/custom": RetiredProgram(PURPOSE_BASS, "bass/axis", CUSTOM_SIZE),
     "close/spot": RetiredProgram(PURPOSE_REFERENCE),
     "close/custom": RetiredProgram(PURPOSE_REFERENCE),
@@ -671,15 +671,19 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
         _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(rows)))
 
 
-def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram | None:
+def trial_program(
+    sections: Collection[str], mover: str | None = None, layout: str | None = None,
+) -> MeasurementProgram | None:
     """The first program the document states of rear, bass, room, speaker (reverse document
-    order), at its first trial layout ``mover`` can walk; ``None`` when it states none."""
+    order): its first trial preset that offers ``layout``, else its first trial layout
+    ``mover`` can walk; ``None`` when it states none."""
     row = next((row for row in reversed(PROGRAM_DOCUMENT_ORDER)
                 if any(section.name in sections for section in row.sections)), None)
     if row is None:
         return None
-    trials = [run_program(preset, layout) for preset, layout in row.trial]
-    return next((trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
+    trials = [run_program(preset, trial_layout) for preset, trial_layout in row.trial]
+    return next((trial for trial in trials if layout in trial.layouts), None) or next(
+        (trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
 
 
 BASE_CANDIDATE = "base"
