@@ -3,8 +3,9 @@
 Run this only when the diff touches the charter's closed non-negotiable list
 (AGENTS.md): the hearing clamps (CamillaDSP `volume_limit`, `set_volume_db`
 clamp, commissioning SPL stop), driver caps or XVF brick-hazard operations,
-DSP math on the output path, secrets handling, or `deploy/install.sh` /
-deploy guards. For everything else use the built-in `/code-review` (medium)
+DSP math on the output path, secrets handling, or `deploy/install.sh` and its
+`deploy/lib/install/` libs / deploy guards. For everything else use the
+built-in `/code-review` (medium)
 — not this.
 
 ## Posture
