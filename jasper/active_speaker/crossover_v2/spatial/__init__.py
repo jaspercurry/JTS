@@ -33,7 +33,6 @@ from .records import (
     _summed_sweep_band_hz as _summed_sweep_band_hz,
     analysis_curve_records as analysis_curve_records,
     phase_composition as phase_composition,
-    take_stop_id as take_stop_id,
 )
 
 __all__ = [

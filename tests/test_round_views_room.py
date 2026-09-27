@@ -175,7 +175,7 @@ def test_the_ceiling_is_the_trusted_floor_clamped(trusted_floor_hz, ceiling_hz) 
     assert room_ceiling_hz(trusted_floor_hz) == ceiling_hz
 
 
-def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> None:
+def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> tuple[str, dict]:
     bundle = round_inputs(round_dir).session_dir
     row, record = next(iter(measurement_documents(bundle)))
     gated = {
@@ -188,15 +188,19 @@ def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> None:
         "curves": [{**record["curves"][0], "trusted_floor_hz": floor_hz}],
     }
     take_artifact_path(bundle, row.path).with_name(f"{take_id}.json").write_text(json.dumps(gated))
+    return Path(row.path).with_name(f"{take_id}.json").as_posix(), gated
 
 
 def test_the_ceiling_uses_the_highest_round_gate_and_discloses_its_take(tmp_path, capsys) -> None:
     round_dir = bank_seat_round(tmp_path)
-    _add_gated_take(round_dir, take_id="gate-low", floor_hz=350.0)
-    _add_gated_take(round_dir, take_id="gate-source", floor_hz=357.1428571428571)
+    seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
+    gates = [_add_gated_take(round_dir, take_id="gate-low", floor_hz=350.0),
+             _add_gated_take(round_dir, take_id="gate-source", floor_hz=357.1428571428571)]
+    write_manifest(round_dir, program="room", groups=[manifest_set(seats, set_id="seats"),
+                                                      manifest_set(gates, set_id="speaker")])
 
-    _run(capsys, ["room", str(round_dir)])
-    ceiling = json.loads((round_dir / "room.json").read_text())["ceiling"]
+    answer = _run(capsys, ["room", str(round_dir), "--set", "seats"])
+    ceiling = json.loads(Path(answer["out"]).read_text())["ceiling"]
 
     assert ceiling["hz"] == pytest.approx(357.1428571428571)
     assert ceiling["provenance"] == {

@@ -14,30 +14,40 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
+import numpy as np
 import pytest
 
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
+from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
+    POSITION_EVIDENCE_KIND,
     ROUND_RECEIPT_KIND,
 )
+from jasper.active_speaker.crossover_v2.feature_classifier import load_round_pose_curves
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
+    PHASE_MEASURE,
 )
+from jasper.active_speaker.crossover_v2.position_cycle import select_pose_curve_pair
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+from jasper.active_speaker.crossover_v2.room_views import room_ceiling
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from tests.crossover_v2_banked_round import (
     _DESIGN_AXIS_GEOMETRY,
     LateralPose,
     TakeClaim,
     lateral_pose_record,
 )
+from tests.run_manifest_fixture import write_bundle_manifest
 from tests.test_crossover_v2_record_store import (
     CAPTURE,
     _bundle,
@@ -244,3 +254,78 @@ async def test_a_file_the_rescan_cannot_parse_costs_only_itself(store):
     (_artifacts(store) / broken).write_text("{not json at all")
 
     assert [row.path for row in _found(store)] == [good]
+
+
+# --------------------------------------------------------------------------- #
+# the record scanners: a take the round kept, of their phase and purpose
+# --------------------------------------------------------------------------- #
+
+
+class _Scanner(NamedTuple):
+    """What a scanner answers for a round, the phase and purpose it reads, a
+    phase and a purpose it passes over (``None``: it reads every purpose),
+    and its answer when it reads the first two takes, then all three."""
+
+    answer: Callable[[Path], Any]
+    phase: str
+    other_phase: str
+    other_purpose: str | None
+    two: Any
+    three: Any
+
+
+def _session(round_dir: Path) -> Path:
+    return round_dir / "bundle" / "sess"
+
+
+_SCANNERS = {
+    "room_ceiling": _Scanner(
+        lambda root: room_ceiling(_session(root)).trusted_floor_hz,
+        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, 300.0, 450.0),
+    "delay_pair": _Scanner(
+        lambda root: Path(select_pose_curve_pair(
+            _session(root), phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
+            roles=("woofer", "tweeter")).take.path).stem,
+        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_REAR, "take_0002", "take_0003"),
+    "pose_bank": _Scanner(
+        lambda root: sorted({curve.pose_id for curve in load_round_pose_curves(_session(root))}),
+        PHASE_LATERAL, PHASE_MEASURE, PURPOSE_ROOM, ["take_0001", "take_0002"],
+        ["take_0001", "take_0002", "take_0003"]),
+    "candidate_ladder": _Scanner(
+        lambda root: candidate_ladder(root, round_inputs(root))["summary"]["candidates"],
+        PHASE_LATERAL, PHASE_MEASURE, None, ["cfg-a", "cfg-b"], ["cfg-a", "cfg-b", "cfg-c"]),
+}
+
+
+@pytest.mark.parametrize("scanner,intruder", [
+    (name, intruder) for name, scanner in _SCANNERS.items()
+    for intruder in ("kept", "phase", "purpose", "refused", "unselected")
+    if intruder != "purpose" or scanner.other_purpose is not None
+])
+def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intruder):
+    """A third take at the same pose changes each scanner's answer when the
+    round kept it, as a higher trusted floor, a newer driver pair, a third
+    pose or a third candidate. The scanner passes it over when it is of
+    another phase, of another purpose, refused, or not selected by the run
+    manifest, and still reads the two takes it should."""
+    spec = _SCANNERS[scanner]
+    positions = _session(tmp_path) / ARTIFACTS / "crossover_v2" / "cap" / "positions"
+    positions.mkdir(parents=True)
+    freqs = np.geomspace(200.0, 12000.0, 24).tolist()
+    for index, (candidate, floor_hz) in enumerate((("cfg-a", 300.0), ("cfg-b", 300.0), ("cfg-c", 450.0)), 1):
+        intruding = index == 3
+        (positions / f"take_{index:04d}.json").write_text(json.dumps({
+            "kind": POSITION_EVIDENCE_KIND, "take_id": f"take_{index:04d}",
+            "phase": spec.other_phase if intruding and intruder == "phase" else spec.phase,
+            "measurement_purpose": spec.other_purpose if intruding and intruder == "purpose" else PURPOSE_SPEAKER,
+            "position_deg": 0, "vertical_deg": 0, "candidate_id": candidate, "gating_applied": True,
+            "curves": [{"role": role, "band_hz": [200.0, 12000.0], "freqs_hz": freqs,
+                        "magnitude_db": [0.0] * len(freqs), "phase_deg": [0.0] * len(freqs),
+                        "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz} for role in ("woofer", "tweeter")],
+        }))
+    write_bundle_manifest(
+        _session(tmp_path), refused={"take_0003"} if intruder == "refused" else (),
+        selected={"take_0001", "take_0002"} if intruder == "unselected" else None,
+    )
+
+    assert spec.answer(tmp_path) == (spec.three if intruder == "kept" else spec.two)

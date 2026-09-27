@@ -22,9 +22,10 @@ from jasper.active_speaker.crossover_v2.delay_landscape import (
     compute_landscape,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL, PHASE_MEASURE
-from jasper.active_speaker.crossover_v2.position_cycle import read_take_curves
 from jasper.active_speaker.delay_sweep import sweep_spec
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.cli.round_views import main
+from tests.run_manifest_fixture import write_bundle_manifest
 
 FC_HZ = 1800.0
 
@@ -59,16 +60,11 @@ def _bank(
     curves,
     phase: str = PHASE_MEASURE,
     position_deg: int = 0,
-    kind: str = POSITION_EVIDENCE_KIND,
     take_id: str = "p0_a01",
     composition: str | None = None,
 ) -> Path:
-    """A bundle carrying one banked take, at the path the store writes.
-
-    No index file needed: `bundle_measurements` always rescans the corpus from
-    the take files on disk, which is what a hand-built fixture like this one
-    relies on.
-    """
+    """A bundle carrying one more banked speaker take, at the path the store
+    writes, and a run manifest keeping every take banked so far."""
 
     positions = (
         tmp_path / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1" / "positions"
@@ -77,8 +73,9 @@ def _bank(
     (positions / f"{take_id}.json").write_text(
         json.dumps({
             "schema_version": 1,
-            "kind": kind,
+            "kind": POSITION_EVIDENCE_KIND,
             "phase": phase,
+            "measurement_purpose": PURPOSE_SPEAKER,
             "take_id": take_id,
             "position_deg": position_deg,
             **({"phase_composition": composition} if composition else {}),
@@ -86,6 +83,7 @@ def _bank(
         }),
         encoding="utf-8",
     )
+    write_bundle_manifest(tmp_path)
     return tmp_path
 
 
@@ -182,6 +180,7 @@ def test_delay_landscape_counts_separate_driver_takes_without_pairing_them(tmp_p
     assert payload["detail"] == {
         "bundle_dir": str(bundle),
         "phases_searched": [PHASE_MEASURE, PHASE_LATERAL],
+        "purposes_searched": [PURPOSE_SPEAKER],
         "roles_required": ["woofer", "tweeter"],
         "takes_seen": 2,
         "roles_per_take": {
@@ -190,30 +189,6 @@ def test_delay_landscape_counts_separate_driver_takes_without_pairing_them(tmp_p
         },
         "poses": [{"position_deg": 0, "vertical_deg": 0}],
     }
-
-
-@pytest.mark.parametrize(
-    ("phase", "kind", "curves"),
-    [
-        pytest.param(PHASE_LATERAL, POSITION_EVIDENCE_KIND, "ok", id="wrong_phase"),
-        pytest.param(PHASE_MEASURE, "something_else", "ok", id="not_a_take"),
-        pytest.param(PHASE_MEASURE, POSITION_EVIDENCE_KIND, [], id="no_curves"),
-    ],
-)
-def test_the_curve_reader_answers_none_and_never_raises(
-    tmp_path, phase, kind, curves,
-) -> None:
-    """One corrupt or unrelated sidecar must not cost a reader the takes that
-    are fine — the same rule `read_lateral_take` follows."""
-
-    payload = [_curve("woofer"), _curve("tweeter")] if curves == "ok" else curves
-    bundle = _bank(tmp_path, curves=payload, phase=phase, kind=kind)
-    take = (
-        bundle / EVIDENCE_ROOT / "artifacts" / "crossover_v2" / "capture-1"
-        / "positions" / "p0_a01.json"
-    )
-    assert read_take_curves(take, phase=PHASE_MEASURE) is None
-    assert read_take_curves(tmp_path / "nope.json", phase=PHASE_MEASURE) is None
 
 
 def test_a_lateral_pose_answers_when_the_caller_asks_for_one(

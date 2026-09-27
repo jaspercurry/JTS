@@ -6,17 +6,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from statistics import median
 from typing import Any, Mapping
 
+from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.speaker_layout import measurement_target_parts
 
+from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
+from .crossover_v2.record_index import Measurement, measurement_documents
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
 from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
@@ -25,6 +30,32 @@ RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
+
+
+def kept_measurements(
+    bundle_dir: Path, *, phases: Collection[str], purposes: Collection[str],
+) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:
+    """The takes of these phases and purposes that the round kept, in path order.
+
+    A kept take is one its verdict accepted and its run manifest selected for
+    its stop, so a refused take, or one a retake or redo replaced, is never
+    read. A bundle with no run manifest keeps none (#2902).
+    """
+    kept = _kept_record_ids(Path(bundle_dir))
+    for row, document in measurement_documents(bundle_dir):
+        if row.phase in phases and document.get("measurement_purpose") in purposes and row.path in kept:
+            yield row, document
+
+
+def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
+    manifests = (bundle_dir / EVIDENCE_ROOT / "artifacts").glob(f"crossover_v2/*/{RUN_MANIFEST_FILENAME}")
+    return frozenset(
+        take["artifacts"]["record_id"]
+        for path in manifests
+        for group in (read_json_mapping(path) or {}).get("sets", ())
+        for take in group["takes"]
+        if take["selected"] and take["quality"]["status"] == TAKE_MEASURED
+    )
 
 
 def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:

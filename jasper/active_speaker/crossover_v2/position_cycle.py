@@ -17,9 +17,11 @@ import numpy as np
 from jasper.atomic_io import atomic_write_text
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from ..measurement_programs import PURPOSE_SPEAKER
+from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
-from .record_index import Measurement, bundle_measurements, measurement_documents
+from .record_index import Measurement, bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
@@ -91,9 +93,8 @@ def take_artifact_path(bundle_dir: str | Path, take_path: str) -> Path:
 
     The ONE composition of that path. ``take_path`` is bundle-relative BELOW
     ``{EVIDENCE_ROOT}/artifacts/`` — the form
-    :func:`~.record_index.bundle_measurements` rows carry and
-    :func:`read_pose_curve_pair` returns — so a caller holding one must not
-    prepend the prefix itself.
+    :func:`~.record_index.bundle_measurements` rows carry — so a caller
+    holding one must not prepend the prefix itself.
     """
     return Path(bundle_dir) / EVIDENCE_ROOT / "artifacts" / take_path
 
@@ -166,38 +167,8 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     return take
 
 
-def read_take_curves(path: Path, *, phase: str) -> list[Mapping[str, Any]] | None:
-    """The measured curves one banked take carries, or ``None``.
-
-    Ruling S3 banks magnitude AND phase for every measured curve
-    (:func:`~.spatial.pose_curve_record`), which is what lets an offline reader
-    reconstruct a transfer function exactly. The two readers above narrow a
-    take to its identity and drop ``curves``, because their consumers index
-    poses rather than re-analyse them; this returns the curves and nothing
-    else, so neither of those records grows a payload its readers never asked
-    for.
-
-    ``phase`` is the caller's — a per-driver walk pose and a design-axis
-    MEASURE capture both carry curves, and which one answers a question is the
-    caller's to state. The rest of the accept rule is the shared one: a
-    position-evidence record, readable, with a curve list on it. ``None`` for
-    everything else, never a raise, exactly as the siblings above.
-    """
-
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, Mapping):
-        return None
-    if raw.get("kind") != POSITION_EVIDENCE_KIND:
-        return None
-    if raw.get("phase") != phase:
-        return None
-    return _take_curves(raw)
-
-
-def _take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
+def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
+    """The measured curves one take record carries, or ``None`` when it carries none."""
     curves = raw.get("curves")
     if not isinstance(curves, list) or not curves:
         return None
@@ -270,23 +241,26 @@ def select_pose_curve_pair(
     roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
-    """Newest matching take, with both curves and their recorded request facts.
+    """Newest matching speaker take the round kept, with both curves and their
+    recorded request facts.
 
     Both roles must ride ONE take: combining transfers from different captures
-    would sum across whatever moved between them. Retake ids are zero-padded,
-    so the index's path order puts a retake after the take it supersedes.
-    Height stays part of the pose even when the bearing is unspecified: a newer
-    raised take cannot stand in for a measurement at mark height.
+    would sum across whatever moved between them. Take ids are zero-padded
+    ordinals, so the index's path order is capture order. Height stays part of
+    the pose even when the bearing is unspecified: a newer raised take cannot
+    stand in for a measurement at mark height.
     """
+    purposes = (PURPOSE_SPEAKER,)
     if search_detail is not None:
-        search_detail.update(bundle_dir=str(bundle_dir), phases_searched=list(phases), roles_required=list(roles),
+        search_detail.update(bundle_dir=str(bundle_dir), phases_searched=list(phases),
+                             purposes_searched=list(purposes), roles_required=list(roles),
                              takes_seen=0, roles_per_take={}, poses=[])
-    for row, document in reversed(list(measurement_documents(bundle_dir))):
-        if (row.phase not in phases or row.vertical_deg != vertical_deg
+    for row, document in reversed(list(kept_measurements(bundle_dir, phases=phases, purposes=purposes))):
+        if (row.vertical_deg != vertical_deg
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue
-        curves = _take_curves(document)
+        curves = take_curves(document)
         if search_detail is not None:
             search_detail["takes_seen"] += 1
             search_detail["roles_per_take"][row.path] = dict(Counter(
@@ -300,17 +274,6 @@ def select_pose_curve_pair(
         if roles[0] in by_role and roles[1] in by_role:
             return PoseCurvePair(by_role[roles[0]], by_role[roles[1]], row, document)
     return None
-
-
-def read_pose_curve_pair(
-    bundle_dir: Path, *, phase: str, position_deg: int,
-    roles: tuple[str, str], vertical_deg: int = 0,
-) -> tuple[Mapping[str, Any], Mapping[str, Any], str] | None:
-    """The latest pair at this pose; see :func:`select_pose_curve_pair`."""
-    found = select_pose_curve_pair(
-        bundle_dir, phases=(phase,), position_deg=position_deg, roles=roles, vertical_deg=vertical_deg,
-    )
-    return (found.lower, found.upper, found.take.path) if found else None
 
 
 def curves_for_take(

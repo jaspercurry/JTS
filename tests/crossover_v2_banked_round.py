@@ -778,8 +778,7 @@ def bank_measure_round(
         )
         for rung, candidate_id in enumerate(candidates or ("",))
     ]
-    _bank(
-        store,
+    takes = (
         # CHECK computes no transfer function, so it banks an empty curve list
         # — the writer's own shape, not an omission here.
         phase_capture_record(
@@ -804,8 +803,10 @@ def bank_measure_round(
             validity_floor_hz=200.0, gate_window_ms=7.0, summed_ripple_db=1.0,
             glitch_detected=False, **stamp,
         ),
-        _receipt("r1"),
     )
+    # Every take of a speaker round states its purpose, as the executor stamps it.
+    _bank(store, *({**take, "measurement_purpose": measurement_programs.PURPOSE_SPEAKER} for take in takes),
+          _receipt("r1"))
     (round_dir / "state.json").write_text(
         json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
     )
