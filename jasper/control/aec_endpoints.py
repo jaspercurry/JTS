@@ -30,17 +30,15 @@ from ..audio_profile_state import (
     PROFILE_XVF_CHIP_AEC_TESTING,
     PROFILE_XVF_SOFTWARE_AEC3,
     RuntimeAecEnv,
-    WAKE_LEG_DEFAULTS,
     audio_profile_status,
     infer_audio_input_profile,
     intent_from_env,
     normalize_audio_input_profile,
     probe_xvf_mic,
-    profile_env_updates,
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
-from ..atomic_io import locked_update_env_file, read_json_mapping
+from ..atomic_io import read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state
@@ -59,8 +57,7 @@ from . import restart_broker
 
 logger = logging.getLogger(__name__)
 
-_AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
-_AEC_MODE_ENV_OWNER = "JTS /aec mode control"
+AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
@@ -187,29 +184,13 @@ def _start_aec_commission() -> bool:
 
 _PROFILE_DEFAULT = "custom"
 
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
-# chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
-# "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
-# production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);
-# the two per-beam toggles below only add extra wake detectors.
-_TOGGLE_TO_TOKEN = {
-    "raw": ("off",),
-    "dtln": ("dtln",),
-    "chip_aec_150": ("chip_aec_150",),
-    "chip_aec_210": ("chip_aec_210",),
-}
-_TOGGLE_TO_ENV_KEY = {
-    name.removeprefix("leg_"): key
-    for name, key, _ in WAKE_LEG_DEFAULTS
-    if name != "leg_chip_aec"
-}
 
 
 def _read_aec_state() -> dict:
     """Full aec_mode.env state; missing keys take the documented defaults
     so a partial file from a pre-leg-toggle deploy still parses sanely
     (the reconciler's ensure_mode_file appends them on its next run)."""
-    env_file = read_env_file_state(_AEC_MODE_FILE)
+    env_file = read_env_file_state(AEC_MODE_FILE)
     values = env_file.values
     intent = replace(intent_from_env(values), mode=values.get(AEC_MODE_ENV) or "auto")
     state: dict[str, Any] = {
@@ -230,25 +211,6 @@ def _read_aec_state() -> dict:
     else:
         state["profile"] = "auto"
     return state
-
-
-def _write_aec_leg(leg: str, enabled: bool) -> None:
-    """Atomic write of one wake-leg boolean, preserving every other key
-    in aec_mode.env (mode, the other leg).
-
-    Caller is responsible for kicking the reconciler — this just
-    persists the user's intent. Restart blast-radius lives in the
-    reconciler since it has the actual mode + presence context."""
-    if leg not in _TOGGLE_TO_TOKEN:
-        raise ValueError(f"invalid leg: {leg!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        {
-            _TOGGLE_TO_ENV_KEY[leg]: "1" if enabled else "0",
-            "JASPER_AUDIO_INPUT_PROFILE": "custom",
-        },
-        owner=_AEC_MODE_ENV_OWNER,
-    )
 
 
 def _leg_status(
@@ -273,20 +235,6 @@ def _leg_status(
         "disabled_reason": disabled_reason if not available else "",
         "status": status,
     }
-
-
-def _write_audio_input_profile(profile: str) -> None:
-    """Write a canonical audio input profile plus rollback-safe leg keys."""
-
-    normalized = normalize_audio_input_profile(profile, default="")
-    if not normalized or normalized == "custom":
-        raise ValueError(f"invalid profile: {profile!r}")
-    locked_update_env_file(
-        _AEC_MODE_FILE,
-        profile_env_updates(normalized),
-        mode=0o644,
-        owner=_AEC_MODE_ENV_OWNER,
-    )
 
 
 _probe_memo = threading.local()
@@ -394,22 +342,6 @@ def _start_xvf_firmware_update() -> None:
         check=True,
         capture_output=True,
         text=True,
-        timeout=5.0,
-    )
-
-
-def _kick_aec_reconciler(*, reason: str) -> dict[str, Any]:
-    """Apply a persisted AEC-mode/leg change through the reconciler.
-
-    Use `restart`, not `start`: the reconciler is a Type=oneshot unit, so a
-    `start` issued while the previous reconcile is still active is a no-op
-    and would leave runtime env one click behind the UI.
-    """
-    return restart_broker.manage_units(
-        "jasper-aec-reconcile.service",
-        verb="restart",
-        reason=reason,
-        no_block=True,
         timeout=5.0,
     )
 
