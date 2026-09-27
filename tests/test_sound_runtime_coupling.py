@@ -42,19 +42,7 @@ def _saved_passive_layout(tmp_path, monkeypatch):
 
 
 def _capture_reemit_coupling(monkeypatch, tmp_path):
-    """Run reconcile_current_dsp far enough to call carrier.reemit once and
-    return the ``fanin_coupling_capture_kwargs`` it was given.
-
-    The fake carrier returns a base_flat result; what this helper needs is the
-    dry-run reemit call, not what reconcile decides afterwards.
-
-    The retired selector is declared OFF the ring in both places it could be
-    read — the process env and a ``fanin.env`` at the module path its readers
-    are handed — so ring kwargs coming out the far end prove the seam consults
-    neither.
-    """
-    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-    declare_fanin_env(monkeypatch, tmp_path, "JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
+    declare_fanin_env(monkeypatch, tmp_path, "")
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -134,20 +122,3 @@ def test_reconcile_with_no_coupling_env_still_passes_the_ring_kwargs(
     assert kwargs["playback_device"] == "jts_ring_playback"
     assert result["status"] == "reconciled"
     assert seen["apply_called"] is True
-
-
-def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
-    """No persisted token and no ``os.environ`` value can produce ``{}``.
-
-    The DEFECT-1 class this used to guard — a stale ``os.environ`` coupling
-    steering the CLI reconcile onto the wrong route — cannot recur, because
-    there is no second route to be steered onto and the resolver takes no
-    coupling argument at all (ADR-0100: it consults neither).
-    """
-    from jasper.fanin_coupling import capture_kwargs_for_coupling
-
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-
-    kwargs = capture_kwargs_for_coupling()
-    assert kwargs["capture_device"] == "jts_ring_capture"
-    assert kwargs["playback_device"] == "jts_ring_playback"

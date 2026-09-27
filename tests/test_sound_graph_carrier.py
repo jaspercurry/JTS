@@ -821,14 +821,6 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
     }
 
 
-# --- shm_ring coupling threaded through stereo-host reemit() ---
-#
-# The coupling is always-on for supported stereo-host graphs while
-# JASPER_FANIN_CAMILLA_COUPLING=shm_ring. Active baselines and grouped program
-# bakes keep their roleful/grouped ALSA paths. Default (None / {}) is
-# byte-identical.
-# (imports for these tests live in the top-of-file import block.)
-
 _SHM_RING_KWARGS = capture_kwargs_for_coupling()
 
 

@@ -86,15 +86,7 @@ unconditionally, and a `JASPER_FANIN_RING_WIRE_FORMAT` naming any other format
 — `S16_LE` above all — is refused as a config-class fault (exit 78, the unit
 parks) rather than served, because the Python side still renders the ioplug
 conf.d from that key and a narrower declaration would shear against the ring
-header. There
-is no coupling to declare either — the Python selector vocabulary is gone, and
-fan-in still refuses any `JASPER_FANIN_CAMILLA_COUPLING` token but
-unset/empty/`shm_ring` as a config-class fault (exit 78, the unit parks) until
-that accept-set is removed too. Nothing unsets a stale value, so a hand-set
-copy in `fanin.env` or `/etc/jasper/jasper.env` parks the daemon; `grep -R
-JASPER_FANIN_CAMILLA_COUPLING /etc/jasper/ /var/lib/jasper/` is the check.
-CamillaDSP
-writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
+header. CamillaDSP writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
 Ring B one DAC-sized slot at a time. A roleful (active-crossover) box has a
 ring of its own, carrying POST-crossover per-driver channels rather than a
 full-range stereo program. That role rides the device NAME because it cannot

@@ -267,10 +267,6 @@ def check_content_transport_coherence() -> CheckResult:
       PERSISTED evidence: ``check_outputd_service`` returns the systemd failure
       first and never reaches the contradiction.
 
-    KEYED ON THE BRIDGE, not on ``JASPER_FANIN_CAMILLA_COUPLING``: under
-    ADR-0100 that file selects nothing, while the bridge
-    (``rust/jasper-outputd/src/config.rs``) decides what outputd reads.
-
     TWO TERMS, NOT THREE, on the first two rungs: a ``writer_alive:false``
     conjunct would make them never fire. outputd publishes that reader-reported
     metric only inside its ``shm_ring`` block, which exists iff the bridge is

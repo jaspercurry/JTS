@@ -515,9 +515,8 @@ def _outputd_transport_health(
 ) -> tuple[str, str, str, str] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
 
-    OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``
-    (which under ADR-0100 selects nothing). ``outputd_env`` is read through the
-    unit's ``EnvironmentFile=`` layering (:func:`outputd_reconciled_env`), so
+    ``outputd_env`` follows the unit's ``EnvironmentFile=`` layering
+    (:func:`outputd_reconciled_env`), so
     the question here is "is the running daemon on the env it was last given?".
     Whether that env is the RIGHT one for this box is
     :func:`check_content_transport_coherence`'s.

@@ -141,9 +141,7 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     assert devices["chunksize"] <= ring_capacity_frames(RING_PLAYBACK_DEVICE)
 
 
-def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
-    monkeypatch,
-):
+def test_capture_kwargs_are_the_ring():
     """THE PIN for ADR-0100's capture seam: the answer is UNCONDITIONAL.
 
     The emitters that reach this — jasper-web `/sound/` and the measurement
@@ -154,8 +152,6 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
     topology.
     """
     from jasper import fanin_coupling
-
-    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
 
     assert fanin_coupling.capture_kwargs_for_coupling() == {
         "capture_device": RING_CAPTURE_DEVICE,

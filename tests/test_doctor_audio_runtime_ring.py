@@ -415,11 +415,6 @@ def _stage_ring_geometry(
 @pytest.mark.parametrize(
     "stage_kwargs, ring_kwargs, status, reason",
     [
-        # Ring A is never inert, so no persisted token may switch this check
-        # off: the gate this replaces skipped whenever
-        # JASPER_FANIN_CAMILLA_COUPLING did not read shm_ring — every box the
-        # reconciler has not written yet, on which the graph opens Ring A
-        # regardless.
         (
             {"fanin_env_text": "JASPER_FANIN_RING_SLOTS=8\n"},
             None,
@@ -610,13 +605,6 @@ def test_ok_when_all_assets_present(monkeypatch, tmp_path):
 
 
 def test_a_live_fanin_is_never_open_probed(monkeypatch, tmp_path):
-    """The gate is fan-in's systemd state, not a persisted token.
-
-    Its predecessor derived "is the ring armed?" from
-    JASPER_FANIN_CAMILLA_COUPLING, which probed a LIVE ring on every box whose
-    key had not been written yet — coupling-auto runs
-    After=jasper-fanin.service, so that is every fresh boot.
-    """
     _stage_assets(monkeypatch, tmp_path)
     _probe_that_creates_the_ring(monkeypatch, tmp_path)
     _fanin_unit_state(monkeypatch, "active")
