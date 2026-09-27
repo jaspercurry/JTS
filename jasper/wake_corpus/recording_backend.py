@@ -281,17 +281,9 @@ class RecordingBackend:
 
     # ----- session + clip state -------------------------------------
 
-    def session_id(self) -> str | None:
-        with self._lock:
-            return self._session_id
-
     def ports(self) -> dict[str, int]:
         """Configured UDP ports this recorder process can subscribe to."""
         return dict(self._ports)
-
-    def member(self) -> str | None:
-        with self._lock:
-            return self._member
 
     def is_recording(self) -> bool:
         with self._lock:
@@ -334,50 +326,6 @@ class RecordingBackend:
             if self._current is None:
                 return None
             return self._current.current_rms_dbfs
-
-    def include_raw_mic_0(self) -> bool:
-        """Whether the active session captures the raw-mic-0 leg."""
-        with self._lock:
-            return self._include_raw_mic_0
-
-    def include_dtln(self) -> bool:
-        """Whether the active session captures the XVF DTLN leg."""
-        with self._lock:
-            return self._include_dtln
-
-    def include_usb_mic(self) -> bool:
-        """Whether the active session captures corpus USB/ref legs."""
-        with self._lock:
-            return self._include_usb_mic
-
-    def include_usb_dtln(self) -> bool:
-        """Whether the active session captures the USB DTLN leg."""
-        with self._lock:
-            return self._include_usb_dtln
-
-    def include_xvf_raw0_dtln(self) -> bool:
-        """Whether the active session captures the XVF raw0 DTLN leg."""
-        with self._lock:
-            return self._include_xvf_raw0_dtln
-
-    def include_aec3_sweep(self) -> bool:
-        """Whether the active session captures same-utterance AEC3 variants."""
-        with self._lock:
-            return self._include_aec3_sweep
-
-    def corpus_profile(self) -> str:
-        with self._lock:
-            return self._corpus_profile
-
-    def enabled_legs(self) -> tuple[str, ...]:
-        """The active session's leg set, in recording/playback order."""
-        with self._lock:
-            return self._enabled_legs
-
-    def audio_context(self) -> dict[str, Any] | None:
-        """Production-profile/corpus-context snapshot for the active session."""
-        with self._lock:
-            return dict(self._audio_context) if self._audio_context else None
 
     def status_snapshot(self) -> dict[str, Any]:
         """Every `/api/status` field, under one lock acquisition."""
