@@ -74,9 +74,12 @@ def _lateral_poses_block(
     rule :func:`~.position_cycle.position_cycle_document` uses for these files.
 
     ``position_deg`` is the SIGNED whole-degree bearing, negative LEFT of the
-    design axis, stamped by :func:`~.spatial.lateral_pose_record` at take time.
-    A commanded pose recorded verbatim, not a measurement with a spread, so
-    this block publishes no uncertainty.
+    design axis, in the retired flow pipeline's take shape. No current product
+    path writes a take in that shape, so this block reads ``not_evaluated`` for
+    every round the engine banks — see
+    :func:`~.position_cycle.read_lateral_take`. A commanded pose recorded
+    verbatim, not a measurement with a spread, so this block publishes no
+    uncertainty.
 
     Both survivors and superseded takes are listed, because the speaker keeps
     both on disk deliberately.

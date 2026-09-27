@@ -65,14 +65,14 @@ from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
-from jasper.active_speaker.crossover_v2.spatial import (
-    cloud_position_record,
-    pose_kind_fields,
-)
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
-from tests.crossover_v2_banked_round import bank_seat_round
+from tests.crossover_v2_banked_round import (
+    bank_seat_round,
+    cloud_position_record,
+    pose_kind_fields,
+)
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 _FC_HZ = 2000.0
@@ -611,14 +611,13 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
 
 
 def test_the_pose_record_states_the_seams_own_regime_word() -> None:
-    """One vocabulary for "what was played", across an import cycle.
+    """One vocabulary for "what was played", across the fixture's own copy.
 
-    ``spatial.lateral_pose_record`` writes the regime onto every banked pose,
-    and it cannot import this module (this one imports the flow, and the flow
-    imports that one). So the word is a literal there and this is the pin that
-    keeps the two spellings one fact.
+    ``crossover_v2_banked_round.lateral_pose_record`` writes the regime onto
+    every banked pose it builds, from a literal copy of this module's own
+    word: this is the pin that keeps the two spellings one fact.
     """
-    from jasper.active_speaker.crossover_v2.spatial import LATERAL_POSE_REGIME
+    from tests.crossover_v2_banked_round import LATERAL_POSE_REGIME
 
     assert LATERAL_POSE_REGIME == ac.REGIME_PER_DRIVER
 

@@ -30,11 +30,13 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.spatial import (
-    LATERAL_POSE_REGIME,
-    LateralPose,
     MARK_DISTANCE_M,
     POSITION_AXIS_HORIZONTAL,
     PositionGeometry,
+)
+from tests.crossover_v2_banked_round import (
+    LATERAL_POSE_REGIME,
+    LateralPose,
     TakeClaim,
     entry_baseline_record,
     lateral_pose_record,
@@ -45,7 +47,7 @@ def _record(
     index: int, position_deg: int, *, attempt: int = 1, vertical_deg: int = 0,
     candidate_id: str = "",
 ) -> dict:
-    """One take, built by the SPEAKER's own producer.
+    """One take, built by the shared take-record builder.
 
     Not a hand-written dict: ``lateral_pose_record`` is the thing whose fields
     this index projects, so a test that spelled them itself would keep passing
@@ -302,7 +304,7 @@ def test_takes_from_two_capture_sessions_name_both_sources(tmp_path):
 
 
 def _entry_take(tmp_path: Path, **overrides) -> Path:
-    """One banked entry-baseline sidecar, from the SPEAKER's own producer."""
+    """One banked entry-baseline sidecar, from the shared take-record builder."""
     fields = {
         "index": 9, "attempt": 1, "session_id": "sess-1",
         "program_id": "prog-entry", "reference_mark": "design_axis",

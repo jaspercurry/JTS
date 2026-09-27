@@ -478,10 +478,10 @@ async def test_a_record_carrying_a_store_owned_key_refuses(real_store):
 async def test_a_take_without_an_id_is_refused(real_store):
     """The bank-id ruling: every banked record carries its own ``take_id``.
 
-    Minted by the producer — through ``spatial.take_id_for`` where a prompted
-    position exists — never re-derived here. A geometry retake reuses its
-    position id, so a store that guessed would collide two takes on one
-    write-once path.
+    Minted upstream — following the ``{position_id}_a{attempt:02d}``
+    convention where a prompted position exists — never re-derived here. A
+    geometry retake reuses its position id, so a store that guessed would
+    collide two takes on one write-once path.
     """
     record = _take()
     del record["take_id"]

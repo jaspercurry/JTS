@@ -30,9 +30,14 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
 )
-from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+from tests.crossover_v2_banked_round import (
+    _DESIGN_AXIS_GEOMETRY,
+    LateralPose,
+    TakeClaim,
+    lateral_pose_record,
+)
 from tests.test_crossover_v2_record_store import (
     CAPTURE,
     _bundle,
@@ -63,7 +68,7 @@ def _artifacts(store: BankedRecordStore) -> Path:
 
 
 def _builder_take(**overrides: Any) -> dict[str, Any]:
-    """A take as the four ``spatial`` builders bank one: with a clock on it."""
+    """A take as the four take-record builders bank one: with a clock on it."""
     return {**_take(), "captured_at": "2026-08-28T11:22:33Z", **overrides}
 
 
@@ -116,16 +121,16 @@ async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
     the pose record is where that label has to survive.
     """
     def _pose_record(index: int, candidate_id: str) -> dict[str, Any]:
-        pose = spatial.LateralPose(
+        pose = LateralPose(
             pose_id=f"lateral_{index:02d}", index=index, attempt=1,
             prompt="+0 deg", role="onax", offset_cm=0.0, at_mark=True,
             curves=(),
         )
-        return spatial.lateral_pose_record(
-            pose, geometry=spatial._DESIGN_AXIS_GEOMETRY, lateral_consumer="forward_model",
+        return lateral_pose_record(
+            pose, geometry=_DESIGN_AXIS_GEOMETRY, lateral_consumer="forward_model",
             session_id="sess-1", graph_fingerprint="fp-applied",
             captured_at="2026-08-28T11:22:33Z", wav_sha256=f"sha-{index}",
-            claim=spatial.TakeClaim(candidate_id=candidate_id),
+            claim=TakeClaim(candidate_id=candidate_id),
         )
 
     wanted = await store.bank(_pose_record(1, "fp-a"))
