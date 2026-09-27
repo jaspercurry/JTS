@@ -21,9 +21,6 @@ from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
     SOLO_RESTORE_PATH,
-    _clear_stash,
-    _write_stash,
-    read_stash,
     restore_action,
 )
 from tests._log_events import event_field_maps
@@ -121,16 +118,6 @@ def test_playback_is_pipe_fails_closed_on_a_duplicated_devices_key():
     one = f'devices:\n  playback:\n    type: File\n    filename: "{SNAPFIFO}"\n'
     assert playback_is_pipe(one, SNAPFIFO) is True
     assert playback_is_pipe(one + one, SNAPFIFO) is False
-
-
-def test_stash_round_trip(tmp_path):
-    path = str(tmp_path / "prior.txt")
-    assert read_stash(path) is None  # missing file → None, no raise
-    _write_stash("/var/lib/camilladsp/configs/sound_current.yml", path)
-    assert read_stash(path) == "/var/lib/camilladsp/configs/sound_current.yml"
-    _clear_stash(path)
-    assert read_stash(path) is None
-    _clear_stash(path)  # idempotent
 
 
 def test_bonded_and_restore_names_are_jts_generated():

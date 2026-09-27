@@ -48,9 +48,9 @@ from ..camilla_config_contract import (
 )
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ..log_event import log_event
-from . import _stash
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
+from .role_stash import RoleStash
 from .snapfifo import SNAPFIFO
 from jasper.output_topology_store import load_output_topology_strict
 
@@ -72,15 +72,16 @@ PRIOR_STASH = "/var/lib/jasper/grouping-prior-camilla.txt"
 REGEN_SOURCE = "grouping-reconcile"
 
 
-def _camilla():
-    """Default `camilla_factory`: camilla#1 (jasper.camilla.primary_controller)."""
-    return _stash.camilla()
-
-
 # ---------- prior-config stash ----------
-# Mechanics shared with follower_config (see jasper.multiroom._stash);
-# these stay as module-level names so this arm's tests can monkeypatch
-# them, and so the default `path=` keeps pointing at THIS arm's stash.
+# Ladder owned by role_stash.RoleStash (shared with follower_config); these
+# stay as module-level names so this arm's tests can monkeypatch them, and
+# so the default `path=` keeps pointing at THIS arm's stash.
+_ROLE_STASH = RoleStash(PRIOR_STASH)
+_camilla = _ROLE_STASH.camilla
+read_stash = _ROLE_STASH.read_stash
+_write_stash = _ROLE_STASH.write_stash
+_clear_stash = _ROLE_STASH.clear_stash
+
 
 def _is_pipe_config(path: str) -> bool:
     """True when the config AT ``path`` is pipe-shaped (writes the
@@ -90,19 +91,6 @@ def _is_pipe_config(path: str) -> bool:
     (defensive) and the read guard's separate ``exists()`` check already
     rejects missing files."""
     return devices_playback_is_pipe(read_camilla_devices_config(path) or {}, SNAPFIFO)
-
-
-def read_stash(path: str = PRIOR_STASH) -> str | None:
-    """The stashed prior solo config path, or None (no stash / unreadable)."""
-    return _stash.read_stash(path)
-
-
-def _write_stash(value: str, path: str = PRIOR_STASH) -> None:
-    _stash.write_stash(value, path)
-
-
-def _clear_stash(path: str = PRIOR_STASH) -> None:
-    _stash.clear_stash(path)
 
 
 def restore_action(
