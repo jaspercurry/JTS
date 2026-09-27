@@ -120,7 +120,7 @@ function draw() {
     theme: {
       grid: cssColor(els.canvas, '--border-strong', '#ccc'),
       text: cssColor(els.canvas, '--muted', '#888'),
-      excluded: cssColor(els.canvas, '--crossover-chart-excluded', '#888'),
+      excluded: cssColor(els.canvas, '--muted', '#888'),
     },
   });
   els.status.textContent = !drew

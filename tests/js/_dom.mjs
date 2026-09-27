@@ -21,7 +21,7 @@ import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
 // is sufficient on its own here, without also needing this file's name to
 // dodge any glob.
 
-// The 19 ids every crossover_*_test.mjs harness looks up via
+// The 20 ids every crossover_*_test.mjs harness looks up via
 // document.getElementById, in the crossover screen's own render order. Not
 // every consumer needs the same set — some add ids, one drops
 // "crossover-applied" — so this is a starting point files splice, not a
