@@ -11,7 +11,22 @@ never varies, only whether the test needs a mic double that actually behaves
 """
 from __future__ import annotations
 
+import pytest
+
+from jasper.accessories import status as accessory_status
 from jasper.voice.push_to_talk import ManualMicRuntime
+
+
+def publish_remote_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """jasper-input's status reports the `wiim_remote_2` adapter connected
+    and subscribed, which a named hold needs before it opens a turn."""
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": {"wiim_remote_2": {
+            "restarts": 0, "last_error": None,
+            "link": {"connected": True, "subscribed": True},
+        }}},
+    )
 
 
 def remote_mic(mic: object | None = None) -> ManualMicRuntime:

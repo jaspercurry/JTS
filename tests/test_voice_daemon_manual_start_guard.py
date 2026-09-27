@@ -28,6 +28,7 @@ from jasper.voice._supervisor import CANT_CONNECT_CUE_SLUG
 from jasper.voice_daemon import INTERNAL_ERROR_CUE_SLUG
 
 from ._async_wait import wait_signalled
+from ._manual_mics import publish_remote_ready
 from ._cue_spy import SpyCues as _SpyCues
 from ._log_events import event_fields, event_records
 from ._wake_loop import wake_loop_for_tests
@@ -419,13 +420,7 @@ async def test_manual_start_unknown_source_refused_before_side_effects(caplog):
 async def test_manual_start_source_uses_source_audio_without_primary_preroll(
     monkeypatch,
 ):
-    monkeypatch.setattr(
-        accessory_status, "snapshot",
-        lambda *_args: {"published": True, "bridges": {"wiim_remote_2": {
-            "restarts": 0, "last_error": None,
-            "link": {"connected": True, "subscribed": True},
-        }}},
-    )
+    publish_remote_ready(monkeypatch)
     wl = _make_wake_loop()
     wl._push_to_talk.sources = {"wiim_remote_2": object()}
 
