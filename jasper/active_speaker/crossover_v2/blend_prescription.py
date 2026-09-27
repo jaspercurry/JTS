@@ -45,11 +45,6 @@ from .blend_correction import (
     blend_filters_from_mapping,
 )
 
-#: What :func:`~.evidence_packet.packet_positional_evidence` returns: the
-#: per-position records, their shared frequency grid, and the flat reference
-#: they are read against — meaningful only as one evaluation's output.
-PositionalEvidence = tuple[list[dict[str, Any]], list[float], float]
-
 __all__ = [
     "BLEND_CANDIDATE_FIELD",
     "BLEND_PRESCRIPTION_MALFORMED",
@@ -64,7 +59,6 @@ __all__ = [
     "PROHIBITED_PRESCRIPTION_KEYS",
     "BlendPrescription",
     "BlendPrescriptionRefused",
-    "PositionalEvidence",
     "blend_prescription_to_candidate_fields",
     "composed_grid",
     "find_prohibited_keys",
@@ -551,11 +545,7 @@ def composed_grid(
     return inside if inside.size > sweep.size else sweep
 
 
-def _check_composed(
-    filters: tuple[dict[str, Any], ...],
-    band_hz: tuple[float, float],
-    freqs_hz: Sequence[float] | None,
-) -> None:
+def _check_composed(filters: tuple[dict[str, Any], ...], band_hz: tuple[float, float]) -> None:
     """The composed BOOST cap, on the EVALUATED cascade, not a sum of gains.
 
     Two filters whose skirts overlap deliver more than either alone. Through
@@ -565,7 +555,7 @@ def _check_composed(
     """
     if not filters:
         return
-    grid = composed_grid(band_hz, freqs_hz)
+    grid = composed_grid(band_hz, None)
     composed = 20.0 * np.log10(
         np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
     )
@@ -644,7 +634,6 @@ def read_blend_prescription(
     *,
     packet_fingerprint: Any,
     band_hz: tuple[float, float] | None,
-    positional_evidence: PositionalEvidence | None,
 ) -> BlendPrescription | None:
     """THE request gate. One point, and the one place every bound is applied.
 
@@ -652,13 +641,12 @@ def read_blend_prescription(
     Otherwise a validated :class:`BlendPrescription`, or
     :class:`BlendPrescriptionRefused` naming which gate said no.
 
-    The three keywords are the evidence's answers: the packet's fingerprint
-    and positional evidence, and the blend contract's ``bounds.band_hz``.
-    Taking VALUES rather than the packet keeps this module a leaf of the DAG
-    (the packet imports the response format from here). All three are
-    required and undefaulted: they are the only inputs a prescriber willing to
-    lie cannot forge, so a caller that forgot one would lose the evidence's
-    opinion and never know.
+    The two keywords are the evidence's answers: the packet's fingerprint and
+    the blend contract's ``bounds.band_hz``. Taking VALUES rather than the
+    packet keeps this module a leaf of the DAG (the packet imports the
+    response format from here). Both are required and undefaulted: they are
+    the only inputs a prescriber willing to lie cannot forge, so a caller that
+    forgot one would lose the evidence's opinion and never know.
 
     Order is deliberate — shape, identity, region, per-filter bounds, composed
     cascade, the route, and last the shipped strict reader — because each
@@ -680,9 +668,7 @@ def read_blend_prescription(
     band = band_hz
 
     prescription_class = _check_bounds(filters, band)
-    _check_composed(
-        filters, band, positional_evidence[1] if positional_evidence else None
-    )
+    _check_composed(filters, band)
 
     prescription = BlendPrescription(
         filters=filters,

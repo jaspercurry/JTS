@@ -78,39 +78,3 @@ def packet_feature_classifications(packet: Any) -> tuple[FeatureVerdict, ...] | 
     if not isinstance(block, dict) or not block.get("available"):
         return None
     return read_feature_verdicts(block.get("verdicts"))
-
-
-def packet_positional_evidence(
-    packet: Any,
-) -> tuple[list[dict[str, Any]], list[float], float] | None:
-    """The per-position curves, their shared grid, and the flat reference.
-
-    ``None`` when any of the three is missing — they are only meaningful
-    together, and a boost judged against two of them would be judged against a
-    reference that did not come from the same evaluation as the curves.
-    """
-    if not isinstance(packet, dict):
-        return None
-    positions = packet.get("positions")
-    spec = packet.get("spec")
-    if not isinstance(positions, dict) or not isinstance(spec, dict):
-        return None
-    rows = positions.get("positions")
-    grid = (positions.get("curve_grid") or {}).get("freqs_hz")
-    reference = spec.get("reference_db")
-    if not isinstance(rows, list) or not rows:
-        return None
-    if not isinstance(grid, list) or not grid:
-        return None
-    if isinstance(reference, bool) or not isinstance(reference, (int, float)):
-        return None
-    # `reference` is coerced inside the same guard as the grid: an
-    # arbitrary-precision int passes the isinstance check above and then
-    # raises on `float()`, so leaving it outside would reintroduce the escape
-    # this guard exists to close.
-    try:
-        freqs = [float(value) for value in grid]
-        reference_db = float(reference)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return ([row for row in rows if isinstance(row, dict)], freqs, reference_db)

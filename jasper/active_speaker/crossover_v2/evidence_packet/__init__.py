@@ -9,8 +9,7 @@ the round's own, and views filed beside it — the classification and H2/H3
 views into :data:`DERIVED_VIEWS`, which the fingerprint skips, and the room
 view into ``contracts``, which it covers (a banked round's contracts read
 the bank's copy, ADR-0371). No clock, no network, no CamillaDSP handle, no
-session. It DERIVES one thing — :func:`_cross_seat_sigma_block`'s per-bin
-spread across seats.
+session.
 
 Absence has two never-merged flavours: ``source_absent`` (the artifact was not
 handed to this builder) and ``field_null`` (it was, and the field is null).
@@ -74,7 +73,6 @@ from .positions import (
     _POSITIONS_SUBDIR,
     _banked_takes,
     _lateral_poses_block,
-    _positions_block,
 )
 from .readers import (
     DERIVED_VIEWS,
@@ -84,7 +82,6 @@ from .readers import (
     fingerprinted,
     packet_driver_passbands_hz,
     packet_feature_classifications,
-    packet_positional_evidence,
 )
 from .uncertainty import (
     REPEAT_FLOOR_UNMEASURED,
@@ -111,10 +108,10 @@ __all__ = [
     "build_round_evidence",
     "contract_currency",
     "fingerprinted",
+    "entry_evidence",
     "round_evidence",
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
-    "packet_positional_evidence",
     "round_artifact_dir",
     "round_program_dir",
     "applied_profile_source",
@@ -326,14 +323,12 @@ def _operator_notes_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
 
 def _not_evaluated(
     *,
-    cloud_reason: str,
     state_reason: str,
     applied_profile_reason: str,
     drivers_available: bool,
     lateral_poses_available: bool,
     candidates_available: bool,
     capture_snr_reason: str,
-    cross_seat_sigma_reason: str,
 ) -> list[dict[str, Any]]:
     """Everything this packet could not answer, and why — one honest list.
 
@@ -355,9 +350,7 @@ def _not_evaluated(
     ]
     if not lateral_poses_available:
         # Narrow by construction: a lateral walk banks a signed whole-degree
-        # bearing per pose, so the only true claim is about THIS round. It
-        # speaks for no cloud seat either — those stamp their own
-        # ``position_deg`` — and points at the block that does.
+        # bearing per pose, so the only true claim is about THIS round.
         entries.append({
             "field": "lateral_poses[].position_deg",
             "reason": (
@@ -376,11 +369,6 @@ def _not_evaluated(
             "field": "capture_snr",
             "reason": capture_snr_reason,
         })
-    if cross_seat_sigma_reason:
-        entries.append({
-            "field": "positions.cross_seat_sigma",
-            "reason": cross_seat_sigma_reason,
-        })
     if not drivers_available:
         entries.append({
             "field": "drivers.passbands_hz",
@@ -388,8 +376,6 @@ def _not_evaluated(
                 CONTRACT_COMMAND
             ),
         })
-    if cloud_reason:
-        entries.append({"field": "cloud_verify", "reason": cloud_reason})
     if state_reason:
         entries.append({"field": "flow_state", "reason": state_reason})
     if applied_profile_reason:
@@ -420,7 +406,7 @@ def build_crossover_evidence_packet(
 
     ``session_dir`` is a commissioning bundle: an ``info.json`` beside an
     ``evidence/v1/artifacts/crossover_v2/<capture-session-id>/`` directory
-    holding the run manifest, the cloud evidence and the per-position records.
+    holding the run manifest and the per-take records.
 
     Every other path is OPTIONAL and INJECTED rather than resolved here — a
     path resolved here would make a round's answer, and its
@@ -455,19 +441,12 @@ def build_crossover_evidence_packet(
     """
     if not session_dir.is_dir():
         raise CrossoverEvidencePacketError(f"not a directory: {session_dir}")
-    info_raw, info_reason = _read_json(session_dir / "info.json")
-    if not isinstance(info_raw, dict):
-        raise CrossoverEvidencePacketError(
-            f"bundle missing a readable info.json ({info_reason}): {session_dir}"
-        )
+    info_raw = _bundle_info(session_dir)
     round_dir, round_reason = round_artifact_dir(session_dir)
     if round_dir is None:
         raise CrossoverEvidencePacketError(f"{round_reason}: {session_dir}")
 
     inputs = round_context or round_inputs(session_dir)
-
-    cloud_raw, cloud_reason = _read_json(round_dir / "cloud_verify.json")
-    cloud = _mapping(cloud_raw)
 
     state_raw: Any = None
     state_reason = "no flow state file was supplied"
@@ -500,9 +479,6 @@ def build_crossover_evidence_packet(
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
     )
-    spec = _mapping(cloud.get("spec"))
-    positions = _positions_block(cloud)
-    cross_seat_sigma = _mapping(positions.get("cross_seat_sigma"))
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
         "kind": PACKET_KIND,
@@ -544,32 +520,11 @@ def build_crossover_evidence_packet(
             state,
             statefile_path,
         ),
-        "spec": spec,
-        "curve": _mapping(cloud.get("curve")),
-        "positions": positions,
         "lateral_poses": lateral_poses,
         "candidates": candidates,
         "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
-        "honesty_mask": {
-            "merged_excluded_bands_hz": cloud.get("merged_excluded_bands_hz"),
-            "screen_excluded_bands_hz": cloud.get("screen_excluded_bands_hz"),
-            "null_registry": _mapping(cloud.get("null_registry")),
-            "null_registry_crossover_region": _mapping(
-                cloud.get("null_registry_crossover_region")
-            ),
-            "carve_outs": cloud.get("carve_outs") or [],
-            "geometry": _mapping(cloud.get("geometry")),
-            "trusted_floor_hz": cloud.get("trusted_floor_hz"),
-            "validity_floor_hz": cloud.get("validity_floor_hz"),
-            "note": (
-                "a bin the merged mask removed is not a bin a prescription may "
-                "correct; the mask is the only structural protection against "
-                "cutting an interference null"
-            ),
-        },
         "accuracy_budget": _accuracy_budget_block(
-            positions=positions,
             round_dir=round_dir,
             repeat_floor=repeat_floor,
             repeat_floor_reason=repeat_floor_reason,
@@ -579,14 +534,12 @@ def build_crossover_evidence_packet(
         "operator_notes": operator_notes,
         "installation": installation_evidence(_mapping(draft_raw)),
         "not_evaluated": _not_evaluated(
-            cloud_reason=cloud_reason,
             state_reason=state_reason,
             applied_profile_reason=applied_profile_reason,
             drivers_available=bool(drivers.get("available")),
             lateral_poses_available=bool(lateral_poses.get("available")),
             candidates_available=bool(candidates.get("available")),
             capture_snr_reason=str(capture_snr.get("reason") or ""),
-            cross_seat_sigma_reason=str(cross_seat_sigma.get("reason") or ""),
         ),
         "contracts": _contract_digests(inputs, round_dir, _mapping(draft_raw), applied_profile),
         DERIVED_VIEWS: _derived_views_block(round_dir, inputs),
@@ -635,6 +588,26 @@ def build_round_evidence(inputs: RoundInputs, *, state_path: Path | None = None)
         driver_draft_path=inputs.design_draft_path, applied_profile_path=inputs.applied_profile_path,
         repeat_floor_path=inputs.repeat_floor_path, declared_geometry_path=inputs.declared_geometry_path,
     )
+
+
+def _bundle_info(session_dir: Path) -> dict[str, Any]:
+    info_raw, info_reason = _read_json(session_dir / "info.json")
+    if not isinstance(info_raw, dict):
+        raise CrossoverEvidencePacketError(f"bundle missing a readable info.json ({info_reason}): {session_dir}")
+    return info_raw
+
+
+def entry_evidence(session_dir: Path, rows: Sequence[Measurement]) -> dict[str, Any]:
+    """The packet's ``entry_baseline`` block and the ``session`` and ``identity``
+    fields a frequency view reads, from a bundle and its take ``rows``."""
+    info_raw = _bundle_info(session_dir)
+    identity, _ = _copy_allowed(_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS)
+    return {
+        "session": {key: info_raw.get(key) for key in ("state", "started_at")}
+        | {"bundle_session_id": info_raw.get("session_id")},
+        "identity": identity,
+        "entry_baseline": _entry_baseline_block(session_dir, rows),
+    }
 
 
 def round_evidence(inputs: RoundInputs) -> dict[str, Any]:

@@ -150,7 +150,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
     the uncertainty declarations the artifact does not carry.
 
-    The packet does not compute it, unlike the cross-seat spread: reading H2/H3
+    The packet does not compute it: reading H2/H3
     means re-opening every banked capture WAV and re-deconvolving it at a
     pre-guard wide enough for the harmonic images to exist, and this module
     publishes ``privacy.raw_audio_excluded``. Absence is ordinary and reported.

@@ -18,7 +18,6 @@ NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 PROGRAM_MISSING = "classification_program_missing"
 REASON_COVERAGE_SHORT = "coverage_short"
-REASON_CROSS_SEAT_SPREAD_OVERFLOW = "cross_seat_spread_overflow"
 REASON_FIT_BAND_UNAVAILABLE = "fit_band_unavailable"
 REASON_FIT_NOT_FINITE = "fit_not_finite"
 REASON_GAP_NOT_CONFIDENT = "gap_not_confident"
@@ -27,7 +26,6 @@ REASON_MARK_FIT_BAND_UNAVAILABLE = "mark_fit_band_unavailable"
 REASON_MARK_RESPONSE_UNAVAILABLE = "mark_response_unavailable"
 REASON_NON_BEARING = "non_bearing_pose"
 REASON_NO_COMPARISON = "no_candidate_comparison"
-REASON_NO_CURVE_GRID = "no_curve_grid"
 REASON_NO_IMPULSE = "no_impulse"
 REASON_NO_MARK_PAIRS = "no_mark_pairs"
 REASON_NO_REFERENCE_TAKE = "no_reference_take"
@@ -38,7 +36,6 @@ REASON_REFUSED = "round_views_refused"
 REASON_SEGMENT_MISSING = "pair_segment_missing"
 REASON_SNR_SHORT = "snr_short"
 REASON_TOO_FEW_POSITIONS = "too_few_positions"
-REASON_TOO_FEW_SEATS = "too_few_seats"
 REASON_UNREADABLE = "round_views_unreadable_round"
 REASON_UNWRITABLE = "round_views_unwritable_out"
 REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
@@ -62,7 +59,6 @@ EVIDENCE_REASONS = MappingProxyType({
     NO_FEATURES_DETECTED: "No pooled-response feature exceeds the measured capture-to-capture scatter.",
     PROGRAM_MISSING: "No banked program matches the stimulus bytes recorded by the round captures.",
     REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
-    REASON_CROSS_SEAT_SPREAD_OVERFLOW: "A member curve carries samples so large that their spread does not fit a float; this artifact cannot be read for a cross-seat spread at all.",
     REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
     REASON_FIT_NOT_FINITE: "A fitted filter term is NaN or infinite, so the fit is published without numbers.",
     REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
@@ -71,7 +67,6 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
     REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
     REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat spread for it.",
-    REASON_NO_CURVE_GRID: "The positions block carries no curve grid, so there are no bins to take a spread over.",
     REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
     REASON_NO_MARK_PAIRS: "The round has fewer than two takes of this driver at one placement, so no mark pair exists for a repeat spread.",
     REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
@@ -82,7 +77,6 @@ EVIDENCE_REASONS = MappingProxyType({
     REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
     REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum is not comparable with the measured sum.",
     REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
-    REASON_TOO_FEW_SEATS: "Too few usable seats support the requested comparison; a sample spread needs at least two member curves.",
     REASON_UNREADABLE: "The round view could not read its input round.",
     REASON_UNWRITABLE: "The round view could not write its output artifact.",
     REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",

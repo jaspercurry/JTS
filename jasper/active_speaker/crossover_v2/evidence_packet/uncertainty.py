@@ -16,7 +16,6 @@ from ..contracts import POSITION_EVIDENCE_KIND
 from ..feature_classification import (
     UNCERTAINTY_RANDOM,
     UNCERTAINTY_SYSTEMATIC,
-    UNCERTAINTY_UNSEPARATED,
 )
 from ..prescription_contract import CONTRACT_COMMAND, snr_shape
 from ..record_index import Measurement
@@ -69,7 +68,7 @@ def _capture_snr_block(
     Read from the BUNDLE, so there is nothing to attribute: a take under this
     bundle's own artifacts root is this bundle's by construction. Each capture
     is named by ``take_id`` and ``wav_sha256``, the identities the
-    ``lateral_poses`` and ``positions`` rows carry, so a reader can join them.
+    ``lateral_poses`` takes carry, so a reader can join them.
     """
     captures: list[dict[str, Any]] = []
     non_finite: set[str] = set()
@@ -121,8 +120,8 @@ def _capture_snr_block(
         "uncertainty": CONTRACT_COMMAND,
         "note": (
             "one row per banked take that carried an analysis, named by the "
-            "same take_id and wav_sha256 the lateral_poses and positions rows "
-            "carry so a reader can join them. n_takes_seen is every take this "
+            "same take_id and wav_sha256 the lateral_poses takes carry so a "
+            "reader can join them. n_takes_seen is every take this "
             "round banked; the difference is takes whose record carries no "
             "diagnostic block at all"
         ),
@@ -226,7 +225,6 @@ def _repeat_floor_component(
 # :func:`~.linearization_envelope.mic_trust_limit` returns.
 def _accuracy_budget_block(
     *,
-    positions: dict[str, Any],
     round_dir: Path | None,
     repeat_floor: dict[str, Any] | None,
     repeat_floor_reason: str,
@@ -237,10 +235,8 @@ def _accuracy_budget_block(
     fresh, and no two figures ever added together, so a 0.04 dB repeat floor
     cannot read as accuracy beside a systematic bound that dwarfs it.
 
-    Three components, each labelled its own kind and each honest about absence:
+    Two components, each labelled its own kind and each honest about absence:
 
-    * ``cross_seat_position_spread`` — UNSEPARATED, pointing at
-      ``positions.cross_seat_sigma`` rather than re-embedding its array.
     * ``in_capture_repeat_floor`` — RANDOM, from the banked repeat floor
       (:mod:`jasper.active_speaker.repeat_floor`), ``available=False`` when
       the rig has none. Unmeasured, never defaulted to 0.0.
@@ -250,9 +246,6 @@ def _accuracy_budget_block(
 
     No score, no recommendation, no verdict: this juxtaposes, an LLM judges.
     """
-
-    cross_seat = _mapping(positions.get("cross_seat_sigma"))
-    cross_seat_available = bool(cross_seat.get("available"))
 
     candidate = _read_candidate(round_dir) if round_dir is not None else {}
     linearization = _mapping(candidate.get("linearization"))
@@ -279,21 +272,6 @@ def _accuracy_budget_block(
             "nothing pooled. Every component labels its OWN kind"
         ),
         "components": {
-            "cross_seat_position_spread": {
-                "kind": UNCERTAINTY_UNSEPARATED,
-                "available": cross_seat_available,
-                "n_seats": cross_seat.get("n_seats"),
-                "source": "positions.cross_seat_sigma",
-                "reason": (
-                    "" if cross_seat_available
-                    else str(cross_seat.get("reason") or "")
-                ),
-                "note": (
-                    "the per-bin array is "
-                    "positions.cross_seat_sigma.per_bin_sigma_db; not "
-                    "duplicated here"
-                ),
-            },
             "in_capture_repeat_floor": _repeat_floor_component(
                 repeat_floor, repeat_floor_reason
             ),

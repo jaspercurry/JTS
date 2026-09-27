@@ -59,38 +59,6 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
             "graph_fingerprint": "graph",
             "mic": {"calibration_id": "mic-a"},
         },
-        "spec": {"reference_db": -24.0},
-        "curve": {
-            "freqs_hz": [100.0, 1000.0, 10000.0],
-            "magnitude_db": [-25.0 + offset, -24.0 + offset, -26.0 + offset],
-        },
-        "positions": {
-            "n_positions": 2,
-            "angle_deg": {"available": True, "angles_deg": [-7, 0]},
-            "curve_grid": {
-                "freqs_hz": [100.0, 1000.0, 10000.0],
-                "fractional_octave": 12,
-                "smoothing_fraction": 6,
-            },
-            "positions": [
-                {
-                    "position_id": "axis",
-                    "role": "onax",
-                    "position_axis": "horizontal",
-                    "position_deg": 0,
-                    "mark_distance_m": 1.0,
-                    "magnitude_db": [-25.0, -24.0, -26.0],
-                },
-                {
-                    "position_id": "left",
-                    "role": "offax",
-                    "position_axis": "horizontal",
-                    "position_deg": -7,
-                    "mark_distance_m": 1.0,
-                    "magnitude_db": [-26.0, -25.0, -29.0],
-                },
-            ],
-        },
         "entry_baseline": {
             "available": True,
             "captured_at": "2026-08-29T12:00:00Z",
@@ -98,39 +66,24 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
             "reference_mark": "design_axis",
             "graph_fingerprint": "before",
             "freqs_hz": [100.0, 1000.0, 10000.0],
-            "magnitude_db": [-25.0, -25.0, -27.0],
+            "magnitude_db": [-25.0 + offset, -25.0 + offset, -27.0 + offset],
             "excluded": [False, False, True],
-        },
-        "honesty_mask": {
-            "validity_floor_hz": 80.0,
-            "trusted_floor_hz": 200.0,
-            "merged_excluded_bands_hz": [[900.0, 1100.0]],
         },
     }
 
 
-def test_frequency_view_exposes_stored_average_baseline_and_positions():
+def test_frequency_view_exposes_the_stored_entry_baseline():
     view = neutral_view(frequency_run(_packet("aaa")))
 
     assert view["schema"] == "jts_frequency_view/1"
     run = view["runs"][0]
     assert (run["slot"], run["id"], run["measurement_family"]) == (
-        "a", "aaa", "summed_cloud",
+        "a", "aaa", "entry_baseline",
     )
-    assert [series["id"] for series in run["series"]] == [
-        "average", "entry_baseline", "axis", "left",
-    ]
-    assert [series["visible_by_default"] for series in run["series"]] == [
-        True, False, False, False,
-    ]
-    assert run["series"][1]["smoothing_fractional_octave"] == 3
-    assert run["series"][1]["excluded_intervals_hz"] == [[10000.0, 10000.0]]
-    assert run["series"][2]["label"] == "0° · On axis"
-    assert run["series"][3]["label"] == "-7° · Off axis"
-    assert run["metadata"]["smoothing"] == {
-        "average_fractional_octave": 3,
-        "positions_fractional_octave": 6,
-    }
+    baseline, = run["series"]
+    assert baseline["id"] == "entry_baseline"
+    assert baseline["smoothing_fractional_octave"] == 3
+    assert baseline["excluded_intervals_hz"] == [[10000.0, 10000.0]]
     assert run["metadata"]["mic_calibration_id"] == "mic-a"
 
 
@@ -138,12 +91,9 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
     packet = _packet("aaa")
     packet["entry_baseline"]["magnitude_db"] = [-35.0, -34.0, -36.0]
 
-    view = neutral_view(frequency_run(packet))
-    average, baseline = view["runs"][0]["series"][:2]
+    baseline, = neutral_view(frequency_run(packet))["runs"][0]["series"]
 
-    assert average["reference_db"] == -24.0
     assert baseline["reference_db"] == -34.0
-    assert average["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
     assert baseline["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
 
 
@@ -290,7 +240,7 @@ def test_frequency_without_matplotlib_writes_json(tmp_path, monkeypatch, capsys,
     assert answer["image"] is None
     assert answer.get("reason") == ("plots_extra_missing" if with_image else None)
     assert output.is_file() and not png.exists()
-    assert answer["series"][0]["rms_db"] == pytest.approx(np.sqrt(5 / 3))
+    assert answer["series"][0]["rms_db"] == pytest.approx(np.sqrt(4 / 3))
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
@@ -300,7 +250,7 @@ def test_frequency_view_adds_optional_run_b_without_changing_run_a():
         ("a", "aaa"), ("b", "bbb"),
     ]
     assert view["runs"][0]["series"][0]["magnitude_db"] == [
-        -25.0, -24.0, -26.0,
+        -25.0, -25.0, -27.0,
     ]
 
 
@@ -635,77 +585,66 @@ def test_legacy_capture_prediction_exposes_no_invented_response_curves():
     ]
 
 
-def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypatch):
-    from jasper.active_speaker.crossover_v2 import evidence_packet
+@pytest.mark.parametrize("banked, listed", [("positions/take_a01.json", True), ("cloud_verify.json", False)])
+def test_the_archive_lists_a_bundle_only_when_it_banked_a_take(tmp_path, banked, listed):
+    sessions = tmp_path / "sessions"
+    info = open_bundle(mono_output_topology(mode="active_2_way"), calibration_id="", sessions_dir=sessions)
+    path = Path(info["bundle_dir"]) / EVIDENCE_ROOT / "artifacts/crossover_v2/cap1" / banked
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"kind": POSITION_EVIDENCE_KIND, "take_id": "take_a01", "phase": "lateral"}))
 
-    monkeypatch.setattr(
-        measurement_archive,
-        "_measurement_documents",
-        lambda _bundle: [{
-            "take_id": "axis",
-            "position_deg": 0,
-            "phase": "measure",
-            "curves": [{
-                "role": "woofer",
-                "freqs_hz": [100.0, 1000.0],
-                "magnitude_db": [-30.0, -20.0],
-            }],
+    assert [run.id for run in measurement_archive.list_measurements(sessions)] == ([info["session_id"]] if listed else [])
+
+
+def _archive_serves(monkeypatch, *documents: dict) -> None:
+    monkeypatch.setattr(measurement_archive, "measurement_documents",
+                        lambda _bundle: [(None, document) for document in documents])
+    monkeypatch.setattr(measurement_archive, "entry_evidence", lambda _bundle, _rows: _packet("saved"))
+
+
+def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypatch):
+    _archive_serves(monkeypatch, {
+        "take_id": "axis",
+        "position_deg": 0,
+        "phase": "measure",
+        "curves": [{
+            "role": "woofer",
+            "freqs_hz": [100.0, 1000.0],
+            "magnitude_db": [-30.0, -20.0],
         }],
-    )
-    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
-    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
+    })
 
     run = measurement_archive.load_measurement(
         ArchivedMeasurement("saved", tmp_path / "saved", 1.0, "applied"),
     )
 
-    assert [series.id for series in run.series] == [
-        "average", "entry_baseline", "axis", "left", "axis:woofer",
-    ]
-    assert [series.visible_by_default for series in run.series] == [
-        True, False, False, False, False,
-    ]
+    assert [series.id for series in run.series] == ["entry_baseline", "axis:woofer"]
+    assert [series.visible_by_default for series in run.series] == [True, False]
 
 
-def test_archive_keeps_old_packet_positions_when_a_record_has_only_a_baseline(
-    tmp_path, monkeypatch,
-):
-    from jasper.active_speaker.crossover_v2 import evidence_packet
-
-    monkeypatch.setattr(
-        measurement_archive,
-        "_measurement_documents",
-        lambda _bundle: [{
-            "take_id": "baseline",
-            "phase": "entry_baseline",
-            "freqs_hz": [100.0, 1000.0],
-            "magnitude_db": [-25.0, -24.0],
-        }],
-    )
-    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
-    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
+def test_archive_serves_the_packets_entry_baseline_over_a_direct_one(tmp_path, monkeypatch):
+    _archive_serves(monkeypatch, {
+        "take_id": "baseline",
+        "phase": "entry_baseline",
+        "freqs_hz": [100.0, 1000.0],
+        "magnitude_db": [-25.0, -24.0],
+    })
 
     run = measurement_archive.load_measurement(
         ArchivedMeasurement("saved", tmp_path / "saved"),
     )
 
-    assert [series.id for series in run.series] == [
-        "average", "entry_baseline", "axis", "left",
-    ]
-    assert run.metadata["position_count"] == 2
-    assert run.metadata["angles_deg"] == [-7, 0]
+    baseline, = run.series
+    assert list(baseline.magnitude_db) == _packet("saved")["entry_baseline"]["magnitude_db"]
 
 
 def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, monkeypatch):
-    from jasper.active_speaker.crossover_v2 import evidence_packet
     docs = [{"take_id": take, "candidate_id": candidate, "graph_fingerprint": "entry",
              "provenance": {"graph": {"fingerprint": graph}}, "position_deg": 0,
              "curves": [{"role": "summed", "freqs_hz": [500, 1000, 2000],
                          "magnitude_db": [-20, -20, -21], "reference_db": -20}]}
             for take, candidate, graph in (("a", "candidate-a", "played-a"), ("b", "candidate-b", "played-b"))]
-    monkeypatch.setattr(measurement_archive, "_measurement_documents", lambda _: docs)
-    monkeypatch.setattr(measurement_archive, "round_inputs", lambda _bundle: None)
-    monkeypatch.setattr(evidence_packet, "round_evidence", lambda _inputs: _packet("saved"))
+    _archive_serves(monkeypatch, *docs)
     run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
     assert len(run.series) == 2
     assert {r.details["take_id"] for r in run.series} == {"a", "b"}

@@ -157,8 +157,8 @@ UNCERTAINTY_KINDS = frozenset({UNCERTAINTY_RANDOM, UNCERTAINTY_SYSTEMATIC})
 #: because it contains both and the evidence publishing it cannot separate
 #: them. Deliberately not a member of :data:`UNCERTAINTY_KINDS`: a third
 #: member would dress a refusal up as a third answer. A figure carrying it
-#: is published apart from a block's ``fields`` list — see the evidence
-#: packet's cross-seat sigma ``uncertainty.unseparated``.
+#: is published apart from a block's ``fields`` list, under
+#: ``uncertainty.unseparated``.
 UNCERTAINTY_UNSEPARATED = "unseparated"
 
 #: Which :data:`LAB_ROW_FIELDS` columns ARE uncertainties, and of what. All

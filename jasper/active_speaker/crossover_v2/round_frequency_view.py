@@ -12,10 +12,7 @@ from typing import Any
 import numpy as np
 
 from jasper.json_fields import as_mapping
-from jasper.audio_measurement.spatial_combine import (
-    DEFAULT_DIAG_FRACTION,
-    DEFAULT_SPEC_FRACTION,
-)
+from jasper.audio_measurement.spatial_combine import DEFAULT_SPEC_FRACTION
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.frequency_view import (
     FrequencyRun,
@@ -24,31 +21,7 @@ from jasper.active_speaker.frequency_view import (
     frequency_series,
 )
 
-MEASUREMENT_FAMILY = "summed_cloud"
-
-def _curve(
-    *,
-    series_id: str,
-    label: str,
-    kind: str,
-    freqs_hz: Any,
-    magnitude_db: Any,
-    reference_db: Any,
-    smoothing_fraction: int | None,
-    visible: bool,
-    **metadata: Any,
-) -> FrequencySeries | None:
-    return frequency_series(
-        series_id=series_id,
-        label=label,
-        kind=kind,
-        freqs_hz=freqs_hz,
-        magnitude_db=magnitude_db,
-        reference_db=reference_db,
-        smoothing_fractional_octave=smoothing_fraction,
-        visible_by_default=visible,
-        **metadata,
-    )
+MEASUREMENT_FAMILY = "entry_baseline"
 
 
 def _whole_degrees(value: Any) -> int | None:
@@ -98,49 +71,28 @@ def _baseline_frame(entry: Mapping[str, Any]) -> tuple[float | None, list[list[f
 
 
 def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
-    """Adapt one retained crossover evidence packet; perform no file I/O."""
+    """Adapt a round's ``session``, ``identity`` and ``entry_baseline`` blocks; perform no file I/O."""
 
     session = as_mapping(packet.get("session"))
     run_id = str(session.get("bundle_session_id") or "").strip()
     if not run_id:
         raise FrequencyViewError("evidence packet has no bundle session id")
 
-    spec = as_mapping(packet.get("spec"))
-    reference_db = spec.get("reference_db")
-    curve = as_mapping(packet.get("curve"))
-    positions = as_mapping(packet.get("positions"))
-    grid = as_mapping(positions.get("curve_grid"))
-    honesty = as_mapping(packet.get("honesty_mask"))
     identity = as_mapping(packet.get("identity"))
 
     series: list[FrequencySeries] = []
-    average = _curve(
-        series_id="average",
-        label="Run average",
-        kind="average",
-        freqs_hz=curve.get("freqs_hz"),
-        magnitude_db=curve.get("magnitude_db"),
-        reference_db=reference_db,
-        smoothing_fraction=DEFAULT_SPEC_FRACTION,
-        visible=True,
-        role="summed",
-        position=None,
-    )
-    if average is not None:
-        series.append(average)
-
     entry = as_mapping(packet.get("entry_baseline"))
     if entry.get("available"):
         baseline_reference_db, baseline_excluded = _baseline_frame(entry)
-        baseline = _curve(
+        baseline = frequency_series(
             series_id="entry_baseline",
             label="Before correction · 0°",
             kind="entry_baseline",
             freqs_hz=entry.get("freqs_hz"),
             magnitude_db=entry.get("magnitude_db"),
             reference_db=baseline_reference_db,
-            smoothing_fraction=DEFAULT_SPEC_FRACTION,
-            visible=False,
+            smoothing_fractional_octave=DEFAULT_SPEC_FRACTION,
+            visible_by_default=False,
             role="summed",
             position={"axis": "horizontal", "deg": 0},
             captured_at=entry.get("captured_at"),
@@ -153,39 +105,6 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
         if baseline is not None:
             series.append(baseline)
 
-    position_freqs = grid.get("freqs_hz")
-    position_smoothing = grid.get("smoothing_fraction")
-    if not isinstance(position_smoothing, int) or isinstance(position_smoothing, bool):
-        position_smoothing = DEFAULT_DIAG_FRACTION
-    for index, raw in enumerate(positions.get("positions") or []):
-        row = as_mapping(raw)
-        position_id = str(row.get("position_id") or f"position_{index + 1}")
-        member = _curve(
-            series_id=position_id,
-            label=position_label(row),
-            kind="position",
-            freqs_hz=position_freqs,
-            magnitude_db=row.get("magnitude_db"),
-            reference_db=reference_db,
-            smoothing_fraction=position_smoothing,
-            visible=False,
-            role=row.get("role"),
-            position={
-                "axis": row.get("position_axis"),
-                "deg": row.get("position_deg"),
-                # 0 for a seat at mark height AND for a row banked before the
-                # field existed — the same fact, and the view needs no third
-                # answer to draw a legend.
-                "vertical_deg": _whole_degrees(row.get("vertical_deg")) or 0,
-                "mark_distance_m": row.get("mark_distance_m"),
-            },
-            take_id=row.get("take_id"),
-            validity_floor_hz=row.get("validity_floor_hz"),
-        )
-        if member is not None:
-            series.append(member)
-
-    angles = as_mapping(positions.get("angle_deg"))
     mic = as_mapping(identity.get("mic"))
     return FrequencyRun(
         id=run_id,
@@ -193,16 +112,6 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
         started_at=session.get("started_at"),
         state=session.get("state"),
         metadata={
-            "position_count": positions.get("n_positions") or 0,
-            "angles_deg": angles.get("angles_deg") or [],
-            "reference_db": reference_db,
-            "smoothing": {
-                "average_fractional_octave": DEFAULT_SPEC_FRACTION,
-                "positions_fractional_octave": position_smoothing,
-            },
-            "validity_floor_hz": honesty.get("validity_floor_hz"),
-            "trusted_floor_hz": honesty.get("trusted_floor_hz"),
-            "excluded_bands_hz": honesty.get("merged_excluded_bands_hz") or [],
             "topology_id": identity.get("topology_id"),
             "topology_fingerprint": identity.get("topology_fingerprint"),
             "build_sha": identity.get("build_sha"),
