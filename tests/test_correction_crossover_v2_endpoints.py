@@ -3191,7 +3191,6 @@ class _StubConductor:
     measure_gate_window_ms = None
     verify_pilot_transfer_reference = None
     verify_level_reference_reset = None
-    session_phases: tuple = ()
 
     def __init__(
         self, session_id: str = "s1", *, applied: bool = True,
@@ -3210,16 +3209,24 @@ class _StubConductor:
         )
 
 
-def test_only_verify_rebind_carries_an_accepted_sound_revision():
-    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
+def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
+    """The carries follow the snapshot's phases; the stub has no ``session_phases`` of its own (#4806)."""
+    v2state.save_v2_state({
+        "session_id": "old", "accepted_sound_revision": 4,
+        "measure": {"calibration_reservation": True},
+    })
     v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
+    state = v2state.load_v2_state() or {}
+    assert state["accepted_sound_revision"] == 4
+    assert state["measure"] == {"calibration_reservation": True}
 
     v2state.persist_conductor_state(
         _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
         failure_code=None,
     )
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
+    state = v2state.load_v2_state() or {}
+    assert state["accepted_sound_revision"] is None
+    assert state["measure"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
