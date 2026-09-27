@@ -132,10 +132,8 @@ def check_memory_headroom() -> CheckResult:
     On 2 GB:  warn at 200 MB, fail at 60 MB
     On 8 GB:  warn at 800 MB, fail at 240 MB
 
-    The 2026-05-23 incident shape was MemAvailable falling from
-    ~250 MB to single-digit MB over ~10 s as a PIO compile ramped
-    up; this check catches that BEFORE the wedge if the operator
-    runs the doctor first."""
+    A PIO compile can consume ~250 MB of available memory in ~10 s;
+    run this check before that allocation."""
     total_kb = evidence.mem_total_kb() or 0
     avail_kb = meminfo_kb("MemAvailable")  # live: inside the exclusive lane
     if avail_kb is None or total_kb == 0:
@@ -259,12 +257,8 @@ def check_zram_size_ratio() -> CheckResult:
         "zram size", "ok", f"{zram_mb} MB ({pct}% of RAM)",
     )
 
-# --- Stage 2 audio-protection checks (shipped 2026-05-24) ---
-#
-# These verify that the audio-path daemons' pages won't be swapped to
-# zram under memory pressure — the failure mode confirmed empirically
-# by the 2026-05-24 stress test (splotchy/crushed music as zram
-# decompression jitter blew the ALSA buffer timing budget).
+# Audio-path pages must stay out of zram: decompression jitter can exceed
+# the ALSA buffer timing budget and distort playback.
 
 
 @doctor_check()
@@ -273,9 +267,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
     Required for `MemorySwapMax=0` on jts-audio.slice / jts-mic.slice
     to enforce. The Pi 5 DTB defaults to `cgroup_disable=memory`;
     install.sh adds `cgroup_enable=memory` to cmdline.txt to override.
-    Failure here means the audio-slice protection is silently a
-    no-op — exactly the trap PR1 + PR1.6 documented for the existing
-    `MemoryHigh=`/`MemoryMax=` directives."""
+    Without it, the audio-slice memory limits are silently ineffective."""
     p = Path("/sys/fs/cgroup/cgroup.controllers")
     if not p.exists():
         return CheckResult(
@@ -306,7 +298,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
 # Audio-path daemons that should NEVER accumulate VmSwap. The check
 # is permissive about small transient values (kernel sometimes evicts
 # a few pages during process startup) but warns if any daemon has
-# meaningful swap — that's the 2026-05-24 failure-mode signature.
+# meaningful swap, which can disrupt audio timing.
 _AUDIO_PATH_UNITS = (
     "jasper-fanin",
     "jasper-outputd",
@@ -325,7 +317,7 @@ def _audio_path_units() -> tuple[str, ...]:
 
 # Threshold for "this daemon has meaningful pages in zram" — well above
 # the small (<100 kB) transient that's normal at startup, well below
-# the 42 MB observed on aec-bridge during the 2026-05-24 stress.
+# the 42 MB observed on aec-bridge under memory pressure.
 _AUDIO_VMSWAP_WARN_KB = 1024  # 1 MB
 
 @doctor_check()
@@ -383,17 +375,9 @@ def check_audio_path_no_swap() -> CheckResult:
     )
 
 
-# --- Disk-pressure checks (the slow-burn resource the resilience ladder
-#     exists to survive) -------------------------------------------------
-#
-# A full SD card is the corruption hazard behind the 2026-05-23 incident
-# class: write fails -> in-flight ext4 metadata -> dirty power-cut leaves
-# the partition needing recovery (worst case, an unbootable Pi). RAM and
-# zram already have live-pressure doctor lines; the root filesystem did
-# not. These add the missing early warning. Thresholds mirror the
-# memory-headroom check's "fail takes precedence over warn" shape so an
-# operator who raises the warn knob can never accidentally suppress the
-# fail.
+# A full SD card can leave failed ext4 metadata writes vulnerable to a
+# power cut. Fail takes precedence over warn so raising the warn threshold
+# cannot suppress a full-disk failure.
 
 _GIB = 1024 ** 3
 
@@ -403,7 +387,7 @@ def check_disk_space() -> CheckResult:
     """WARN/FAIL on root-filesystem fullness before writes start failing.
 
     A full root partition is the failure that turns a routine power-cut
-    into ext4 corruption (the 2026-05-23 incident class).
+    into ext4 corruption.
 
     Skips cleanly when the filesystem cannot be measured (non-POSIX dev
     host, zero-sized) — same skip-on-not-applicable posture as the /proc

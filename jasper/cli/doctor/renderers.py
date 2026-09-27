@@ -1107,8 +1107,7 @@ def _probe_open_as_user(
     return _classify_probe(r.returncode, r.stderr or "")
 
 # The playback (write-side) renderer lanes that own an snd-aloop substream. USB is
-# NOT here: jasper-fanin DIRECT-captures hw:UAC2Gadget rather than reading an aloop
-# write lane (the usbsink_substream=3 solo bridge was removed 2026-07-10).
+# NOT here: jasper-fanin captures hw:UAC2Gadget directly.
 _FANIN_PRIVATE_RENDERER_DEVICES = {
     "librespot_substream": 0,
     "shairport_substream": 1,
