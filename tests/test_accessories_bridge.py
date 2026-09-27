@@ -28,6 +28,7 @@ from jasper.accessories.registry import (
     TapAction,
 )
 from jasper.accessories import status as accessory_status
+from jasper.accessories.mic_env import ADAPTER_PLAN_HEADER, render_manual_mic_env
 from jasper.accessories.status import snapshot
 from jasper.accessories.supervisor import supervise
 from jasper.platform.control_client import ControlError, ControlResponse
@@ -1538,24 +1539,26 @@ def test_every_declared_adapter_mic_has_an_in_process_adapter():
 
 
 def test_unreadable_published_sources_still_leave_the_button_bridge_running(
-    monkeypatch, tmp_path,
+    tmp_path,
 ):
     """Volume and push-to-talk must not depend on the mic half being readable."""
-    corrupt = tmp_path / "accessory-mics.env"
+    corrupt = tmp_path / "accessory-adapters.env"
     corrupt.write_text("JASPER_MANUAL_MIC_SOURCES=nonsense\n", encoding="utf-8")
-    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(corrupt))
 
-    assert bridge_mod._published_mic_adapters() == {}
+    assert bridge_mod._published_mic_adapters(str(corrupt)) == {}
 
 
-def test_a_published_source_selects_its_adapter(monkeypatch, tmp_path):
-    published = tmp_path / "accessory-mics.env"
-    published.write_text(
-        "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=udp:9892\n", encoding="utf-8",
+def test_the_reconcilers_plan_selects_its_adapter(tmp_path):
+    """The host runs what the adapter plan names, header and all (ADR-0372)."""
+    plan = tmp_path / "accessory-adapters.env"
+    plan.write_text(
+        render_manual_mic_env(
+            {"wiim_remote_2": "udp:9892"}, header=ADAPTER_PLAN_HEADER,
+        ),
+        encoding="utf-8",
     )
-    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(published))
 
-    assert set(bridge_mod._published_mic_adapters()) == {"wiim_remote_2"}
+    assert set(bridge_mod._published_mic_adapters(str(plan))) == {"wiim_remote_2"}
 
 
 async def test_a_termination_signal_runs_every_bridge_teardown_to_completion(

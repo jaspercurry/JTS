@@ -19,7 +19,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from jasper.accessories import status as accessory_status
-from jasper.accessories.registry import adapter_mic_profiles
 from jasper.log_event import log_event
 
 from ..mic_capture import MicCapture
@@ -120,31 +119,31 @@ class PushToTalk:
         # knowing anything about install tiers.
         self.only: bool = not have_wake_legs and bool(self.sources)
         self._cap_warned: bool = False
-        # Only a source a jasper-input adapter produces has a link to lose.
-        adapter_ids = {p.mic.capture_profile_id for p in adapter_mic_profiles()}
-        self._adapter_sources = frozenset(
-            source_id for source_id in self.sources if source_id in adapter_ids
+
+    def known(self, source_id: str) -> bool:
+        """Whether a press naming ``source_id`` came from a mic this box has:
+        one this daemon opened, or a remote the accessory reconciler registered
+        without arming (ADR-0372)."""
+        return (
+            source_id in self.sources
+            or source_id in accessory_status.registered_mic_sources()
         )
 
     def not_ready(self, source_id: str) -> str | None:
         """Why ``source_id`` cannot stream right now, or None when it can.
 
         The code is ``jasper.accessories.status``'s, read fresh from the
-        adapter's own published facts on every call (issue #3346).
+        adapter's own published facts on every call (issue #3346). A source
+        this daemon did not open counts as not armed.
         """
-        if source_id not in self._adapter_sources:
-            return None
-        return accessory_status.mic_not_ready_reason(source_id)
+        return accessory_status.mic_not_ready_reason(
+            source_id, armed=source_id in self.sources,
+        )
 
     def status(self) -> dict[str, dict[str, Any]]:
-        """Every armed source's readiness, as ``/state.voice.push_to_talk``."""
-        out: dict[str, dict[str, Any]] = {}
-        for source_id in sorted(self.sources):
-            reason = self.not_ready(source_id)
-            out[source_id] = {
-                "armed": True, "ready": reason is None, "not_ready": reason,
-            }
-        return out
+        """``/state.voice.push_to_talk`` while this daemon runs: the sources
+        it opened count as armed, since only those can carry a hold."""
+        return accessory_status.mic_readiness(self.sources)
 
     def input_cap_sec(self, idle_timeout_sec: float) -> float:
         """How long a held button may hold the user's input open.

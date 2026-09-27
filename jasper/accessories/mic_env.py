@@ -7,9 +7,14 @@
 ``jasper-accessory-reconcile`` is the single *writer* of
 ``/var/lib/jasper/accessory-mics.env``: it publishes one
 ``JASPER_MANUAL_MIC_SOURCES=<id>=<device>[,<id>=<device>...]`` line while a
-mic-bearing accessory profile is paired, and removes the file when none is.
-``jasper-voice`` consumes it as an ``EnvironmentFile=`` and parses it through
-``Config.manual_mic_sources``.
+mic-bearing accessory profile is paired and its adapter is running, and
+removes the file when none is. ``jasper-voice`` consumes it as an
+``EnvironmentFile=`` and parses it through ``Config.manual_mic_sources``.
+
+The same writer keeps ``accessory-adapters.env`` beside it, in the same
+format: the sources whose adapters ``jasper-input`` runs. That file leads the
+armed one in both directions, so no source is armed before its producer runs
+(issue #3346).
 
 This module exists because a *second* reader appeared: the voice-input start
 gate. "Is there usable voice input on this box?" is an OR across two
@@ -55,6 +60,19 @@ from collections.abc import Mapping
 
 from jasper.env_load import ACCESSORY_MIC_ENV_FILE as DEFAULT_ACCESSORY_MIC_ENV_FILE
 
+
+
+def adapter_plan_path(env_file: str) -> str:
+    """jasper-input's adapter plan, which lives beside the armed file."""
+    return os.path.join(os.path.dirname(env_file), "accessory-adapters.env")
+
+
+DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE = adapter_plan_path(DEFAULT_ACCESSORY_MIC_ENV_FILE)
+ADAPTER_PLAN_HEADER = (
+    "# Single writer: jasper-accessory-reconcile (ADR-0372). "
+    "Read by jasper-input.\n"
+)
+
 # Must match the key jasper/config.py parses into Config.manual_mic_sources.
 MANUAL_MIC_SOURCES_KEY = "JASPER_MANUAL_MIC_SOURCES"
 
@@ -79,7 +97,7 @@ def accessory_mic_env_path() -> str:
     )
 
 
-def render_manual_mic_env(sources: Mapping[str, str]) -> str:
+def render_manual_mic_env(sources: Mapping[str, str], *, header: str = "") -> str:
     """The exact file body for ``sources`` — empty string means "no file".
 
     Empty sources render to ``""`` rather than an empty assignment: the writer
@@ -91,7 +109,7 @@ def render_manual_mic_env(sources: Mapping[str, str]) -> str:
     value = ",".join(
         f"{source}={device}" for source, device in sorted(sources.items())
     )
-    return f"{MANUAL_MIC_SOURCES_KEY}={value}\n"
+    return f"{header}{MANUAL_MIC_SOURCES_KEY}={value}\n"
 
 
 def parse_manual_mic_sources(body: str) -> tuple[str, ...]:

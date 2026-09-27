@@ -50,7 +50,7 @@ from ...control.control_token import TOKEN_FILE
 from ...sound.profile import PROFILE_PATH
 from ...sound.settings import SETTINGS_PATH
 from ...volume_persistence import VolumePersistence
-from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ...accessories.mic_env import DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE
 from ...env_load import (
     GROUPING_ENV_FILE,
     PEERING_ENV_PATH,
@@ -249,10 +249,10 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             mic_mute_persistence.DEFAULT_PATH,
         ),
     ),
-    # jasper-input's one on-disk read is the accessory reconciler's published
-    # mic sources, which decide whether this process also runs an accessory mic
-    # adapter task (ADR-0225); an unreadable file costs the box its remote
-    # microphone. The adapter's 'bluetooth' grant is absent here because the
+    # jasper-input's one on-disk read is the accessory reconciler's adapter
+    # plan, which decides whether this process also runs an accessory mic
+    # adapter task (ADR-0225, ADR-0372); an unreadable file costs the box its
+    # remote microphone. The adapter's 'bluetooth' grant is absent here because the
     # unit does not declare it either — resolve_identity picks it up from the
     # user's own group memberships.
     DaemonReadSpec(
@@ -261,7 +261,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         user="jasper-input",
         group="jasper",
         supplementary_groups=("input",),
-        paths=(DEFAULT_ACCESSORY_MIC_ENV_FILE,),
+        paths=(DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE,),
     ),
     DaemonReadSpec(
         unit="jasper-usbmic",

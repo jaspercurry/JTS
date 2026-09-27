@@ -9,7 +9,7 @@ a fault in one can never stop the other or the process:
 
 * the HID bridge below — evdev → jasper-control HTTP calls, always running;
 * the WiiM Remote 2 BLE mic adapter (``wiim_remote_mic``), run only while
-  ``jasper-accessory-reconcile`` publishes that accessory's manual mic source.
+  ``jasper-accessory-reconcile``'s adapter plan names that accessory's source.
 
 The HID bridge watches /dev/input/event* for any device matching
 `registry.KNOWN_PROFILES` (by USB VID/PID or Bluetooth name fallback).
@@ -52,7 +52,7 @@ from jasper.log_event import log_event
 # jasper/control/server.py's _dispatch_transport.
 
 from .constants import WIIM_REMOTE_2_SOURCE_ID
-from .mic_env import read_accessory_mic_sources
+from .mic_env import DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE, read_accessory_mic_sources
 from .registry import (
     KNOWN_PROFILES,
     HoldAction,
@@ -916,22 +916,24 @@ async def _run_wiim_remote_mic(link: MicLink) -> None:
 
 MicAdapter = Callable[[MicLink], Awaitable[None]]
 
-# Manual mic source id (as published in accessory-mics.env) -> the adapter that
+# Manual mic source id (as the adapter plan names it) -> the adapter that
 # produces it inside this process, run as the bridge of the same name.
 MIC_ADAPTERS: dict[str, MicAdapter] = {
     WIIM_REMOTE_2_SOURCE_ID: _run_wiim_remote_mic,
 }
 
 
-def _published_mic_adapters() -> dict[str, MicAdapter]:
-    """The adapters jasper-accessory-reconcile currently publishes a source for.
+def _published_mic_adapters(
+    plan_file: str = DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE,
+) -> dict[str, MicAdapter]:
+    """The adapters jasper-accessory-reconcile's plan names (ADR-0372).
 
     An unreadable or corrupt file degrades to "no accessory mic" rather than
     propagating: the HID bridge in this process carries volume and
     push-to-talk, and must start whatever the mic half says.
     """
     try:
-        sources = read_accessory_mic_sources()
+        sources = read_accessory_mic_sources(plan_file)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         log_event(
             logger,

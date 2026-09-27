@@ -262,31 +262,52 @@ def test_check_accessory_bridges_warns_on_restart_loop(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("link", "status", "reason"),
+    ("armed", "link", "status", "reason"),
     [
-        ({"connected": True, "subscribed": True}, "ok", ""),
+        (True, {"connected": True, "subscribed": True}, "ok", ""),
         # Asleep is a remote's normal idle; the next press wakes it.
-        ({"connected": False, "subscribed": False}, "ok", ""),
+        (True, {"connected": False, "subscribed": False}, "ok", ""),
         (
-            {"connected": True, "subscribed": False}, "warn",
+            True, {"connected": True, "subscribed": False}, "warn",
             resilience.REASON_ACCESSORY_MIC_NOT_READY,
         ),
-        (None, "warn", resilience.REASON_ACCESSORY_MIC_NOT_READY),
+        (True, None, "warn", resilience.REASON_ACCESSORY_MIC_NOT_READY),
+        # The reconciler's plan registers a paired remote it has not armed:
+        # here its adapter never saw a BlueZ answer (ADR-0372) ...
+        (
+            False, {"connected": None, "subscribed": False}, "warn",
+            resilience.REASON_ACCESSORY_MIC_NOT_ARMED,
+        ),
+        # ... and here jasper-input, which would run that adapter, is down.
+        (False, "unpublished", "warn", resilience.REASON_ACCESSORY_MIC_NOT_ARMED),
     ],
-    ids=["ready", "asleep", "unsubscribed", "no_adapter"],
+    ids=[
+        "ready", "asleep", "unsubscribed", "no_adapter", "not_armed",
+        "not_armed_jasper_input_down",
+    ],
 )
-def test_check_accessory_bridges_reports_an_armed_mics_readiness(
-    monkeypatch, link, status, reason,
+def test_check_accessory_bridges_reports_each_registered_mics_readiness(
+    monkeypatch, tmp_path, armed, link, status, reason,
 ):
-    bridges = {"hid": {"restarts": 0, "last_error": None}}
-    if link is not None:
-        bridges["wiim_remote_2"] = {"restarts": 0, "last_error": None, "link": link}
-    monkeypatch.setattr(
-        resilience.accessory_status, "snapshot",
-        lambda: {"published": True, "bridges": bridges},
+    monkeypatch.setenv(
+        "JASPER_ACCESSORY_MIC_ENV_FILE", str(tmp_path / "accessory-mics.env"),
     )
+    (tmp_path / "accessory-adapters.env").write_text(
+        "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=udp:9892\n",
+    )
+    bridges = {"hid": {"restarts": 0, "last_error": None}}
+    if isinstance(link, dict):
+        bridges["wiim_remote_2"] = {"restarts": 0, "last_error": None, "link": link}
+    snap = (
+        {"published": False, "bridges": {}} if link == "unpublished"
+        else {"published": True, "bridges": bridges}
+    )
+    monkeypatch.setattr(resilience.accessory_status, "snapshot", lambda: snap)
     _evidence.evidence.seed(
-        "mic_presence", MicPresence(present=True, accessory_sources=("wiim_remote_2",)),
+        "mic_presence",
+        MicPresence(
+            present=True, accessory_sources=("wiim_remote_2",) if armed else (),
+        ),
     )
 
     result = resilience.check_accessory_bridges()
