@@ -511,8 +511,7 @@ async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
 
 
 async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
-    """note_voice_session(True) gates apply_active_source_transition
-    so the ducker's additive math isn't corrupted by absolute writes."""
+    """note_voice_session(True) gates apply_active_source_transition."""
     coord, cam, _ = _coord(tmp_path, active={}, selected="spotify")
     coord.note_voice_session(True)
     initial_calls = list(cam.set_calls)
@@ -809,33 +808,11 @@ async def test_equal_spotify_observation_publishes_only_when_guard_changes(tmp_p
     assert published == []
 
 
-async def test_observe_spotify_clear_deferred_during_duck_keeps_guard(tmp_path):
-    """A push confirmation during an active duck is not a real carrier
-    clear. Keep the guard persisted so the observer can retry later."""
-    async def probe():
-        return True
-
-    coord, cam, persistence = _coord(
-        tmp_path, active={"spotactive": True}, db=-13.0, level=90,
-        duck_active_probe=probe,
-    )
-    persistence.save_now(-13.0)
-
-    await coord.observe_source_volume(Source.SPOTIFY, 90)
-
-    assert cam.set_calls == []
-    _assert_persisted(persistence, level=90, db=-13.0)
-
-
 async def test_observe_spotify_repairs_live_guard_after_false_clear(tmp_path):
     """Recover from the legacy split-brain: persistence claimed the push
     guard was clear, but live Camilla was still attenuating the path."""
-    async def probe():
-        return False
-
     coord, cam, persistence = _coord(
         tmp_path, active={"spotactive": True}, db=-13.0, level=90,
-        duck_active_probe=probe,
     )
     persistence.save_now(0.0)
 
@@ -1105,88 +1082,6 @@ async def test_transition_push_failure_guard_preserves_guard_and_warning(
     )
 
 
-async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
-    """During a voice duck, a camilla-master target is only safe if the
-    current ducked Camilla level is already below the target guard.
-    The target is still persisted so the duck release lands safe."""
-    async def duck_active():
-        return True
-
-    coord, cam, persistence = _coord(
-        tmp_path,
-        active={"spotactive": True},
-        selected="airplay",
-        db=-25.0,
-        level=20,  # target guard is percent_to_db(20); the duck is too loud
-        mark_user_change=True,
-        duck_active_probe=duck_active,
-    )
-    persistence.save_now(0.0)
-
-    handoff = await coord.prepare_source_handoff(
-        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
-    )
-
-    assert not handoff.ok
-    assert handoff.detail == "camilla_guard_failed"
-    assert cam.set_calls == []
-    _assert_persisted(persistence, db=round(percent_to_db(20), 2))
-
-
-async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
-    """If the duck has already made Camilla quiet enough, prepare may
-    succeed and the duck release still targets the selected source level."""
-    async def duck_active():
-        return True
-
-    coord, _, _ = _coord(
-        tmp_path,
-        active={"spotactive": True},
-        selected="airplay",
-        db=-45.0,
-        level=20,
-        mark_user_change=True,
-        duck_active_probe=duck_active,
-    )
-
-    handoff = await coord.prepare_source_handoff(
-        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
-    )
-
-    assert handoff.ok
-    assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(20))
-
-
-@pytest.mark.parametrize("door", ["finalize_source_handoff", "abort_source_handoff"])
-@pytest.mark.parametrize("db", [-45.0, -5.0])
-async def test_handoff_restore_keeps_percent_write_semantics_during_duck(
-    tmp_path, caplog, pushes, door, db,
-):
-    backend = _FakeBackend()
-    coord, cam, persistence = _coord(tmp_path, backend=backend, db=db, level=20)
-    persistence.save_now(0.0)
-    handoff = await coord.prepare_source_handoff(Source.AIRPLAY, Source.AIRPLAY, reason="manual")
-    coord.note_voice_session(True, camilla_volume_locked=True)
-
-    assert await getattr(coord, door)(handoff) is True
-    assert cam.set_calls == []
-    assert cam.mute_calls == [False]
-    _assert_persisted(persistence, db=0.0)
-
-    # The raw-dB guard door under the same duck: a refused Spotify push asks
-    # it for percent_to_db(20), persisted either way, safe only when quieter.
-    backend._selected = Source.SPOTIFY.value
-    pushes.ok[Source.SPOTIFY] = False
-    caplog.set_level(logging.INFO, logger="jasper")
-    await coord.set_listening_level(20)
-    (deferred,) = event_field_maps(
-        caplog, "volume.deferred", context="dispatch_spotify_degraded",
-    )
-    assert deferred["result"] == ("already_safe" if db == -45.0 else "unsafe_for_handoff")
-    assert cam.set_calls == []
-    _assert_persisted(persistence, db=round(percent_to_db(20), 2))
-
-
 async def test_get_camilla_target_db_preserves_degraded_push_guard(tmp_path):
     """Push-mode normally restores Camilla to 0 dB, but a degraded
     handoff guard is intentional safety state and must survive restore."""
@@ -1203,30 +1098,11 @@ async def test_get_camilla_target_db_preserves_degraded_push_guard(tmp_path):
     assert await coord.get_camilla_target_db() == pytest.approx(0.0)
 
 
-async def test_set_camilla_deferred_during_voice_session(tmp_path):
-    """During a voice session the duck holder owns camilla; coordinator
-    writes are deferred, but listening_level still updates so
-    the duck release lands at the user's intended level."""
-    # Idle backend (camilla carries the level) and an already-ducked fader.
-    coord, cam, persistence = _real_coord(tmp_path, active={}, db=-25.0)
-    coord.note_voice_session(True)
-
-    await coord.set_listening_level(46)
-
-    assert cam.set_calls == []
-    assert coord.get_listening_level() == 46
-    _assert_persisted(persistence, level=46)
-
-    coord.note_voice_session(False)
-    await coord.set_listening_level(50)
-    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(percent_to_db(50))
-
-
 async def test_fanin_voice_session_keeps_live_camilla_volume_control(tmp_path):
     """Fan-in owns program ducking, not Camilla, so an in-session remote edit
     must land immediately while source transitions remain session-gated."""
     coord, cam, _ = _real_coord(tmp_path, active={}, db=-25.0)
-    coord.note_voice_session(True, camilla_volume_locked=False)
+    coord.note_voice_session(True)
 
     await coord.set_listening_level(46)
 
@@ -1516,67 +1392,6 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
     assert context.stamp_boot_ns == 123
 
 
-# ---- cross-daemon duck-active probe -------------------------------------
-#
-# jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
-# in-process `_voice_session_active` flag is always False there even when
-# jasper-voice has a session in flight. Those coordinators get a
-# `duck_active_probe` callable that asks jasper-voice over UDS whether a
-# camilla-owning duck is engaged. The probe is the authoritative signal —
-# no inference.
-
-
-@pytest.mark.parametrize(
-    ("answer", "expect_defer"),
-    [
-        pytest.param("true", True, id="duck_active"),
-        pytest.param("false", False, id="no_duck"),
-        pytest.param("none", False, id="probe_unreachable"),
-        pytest.param("raises", False, id="probe_raises"),
-        pytest.param("absent", False, id="no_probe_configured"),
-    ],
-)
-async def test_the_duck_probe_answer_decides_whether_the_camilla_write_defers(
-    tmp_path, caplog, answer, expect_defer,
-):
-    """Only a probe that says "ducking" defers the fader write.
-
-    Everything else fails open — an unreachable UDS, a wedged voice daemon, a
-    malformed reply, even a probe that raises — because a home appliance is
-    better off un-ducking music for a moment than leaving the owner with a
-    dead remote over an inter-daemon problem. jasper-voice's own coordinator
-    configures no probe and uses `_voice_session_active` instead.
-    """
-    answers = {"true": True, "false": False, "none": None}
-
-    async def probe():
-        if answer == "raises":
-            raise RuntimeError("simulated probe bug")
-        return answers[answer]
-
-    coord, cam, persistence = _real_coord(
-        tmp_path,
-        active={},
-        db=-40.0,
-        duck_active_probe=None if answer == "absent" else probe,
-    )
-
-    with caplog.at_level(logging.WARNING, logger="jasper"):
-        await coord.set_listening_level(70)
-
-    if expect_defer:
-        assert cam.set_calls == []
-    else:
-        assert cam.set_calls[-1] == pytest.approx(percent_to_db(70))
-    # Either way the level persists, so the duck release lands at user intent.
-    assert coord.get_listening_level() == 70
-    _assert_persisted(persistence, level=70)
-    # A misbehaving probe has no structured counterpart; the warning is it.
-    assert any(
-        "duck_active_probe raised" in message for message in _warnings(caplog)
-    ) is (answer == "raises")
-
-
 async def test_set_camilla_fast_spin_regression(tmp_path):
     """Fast remote spin batching 3 detents (+12% / +6 dB) with no session.
 
@@ -1585,16 +1400,12 @@ async def test_set_camilla_fast_spin_regression(tmp_path):
     later twist read the inflated level and deferred again, trapping the user
     with a knob that did nothing until they spun all the way down.
     """
-    async def probe():
-        return False
-
     coord, cam, _ = _real_coord(
         tmp_path,
         active={},
         db=-18.0,  # in sync with listening_level=64%, per the production log
         level=64,
         mark_user_change=True,
-        duck_active_probe=probe,
     )
 
     await coord.adjust_listening_level(12)
@@ -1606,25 +1417,6 @@ async def test_set_camilla_fast_spin_regression(tmp_path):
     await coord.adjust_listening_level(4)
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(80))
     assert coord.get_listening_level() == 80
-
-
-async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
-    """The probe-driven defer is distinguishable in the journal from the
-    in-process flag path and from any future defer reason."""
-    async def probe():
-        return True
-
-    coord, _, _ = _real_coord(
-        tmp_path, active={}, db=-40.0, duck_active_probe=probe,
-    )
-
-    caplog.set_level(logging.INFO, logger="jasper")
-    await coord.set_listening_level(70)
-
-    fields = event_fields(caplog, "volume.deferred")
-    assert fields["reason"] == "session_signaled"
-    assert fields["level"] == "70%"
-    assert fields["target_db"] == f"{percent_to_db(70):.1f}"
 
 
 # ---- maybe_reconcile_camilla (self-healing backstop) --------------------
@@ -1854,8 +1646,8 @@ async def _gate_none(coord, cam):
     ],
 )
 async def test_the_reconciler_stands_down_behind_each_gate(tmp_path, active, gate):
-    """Voice session → the duck holder owns camilla. Measurement → correction's
-    ramp lease owns it. Push-mode source → camilla is pinned at 0 dB by
+    """Voice session → wait for the turn to end. Measurement → correction's
+    ramp lease owns camilla. Push-mode source → camilla is pinned at 0 dB by
     design and the level lives on the source's own slider. Camilla
     unreachable → skip silently and retry on the next tick.
 
@@ -2357,29 +2149,6 @@ async def test_observe_usbsink_unmute_restores_camilla_carrier(
         ("volume", pytest.approx(percent_to_db(75))),
         ("mute", False),
     ]
-
-
-async def test_observe_usbsink_unmute_defers_during_duck(tmp_path):
-    """A USB host unmute records intent but does not clobber active ducking."""
-    async def probe():
-        return True
-
-    coord, cam, persistence = _real_coord(
-        tmp_path,
-        active={"usbsinkactive": True},
-        db=-50.0,
-        level=0,
-        duck_active_probe=probe,
-    )
-    persistence.save_now(-50.0)
-    cam.muted = True
-
-    await coord.observe_source_volume(Source.USBSINK, 75)
-
-    assert coord.get_listening_level() == 75
-    _assert_persisted(persistence, level=75, db=percent_to_db(0))
-    assert cam.set_calls == []
-    assert cam.mute_calls[-1] is False
 
 
 @pytest.mark.parametrize(

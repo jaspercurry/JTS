@@ -5,19 +5,16 @@
 """Volume coordinator and transport-dispatch helpers for jasper-control."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable
 
 from .. import librespot_state
 from ..accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
-from ..platform import wire
-from ..platform.uds import voice_socket_command
 from ..spotify_oauth import resolved_spotify_redirect_uri
 from ..volume_persistence import (
     VolumePersistence,
@@ -134,17 +131,12 @@ async def with_coordinator(
     *,
     camilla_host: str,
     camilla_port: int,
-    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
     """Build a VolumeCoordinator for one operation, run `op(coord)`, dispose.
 
     Per-request like `dispatch_transport`, so this stdlib HTTP server never
     holds a long-lived asyncio loop. `op` is an async callable taking the live
-    coordinator and returning the request's result.
-
-    `duck_active_probe` is forwarded into the coordinator: when set, the
-    coordinator defers its camilla write iff the probe returns True. See
-    `make_duck_active_probe` for the wire details."""
+    coordinator and returning the request's result."""
     from ..renderer import RendererClient  # lazy: import cost, see module header
     from ..volume_coordinator import build_volume_coordinator  # lazy: import cost, see module header
 
@@ -156,60 +148,10 @@ async def with_coordinator(
         # Web API because librespot 0.8.0 has no local HTTP control; None
         # (no client id / no authorized account) makes Spotify a no-op.
         spotify_router=build_spotify_router_or_none(),
-        duck_active_probe=duck_active_probe,
     )
     # Nothing here is closable: RendererClient is a stateless probe wrapper
     # and CamillaController's websocket reconnects on next use.
     return await op(coord)
-
-
-def make_duck_active_probe(
-    voice_socket_path: str,
-    *,
-    voice_socket_command: Callable[..., Awaitable[dict]] = voice_socket_command,
-) -> Callable[[], Awaitable[Optional[bool]]]:
-    """Build the cross-daemon Camilla-ownership probe consumed by
-    VolumeCoordinator._set_camilla in the per-request coordinators here.
-
-    The probe asks jasper-voice over UDS whether a duck holder is
-    currently holding camilla below the canonical listening_level
-    target. True → skip the accessory's camilla write; listening_level
-    still persists, so the user's intent is not lost. False → write
-    camilla normally.
-    None → unknown (UDS unreachable / voice wedged / response
-    malformed); the coordinator treats this as fail-open and writes
-    camilla — the accessory must never silently stop working because of
-    an inter-daemon problem.
-
-    Tight 1 s timeout: STATUS is a synchronous attribute read in
-    voice_daemon (no I/O). If it doesn't return in 1 s the daemon
-    is wedged and we'd rather fail-open than block accessory input."""
-    async def probe() -> Optional[bool]:
-        try:
-            response = await voice_socket_command(
-                voice_socket_path, wire.STATUS, timeout=1.0,
-            )
-        except (
-            FileNotFoundError,
-            ConnectionRefusedError,
-            asyncio.TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-        ):
-            return None
-        camilla_locked = response.get("camilla_volume_locked")
-        if isinstance(camilla_locked, bool):
-            return camilla_locked
-        # Rolling-upgrade compatibility with a voice daemon that predates the
-        # explicit lock field. Its only duck transport owned Camilla.
-        duck_active = response.get("duck_active")
-        if isinstance(duck_active, bool):
-            return duck_active
-        # Older jasper-voice without the field, or unexpected type —
-        # fail-open. Same effect as voice unreachable.
-        return None
-    return probe
 
 
 async def dispatch_transport(

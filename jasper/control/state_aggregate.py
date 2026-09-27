@@ -102,7 +102,6 @@ _VOICE_STATUS_DIRECT_KEYS = (
     "mic_muted",
     "measurement_active",
     "duck_active",
-    "camilla_volume_locked",
     "music_dbfs",
     "last_wake_at",
     "idle_rms_dbfs",
