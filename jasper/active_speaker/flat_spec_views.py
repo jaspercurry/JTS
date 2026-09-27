@@ -132,7 +132,7 @@ def log_pooled_residual(report: FlatSpecReport) -> LogPooledResidual:
     not recomputed, carried on :attr:`LogPooledResidual.linear_rms_db`).
     Re-weights BETWEEN bands only, not within one — a wide band's own
     linear-grid tilt survives (250 Hz-2 kHz's top octave supplied ~61% of
-    its bins on the 2026-08-18 corpus). ``rms_db=None``, ``evaluable=False``
+    its bins in one corpus). ``rms_db=None``, ``evaluable=False``
     when no band carries a residual.
     """
     linear = spec_convergence_residual(report)
@@ -191,8 +191,8 @@ class PositionCurve:
     ``role`` is the cloud's own vocabulary (``onax``/``offax``/``xovr``),
     read off the record, never re-derived. ``smoothing_fraction`` is
     LOAD-BEARING for interpretation: the cloud smooths per-position curves
-    finer than the pooled spec curve (1/6 vs 1/3 octave on the 2026-08-18
-    corpus), so a per-position residual reads HIGHER for that reason
+    finer than the pooled spec curve (1/6 vs 1/3 octave), so a per-position
+    residual reads HIGHER for that reason
     alone. ``degrees=None`` means NOT RECORDED, never zero.
     """
 

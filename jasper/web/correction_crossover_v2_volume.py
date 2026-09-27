@@ -152,7 +152,7 @@ def _volume_door(
 def enforce_session_volume_ceiling_if_stale(
     run_async: Any, camilla_factory: Any
 ) -> bool:
-    """Lazy wall-clock-ceiling enforcement (W6.1 — ``enforce_ceiling`` had zero
+    """Lazy wall-clock-ceiling enforcement (``enforce_ceiling`` had zero
     callers, so the 1800 s ceiling never existed at runtime).
 
     Invoked on the crossover status and envelope reads. Cheap on the happy

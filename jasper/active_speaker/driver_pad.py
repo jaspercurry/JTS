@@ -7,7 +7,7 @@
 Pure computation only: no I/O, no product policy, shared field validation. A
 pad is always operator-declared — never AI-researched.
 
-Formula (verified against JTS3's tweeter pad, 2026-07-23), where a series-only
+Formula (verified against JTS3's tweeter pad), where a series-only
 pad degenerates to the bare driver impedance::
 
     R_par = Z * shunt / (Z + shunt)          (or Z when there is no shunt)

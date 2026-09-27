@@ -56,7 +56,7 @@ def resolve_setup_calibration(setup: Any, device: Any) -> Any:
     capture's ``setup.calibration`` reference becomes a stored
     ``CalibrationRecord``. Returns the record, or ``None`` when the capture
     declared no calibration or its reference names a DIFFERENT mic than the
-    one this capture reports (the 2026-07-20 incident). ``device`` is this
+    one this capture reports. ``device`` is this
     capture's realized input device (``CaptureAnswer.device``) — threaded
     through so that mismatch is caught where the calibration is resolved for
     THIS capture, not applied blind to whichever mic actually recorded.

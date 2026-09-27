@@ -9,7 +9,7 @@ the proof it helped, and never writes back into a gating decision.
 
 The evaluation band is the caller's floor INTERSECTED with the band the DUT
 radiates: un-intersected, a tweeter high-passed at 2 kHz read RMS 4.045 dB
-against an honest 1.368 dB (E5, #1969,
+against an honest 1.368 dB (#1969,
 ``captures/gating-experiments-20260731/`` §5).
 
 A delta near zero is not self-explanatory -- a 7 ms gate always truncates the
@@ -348,7 +348,7 @@ def render_gate(d: GateDisclosure) -> str:
     """The one honest sentence about a gate. THE single writer of it.
 
     A record that prints ``gate_window_ms = 7.0`` and nothing else reads as
-    "reflections removed", but across the whole 2026-07-30 corpus it meant "no
+    "reflections removed", but across the whole corpus it meant "no
     reflection found; window capped at the ceiling" (#1966). Consumers render
     this verbatim and never re-phrase the fields.
     """

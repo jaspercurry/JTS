@@ -557,7 +557,7 @@ class TuningSession:
         the answer against that level rather than trusting it, through
         :func:`~jasper.volume_latch.fader_matches` — the repo's
         one *"do these two fader dB values agree?"* test, at the confirm
-        tolerance wave 5 collapses every other writer onto.
+        tolerance every other writer collapses onto.
 
         A number that disagrees with the level the program was admitted against
         is the 8.712 dB incident's exact shape: two fields of one block saying
@@ -585,7 +585,7 @@ class TuningSession:
         proven_level_db: float,
         take_id: str,
     ) -> Mapping[str, Any]:
-        """One stimulus, as the facts wave 4's five blocks are built around.
+        """One stimulus, as the facts five blocks are built around.
 
         The index reads six of these — session, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it

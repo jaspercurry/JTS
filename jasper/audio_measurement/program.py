@@ -76,7 +76,7 @@ KNOWN_AUDIBLE_KINDS = STIMULUS_KINDS | frozenset({KIND_COURTESY_TONE})
 AMBIENT_SEGMENT_ID = "ambient"
 
 # [150 Hz, 23 kHz] (design §5.2); upper edge pinned equal to
-# test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ (PR-A, #1668) by a test.
+# test_signal_plan.MAX_DRIVER_TEST_FREQUENCY_HZ (#1668) by a test.
 MEASURE_SWEEP_F_LO_HZ = 150.0
 MEASURE_SWEEP_F_HI_HZ = 23_000.0
 MEASURE_SWEEP_BAND_HZ = (MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)

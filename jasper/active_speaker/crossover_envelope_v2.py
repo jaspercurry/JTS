@@ -454,7 +454,7 @@ def _envelope(
     round_ordinal: int | None = None,
 ) -> dict[str, Any]:
     resting = screen in {"awaiting_plan", "finished"}
-    # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632 F3).
+    # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632).
     timing_action = dict(as_mapping(as_mapping(status.get("timing")).get("next_action"))) or None
     if timing_action and timing_action.get("id") == "reset_timing":
         alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
@@ -869,7 +869,7 @@ def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
     the drift that costs. ``None`` for anything that is not a usable pair, so a
     caller never fabricates an empty curve out of malformed state.
 
-    **Ceiling-division stride, not floor (gate finding on #1858, SF-1).** The
+    **Ceiling-division stride, not floor (gate finding on #1858).** The
     original shape here was ``step = n // CAP`` — a *soft* ceiling, documented
     (and pinned, before this fix) as capable of overshooting by up to one
     stride: 1031 raw points strode by 4 and yielded 258, not 256. That was

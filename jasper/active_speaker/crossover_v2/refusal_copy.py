@@ -71,7 +71,7 @@ REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
 # #2059: a plan-shape request the household's link/client sent that this build
 # does not recognize -- an unknown tier, or a position count outside its
-# tier's range. Owner ruling (2026-08-13): distinct from
+# tier's range. Distinct from
 # ``program_unplayable`` -- that copy's "re-check the driver details" advice
 # is a loose fit for a malformed request, which no driver recheck fixes.
 REASON_PROGRAM_PLAN_SHAPE_INVALID = "program_plan_shape_invalid"
@@ -993,7 +993,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # admits the retake: every rung spends one of the POSITION's pooled
         # extras.
         GEOMETRY_RETRY_POSITIONS,
-        # #2092 (owner-approved 2026-08-08): the old diagnosis ("too close
+        # The old diagnosis ("too close
         # together") is factually false on a wide walk — the estimator reads
         # only tau, never mic spread, so tau agreement at wide spread is
         # positive evidence FOR a source-fixed defect, not proof the operator

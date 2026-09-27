@@ -531,7 +531,7 @@ class LocalSubwoofer:
         }
 
 
-# dB of retry reserve for the 87.7 dB Z transient at jts3's stop (#5073, A1).
+# dB of retry reserve for the 87.7 dB Z transient at jts3's stop (#5073).
 SPL_RAISE_MARGIN_DB = 3.0
 
 
@@ -549,7 +549,7 @@ def ramp_bound_db_spl(stop_db_spl: float) -> float:
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""
 
-    # Owner ruling 2026-08-23: the commissioning SPL stop rides this dataclass
+    # The commissioning SPL stop rides this dataclass
     # default; construction sites must not restate it. Two staging sites
     # hardcoded 80.0, which hid this default and cost a bench night: the ruled
     # 75 dB seat-level frame could not converge, because a post-step sample
@@ -582,7 +582,7 @@ class SafetyEnvelope:
         return cls(
             max_commissioning_level_db_spl=_finite_float(
                 # The dataclass default is the ONE owner of this value; a
-                # literal here would be a second (owner ruling 2026-08-23).
+                # literal here would be a second.
                 raw.get(
                     "max_commissioning_level_db_spl",
                     cls.max_commissioning_level_db_spl,

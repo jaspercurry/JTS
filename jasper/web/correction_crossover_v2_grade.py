@@ -138,7 +138,7 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     derivation below owns that rule and states why.
 
     **``state`` answers "was it checked"; ``scope``/``spatial``/``complete``
-    answer "how widely, and was that enough" (R19, #2098 + #2160).** Those
+    answer "how widely, and was that enough" (see #2098, #2160).** Those
     three are why this returns more than a state name. ``state`` alone cannot
     carry either fact, and both were being guessed at downstream:
 
@@ -147,8 +147,8 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
       what its plan asked. It rendered as "applied and graded".
     * a post-apply group that closed with ``overall_within_target=False`` reaches
       ``GRADE_GRADED``, because a graded-and-failed group IS graded. It also
-      rendered as "applied and graded" — measured on jts3 2026-08-07, a
-      −4.63 dB spatial miss under a green tick.
+      rendered as "applied and graded" for a −4.63 dB spatial miss under a
+      green tick.
 
     ``scope`` is what the evidence DELIVERED; the persisted run manifest's
     asked poses state what the run PROMISED. ``complete`` compares the two,
@@ -291,8 +291,8 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     cloud_verdict = (
         post_apply.get("overall_within_target") if isinstance(post_apply, Mapping) else None
     )
-    # **A failed mark-VERIFY caps this badge whatever the group says** (#2464,
-    # ruled 2026-08-19). ``cloud_verdict`` was tested FIRST, so a closed group
+    # **A failed mark-VERIFY caps this badge whatever the group says** (#2464).
+    # ``cloud_verdict`` was tested FIRST, so a closed group
     # made the fail and inconclusive arms unreachable: a re-verify that failed
     # against a carried-forward passing group reached ``GRADE_GRADED`` with
     # ``graded=True``, and every surface keying on those read it as all clear.

@@ -857,7 +857,7 @@ def _check_displaced(
     incumbent. ``filters`` is a TOTAL for every role it names, so an incumbent
     filter a naming document does not repeat is deleted — a change
     :func:`_check_composed` cannot see, and one that measured a 6.065 dB tilt
-    step on 2026-08-22 (#2863).
+    step (#2863).
 
     It DISCLOSES and never refuses: dropping an incumbent cut adds nothing to
     the cascade the emitter charges, and a driver's protective corners are not

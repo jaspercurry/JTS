@@ -18,7 +18,7 @@ Imported lazily by :mod:`jasper.active_speaker.driver_acoustics`, and ``scipy`` 
 :func:`analytic_signal`, so the socket-activated ``/sound/`` wizard stays light until a
 measurement runs.
 
-The gating contract (R9, issue #1969): every gating block carries, beside the window chosen,
+The gating contract (issue #1969): every gating block carries, beside the window chosen,
 ``floor_source`` (WHY the window is what it is — :data:`FLOOR_MEASURED` / :data:`FLOOR_SEARCH_BOUND`
 / ``None``; deliberately no ``geometric`` value, since JTS never derives a bound from assumed
 room geometry, owner ruling #1966), ``search_bound_ms``/``search_bound_source`` (how far the
@@ -31,7 +31,7 @@ distinguish "reflection found and removed" from "nothing found; capped at the se
 — they print identically and mean opposite things (#1966). The operator-facing sentence is
 :func:`jasper.audio_measurement.gate_disclosure.describe_gate`.
 
-The prominence vote (R9, issue #1969): a bare hysteresis crossing is a *confident* answer
+The prominence vote (issue #1969): a bare hysteresis crossing is a *confident* answer
 with no confidence behind it — on our own ESS chain 18.1 % of criteria-region positives fired
 EARLY against 12.4 % that found nothing. So a crossing must also *stand out* by
 :data:`REFLECTION_PROMINENCE_DB` above the envelope's own minimum since the direct peak; a

@@ -259,8 +259,8 @@ def _pilot_observations(
     wiring can produce -- CHECK's ladder reads that as mis-anchoring
     evidence rather than a `channel_map_mismatch` wiring finding, belt to
     the near-tie guard's suspenders (`anchor_ambiguous`). Deliberately NOT
-    gated on `snr_valid`: the 2026-08-16 incident's own low-SNR reading was
-    itself an artifact of the wrong window being read.
+    gated on `snr_valid`: a low-SNR reading can itself be an artifact of the
+    wrong window being read.
     """
     by_id = {loc.segment_id: loc for loc in locations}
     roles = sorted({seg.role for seg in program.segments if seg.kind == KIND_PILOT and seg.role})
@@ -315,9 +315,9 @@ def _pilot_observations(
         # readings floored (fell at/below ambient) while the other did not,
         # which is either a mis-anchored window or a room too noisy to trust
         # either way -- both route to the same retriable finding, never the
-        # wiring hard stop. The 2026-08-16 incident's own low-SNR reading
-        # (10.6 dB, itself an artifact of the wrong window) is why this must
-        # not wait on the SNR gate the way `linearity_ok` does.
+        # wiring hard stop. A low-SNR reading (as low as 10.6 dB, itself an
+        # artifact of the wrong window) is why this must not wait on the SNR
+        # gate the way `linearity_ok` does.
         delta_implausible = abs(captured_delta - programmed_delta) > DELTA_IMPLAUSIBLE_GAP_DB
 
         # Gain-solve reference: full-band peak, NOT the ambient-subtracted level.
