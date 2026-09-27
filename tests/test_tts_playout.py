@@ -305,7 +305,7 @@ def _speech_like_24k(chunks: int, chunk_samples: int) -> np.ndarray:
 
 def _played_mono(stream) -> np.ndarray:
     """The mono 48 kHz signal behind a capture stream's stereo writes."""
-    return np.frombuffer(b"".join(stream.writes), dtype=np.int16)[::2]
+    return np.frombuffer(b"".join(stream.writes), dtype=np.int32)[::2].astype(np.float64) / tts_mod._SPINE_SCALE
 
 
 async def test_chunked_upsample_matches_the_whole_signal_at_every_join():
@@ -317,12 +317,12 @@ async def test_chunked_upsample_matches_the_whole_signal_at_every_join():
     """
     chunk = int(TtsPlayout.INPUT_RATE * 0.095)
     source = _speech_like_24k(10, chunk)
-    p, stream = playout_over_fake_stream(gain_db=0.0, wire_wide=False)  # i16 units
+    p, stream = playout_over_fake_stream(gain_db=0.0)
 
     for start in range(0, source.size, chunk):
         await p.write(source[start:start + chunk].tobytes())
 
-    played = _played_mono(stream).astype(np.float64)
+    played = _played_mono(stream)
     assert played.size == 2 * source.size
     reference = upsample_2x(source.astype(np.float64))
     delay = 2 * UPSAMPLE_2X_CONTEXT
@@ -337,7 +337,7 @@ async def test_a_finished_segment_starts_the_upsampler_from_silence(boundary):
     either way the next segment is different audio, so none of the last one
     may bleed into its leading interpolation."""
     chunk = int(TtsPlayout.INPUT_RATE * 0.095)
-    p, stream = playout_over_fake_stream(gain_db=0.0, wire_wide=False)  # i16 units
+    p, stream = playout_over_fake_stream(gain_db=0.0)
 
     await p.write(_speech_like_24k(1, chunk).tobytes())
     await getattr(p, boundary)()
@@ -351,12 +351,6 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     p, stream = playout_over_fake_stream(
         gain_db=TtsPlayout.MIN_TTS_GAIN_DB,
-        # STATED, not inherited. The byte-level expectations below are S16, and
-        # what the box the suite runs on RESOLVES is not this test's subject —
-        # tests/test_tts_wire_width.py owns that question. An undeclared box now
-        # resolves WIDE (ADR-0100: undeclared is the ring), so leaving this to
-        # the resolver made these assertions depend on the host's /var/lib state.
-        wire_wide=False,
     )
 
     mono = np.array([10000, -10000], dtype=np.int16)
@@ -365,26 +359,23 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
     assert stream.gains == [TtsPlayout.MIN_TTS_GAIN_DB]
     assert stream.segments_started == [("assistant", None, None)]
     assert stream.writes == [
-        np.array([10000, 10000, -10000, -10000], dtype=np.int16).tobytes()
+        (np.array([10000, 10000, -10000, -10000], dtype=np.int32) * tts_mod._SPINE_SCALE).tobytes()
     ]
     assert p.expected_drain_at() != 0.0
 
 
 async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkeypatch):
 
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(tts_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 16)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
-    p, stream = playout_over_fake_stream(
-        # S16 frame bytes are what the chunk boundaries below are counted in.
-        wire_wide=False,
-    )
+    p, stream = playout_over_fake_stream()
 
     mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
     await p.write(mono.tobytes())
 
-    stereo = np.repeat(mono, 2).tobytes()
+    stereo = (np.repeat(mono.astype(np.int32), 2) * tts_mod._SPINE_SCALE).tobytes()
     assert stream.gains == [-8.0]
-    assert stream.writes == [stereo[:8], stereo[8:16], stereo[16:]]
+    assert stream.writes == [stereo[:16], stereo[16:32], stereo[32:]]
 
 
 async def test_outputd_partial_write_keeps_accepted_prefix_in_drain_ledger(
@@ -894,7 +885,7 @@ def test_outputd_lock_timeout_shutdown_unblocks_nonreading_sendall(
     received = b""
     while b"\n" not in received:
         received += child.recv(128)
-    assert received.startswith(b"AUDIO ")
+    assert received.startswith(b"AUDIO32 ")
 
     with pytest.raises(TimeoutError):
         adapter.pause_content_meter()
@@ -1082,7 +1073,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
             remaining_commands = int(accepted_prefix)
             while True:
                 header = incoming.readline()
-                if header.startswith(b"AUDIO "):
+                if header.startswith(b"AUDIO32 "):
                     if not remaining_commands:
                         return header
                     length = int(header.split()[1])
@@ -1090,7 +1081,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
                     remaining_commands -= 1
 
     received = await asyncio.to_thread(read_to_audio_header)
-    assert b"AUDIO " in received
+    assert b"AUDIO32 " in received
     writing.cancel()
     await asyncio.sleep(0)
     writing.cancel()

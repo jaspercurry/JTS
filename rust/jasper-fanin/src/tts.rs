@@ -6,7 +6,7 @@
 //!
 //! The wire protocol intentionally matches `jasper-outputd`'s TTS
 //! socket so Python can keep one playout implementation. fan-in only
-//! owns the pre-DSP summing concern: it accepts 48 kHz stereo S16_LE
+//! owns the pre-DSP summing concern: it accepts 48 kHz stereo S32_LE
 //! TTS/cue audio, sanitizes malformed gain, applies the shared peak-capped
 //! assistant gain policy, and mixes it into the summed program lane before
 //! CamillaDSP performs crossover/protection.
@@ -32,8 +32,8 @@ use jasper_tts_protocol::loudness::{
     ReferenceKind, SegmentKind, DEFAULT_TTS_GAIN_DB, MIN_TTS_GAIN_DB,
 };
 use jasper_tts_protocol::{
-    command_name, serve_client, QueuedTtsCommand, TtsAudioSamples, TtsCommand, TtsCommandSink,
-    TtsServerCounters, TtsWireWidth, VolumeContext, SAMPLE_RATE, TTS_FRAME_DEADLINE,
+    command_name, serve_client, QueuedTtsCommand, TtsCommand, TtsCommandSink, TtsServerCounters,
+    VolumeContext, SAMPLE_RATE, TTS_FRAME_DEADLINE,
 };
 
 pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
@@ -593,11 +593,6 @@ pub struct TtsMixer {
     /// Per-segment playout accounting behind the FLUSH_SYNC ack. Drained at
     /// the mix-commit point (see [`crate::playout`]).
     ledger: PlayoutLedger,
-    /// The last payload width seen AND compared, so the mismatch warning fires
-    /// on a transition rather than once per audio command. In practice a box
-    /// speaks one width for a daemon's whole lifetime, so this is one line per
-    /// lifetime, not per connection — the client reconnecting does not re-arm it.
-    last_payload_width: Option<TtsWireWidth>,
     /// Missing samples since PCM last played, including partial-period tails.
     /// Resumption determines same-segment starvation versus a boundary gap.
     starved_run_samples: u64,
@@ -640,7 +635,6 @@ impl TtsMixer {
             log_tx: input.log_tx,
             loudness,
             ledger: PlayoutLedger::new(SAMPLE_RATE),
-            last_payload_width: None,
             starved_run_samples: 0,
             starved_run_segment: 0,
             played_segment: None,
@@ -699,39 +693,6 @@ impl TtsMixer {
         }
     }
 
-    /// Note the wire width a payload declared, warning when it is not this
-    /// box's own — the program wire is S32_LE, so the assistant verb fan-in
-    /// expects is `AUDIO32`.
-    ///
-    /// A narrow payload is not a level error — `widen_i16_to_i32` is exact and
-    /// the mix converts it — so this is observable rather than fatal: it says
-    /// jasper-voice resolved a width fan-in does not.
-    ///
-    /// The latch dedups a per-command warn: in practice a client speaks one
-    /// width for a daemon's whole lifetime, so this is one line per lifetime,
-    /// not one per audio command (~4 Hz through a reply).
-    fn note_payload_width(&mut self, declared: TtsWireWidth) {
-        if self.last_payload_width == Some(declared) {
-            return;
-        }
-        self.last_payload_width = Some(declared);
-        if declared != TtsWireWidth::Wide {
-            warn!(
-                "event=fanin.tts_wire_width_mismatch declared={} expected={} \
-                 action=converted note=jasper-voice resolved a narrower assistant \
-                 wire than this box's program wire; restart jasper-voice after a \
-                 deploy so it picks the current width up",
-                declared.verb(),
-                TtsWireWidth::Wide.verb(),
-            );
-        }
-    }
-
-    /// Mix the queued assistant/cue audio into the program sum.
-    ///
-    /// The sum is at the i32 spine scale; the payload carries its OWN width
-    /// (`AUDIO` vs `AUDIO32`) and is promoted at its sum entry — see
-    /// [`QueuedAudioBlock::gained_contribution`].
     pub fn mix_period(&mut self, sum: &mut [i64]) {
         let queued_samples_before = self.pending_samples;
         let resumed_segment = self.queue.front().map(|block| block.segment_serial);
@@ -950,25 +911,13 @@ impl TtsMixer {
                 }
                 continue;
             }
+            let incoming_frames = queued.command.audio_frames();
             match queued.command {
                 // Retained as an accepted legacy wire command. Per-segment
                 // loudness context is now the sole gain authority, so there is
                 // deliberately no mutable fallback-gain state to update.
                 TtsCommand::GainDb(_) => {}
-                // Both payload verbs, one body. The patterns are spelled out
-                // rather than guarded on `is_audio()` so the compiler's
-                // exhaustiveness check — which ignores guards — still forces a
-                // future third payload verb to be handled here.
-                command @ (TtsCommand::Audio(_) | TtsCommand::AudioWide(_)) => {
-                    let incoming_frames = command.audio_frames();
-                    // Cannot be None inside this arm: the same two patterns
-                    // select it. A `let ... else` rather than an `unwrap` so a
-                    // future verb that lands in one match and not the other
-                    // skips the block instead of panicking a daemon.
-                    let Some(samples) = command.into_audio_samples() else {
-                        continue;
-                    };
-                    self.note_payload_width(samples.width());
+                TtsCommand::AudioWide(samples) => {
                     if samples.is_empty() {
                         continue;
                     }
@@ -1292,8 +1241,7 @@ impl TtsMixer {
 }
 
 struct QueuedAudioBlock {
-    /// The block's samples at the width the AUDIO/AUDIO32 verb declared.
-    samples: TtsAudioSamples,
+    samples: Vec<i32>,
     cursor: usize,
     base_gain_db: f32,
     peak_cap_gain_db: f32,
@@ -1305,19 +1253,9 @@ struct QueuedAudioBlock {
 }
 
 impl QueuedAudioBlock {
-    /// One gained sample at the sum's spine scale.
-    ///
-    /// The payload is promoted FIRST (`widen_i16_to_i32` for a narrow one, a
-    /// no-op for a wide one) and gained in f64 after. Gaining at i16 first would
-    /// round every gained sample back onto the S16 grid before the promotion
-    /// could carry it, and the assistant gain is usually a deep attenuation: at
-    /// −40 dB a full-scale i16 sample lands near 328, so the product would keep
-    /// about 9 of its 16 bits and the rest would be rounding. This is the same
-    /// order, the same `apply_gain`, and the same f64-mantissa reason
-    /// `jasper-outputd`'s `AssistantSource::read_period_into` already uses.
     #[inline]
     fn gained_contribution(&self, index: usize, gain: f32) -> i64 {
-        apply_gain(self.samples.spine_sample(index), gain) as i64
+        apply_gain(self.samples[index], gain) as i64
     }
 }
 
@@ -1682,7 +1620,7 @@ mod tests {
     #[test]
     fn reads_outputd_compatible_gain_audio_and_flush() {
         let mut reader = Cursor::new(
-            b"GAIN -12.5\nAUDIO 8\n\x01\0\x02\0\x03\0\x04\0PROGRAM_DUCK_ON\nFLUSH_SYNC\nPROGRAM_DUCK_OFF\n".to_vec(),
+            b"GAIN -12.5\nAUDIO32 16\n\0\0\x01\0\0\0\x02\0\0\0\x03\0\0\0\x04\0PROGRAM_DUCK_ON\nFLUSH_SYNC\nPROGRAM_DUCK_OFF\n".to_vec(),
         );
 
         assert_eq!(
@@ -1691,7 +1629,12 @@ mod tests {
         );
         assert_eq!(
             read_command(&mut reader).unwrap(),
-            Some(TtsCommand::Audio(vec![1, 2, 3, 4]))
+            Some(TtsCommand::AudioWide(vec![
+                1 << 16,
+                2 << 16,
+                3 << 16,
+                4 << 16
+            ]))
         );
         assert_eq!(
             read_command(&mut reader).unwrap(),
@@ -1746,7 +1689,7 @@ mod tests {
 
     #[test]
     fn rejects_non_stereo_audio_chunks() {
-        let mut reader = Cursor::new(b"AUDIO 2\n\x01\0".to_vec());
+        let mut reader = Cursor::new(b"AUDIO32 4\n\0\0\x01\0".to_vec());
         let err = read_command(&mut reader).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
@@ -1784,7 +1727,12 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000, -10_000, 10_000, -10_000]),
+            command: TtsCommand::AudioWide(vec![
+                10_000 << 16,
+                -10_000 << 16,
+                10_000 << 16,
+                -10_000 << 16,
+            ]),
         })
         .unwrap();
         let mut sum = vec![0i64; 4];
@@ -1846,7 +1794,7 @@ mod tests {
             .unwrap();
             tx.send(QueuedTtsCommand {
                 epoch: 0,
-                command: TtsCommand::Audio(vec![1_000, -1_000]),
+                command: TtsCommand::AudioWide(vec![1_000 << 16, -1_000 << 16]),
             })
             .unwrap();
         }
@@ -1930,7 +1878,7 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000, -10_000]),
+            command: TtsCommand::AudioWide(vec![10_000 << 16, -10_000 << 16]),
         })
         .unwrap();
 
@@ -1986,7 +1934,7 @@ mod tests {
                 provider_item_id: Some("loud_prior".to_string()),
                 profile: Some(profile(-30.0, -20.0)),
             },
-            TtsCommand::Audio(vec![30_000, 30_000]),
+            TtsCommand::AudioWide(vec![30_000 << 16, 30_000 << 16]),
             TtsCommand::SegmentEnd,
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
@@ -2012,7 +1960,7 @@ mod tests {
                 provider_item_id: Some("capped_next".to_string()),
                 profile: Some(profile(-50.0, 0.0)),
             },
-            TtsCommand::Audio(vec![30_000; 128 * (CHANNELS as usize)]),
+            TtsCommand::AudioWide(vec![30_000 << 16; 128 * (CHANNELS as usize)]),
             TtsCommand::SegmentEnd,
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
@@ -2087,7 +2035,7 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000; 9_600 * (CHANNELS as usize)]),
+            command: TtsCommand::AudioWide(vec![10_000 << 16; 9_600 * (CHANNELS as usize)]),
         })
         .unwrap();
         tx.send(QueuedTtsCommand {
@@ -2194,7 +2142,7 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000, 10_000]),
+            command: TtsCommand::AudioWide(vec![10_000 << 16, 10_000 << 16]),
         })
         .unwrap();
 
@@ -2272,7 +2220,7 @@ mod tests {
                     confidence: 1.0,
                 }),
             },
-            TtsCommand::Audio(vec![10_000; 4 * (CHANNELS as usize)]),
+            TtsCommand::AudioWide(vec![10_000 << 16; 4 * (CHANNELS as usize)]),
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
@@ -2399,7 +2347,7 @@ mod tests {
                     confidence: 1.0,
                 }),
             },
-            TtsCommand::Audio(vec![10_000, 10_000]),
+            TtsCommand::AudioWide(vec![10_000 << 16, 10_000 << 16]),
         ] {
             tx.send(QueuedTtsCommand { epoch: 0, command }).unwrap();
         }
@@ -2438,7 +2386,7 @@ mod tests {
         });
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+            command: TtsCommand::AudioWide(vec![1 << 16, 2 << 16, 3 << 16, 4 << 16]),
         })
         .unwrap();
         mixer.drain_commands();
@@ -2562,7 +2510,7 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![6000i16; 48_000 * (CHANNELS as usize)]),
+            command: TtsCommand::AudioWide(vec![6000 << 16; 48_000 * (CHANNELS as usize)]),
         })
         .unwrap();
 
@@ -2644,7 +2592,7 @@ mod tests {
         .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![7i16; 4 * (CHANNELS as usize)]),
+            command: TtsCommand::AudioWide(vec![7 << 16; 4 * (CHANNELS as usize)]),
         })
         .unwrap();
         mixer.drain_commands();
@@ -2732,7 +2680,7 @@ mod tests {
         assert!(metrics.program_duck_active());
 
         run_tts_client_payload(
-            b"AUDIO 8\n\x01\0\x02\0\x03\0\x04\0CLOSE\n",
+            b"AUDIO32 16\n\0\0\x01\0\0\0\x02\0\0\0\x03\0\0\0\x04\0CLOSE\n",
             &tx,
             &flush_tx,
             &epoch,
@@ -2832,7 +2780,7 @@ mod tests {
         mixer.program_duck_last_refresh = Instant::now().checked_sub(Duration::from_secs(120));
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+            command: TtsCommand::AudioWide(vec![1 << 16, 2 << 16, 3 << 16, 4 << 16]),
         })
         .unwrap();
 
@@ -2867,7 +2815,7 @@ mod tests {
         assert!(mixer.prepare_period());
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+            command: TtsCommand::AudioWide(vec![1 << 16, 2 << 16, 3 << 16, 4 << 16]),
         })
         .unwrap();
         assert!(mixer.prepare_period());
@@ -3007,7 +2955,7 @@ mod tests {
             .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1, 2, 3, 4]),
+            command: TtsCommand::AudioWide(vec![1 << 16, 2 << 16, 3 << 16, 4 << 16]),
         })
         .unwrap();
 
@@ -3058,13 +3006,7 @@ mod tests {
         assert!(!mixer.content_meter_paused);
     }
 
-    // ------------------------------------------------------------------
-    // The assistant lane at both payload widths. The sum is always spine-scale;
-    // the PAYLOAD still declares its own width (`AUDIO` / `AUDIO32`) and is
-    // promoted at its sum entry, so both verbs are covered here.
-    // ------------------------------------------------------------------
-
-    fn wire_width_mixer() -> (
+    fn assistant_mixer() -> (
         SyncSender<QueuedTtsCommand>,
         SyncSender<QueuedFlush>,
         TtsMixer,
@@ -3085,19 +3027,18 @@ mod tests {
         (tx, flush_tx, mixer)
     }
 
-    /// NARROW PAYLOAD — the `AUDIO` verb, promoted at its sum entry.
-    ///
-    /// The expectation is a LITERAL, not a recomputation of the code under
-    /// test: 10_000 promoted and gained at the first-use quiet-room envelope
-    /// (-17.0 dB). A change to the gain order, the gain arithmetic, or the
-    /// payload representation moves it.
     #[test]
     fn the_assistant_lane_is_byte_identical_to_its_committed_golden() {
         const GOLDEN: i64 = 92_572_051;
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+        let (tx, flush_tx, mut mixer) = assistant_mixer();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000, -10_000, 10_000, -10_000]),
+            command: TtsCommand::AudioWide(vec![
+                10_000 << 16,
+                -10_000 << 16,
+                10_000 << 16,
+                -10_000 << 16,
+            ]),
         })
         .unwrap();
         let mut sum = vec![0i64; 4];
@@ -3116,20 +3057,12 @@ mod tests {
         drop(flush_tx);
     }
 
-    /// NARROW PAYLOAD — the gain-width fix.
-    ///
-    /// The same i16 wire sample, the same gain, but widened BEFORE the multiply
-    /// instead of after. The assertion that matters is the CONTRAST: the result
-    /// is not what the old order produced, and the difference is exactly the
-    /// sub-i16-LSB remainder the i16 gain used to round away. A deep assistant
-    /// gain is where this bites — at -17 dB a full-scale i16 sample keeps ~13
-    /// of its 16 bits, and the rest were rounding.
     #[test]
-    fn the_sum_gains_after_the_promotion_keeping_bits_the_i16_gain_rounded_away() {
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+    fn the_sum_gains_at_spine_scale_preserving_sub_i16_precision() {
+        let (tx, flush_tx, mut mixer) = assistant_mixer();
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![10_000, -10_000]),
+            command: TtsCommand::AudioWide(vec![10_000 << 16, -10_000 << 16]),
         })
         .unwrap();
         let mut sum = vec![0i64; 2];
@@ -3159,15 +3092,10 @@ mod tests {
         drop(flush_tx);
     }
 
-    /// WIDE PAYLOAD — the `AUDIO32` verb's whole point.
-    ///
-    /// A quarter of one i16 LSB is a signal the narrow wire has no code for at
-    /// all. Through the wide payload it reaches the sum as a nonzero value;
-    /// the same sound offered to the narrow wire is silence.
     #[test]
-    fn a_sub_16_bit_assistant_sample_reaches_the_sum_and_dies_on_the_narrow_verb() {
+    fn a_sub_16_bit_assistant_sample_reaches_the_sum() {
         const QUARTER_LSB: i32 = 0x0000_4000;
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
+        let (tx, flush_tx, mut mixer) = assistant_mixer();
         tx.send(QueuedTtsCommand {
             epoch: 0,
             command: TtsCommand::AudioWide(vec![QUARTER_LSB, -QUARTER_LSB]),
@@ -3185,8 +3113,6 @@ mod tests {
             sum[0]
         );
         assert_eq!(sum[1], -sum[0]);
-        // The contrast: that same sound sent as `AUDIO` is the zero sample, and
-        // zero gained by anything is zero.
         assert_eq!(
             jasper_resampler::narrow_i32_to_i16_round(QUARTER_LSB),
             0,
@@ -3196,9 +3122,6 @@ mod tests {
         drop(flush_tx);
     }
 
-    /// Both verbs are audio for every accounting purpose: the pending budget,
-    /// the frame ledger, and the stale-epoch drop path. A wide payload that
-    /// read as "not audio" would bypass the budget that keeps the queue bounded.
     #[test]
     fn a_wide_payload_is_accounted_as_audio_by_the_pending_budget() {
         let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
@@ -3225,71 +3148,6 @@ mod tests {
             metrics.counters.dropped_audio_frames(),
             4,
             "an over-budget wide payload must be dropped and counted, not queued",
-        );
-        drop(flush_tx);
-    }
-
-    /// R-SF2: THE MISMATCH WARNING FIRES, AND FIRES ONCE.
-    ///
-    /// Before this the warn had no coverage at all — a mutation deleting the
-    /// whole `note_payload_width` call left the suite green. Two properties,
-    /// because either alone is a defect: silence would hide config drift, and a
-    /// line per audio command would spam the journal at ~4 Hz through a reply.
-    #[test]
-    fn a_width_mismatch_warns_exactly_once_for_the_daemon_lifetime() {
-        capture_logs();
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
-
-        // Six narrow payloads from a drifted client, drained across three
-        // periods — the shape a real reply has.
-        for _ in 0..3 {
-            for _ in 0..2 {
-                tx.send(QueuedTtsCommand {
-                    epoch: 0,
-                    command: TtsCommand::Audio(vec![1_000, -1_000]),
-                })
-                .unwrap();
-            }
-            mixer.prepare_period();
-            let mut period = vec![0i64; 2];
-            mixer.mix_period(&mut period);
-        }
-
-        let lines: Vec<String> = captured_logs()
-            .into_iter()
-            .filter(|line| line.contains("event=fanin.tts_wire_width_mismatch"))
-            .collect();
-        assert_eq!(
-            lines.len(),
-            1,
-            "expected exactly one mismatch line, got {lines:#?}",
-        );
-        let line = &lines[0];
-        assert!(line.contains("declared=AUDIO"), "{line}");
-        assert!(line.contains("expected=AUDIO32"), "{line}");
-        assert!(line.contains("action=converted"), "{line}");
-        drop(flush_tx);
-    }
-
-    /// The coherent box is silent. Without this the test above would pass on a
-    /// daemon that warned unconditionally.
-    #[test]
-    fn a_matching_payload_width_logs_nothing() {
-        capture_logs();
-        let (tx, flush_tx, mut mixer) = wire_width_mixer();
-        let mut sum = vec![0i64; 2];
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::AudioWide(vec![1_000, -1_000]),
-        })
-        .unwrap();
-        mixer.prepare_period();
-        mixer.mix_period(&mut sum);
-        assert!(
-            captured_logs()
-                .iter()
-                .all(|line| !line.contains("event=fanin.tts_wire_width_mismatch")),
-            "a coherent box must not warn",
         );
         drop(flush_tx);
     }
@@ -3332,7 +3190,7 @@ mod tests {
     fn send_audio_frames(tx: &SyncSender<QueuedTtsCommand>, frames: usize) {
         tx.send(QueuedTtsCommand {
             epoch: 0,
-            command: TtsCommand::Audio(vec![1_000; frames * CHANNELS as usize]),
+            command: TtsCommand::AudioWide(vec![1_000 << 16; frames * CHANNELS as usize]),
         })
         .unwrap();
     }

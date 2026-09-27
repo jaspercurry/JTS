@@ -170,7 +170,7 @@ impl PlayoutLedger {
     /// Record `frames` accepted onto the audio queue (call only for frames
     /// that actually enqueue — not stale-epoch or over-budget drops, so the
     /// ledger total stays equal to the live queue depth). Opens an implicit
-    /// Assistant segment for the legacy GAIN+AUDIO cue path that sends no
+    /// Assistant segment for cues that send no
     /// `SEGMENT_START`, mirroring outputd's `TtsBridge`.
     pub fn note_queued(&mut self, frames: u64) {
         if frames == 0 {
@@ -343,7 +343,6 @@ mod tests {
     #[test]
     fn implicit_segment_opens_for_legacy_cue_audio_without_segment_start() {
         let mut ledger = PlayoutLedger::new(RATE);
-        // No start_segment: a bare cue is GAIN+AUDIO.
         ledger.note_queued(2_400);
         let events = ledger.flush();
         assert_eq!(events.len(), 1);

@@ -206,49 +206,6 @@ def _isolate_environ():
                 os.environ[k] = v
 
 
-@pytest.fixture(autouse=True)
-def _isolate_tts_wire_width_cache():
-    """Clear the per-process assistant-width answer before AND after each test.
-
-    ``jasper.tts_playout.tts_wire_is_wide`` is ``lru_cache``'d on purpose: the two
-    callers that ask (the playout's quantizer and the daemon's earcon bake) must
-    get ONE answer, and in production the daemon is restarted by anything that
-    could change it. In a test process there is no restart, so the cache is a
-    channel between tests — including ACROSS FILES, which no per-file inline
-    clear can close. A test that monkeypatches the box declaration to wide and
-    warms the cache would otherwise leave every later test quantizing and baking
-    at spine scale.
-
-    Both sides matter. Clearing AFTER stops a test from handing its answer
-    forward; clearing BEFORE means a test does not inherit one from a file that
-    forgot to clean up, so this fixture is not itself a thing to remember.
-
-    IT MUST NOT IMPORT ``jasper.tts_playout``, and that is a CI constraint rather
-    than a preference. This fixture is autouse, so its body runs at the setup of
-    EVERY test in the repo — including the ``python-policy`` job, which installs
-    only the ``fast-landing`` dependency group and therefore has no numpy, while
-    ``jasper/tts_playout.py`` imports numpy at module level. An unconditional import
-    here errored all 93 of that job's tests at setup, and because ``pytest``
-    runs ``needs: python-policy``, one fixture took the whole suite down with it.
-
-    Consulting ``sys.modules`` instead is not merely lighter — it is the more
-    precise statement of the invariant. The cache can only hold a stale answer
-    if something already imported the module, so an absent module means there is
-    nothing to clear, in a minimal environment exactly as in a full one.
-    """
-
-    def _clear() -> None:
-        module = sys.modules.get("jasper.tts_playout")
-        if module is not None:
-            module.tts_wire_is_wide.cache_clear()
-
-    _clear()
-    try:
-        yield
-    finally:
-        _clear()
-
-
 _host_state_dirs = itertools.count()
 
 # (env var, file name) — reader module + why absent is the hermetic baseline.

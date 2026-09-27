@@ -22,7 +22,7 @@ use jasper_tts_protocol::loudness::{
     linear_to_db, AssistantGainDecision, AssistantLoudness, AssistantLoudnessConfig,
     HeldLoudnessReference, MixStage, TtsLoudnessSnapshot,
 };
-use jasper_tts_protocol::{TtsAudioSamples, VolumeContext};
+use jasper_tts_protocol::VolumeContext;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodReport {
@@ -139,7 +139,7 @@ impl OutputCore {
         &mut self,
         provider_item_id: Option<String>,
         kind: SegmentKind,
-        samples: impl Into<TtsAudioSamples>,
+        samples: Vec<ProgramSample>,
     ) -> SegmentId {
         let id = self.start_assistant_segment(provider_item_id, kind);
         self.append_assistant_audio_with_segment_gain(id, samples);
@@ -176,7 +176,7 @@ impl OutputCore {
     pub fn append_assistant_audio_with_segment_gain(
         &mut self,
         id: SegmentId,
-        samples: impl Into<TtsAudioSamples>,
+        samples: Vec<ProgramSample>,
     ) {
         let segment = self.ledger.segment(id);
         let base_gain_db = segment.gain;
@@ -202,9 +202,8 @@ impl OutputCore {
         base_gain_db: f32,
         decision: Option<Arc<AssistantGainDecision>>,
         reference_eligible: bool,
-        samples: impl Into<TtsAudioSamples>,
+        samples: Vec<ProgramSample>,
     ) {
-        let samples = samples.into();
         // PANIC-AUDITED: every real producer (the daemon's TTS/cue rendering) emits whole frames
         assert_eq!(samples.len() % (self.format.channels as usize), 0);
         if samples.is_empty() {
@@ -555,15 +554,8 @@ mod tests {
         jasper_resampler::widen_i16_to_i32(value)
     }
 
-    /// A period of PROGRAM (spine-width) samples, written as the S16 value it
-    /// represents so these fixtures read the way they did before the widening.
     fn stereo(value: i16, frames: usize) -> Vec<ProgramSample> {
         vec![w(value); frames * (CHANNELS as usize)]
-    }
-
-    /// A period of ASSISTANT/TTS samples — the wire is S16 and stays S16.
-    fn tts(value: i16, frames: usize) -> Vec<i16> {
-        vec![value; frames * (CHANNELS as usize)]
     }
 
     /// One S16 LSB expressed at the spine's scale — the natural unit for "the
@@ -603,7 +595,7 @@ mod tests {
         core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            tts(5000, 4),
+            stereo(5000, 4),
         );
 
         let report = core.step();
@@ -620,7 +612,7 @@ mod tests {
         let mut core = OutputCore::new(2);
         authorize_unmuted_assistant(&mut core);
         core.push_content_period(stereo(30_000, 2));
-        core.enqueue_assistant_segment(None, SegmentKind::Cue, tts(30_000, 2));
+        core.enqueue_assistant_segment(None, SegmentKind::Cue, stereo(30_000, 2));
 
         let first = core.step();
         let second = core.step();
@@ -646,7 +638,7 @@ mod tests {
             let segment = core.enqueue_assistant_segment(
                 Some("item-1".to_string()),
                 SegmentKind::Assistant,
-                tts(10_000, 2),
+                stereo(10_000, 2),
             );
             core.step();
             assert_eq!(core.ledger().segment(segment).gain, gain);
@@ -775,7 +767,7 @@ mod tests {
     #[test]
     fn pending_assistant_frames_tracks_queue_depth() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, tts(100, 4));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(100, 4));
 
         assert_eq!(core.pending_assistant_frames(), 4);
 
@@ -791,7 +783,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            tts(5000, 2),
+            stereo(5000, 2),
         );
 
         let clipped = core.prepare_period_with_content(&stereo(100, 2));
@@ -824,7 +816,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            tts(1000, 96),
+            stereo(1000, 96),
         );
 
         core.prepare_period();
@@ -846,7 +838,7 @@ mod tests {
     #[test]
     fn steady_state_reuses_segment_write_buffer_capacity() {
         let mut core = OutputCore::new(2);
-        core.enqueue_assistant_segment(None, SegmentKind::Assistant, tts(1000, 8));
+        core.enqueue_assistant_segment(None, SegmentKind::Assistant, stereo(1000, 8));
 
         core.step();
         let capacity = core.segment_write_capacity();
@@ -907,7 +899,7 @@ mod tests {
         let segment = core.enqueue_assistant_segment(
             Some("item-1".to_string()),
             SegmentKind::Assistant,
-            tts(1000, 96),
+            stereo(1000, 96),
         );
 
         core.step();
@@ -970,7 +962,7 @@ mod tests {
             Some(profile(-41.0, -3.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
-        core.append_assistant_audio_with_segment_gain(id, tts(8000, 12));
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 12));
         core.end_assistant_segment(id);
 
         core.push_content_period(stereo(0, 4));
@@ -1032,7 +1024,7 @@ mod tests {
             Some(profile(-41.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, 0.0);
-        core.append_assistant_audio_with_segment_gain(id, tts(8000, (PERIOD as usize) * 2));
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, (PERIOD as usize) * 2));
         core.end_assistant_segment(id);
 
         core.push_content_period(stereo(0, PERIOD as usize));
@@ -1100,7 +1092,7 @@ mod tests {
             Some(profile(-25.0, -20.0)),
         );
         assert_eq!(core.ledger().segment(id).gain, -16.0);
-        core.append_assistant_audio_with_segment_gain(id, tts(8000, 4));
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 4));
         // END arrives before the audio drains; the reference commits once the
         // audio finishes playing this period.
         core.end_assistant_segment(id);
@@ -1134,7 +1126,7 @@ mod tests {
             SegmentKind::Assistant,
             Some(profile(-25.0, -20.0)),
         );
-        core.append_assistant_audio_with_segment_gain(id, tts(8000, 8));
+        core.append_assistant_audio_with_segment_gain(id, stereo(8000, 8));
         core.end_assistant_segment(id);
 
         // First period unmuted, then mute before the reply finishes: a silenced
