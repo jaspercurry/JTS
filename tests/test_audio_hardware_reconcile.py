@@ -1253,7 +1253,8 @@ _PRINT_ENV_NO_DAC = {
 
 def _parse_print_env(stdout: str) -> dict[str, str]:
     """Parse `--print-env`'s `KEY=value` lines, unquoting each value the way
-    a `bash eval` of install.sh's consumer would (deploy/install.sh:893)."""
+    a `bash eval` of install.sh's consumer would (select_audio_hardware_roles
+    in deploy/lib/install/alsa.sh)."""
     parsed: dict[str, str] = {}
     for line in stdout.splitlines():
         key, _, raw_value = line.partition("=")
@@ -1307,9 +1308,9 @@ def _parse_print_env(stdout: str) -> dict[str, str]:
 def test_print_env_pins_the_install_contract(
     tmp_path: Path, listing: str, expected: dict[str, str]
 ):
-    """`--print-env` is install.sh's contract with this script (install.sh:893
-    evals it and exports every key; deploy/lib/install/systemd-units.sh:1331,
-    1650 call it too). #4478 ports this script to Python -- pin the exact key
+    """`--print-env` is install.sh's contract with this script
+    (select_audio_hardware_roles in deploy/lib/install/alsa.sh evals it and
+    exports every key). #4478 ports this script to Python -- pin the exact key
     set and values here so that port cannot silently change this surface."""
     result = _run_reconcile(tmp_path, listing, "--print-env")
 
@@ -1775,9 +1776,10 @@ def test_print_env_degrades_to_the_no_dac_row_when_the_pass_cannot_start(
     tmp_path: Path, rc: int
 ) -> None:
     """install.sh evals this output and reads every key under `set -u`
-    (deploy/install.sh:893), so an unstartable interpreter must degrade to the
-    unrecognized-DAC answer with rc 0 rather than abort the install on an
-    empty eval. Only 126/127 mean "no pass ran"; see the sibling below."""
+    (select_audio_hardware_roles in deploy/lib/install/alsa.sh), so an
+    unstartable interpreter must degrade to the unrecognized-DAC answer with
+    rc 0 rather than abort the install on an empty eval. Only 126/127 mean
+    "no pass ran"; see the sibling below."""
     result = _run_shim(
         tmp_path, "", "--print-env", extra_env=_failing_interpreter(tmp_path, rc)
     )

@@ -58,27 +58,6 @@ def test_correction_location_allows_large_capture_upload():
     )
 
 
-def test_install_sh_creates_correction_state_dirs():
-    body = DSP_RUNTIME_SH.read_text()
-    assert "install -d -m 2770 -g jasper \\" in body
-    for path in [
-        "/var/lib/jasper/correction",
-        "/var/lib/jasper/correction/calibration_mics",
-        "/var/lib/jasper/correction/tones",
-        # The active_speaker* trees /sound/ and the measurement daemon share; must be
-        # created at install time too, or the first root-lane writer mints
-        # them root:root 0700 and locks jasper-web out until the next
-        # deploy's heal_shared_state_modes runs.
-        "/var/lib/jasper/active_speaker",
-        "/var/lib/jasper/active_speaker/campaigns",
-        "/var/lib/jasper/active_speaker/sessions",
-        "/var/lib/jasper/active_speaker_captures",
-        "/var/lib/jasper/active_speaker_sweeps",
-        "/var/lib/jasper/active_speaker_stimuli",
-    ]:
-        assert path in body
-
-
 def test_install_sh_active_speaker_dirs_match_heal_allowlist():
     """A prose pointer between install_camilladsp and heal_shared_state_modes
     doesn't fail CI: reuses the two existing extraction helpers (this

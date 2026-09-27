@@ -361,6 +361,13 @@ while IFS= read -r changed; do
       add_globbed_tests "test_${script_module}_*.py" || true
       add_tests_naming "${raw_base}" || echo "==> no test names ${changed}"
       ;;
+    deploy/lib/install/*.sh)
+      # Ahead of the generic arm below: install.sh sources these libs, and
+      # most of their tests source install.sh or read the joined installer
+      # text, naming install.sh rather than the lib.
+      add_tests_naming "${changed}" || true
+      add_tests_naming "install.sh" || echo "==> no test names ${changed}"
+      ;;
     scripts/*|deploy/*.sh)
       # Reached by subprocess too (issue #4194, #4248; deploy/install.sh's ~9% accepted).
       # A suffix-less name, Path-joined in tests, also gets tried quoted.

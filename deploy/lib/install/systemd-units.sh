@@ -1325,6 +1325,52 @@ _start_core_graph_units() {
     release_fanin_coupling_fence
 }
 
+reconcile_aec_state() {
+    ensure_state_dir
+    # /wake owns the independent host-microphone preference. Seed it Off so a
+    # fresh install never exports room audio merely because USB Audio Input is
+    # enabled; the UI must record an explicit household choice first.
+    jasper_env_file_seed_absent "${STATE_DIR}/usb_mic.env" 0644 0770 \
+        JASPER_USB_MIC=disabled JASPER_USB_MIC_LEG=primary
+    # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
+    local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
+    systemctl enable jasper-aec-reconcile.service
+    if ! install_run_bounded 125 -- /usr/local/sbin/jasper-aec-reconcile --reason install; then
+        echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+        if [[ -e "$aec_bridge_marker" ]]; then
+            echo "  WARN: AEC bridge marker still present ($aec_bridge_marker) from a prior pass"
+        else
+            echo "  WARN: AEC bridge marker absent ($aec_bridge_marker); echo cancellation is off until the next reconcile"
+        fi
+    fi
+}
+
+reconcile_grouping_state() {
+    # Grouping reconciler runs at BOOT (and on every install) so a BONDED
+    # speaker survives reboots/deploys: it re-derives the snapcast args +
+    # the outputd round-trip lane env, drives the CamillaDSP bonded/solo
+    # config, pins the snapcast stream bindings, and (re)starts the snap
+    # units per the wizard intent. On a solo speaker it is a no-op
+    # oneshot (grouping off => stop both units, clear derived env) —
+    # cost-free. This enables the RECONCILER, not grouping: snapserver/
+    # snapclient still ship disabled and only the reconciler starts them
+    # on explicit wizard opt-in.
+    systemctl enable jasper-grouping-reconcile.service
+    systemctl restart jasper-grouping-reconcile.service || {
+        echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
+}
+
+resolve_fanin_coupling_default() {
+    systemctl enable jasper-fanin-coupling-auto.service
+    install_run_bounded "${FANIN_COUPLING_PASS_BOUND_SEC}" -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
+        echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
+}
+
 # The rest of the runtime tail, once the core graph is back. "$1" is the
 # install profile; only `full` reconciles AEC.
 _converge_runtime_units() {

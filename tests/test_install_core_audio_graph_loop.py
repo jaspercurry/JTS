@@ -1029,9 +1029,8 @@ _RUNTIME_TAILS = {
                                       *_TAIL_TO_AEC, *_TAIL_AFTER_AEC),
     "install_systemd_units": (*_TAIL_TO_AEC, "fn reconcile_aec_state", *_TAIL_AFTER_AEC),
 }
-# install.sh, not the fragment, owns these, so the stub loop never sees them.
-_INSTALL_SH_RECORDERS = "".join(f'{fn}() {{ echo "fn {fn}${{*:+ $*}}" >> "$LOG"; }}\n' for fn in (
-    "install_run_bounded", "reconcile_aec_state", "reconcile_grouping_state", "resolve_fanin_coupling_default"))
+# install.sh, not the fragment, owns this, so the stub loop never sees it.
+_INSTALL_SH_RECORDERS = 'install_run_bounded() { echo "fn install_run_bounded${*:+ $*}" >> "$LOG"; }\n'
 
 
 @pytest.mark.parametrize("function", tuple(_RUNTIME_TAILS))
