@@ -209,6 +209,13 @@ def test_a_layout_its_preset_does_not_offer_refuses_by_name(preset, layout):
         "preset": f"{default.program_id}/{default.size}", "layout": layout, "offered": list(default.layouts)})
 
 
+def test_a_layout_passed_as_poses_refuses_by_name():
+    with pytest.raises(mp.PosesNameALayoutError) as excinfo:
+        mp.run_program("room", poses="seat_express")
+    assert (excinfo.value.reason, excinfo.value.detail) == (
+        mp.POSES_NAME_A_LAYOUT, {"poses": "seat_express", "use": "--layout"})
+
+
 def test_the_bass_handoff_names_a_layout_a_person_can_walk():
     """The default bass layout pins the arm, so the prompt names the hand one (#5632 F4)."""
     preset, layout, mover = re.search(r"--program (\S+) --layout (\S+) --mover (\S+)",

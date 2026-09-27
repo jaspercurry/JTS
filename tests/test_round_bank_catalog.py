@@ -51,7 +51,7 @@ def test_a_row_is_what_the_round_recorded(campaign):
     selected = resolve_set(round_inputs(campaign / "r1"))
 
     assert list_rounds()[0] == {
-        "round_id": "r1", "round_dir": str(campaign / "r1"), "program": "speaker", "purposes": ["speaker"],
+        "round_id": "r1", "round_dir": str(campaign / "r1"), "program": "speaker", "layout": None, "purposes": ["speaker"],
         "banked_at": parse_utc_iso(_BANKED_AT["r1"]), "status": "complete",
         "sets": {selected.set_id: len(selected.selected_ids)},
         "applied_identity": applied_identity(_applied_anchor()),

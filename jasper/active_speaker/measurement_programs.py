@@ -250,8 +250,9 @@ class RetiredProgram(NamedTuple):
     layout: str = ""
 
 
-#: Every id a round may have banked under a row that has since retired, keyed by the
-#: full banked id, with its ``/custom`` twin. Frozen: a banked id is never renamed or
+#: The retired rows' ids a round may have banked, keyed by the full banked id, with its
+#: ``/custom`` twin. Older ids outside it (``room/quick``) still read through
+#: :func:`run_purposes` but are refused as unknown, not by name. Frozen: a banked id is never renamed or
 #: reused (ADR-0366 §6).
 RETIRED_PROGRAMS = MappingProxyType({
     "baseline/express": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", "baseline_express"),
@@ -280,6 +281,7 @@ RETIRED_PROGRAMS = MappingProxyType({
 })
 PROGRAM_RETIRED = "measurement_program_retired"
 LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"
+POSES_NAME_A_LAYOUT = "measurement_poses_name_a_layout"
 
 
 def run_purpose(run_program: str | None) -> str:
@@ -461,6 +463,16 @@ class LayoutNotOfferedError(ValueError):
     def __init__(self, preset: str, layout: str, offered: tuple[str, ...]) -> None:
         self.detail = {"preset": preset, "layout": layout, "offered": list(offered)}
         super().__init__(f"{preset} offers {', '.join(offered)}, not {layout}")
+
+
+class PosesNameALayoutError(ValueError):
+    """``poses`` names a layout; a named layout is chosen with ``layout``."""
+
+    reason = POSES_NAME_A_LAYOUT
+
+    def __init__(self, layout: str) -> None:
+        self.detail = {"poses": layout, "use": "--layout"}
+        super().__init__(f"{layout} is a layout: pass it as --layout")
 
 
 class UnknownProgramError(ValueError):
@@ -665,6 +677,8 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
         selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
     if poses is None:
         return selected
+    if poses in _LAYOUTS:
+        raise PosesNameALayoutError(poses)
     rows = json.loads(poses) if poses.lstrip().startswith("[") else [
         {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
     return replace(selected, layout=CUSTOM_SIZE, poses=tuple(

@@ -27,7 +27,7 @@ document, which goes through the same judge → compose → apply gates as any o
 
 1. **Capture.** On the speaker, run the near-field row for the cabinet, one woofer per take at
    15 and 30 mm ([the runbook's near-field section](../../docs/tuning-operator-runbook.md#near-field)):
-   `jasper-round run --program nearfield --poses nearfield/cardioid --wait --timeout 3600`. Each
+   `jasper-round run --program nearfield/cardioid --wait --timeout 3600`. Each
    placement levels itself to 80 dB at the mic under the unchanged 85 dB stop.
 
 2. **Read and pull.** The view divides the fader and the played graph out of each take, and gives

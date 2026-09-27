@@ -19,7 +19,7 @@ from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, LayoutNotOfferedError, RetiredProgramError, available_programs,
+    RUNNABLE_PROGRAMS, LayoutNotOfferedError, PosesNameALayoutError, RetiredProgramError, available_programs,
 )
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
@@ -110,7 +110,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
 
     try:
         report = resolve_run(args)
-    except (RetiredProgramError, LayoutNotOfferedError) as exc:
+    except (RetiredProgramError, LayoutNotOfferedError, PosesNameALayoutError) as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
     except PermissionError as exc:
         return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},

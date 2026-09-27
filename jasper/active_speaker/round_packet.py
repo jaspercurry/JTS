@@ -222,7 +222,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     axis = commissioning_alignment(alignments) or {}
     packet = {"schema": "jts_round_packet/3", "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
-              "program": manifest.get("program"), "level": manifest.get("level"),
+              "program": manifest.get("program"), "layout": manifest.get("layout"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
               "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},
