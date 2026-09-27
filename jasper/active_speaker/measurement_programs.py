@@ -10,14 +10,15 @@ import json
 import math
 import numbers
 from dataclasses import dataclass, replace
+from itertools import groupby
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Collection, Mapping, NamedTuple, Sequence
+from typing import Any, Collection, Iterator, Mapping, NamedTuple, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
-from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
+from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
 
 from .measurement import active_driver_targets
 
@@ -243,11 +244,12 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
 
 
 class RetiredProgram(NamedTuple):
-    """What a retired id's banked rounds read as, and the preset and layout that
-    replace it for a new run; no preset when nothing does."""
+    """What a retired id's banked rounds read as, and the preset, layout and driver
+    that replace it for a new run; no preset when nothing does."""
     purpose: str
     preset: str = ""
     layout: str = ""
+    driver: str = ""
 
 
 #: The retired rows' ids a round may have banked, keyed by the full banked id, with its
@@ -278,10 +280,17 @@ RETIRED_PROGRAMS = MappingProxyType({
     "bass/custom": RetiredProgram(PURPOSE_BASS, "bass/axis", CUSTOM_SIZE),
     "close/spot": RetiredProgram(PURPOSE_REFERENCE),
     "close/custom": RetiredProgram(PURPOSE_REFERENCE),
+    "nearfield/woofer": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer", "woofer"),
+    "nearfield/rear": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer", "woofer:rear"),
+    "nearfield/cardioid": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", "nearfield_woofer"),
+    "nearfield/custom": RetiredProgram(PURPOSE_REFERENCE, "nearfield/each", CUSTOM_SIZE),
+    "drivers/cardioid": RetiredProgram(PURPOSE_REFERENCE, "drivers/each", "drivers_each"),
+    "drivers/custom": RetiredProgram(PURPOSE_REFERENCE, "drivers/each", CUSTOM_SIZE),
 })
 PROGRAM_RETIRED = "measurement_program_retired"
 LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"
 POSES_NAME_A_LAYOUT = "measurement_poses_name_a_layout"
+DRIVER_NOT_OFFERED = "measurement_driver_not_offered"
 
 
 def run_purpose(run_program: str | None) -> str:
@@ -456,12 +465,15 @@ class RetiredProgramError(ValueError):
 
 
 class LayoutNotOfferedError(ValueError):
-    """A named layout the run's preset does not offer; ``detail`` names the ones it does."""
+    """A named layout the run's preset does not offer; ``detail`` names the ones it does,
+    and what replaces a retired row that walked it (``nearfield/rear`` walked ``nearfield_rear``)."""
 
     reason = LAYOUT_NOT_OFFERED
 
     def __init__(self, preset: str, layout: str, offered: tuple[str, ...]) -> None:
-        self.detail = {"preset": preset, "layout": layout, "offered": list(offered)}
+        retired = RETIRED_PROGRAMS.get(layout.replace("_", "/", 1))
+        self.detail = {"preset": preset, "layout": layout, "offered": list(offered),
+                       **({"replacement": retired._asdict()} if retired else {})}
         super().__init__(f"{preset} offers {', '.join(offered)}, not {layout}")
 
 
@@ -473,6 +485,17 @@ class PosesNameALayoutError(ValueError):
     def __init__(self, layout: str) -> None:
         self.detail = {"poses": layout, "use": "--layout"}
         super().__init__(f"{layout} is a layout: pass it as --layout")
+
+
+class DriverNotOfferedError(ValueError):
+    """A run narrowed to a driver its preset cannot play alone here; ``detail``
+    names the drivers this speaker declares."""
+
+    reason = DRIVER_NOT_OFFERED
+
+    def __init__(self, preset: str, driver: str, declared: Sequence[str]) -> None:
+        self.detail = {"preset": preset, "driver": driver, "declared": list(declared)}
+        super().__init__(f"{preset} cannot play {driver} alone here")
 
 
 class UnknownProgramError(ValueError):
@@ -683,6 +706,39 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
         {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
     return replace(selected, layout=CUSTOM_SIZE, poses=tuple(
         _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(rows)))
+
+
+def plan_poses(program: MeasurementProgram, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
+    """The poses a run walks on this speaker. A named layout's pose that names a driver
+    role plays each declared output of that role (``targets``), one output's poses after
+    the other's, so a cardioid's rear woofer follows its front one (ADR-0366 §6); a role
+    with no declared output keeps its name for preflight to refuse. ``driver`` narrows
+    the run to that one output."""
+    preset = f"{program.program_id}/{program.size}"
+    if driver and driver not in targets:
+        raise DriverNotOfferedError(preset, driver, targets)
+    if program.layout == CUSTOM_SIZE:
+        poses = tuple(pose for pose in program.poses if not driver or pose.driver == driver)
+    else:
+        poses = tuple(replace(pose, driver=output) for role, run in _role_runs(program.poses)
+                      for output in _outputs(role, run[0].driver, targets, driver) for pose in run)
+    if not poses:
+        raise DriverNotOfferedError(preset, driver, targets)
+    return poses
+
+
+def _role_runs(poses: Sequence[ProgramPose]) -> Iterator[tuple[str, tuple[ProgramPose, ...]]]:
+    """Consecutive poses naming one driver role; ``""`` for poses that name none."""
+    for role, run in groupby(poses, key=lambda pose: measurement_target_parts(pose.driver)[0] if pose.driver else ""):
+        yield role, tuple(run)
+
+
+def _outputs(role: str, named: str, targets: Sequence[str], driver: str) -> tuple[str, ...]:
+    if driver:
+        return (driver,) if measurement_target_parts(driver)[0] == role else ()
+    if not role:
+        return ("",)
+    return tuple(target for target in targets if measurement_target_parts(target)[0] == role) or (named,)
 
 
 def trial_program(

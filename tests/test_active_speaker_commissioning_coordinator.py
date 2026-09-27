@@ -161,8 +161,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
     assert "room/seat" in ids
-    near_field = {"nearfield/woofer", "nearfield/rear", "nearfield/cardioid"}
-    assert ids & near_field == (set() if passive else near_field if rear else {"nearfield/woofer"})
+    assert ("nearfield/each" in ids) is not passive
     assert sum(choice["default"] for choice in choices) == 1
     programs = ("bass", "room") if passive else ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
     handoff = tuning_handoff.build_tuning_handoff(commissioning_view=view, design_draft={})
@@ -330,7 +329,7 @@ def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypat
     assert check_row(doctor.check_active_speaker_applied_graph()).get("applied_identity") == expected
 
 
-@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/woofer"])
+@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/each"])
 def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
     roles = tuple(_roles())
     context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs={r.role: 0.0 for r in roles}, fc_hz=2500,

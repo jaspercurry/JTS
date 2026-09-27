@@ -934,11 +934,14 @@ def test_program_choices_include_rear():
 
 @pytest.mark.parametrize("argv,reason,detail", [
     (["--program", "baseline/full"], "measurement_program_retired",
-     {"retired": "baseline/full", "purpose": "speaker", "preset": "speaker/mark", "layout": "baseline_full"}),
+     {"retired": "baseline/full", "purpose": "speaker", "preset": "speaker/mark", "layout": "baseline_full", "driver": ""}),
     (["--program", "rear", "--poses", "rear/pair_mark"], "measurement_program_retired",
-     {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark"}),
+     {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark", "driver": ""}),
     (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
-     {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
+     {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"],
+      "replacement": {"purpose": "room", "preset": "room/seat", "layout": "seat_cloud", "driver": ""}}),
+    (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",
+     {"preset": "nearfield/each", "driver": "woofer:rear", "declared": []}),
 ])
 def test_a_retired_id_or_an_unoffered_layout_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
     opener = _opener()
@@ -978,7 +981,7 @@ def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: {"status": "applied",
                                  "source": {"measured_candidate_fingerprint": applied.fingerprint}})
-    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: topology)
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
         plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
                           for name in plan.candidates}))

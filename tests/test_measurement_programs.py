@@ -205,7 +205,8 @@ def test_a_layout_its_preset_does_not_offer_refuses_by_name(preset, layout):
     with pytest.raises(mp.LayoutNotOfferedError) as excinfo:
         mp.run_program(preset, layout)
     default = mp.run_program(preset)
-    assert (excinfo.value.reason, excinfo.value.detail) == (mp.LAYOUT_NOT_OFFERED, {
+    detail = {key: value for key, value in excinfo.value.detail.items() if key != "replacement"}
+    assert (excinfo.value.reason, detail) == (mp.LAYOUT_NOT_OFFERED, {
         "preset": f"{default.program_id}/{default.size}", "layout": layout, "offered": list(default.layouts)})
 
 
@@ -264,10 +265,9 @@ def test_available_programs_is_the_sorted_registry() -> None:
     choices = mp.available_programs()
 
     assert choices == (
-        ("bass", "axis"), ("branches", "express"), ("drivers", "cardioid"), ("drivers", "each"),
-        ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
-        ("rear", "express"), ("rear", "pair"), ("rear", "seat"), ("room", "seat"), ("speaker", "mark"),
-        ("tournament", "express"),
+        ("bass", "axis"), ("branches", "express"), ("drivers", "each"), ("front_rear", "express"),
+        ("nearfield", "each"), ("rear", "express"), ("rear", "pair"), ("rear", "seat"), ("room", "seat"),
+        ("speaker", "mark"), ("tournament", "express"),
     )
     rows = [mp.program(program_id, size) for program_id, size in choices]
     assert tuple((row.program_id, row.size) for row in rows) == choices
@@ -280,12 +280,49 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
 
 _WOOFER_STEP = (("woofer", 0.015), ("woofer", 0.03))
+_TWO_WAY, _CARDIOID = ("tweeter", "woofer"), ("tweeter", "woofer", "woofer:rear")
+
+
+@pytest.mark.parametrize("preset,targets,driver,walked", [
+    ("nearfield", _TWO_WAY, "", _WOOFER_STEP),
+    ("nearfield", _CARDIOID, "", (*_WOOFER_STEP, *(("woofer:rear", distance) for _, distance in _WOOFER_STEP))),
+    ("nearfield", (), "", _WOOFER_STEP),
+    ("nearfield", _CARDIOID, "woofer:rear", tuple(("woofer:rear", distance) for _, distance in _WOOFER_STEP)),
+    ("drivers", _CARDIOID, "", (("woofer", None), ("woofer:rear", None), ("tweeter", None))),
+    ("drivers", _CARDIOID, "tweeter", (("tweeter", None),)),
+    ("nearfield", _TWO_WAY, "woofer:rear", None),
+    ("nearfield", _CARDIOID, "tweeter", None),
+    ("speaker", _CARDIOID, "woofer", None),
+])
+def test_a_presets_driver_role_plays_each_declared_output(preset, targets, driver, walked) -> None:
+    """A preset's pose names a driver role and plays each declared output of it, one
+    output's placements after the other's; an undeclared role keeps its name for
+    preflight to refuse; --driver narrows to one output or refuses by name (ADR-0366 §6)."""
+    row = mp.run_program(preset)
+    if walked is None:
+        with pytest.raises(mp.DriverNotOfferedError) as excinfo:
+            mp.plan_poses(row, targets, driver)
+        assert (excinfo.value.reason, excinfo.value.detail) == (mp.DRIVER_NOT_OFFERED, {
+            "preset": f"{row.program_id}/{row.size}", "driver": driver, "declared": list(targets)})
+        return
+    request = ac.request_for_program(row, targets=targets, driver=driver)
+    assert tuple((stop.driver, stop.distance_m) for stop in request.stops) == walked
+
+
+@pytest.mark.parametrize("preset,layout,driver", [
+    ("nearfield", "nearfield_rear", "woofer:rear"), ("nearfield", "nearfield_cardioid", ""),
+    ("drivers", "drivers_cardioid", ""),
+])
+def test_a_retired_rows_own_layout_names_what_replaces_it(preset, layout, driver) -> None:
+    with pytest.raises(mp.LayoutNotOfferedError) as excinfo:
+        mp.run_program(preset, layout)
+    replacement = excinfo.value.detail["replacement"]
+    assert (replacement["preset"], replacement["driver"]) == (f"{preset}/each", driver)
+    assert mp.run_program(replacement["preset"], replacement["layout"]).layout == replacement["layout"]
 
 
 @pytest.mark.parametrize("program_id,layout,poses,resolved", [
     ("nearfield", None, None, ("nearfield_woofer", _WOOFER_STEP)),
-    ("nearfield/cardioid", None, None, ("nearfield_cardioid", (*_WOOFER_STEP, *(
-        ("woofer:rear", distance) for _, distance in _WOOFER_STEP)))),
     ("nearfield", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.012, "driver": "woofer:rear"}]',
      ("custom", (("woofer:rear", 0.012),))),
     ("speaker", "nearfield_woofer", None, None),
@@ -534,17 +571,16 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
 
 
 @pytest.mark.parametrize("stops,expected", [
-    (mp.program("drivers", "cardioid"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)),
-                                         ("lateral", ("tweeter",))]),
+    (mp.run_program("drivers"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)), ("lateral", ("tweeter",))]),
     ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
       ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
      [("check", ()), ("entry_baseline", ()), ("measure", ()), ("lateral", ("woofer",))]),
-], ids=["one-driver-row", "beside-a-two-driver-stop"])
+], ids=["one-driver-preset", "beside-a-two-driver-stop"])
 def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected) -> None:
     """A stop naming its driver plays it alone in the far field on MEASURE's
     sweep, with no CHECK or timing take for it; a stop that plays every driver
     keeps both (#5696, ADR-0366)."""
-    request = (ac.request_for_program(stops) if isinstance(stops, mp.MeasurementProgram)
+    request = (ac.request_for_program(stops, targets=_CARDIOID) if isinstance(stops, mp.MeasurementProgram)
                else ac.AngleCaptureRequest(stops=stops))
     captures = prepare_plan_captures(request)
     assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected

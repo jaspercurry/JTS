@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_poses, run_program
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
@@ -45,9 +46,9 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
         preset if layout == run_program(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
     assert [c["id"] for c in choices if c["default"]] == ["room/seat@seat_cube"]
-    assert [(c["poses"], c["captures"]) for c in choices] == [
-        (run_program(preset, layout).mic_move_count, run_program(preset, layout).capture_count)
-        for preset, layout in visible]
+    walked = [replace(row, poses=plan_poses(row, _VIEW["near_field_drivers"]))
+              for row in (run_program(preset, layout) for preset, layout in visible)]
+    assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
     selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
     plan = selected["action"]["body"]["plan"]
     assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)

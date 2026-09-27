@@ -19,7 +19,8 @@ from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, LayoutNotOfferedError, PosesNameALayoutError, RetiredProgramError, available_programs,
+    RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, RetiredProgramError,
+    available_programs,
 )
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
@@ -110,7 +111,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
 
     try:
         report = resolve_run(args)
-    except (RetiredProgramError, LayoutNotOfferedError, PosesNameALayoutError) as exc:
+    except (RetiredProgramError, LayoutNotOfferedError, PosesNameALayoutError, DriverNotOfferedError) as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
     except PermissionError as exc:
         return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
@@ -378,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     poses.add_argument("--poses", help="comma-separated bearings in degrees, or a JSON list of poses")
     poses.add_argument("--layout", help="a named layout the preset offers")
     run_args.add_argument("--repeats", type=int, help="takes per pose and configuration")
+    run_args.add_argument("--driver", help="play only this output (woofer, woofer:rear) at the preset's poses for its role")
     run_args.add_argument("--mover", choices=MOVERS)
     run_args.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
