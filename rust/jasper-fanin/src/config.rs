@@ -4,8 +4,7 @@
 
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
-//! This module owns the defaults. `.env.example` documents the operator-facing
-//! subset as prose rather than seeded literals: install.sh copies that file to
+//! `.env.example` documents defaults as prose, not seeded literals: install.sh copies that file to
 //! `/etc/jasper/jasper.env` once and never re-syncs it, so a literal there
 //! would pin the default on every existing Pi. Where a key appears in both, the
 //! two must agree.
@@ -20,7 +19,7 @@ use jasper_env::{
     env_u64,
 };
 
-use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
+use jasper_tts_protocol::{flush::DEFAULT_MAX_PENDING_FRAMES, loudness::AssistantLoudnessConfig};
 
 /// The SHM ring's pinned slot size in frames (Ring A), re-exported from the
 /// crate that owns the ring geometry so fan-in and outputd read one constant.
@@ -371,7 +370,7 @@ impl Config {
             ),
             tts_max_pending_frames: env_u64(
                 "JASPER_FANIN_TTS_MAX_PENDING_FRAMES",
-                crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+                DEFAULT_MAX_PENDING_FRAMES,
             )?,
             tts_program_duck_db,
             tts_cue_duck_db,

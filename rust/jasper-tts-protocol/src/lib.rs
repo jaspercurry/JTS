@@ -15,15 +15,9 @@
 //! It also owns the shared K-weighted assistant loudness policy used by
 //! fan-in and outputd, and the versioned on-disk record that carries a
 //! learned assistant reference across restarts ([`assistant_reference`]).
-//! Queue capacity and the pending-frame budget, epochs, metrics, the
-//! per-daemon playout LEDGERS behind the flush-ack — and the VALUES they report
-//! (fan-in's pre-DSP mix-commit estimate vs outputd's DAC-true one) — and
-//! final mixing engines stay per-daemon; they may legitimately diverge
-//! without breaking compatibility. Wire vocabulary may not: that means the
-//! command parser AND the `FLUSH_SYNC` ack KEY shape
-//! ([`FLUSH_SYNC_ACK_KEYS`] / [`FLUSH_SYNC_ACK_EVENT_KEYS`]), which the
-//! Python consumer and barge-in truncation parse, plus assistant loudness
-//! decisions.
+//! The [`flush`] transport shares queue geometry and acknowledgement rendering.
+//! Ledgers, metrics and mixing stay per-daemon: fan-in reports mix-commit
+//! progress while outputd reports DAC drain progress.
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
@@ -39,6 +33,7 @@ use jasper_daemon::json::{event_age_ms, NEVER_MS};
 use jasper_daemon::HELPER_STACK_BYTES;
 
 pub mod assistant_reference;
+pub mod flush;
 pub mod loudness;
 
 pub use loudness::SAMPLE_RATE;
@@ -57,16 +52,8 @@ pub const MAX_COMMAND_LINE_BYTES: usize = 8 * 1024;
 
 /// Canonical top-level JSON keys of a `FLUSH_SYNC` acknowledgement line.
 ///
-/// The ack is the response half of this wire protocol. fan-in (solo) and
-/// outputd (bonded multiroom member) each render it from their OWN playout
-/// ledger — the *values* differ (mix-commit vs DAC-true) but the *key
-/// shape* must not, because one Python consumer (`jasper/tts_playout.py`,
-/// `jasper/voice/turn_playback.py`) and the barge-in truncation path parse
-/// both. Each daemon's tests assert its rendered ack satisfies this
-/// contract; changing it is a deliberate wire change touching both daemons
-/// and the Python consumer in the same PR. Extra keys are tolerated by the
-/// `.get()`-based consumer; missing/renamed keys are the breakage this
-/// pins.
+/// Both daemon ledgers feed [`flush::FlushSummary`]. The Python consumer and
+/// barge-in truncation require these keys despite different drain accounting.
 pub const FLUSH_SYNC_ACK_KEYS: &[&str] = &[
     "ok",
     "requests",
@@ -1101,10 +1088,6 @@ mod tests {
 
     #[test]
     fn flush_sync_ack_key_contract_is_stable() {
-        // The shared FLUSH_SYNC ack wire shape. Both daemons' renderers and
-        // the Python consumer agree on exactly these keys; changing either
-        // list is a deliberate wire-contract change. Each daemon has a guard
-        // test asserting its rendered ack contains every key here.
         assert_eq!(
             FLUSH_SYNC_ACK_KEYS,
             [

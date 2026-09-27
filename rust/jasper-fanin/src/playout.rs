@@ -12,9 +12,7 @@
 //! only reads the already-summed content lane and has no TTS bridge/ledger
 //! instantiated unless a bonded multiroom member routes TTS straight to it.
 //! The playout ledger for the solo TTS path therefore has to live where the
-//! TTS is actually mixed: here. (Per `jasper-tts-protocol`'s own contract,
-//! flush-ack summaries and ledgers are deliberately per-daemon — only the
-//! wire vocabulary and loudness policy are shared.)
+//! TTS is actually mixed: here.
 //!
 //! ## The honest drain point
 //!

@@ -1000,6 +1000,7 @@ fn rate_per_hour(count: u64, uptime_ms: u64) -> f64 {
 pub(crate) mod tests {
     use super::*;
     use crate::config::{BackendMode, Config, ContentBridgeMode, SinkMode};
+    use jasper_tts_protocol::flush::DEFAULT_MAX_PENDING_FRAMES;
 
     pub(crate) fn test_config() -> Config {
         Config {
@@ -1031,14 +1032,10 @@ pub(crate) mod tests {
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,
             tts_socket_path: None,
-            tts_max_pending_frames: crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+            tts_max_pending_frames: DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
             assistant_loudness: Default::default(),
             active_lane: false,
-            // ACTIVE_LANE's pair. False is the passive/stereo default a FLAT box
-            // runs. `dual_test_config` below overrides ring_active_endpoint rather
-            // than inheriting it, because a composite sink CAN be an active-ring
-            // endpoint.
             ring_active_endpoint: false,
         }
     }
