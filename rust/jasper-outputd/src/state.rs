@@ -48,7 +48,7 @@ const DAC_CONTENT_TRIM_DB_MAX_TENTHS: i32 = 0;
 pub struct ChipRefWrite {
     pub frames_written: u64,
     pub delay_frames: Option<u64>,
-    pub reference_sequence: Option<u64>,
+    pub reference_sequence: u64,
     pub underruns: u64,
     pub xruns: u64,
     pub recoveries: u64,
@@ -93,8 +93,7 @@ struct ChipRefObservation {
     /// Cumulative `frames_written` AFTER this write. Strictly increasing across
     /// entries, so it is the writer's own identity for an observation.
     frames_written: u64,
-    /// The mix period this write carried, or `OPTIONAL_U64_NONE` for a write
-    /// that carried none.
+    /// The mix period this write carried.
     reference_sequence: u64,
 }
 
@@ -721,10 +720,8 @@ impl OutputdState {
                 .fetch_add(frames_written, Ordering::Relaxed);
             self.chip_ref_last_write_ms
                 .store(uptime_ms, Ordering::Relaxed);
-            if let Some(sequence) = reference_sequence {
-                self.chip_ref_last_written_reference_sequence
-                    .store(sequence, Ordering::Relaxed);
-            }
+            self.chip_ref_last_written_reference_sequence
+                .store(reference_sequence, Ordering::Relaxed);
             if let Some(delay_frames) = delay_frames {
                 self.chip_ref_snd_pcm_delay_frames
                     .store(delay_frames, Ordering::Relaxed);
@@ -741,7 +738,7 @@ impl OutputdState {
                         uptime_ms,
                         delay_frames,
                         frames_written: self.chip_ref_frames_written.load(Ordering::Relaxed),
-                        reference_sequence: reference_sequence.unwrap_or(OPTIONAL_U64_NONE),
+                        reference_sequence,
                     });
                 }
                 // Tick the passive SRO estimator here — the chip-ref delay is
@@ -1224,7 +1221,7 @@ pub(crate) mod tests {
             state.mark_chip_ref_write(ChipRefWrite {
                 frames_written: 640,
                 delay_frames: Some(83),
-                reference_sequence: Some(37),
+                reference_sequence: 37,
                 underruns: 3,
                 xruns: 5,
                 recoveries: 7,
@@ -1459,7 +1456,7 @@ pub(crate) mod tests {
         state.mark_chip_ref_write(ChipRefWrite {
             frames_written: 320,
             delay_frames: Some(400),
-            reference_sequence: Some(1),
+            reference_sequence: 1,
             ..ChipRefWrite::default()
         });
 
@@ -2210,7 +2207,7 @@ pub(crate) mod tests {
         state.mark_chip_ref_write(ChipRefWrite {
             frames_written: 320,
             delay_frames: Some(640),
-            reference_sequence: Some(10),
+            reference_sequence: 10,
             underruns: 1,
             xruns: 1,
             recoveries: 1,
@@ -2261,18 +2258,11 @@ pub(crate) mod tests {
         };
         let state = OutputdState::new(&cfg);
         state.mark_chip_ref_writer_active(true);
-        // A write without a reference sequence is still an entry: `frames_written`,
-        // not the sequence, is the entry's identity.
-        state.mark_chip_ref_write(ChipRefWrite {
-            frames_written: 128,
-            delay_frames: Some(400),
-            ..ChipRefWrite::default()
-        });
-        for sequence in 1..=3u64 {
+        for sequence in 0..=3u64 {
             state.mark_chip_ref_write(ChipRefWrite {
                 frames_written: 128,
                 delay_frames: Some(400 + sequence),
-                reference_sequence: Some(sequence),
+                reference_sequence: sequence,
                 ..ChipRefWrite::default()
             });
         }
@@ -2281,7 +2271,7 @@ pub(crate) mod tests {
         state.mark_chip_ref_write(ChipRefWrite {
             frames_written: 128,
             delay_frames: None,
-            reference_sequence: Some(4),
+            reference_sequence: 4,
             ..ChipRefWrite::default()
         });
 
@@ -2295,7 +2285,7 @@ pub(crate) mod tests {
         // Oldest first, cumulative frames_written strictly increasing.
         assert!(
             j.contains(
-                r#""recent_writes":[{"frames_written":128,"snd_pcm_delay_frames":400,"reference_sequence":null,"age_ms":"#
+                r#""recent_writes":[{"frames_written":128,"snd_pcm_delay_frames":400,"reference_sequence":0,"age_ms":"#
             ),
             "{j}"
         );

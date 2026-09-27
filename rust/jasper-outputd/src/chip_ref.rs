@@ -324,7 +324,7 @@ fn run_chip_ref_writer_with<P, Open, WritePeriod>(
                     state.mark_chip_ref_write(ChipRefWrite {
                         frames_written: report.frames_written,
                         delay_frames: report.delay_frames,
-                        reference_sequence: Some(packet.reference_sequence),
+                        reference_sequence: packet.reference_sequence,
                         underruns: report.underruns,
                         xruns: report.xruns,
                         recoveries: report.recoveries,
