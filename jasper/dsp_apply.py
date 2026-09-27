@@ -24,7 +24,6 @@ import asyncio
 import contextlib
 import inspect
 import logging
-import math
 import os
 import shutil
 import subprocess
@@ -47,7 +46,7 @@ from jasper.camilla_config_contract import (
     VolumeLimitViolation,
     check_volume_limit,
 )
-from jasper.json_fields import sha256_file, utc_now_iso
+from jasper.json_fields import finite_float, sha256_file, utc_now_iso
 from jasper.log_event import log_event
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
@@ -441,12 +440,10 @@ def _proof_failure(
 
 
 def _positive_finite(value: float, *, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    number = finite_float(value)
+    if number is None or number <= 0.0:
         raise ValueError(f"{field_name} must be a positive finite number")
-    result = float(value)
-    if not math.isfinite(result) or result <= 0.0:
-        raise ValueError(f"{field_name} must be a positive finite number")
-    return result
+    return number
 
 
 @contextlib.asynccontextmanager
