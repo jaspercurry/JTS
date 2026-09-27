@@ -105,6 +105,8 @@ from jasper.service_units import (
 from jasper.source_intent_units import (
     RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT,
     RECONCILE_BROKER_TIMEOUT_SECONDS as _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
+    USB_COUPLING_UNIT,
+    unit_action_timeout_sec,
 )
 
 logger = logging.getLogger(__name__)
@@ -183,11 +185,10 @@ START_ONLY_UNITS = frozenset({
     AUDIO_HARDWARE_RECONCILE_UNIT,
     # Root oneshot that resolves the fan-in coupling + USB low-latency combo
     # (jasper.fanin.coupling_auto). Normally runs at boot/deploy, but the
-    # /sources/ USB-audio toggle (jasper-web, non-root) starts it right after
-    # an enable/disable so the combo arms/disarms immediately instead of only
-    # at the next reboot. Start-only: jasper-web may kick a reconcile pass, not
+    # /system USB-latency apply (jasper-control, non-root) starts it so the
+    # saved mode lands now. Start-only: a client may kick a reconcile pass, not
     # stop/restart the reconciler (mirrors jasper-wifi-scan-repair).
-    "jasper-fanin-coupling-auto.service",
+    USB_COUPLING_UNIT,
     # Root oneshot that persists /sources enable/disable intent
     # (jasper.source_intent). enable/disable is manage-unit-files, which the
     # non-root broker deliberately cannot run (can't be unit-scoped; systemctl
@@ -250,7 +251,7 @@ POWER_VERBS = frozenset({"reboot", "poweroff"})
 
 # Each client leg waits past the exec bound so the broker can return a verdict.
 _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
-# Ordinary broker actions retain the original hard ceiling.  The sole extended
+# Ordinary broker actions retain the original hard ceiling.  One extended
 # shape is a blocking start of exactly the source-intent coordinator: its
 # finite systemd bound covers all four sources, bounded owner barriers,
 # failed-unit resets, and fail-closed cleanup, and this root boundary must
@@ -284,6 +285,7 @@ _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 236.0
 _EXTENDED_EXEC_TIMEOUT_CEILING_SEC: dict[tuple[str, str], float] = {
     (_SOURCE_INTENT_RECONCILE_UNIT, "start"): _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
     (_CAMILLA_UNIT, "start"): _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC,
+    (USB_COUPLING_UNIT, "start"): unit_action_timeout_sec(USB_COUPLING_UNIT, "start"),
 }
 _CLIENT_SOCKET_MARGIN_SEC = 5.0    # client waits this much past the exec bound
 _MAX_REQUEST_BYTES = 4096
