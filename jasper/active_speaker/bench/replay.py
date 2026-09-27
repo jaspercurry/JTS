@@ -27,12 +27,10 @@ DSP_REPLAY_SCHEMA = "jts_dsp_replay/1"
 DSP_LEVELS_SCHEMA = "jts_dsp_levels/1"
 
 
-def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float,
-                 bass_reference_db: float | None = None) -> dict:
-    """``bass_reference_db`` is the Aux1 level a graph emitted before ADR-0359 reads through its
-    Loudness taper; a graph that reads no Aux1 fader replays without one."""
-    faders = (main_db,) if bass_reference_db is None else (main_db, bass_reference_db)
-    if any(not math.isfinite(value) or not -120 <= value <= 0 for value in faders):
+def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float) -> dict:
+    """A graph with an Aux1 fader (the pre-ADR-0359 shape) refuses
+    ``dsp_replay_fader_invalid``."""
+    if not math.isfinite(main_db) or not -120 <= main_db <= 0:
         raise ValueError("dsp_replay_fader_invalid")
     with wave.open(str(stimulus), "rb") as wav:
         header = ArtifactHeader(wav.getframerate(), wav.getnchannels(), 8 * wav.getsampwidth())
@@ -41,8 +39,8 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float,
     derived = derive_offline_render_config(graph.read_text(), roles=None,
         capture_filename=str(stimulus.resolve()), capture_header=header,
         playback_filename=str(raw), processing_precision=DEPLOYED_PROCESSING_PRECISION)
-    if bass_reference_db is None and any(filter_.params.get("fader") == "Aux1" for filter_ in
-                                         view_from_yaml_dict(yaml.safe_load(derived.yaml_text)).filters.values()):
+    if any(filter_.params.get("fader") == "Aux1" for filter_ in
+           view_from_yaml_dict(yaml.safe_load(derived.yaml_text)).filters.values()):
         raise ValueError("dsp_replay_fader_invalid")
     out.mkdir(parents=True, exist_ok=True)
     config.write_text(derived.yaml_text)
@@ -50,10 +48,10 @@ def replay_graph(graph: Path, stimulus: Path, out: Path, *, main_db: float,
     invocation = render_config(binary.path, config, output_path=raw,
         bounds=RenderBounds(timeout_s=max(30, duration_s * 2), rlimit_as_bytes=384 * 1024**2,
                             rlimit_cpu_s=max(30, math.ceil(duration_s * 2)), nice=10),
-        fader_db=main_db, loudness_fader_db=bass_reference_db)
+        fader_db=main_db)
     return {"schema": DSP_REPLAY_SCHEMA, "graph": str(graph), "graph_sha256": sha256_file(graph),
             "stimulus": str(stimulus), "stimulus_sha256": sha256_file(stimulus),
-            "main_db": main_db, "bass_reference_db": bass_reference_db,
+            "main_db": main_db,
             "sample_rate_hz": derived.sample_rate_hz, "channels": derived.playback_channels,
             "output": str(raw), "binary": binary.identity_artifact(), "render": asdict(invocation),
             "derivation": derived.receipt,
@@ -75,7 +73,7 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
     named_bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in bands]
     return {"schema": DSP_LEVELS_SCHEMA, "output_sha256": manifest["render"]["output_sha256"],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],
-            "main_db": manifest["main_db"], "bass_reference_db": manifest["bass_reference_db"],
+            "main_db": manifest["main_db"],
             "window_s": [first / rate, last / rate], "window": "rectangular",
             "channels": [{"channel": channel, "ladder": band_ladder_name(bands), "bands": band_levels_dbfs(data[first:last, channel], rate, named_bands, window="rectangular")}
                          for channel in range(channels)]}

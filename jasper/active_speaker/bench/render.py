@@ -325,16 +325,14 @@ def render_config(
     output_path: Path,
     bounds: RenderBounds,
     fader_db: float,
-    loudness_fader_db: float | None = None,
 ) -> RenderInvocation:
-    """Render files with recorded Main and optional Aux1 fader values.
+    """Render files with the recorded Main fader value.
 
     Negative gains need the single-token ``--gain=<db>`` syntax in v4.1.3.
     Omitting websocket/statefile flags keeps this process isolated.
     """
 
-    auxiliary = () if loudness_fader_db is None else (f"--gain1={loudness_fader_db}",)
-    argv = (binary_path, f"--gain={fader_db}", *auxiliary, str(config_path))
+    argv = (binary_path, f"--gain={fader_db}", str(config_path))
     # Split each token on its FIRST "=" before the membership check: an
     # embedded forbidden flag (e.g. a hypothetical "--port=1234" token)
     # would otherwise bypass an exact-string check that only ever sees

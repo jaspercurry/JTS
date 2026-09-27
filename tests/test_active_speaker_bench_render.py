@@ -50,7 +50,7 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path, ban
     np.column_stack([signal, signal / 2]).astype('<f8').tofile(raw)
     manifest = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
                 'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': 'graph', 'stimulus_sha256': 'stimulus',
-                'main_db': -20, 'bass_reference_db': -20}
+                'main_db': -20}
     result = replay_levels(manifest, raw, (1, 2), **({"bands": bands} if bands else {}))
     expected = list(bands[0]) if bands else [50., 63.]
     band = next(b for b in result['channels'][0]['bands'] if b['band_hz'] == expected)
@@ -63,10 +63,11 @@ def test_digital_levels_read_the_selected_window_and_verify_output(tmp_path, ban
         replay_levels(manifest, raw, (1, 2))
 
 
-@pytest.mark.parametrize("taper,reference", [(False, None), (True, -16.0), (True, None)])
-def test_only_a_graph_that_reads_aux1_takes_a_bass_reference(tmp_path, monkeypatch, taper, reference):
-    """A graph from before ADR-0359 reads Aux1 through its Loudness taper: it replays at its bass
-    reference and is refused without one. Any other graph replays at Main alone."""
+@pytest.mark.parametrize("taper", [False, True])
+def test_replay_graph_renders_unless_the_graph_reads_aux1(tmp_path, monkeypatch, taper):
+    """A graph that reads Aux1 predates ADR-0359 and this replay carries no
+    reference level for it any more (#5710 slice 2): refused. Any other
+    graph renders at Main alone."""
     source = yaml.safe_load(_emit())
     if taper:
         source["filters"]["bass_ext_dynamic_loudness"] = {"type": "Loudness", "parameters": {"fader": "Aux1"}}
@@ -80,20 +81,21 @@ def test_only_a_graph_that_reads_aux1_takes_a_bass_reference(tmp_path, monkeypat
         wav.writeframes(bytes(4 * 480))
     rendered = []
 
-    def render_config(binary, config, *, fader_db, loudness_fader_db, **_):
-        rendered.append((fader_db, loudness_fader_db))
+    def render_config(binary, config, *, fader_db, **_):
+        rendered.append(fader_db)
         return render.RenderInvocation((), 0, 0.0, "", "", "", 0)
 
     monkeypatch.setattr("jasper.active_speaker.bench.replay.render_config", render_config)
     monkeypatch.setattr("jasper.active_speaker.bench.replay.resolve_render_binary",
                         lambda: SimpleNamespace(path="camilladsp", identity_artifact=dict))
-    if taper and reference is None:
+    if taper:
         with pytest.raises(ValueError, match="^dsp_replay_fader_invalid$"):
             replay_graph(graph, stimulus, tmp_path / "out", main_db=-16.0)
         assert rendered == []
     else:
-        manifest = replay_graph(graph, stimulus, tmp_path / "out", main_db=-16.0, bass_reference_db=reference)
-        assert (rendered, manifest["bass_reference_db"]) == ([(-16.0, reference)], reference)
+        manifest = replay_graph(graph, stimulus, tmp_path / "out", main_db=-16.0)
+        assert rendered == [-16.0]
+        assert manifest["main_db"] == -16.0
 
 
 @pytest.mark.parametrize("cardioid", [False, True])
@@ -117,16 +119,16 @@ def test_bass_replay_derives_only_the_requested_comparisons(tmp_path, monkeypatc
 
     monkeypatch.setattr(bass_replay, 'replay_graph', replay)
     result = bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
-        main_db=-16, bass_reference_db=-16, descriptor=descriptor.payload(), channels=(0, 2), preset=preset)
+        main_db=-16, descriptor=descriptor.payload(), channels=(0, 2), preset=preset)
     assert calls[0][0] == base
     assert calls[-1][0] == source
     assert calls[1][0] == {**source, 'pipeline': [step for step in source['pipeline'] if step['type'] != 'Processor']}
-    assert [faders for _, faders in calls] == [{'main_db': -16, 'bass_reference_db': -16}] * 3
+    assert [faders for _, faders in calls] == [{'main_db': -16}] * 3
     assert result['bass_attribution']['channels'] == [0, 2]
     assert yaml.safe_load(graph.read_text()) == source
     with pytest.raises(ValueError):
         bass_replay.replay_bass(graph, tmp_path / 'tone.wav', tmp_path / 'replay',
-            main_db=-16, bass_reference_db=-16, descriptor=descriptor.payload(), channels=(1, 3))
+            main_db=-16, descriptor=descriptor.payload(), channels=(1, 3))
     assert len(calls) == 3
 
 
@@ -147,7 +149,7 @@ def test_bass_replay_cli_passes_the_optional_preset(tmp_path, monkeypatch, with_
     parser = argparse.ArgumentParser()
     dsp_replay.add_parser(parser.add_subparsers(dest="command"))
     args = parser.parse_args([
-        "dsp-replay", "source.yml", "tone.wav", "--main-db", "-16", "--bass-reference-db", "-16",
+        "dsp-replay", "source.yml", "tone.wav", "--main-db", "-16",
         "--out", str(tmp_path), "--bass-descriptor", str(descriptor_path), "--bass-channels", "0", "2",
         *(["--preset", str(preset_path)] if with_preset else []),
     ])
@@ -167,7 +169,7 @@ def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_
         np.column_stack([tone * .01 * 10 ** (gain / 20), np.zeros(rate)]).astype('<f8').tofile(raw)
         manifests[name] = {'schema': 'jts_dsp_replay/1', 'render': {'output_sha256': sha256_file(raw)},
             'sample_rate_hz': rate, 'channels': 2, 'graph_sha256': name, 'stimulus_sha256': 'stimulus',
-            'main_db': -16, 'bass_reference_db': -16}
+            'main_db': -16}
     manifest = manifests.pop('delivered')
     manifest['bass_attribution'] = {'stages': manifests, 'channels': [0], 'descriptor': {}, 'scope': 'net output'}
     raw = tmp_path / 'output.f64le'
@@ -306,9 +308,8 @@ def test_resolve_render_binary_refuses_when_resolved_path_missing(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("loudness_db", [None, -18.0])
 def test_render_config_argv_carries_the_bracketed_fader_gain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, loudness_db: float | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """B1/B-A: the render argv MUST carry ``--gain=<fader_db>`` as ONE
     ``=``-joined token — R4(c) always resolves to "reproduce the recorded
@@ -347,11 +348,8 @@ def test_render_config_argv_carries_the_bracketed_fader_gain(
         output_path=output_path,
         bounds=bounds,
         fader_db=-6.5,
-        loudness_fader_db=loudness_db,
     )
     expected = ("/opt/camilladsp/camilladsp", "--gain=-6.5", str(config_path))
-    if loudness_db is not None:
-        expected = (*expected[:-1], "--gain1=-18.0", expected[-1])
     assert result.argv == expected
     assert seen_argv == [expected]
     # Never two separate tokens ("--gain", "-6.5") — the documented-broken form.

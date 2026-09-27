@@ -333,7 +333,7 @@ def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     manifest = root / "dsp_replay.json"
     manifest.write_text(json.dumps({
         "schema": DSP_REPLAY_SCHEMA, "render": {"output_sha256": sha256_file(raw)}, "sample_rate_hz": rate,
-        "channels": 2, "graph_sha256": "graph", "stimulus_sha256": "stimulus", "main_db": -20, "bass_reference_db": -20,
+        "channels": 2, "graph_sha256": "graph", "stimulus_sha256": "stimulus", "main_db": -20,
     }))
     return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
 

@@ -164,7 +164,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             manifests[stage] = {
                 "schema": "jts_dsp_replay/1", "render": {"output_sha256": sha256_file(raw)},
                 "sample_rate_hz": 48000, "channels": 1, "graph_sha256": stage,
-                "stimulus_sha256": "stimulus", "main_db": -20, "bass_reference_db": -20,
+                "stimulus_sha256": "stimulus", "main_db": -20,
             }
         manifest = manifests.pop("delivered")
         manifest["bass_attribution"] = {"stages": manifests, "channels": [0], "descriptor": {}, "scope": "output"}

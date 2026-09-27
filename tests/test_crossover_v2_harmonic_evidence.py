@@ -28,7 +28,7 @@ import pytest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
 from jasper.cli.round_views import main
 from jasper.active_speaker.round_bank import bank_round
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
@@ -66,14 +66,28 @@ ORDERS = (2, 3)
 # --------------------------------------------------------------------------- #
 
 
+def _beside(session: Path, name: str) -> Path:
+    """Where ``name`` files beside this bundle's round (ADR-0346)."""
+    return view_path(round_inputs(session), name)
+
+
+def _bundle_dir(tmp_path: Path) -> Path:
+    """Where :func:`_bundle` puts the bundle: nested under a bank root's
+    ``bundle/`` so ``view_path`` resolves beside the round (ADR-0346)
+    instead of falling back to the caller's cwd. Shared with the two
+    hand-rolled bundles below that must agree with it on the same tree.
+    """
+    return tmp_path / "bank" / "bundle" / "session"
+
+
 def _bundle(tmp_path: Path, *, harmonics: dict[str, Any] | None = None) -> Path:
     """A commissioning bundle on disk, in the real tree shape.
 
-    Deliberately minimal: the harmonics block reads exactly one file out of the
-    round directory, and a fixture that also staged a receipt and a cloud
-    artifact would let a test pass for a reason it did not name.
+    Deliberately minimal: the harmonics block reads exactly one file, and a
+    fixture that also staged a receipt and a cloud artifact would let a test
+    pass for a reason it did not name.
     """
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     round_dir = session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY"
     round_dir.mkdir(parents=True)
     (session / "info.json").write_text(json.dumps({
@@ -82,7 +96,7 @@ def _bundle(tmp_path: Path, *, harmonics: dict[str, Any] | None = None) -> Path:
         "fingerprints": {"build_sha": "200d54578"},
     }))
     if harmonics is not None:
-        (round_dir / HARMONICS_ARTIFACT).write_text(json.dumps(harmonics))
+        _beside(session, HARMONICS_ARTIFACT).write_text(json.dumps(harmonics))
     return session
 
 
@@ -206,8 +220,7 @@ def test_an_artifact_that_is_not_an_object_still_names_its_reason(tmp_path, bank
     """A file that PARSED into something that is not an object has an empty
     read reason, because the read succeeded; the block must still name one."""
     session = _bundle(tmp_path)
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    (round_dir / HARMONICS_ARTIFACT).write_text(banked)
+    _beside(session, HARMONICS_ARTIFACT).write_text(banked)
 
     block = _harmonics(session)
 
@@ -1314,7 +1327,7 @@ def harmonic_capture(tmp_path, monkeypatch, request):
 def bank_measure_capture(harmonic_capture, tmp_path: Path) -> Path:
     """The fixture's MEASURE capture filed in a session, banked; the banked round."""
     _, compose, _, wav, document = harmonic_capture
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     capture_id = document["jts_session_identity"]["aliases"]["capture_session_id"]
     artifacts = session / f"evidence/v1/artifacts/crossover_v2/{capture_id}"
     positions = artifacts / "positions"
@@ -1496,7 +1509,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     calibration = tmp_path / "mic.txt"
     calibration.write_text("20 2\n20000 4\n")
     _, compose, _, wav, document = harmonic_capture
-    session = tmp_path / "session"
+    session = _bundle_dir(tmp_path)
     info = json.loads((session / "info.json").read_text())
     info["fingerprints"] = {"mic": {"calibration_id": calibration_id}}
     (session / "info.json").write_text(json.dumps(info))
@@ -1552,7 +1565,6 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     harmonic = json.loads(out["distortion"].read_text())
     feature_result = json.loads(out["classify-features"].read_text())
     views = cited[DERIVED_VIEWS]
-    assert views["legacy_view_files_in_evidence"] is False
     assert views["harmonics"]["n_roles"] == len(harmonic["roles"])
     assert views["feature_classification"]["n_rows_banked"] == len(feature_result["rows"])
     assert harmonic["captures"]["n_read"] == 1

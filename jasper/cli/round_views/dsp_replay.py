@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The existing file renderer, with an explicit Main value and a taper-era graph's bass reference."""
+"""The existing file renderer, with an explicit Main value."""
 
 from __future__ import annotations
 
@@ -24,18 +24,16 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         if args.bass_descriptor is not None:
             from jasper.active_speaker.bench.bass_replay import replay_bass  # lazy: native bass attribution
             return replay_bass(args.graph, args.stimulus, args.out, main_db=args.main_db,
-                bass_reference_db=args.bass_reference_db,
                 descriptor=json.loads(args.bass_descriptor.read_text()), channels=tuple(args.bass_channels),
                 preset=load_active_speaker_preset(args.preset) if args.preset is not None else None)
         if args.bass_channels:
             raise ValueError('bass_replay_descriptor_required')
-        return replay_graph(args.graph, args.stimulus, args.out, main_db=args.main_db,
-                            bass_reference_db=args.bass_reference_db)
+        return replay_graph(args.graph, args.stimulus, args.out, main_db=args.main_db)
     payload = stage(EXIT_UNREADABLE, (*_ROUND_TOOL_ERRORS, RenderError, wave.Error), replay)
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(payload, None, args.out / spec.artifact, schema=spec.schema)
     return answer(args.command, schema=spec.schema, subject={},
-                  parameters={"main_db": args.main_db, "bass_reference_db": args.bass_reference_db},
+                  parameters={"main_db": args.main_db},
                   out=written, output=payload["output"], line=f"dsp-replay -> {written}")
 
 
@@ -44,8 +42,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("graph", type=Path)
     parser.add_argument("stimulus", type=Path)
     parser.add_argument("--main-db", type=float, required=True)
-    parser.add_argument("--bass-reference-db", type=float,
-                        help="the Aux1 level a graph from before ADR-0359 reads; other graphs need none")
     parser.add_argument("--out", type=Path, required=True, help="render directory; use pi-run-diagnostic.sh on the Pi")
     parser.add_argument("--bass-descriptor", type=Path, help="also render bass off and full boost from this descriptor (graphs with the ADR-0359 block)")
     parser.add_argument("--bass-channels", type=int, nargs="+", default=[], help="bass output indices; validated against the graph and descriptor")

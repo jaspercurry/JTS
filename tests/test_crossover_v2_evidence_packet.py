@@ -21,16 +21,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    CLASSIFICATION_ARTIFACT,
-    DERIVED_VIEWS,
-    HARMONICS_ARTIFACT,
     NO_CANDIDATE_TAKES,
     REPEAT_FLOOR_UNMEASURED,
     REPEAT_FLOOR_UNREADABLE,
     REPEAT_FLOOR_UNUSABLE,
     STRUCTURAL_HISTORY_AXES,
     build_crossover_evidence_packet,
-    packet_feature_classifications,
     round_artifact_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
@@ -50,8 +46,6 @@ from jasper.active_speaker.repeat_floor import (
 )
 
 from tests.test_crossover_v2_blend_prescription import _bundle
-from tests.test_crossover_v2_driver_prescription import _classification
-from tests.test_crossover_v2_harmonic_evidence import _artifact as _harmonics
 
 
 def test_packet_json_bytes(tmp_path):
@@ -59,25 +53,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "185d491c82e5326e15eaa31d11ef5c2bda01d2dc5c9f6d416fd8d0fa57c41438")
+        "5fdd7086889d61f9e9c26035577dd0d0c269211312ea872972982d1aef4b90df")
     assert packet["packet_fingerprint"] == "7f35fb0c9562341097f6fa88ffdbec4d81e33c6e2cb3a992df03a64039d10c37"
-
-
-def test_a_round_that_filed_view_outputs_in_its_evidence_still_feeds_the_gate(tmp_path):
-    """Views once wrote their outputs into the round's evidence; the gate still
-    reads that round's classification through the derived views."""
-    session, _ = _bundle(tmp_path)
-    round_dir, _ = round_artifact_dir(session)
-    assert round_dir is not None
-    (round_dir / CLASSIFICATION_ARTIFACT).write_text(json.dumps(_classification()))
-    (round_dir / HARMONICS_ARTIFACT).write_text(json.dumps(_harmonics()))
-
-    packet = build_crossover_evidence_packet(session)
-
-    views = packet[DERIVED_VIEWS]
-    assert views["legacy_view_files_in_evidence"] is True
-    assert views["harmonics"]["available"] is True
-    assert len(packet_feature_classifications(packet) or ()) == len(_classification()["rows"])
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):

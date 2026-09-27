@@ -95,13 +95,14 @@ def _speaker_dirs(
     draft: dict[str, Any] | None = None,
     classification: dict[str, Any] | None = None,
 ) -> tuple[Path, Path | None]:
-    session, _ = _bundle(tmp_path)
+    # Nested under bank/bundle/ (like a real bank) so a classification write
+    # resolves beside the round instead of falling back to the cwd.
+    session, _ = _bundle(tmp_path / "bank" / "bundle")
     write_manifest(session)
     if classification is not None:
-        round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-        (round_dir / "feature_classification.json").write_text(
-            json.dumps(classification)
-        )
+        round_views.default_out(
+            round_inputs_mod.round_inputs(session), session, CLASSIFICATION_ARTIFACT
+        ).write_text(json.dumps(classification))
     draft_path = None
     if draft is not None:
         draft_path = tmp_path / "draft.json"
