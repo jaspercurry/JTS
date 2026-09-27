@@ -125,3 +125,26 @@ async def set_property(
         )
         return False
     return True
+
+
+async def get_property(
+    bus_name: str,
+    object_path: str,
+    interface: str,
+    prop: str,
+    *,
+    bus: str = "--system",
+) -> str | None:
+    """Run `busctl get-property` and return the raw stdout, or None
+    on any error. Caller parses the typed-variant value."""
+    result = await run_busctl(
+        "get-property",
+        bus_name, object_path, interface, prop,
+        bus=bus,
+    )
+    if result is None:
+        logger.debug("busctl get-property %s.%s failed", interface, prop)
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", "replace").strip()

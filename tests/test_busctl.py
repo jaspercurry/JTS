@@ -46,3 +46,71 @@ async def test_external_cancellation_kills_and_reaps_child(monkeypatch) -> None:
 
     assert process.killed is True
     assert process.waited is True
+
+
+class _FakeProcess:
+    def __init__(
+        self, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0,
+    ) -> None:
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, self._stderr
+
+
+async def test_set_property_argv_carries_system_bus_signature_and_double_dash(
+    monkeypatch,
+) -> None:
+    """Pin for #4806: the Bluetooth volume write's exact shape (bus,
+    verb, signature, and the `--` guard before the typed value)."""
+    captured: list[tuple[object, ...]] = []
+
+    async def fake_spawn(*args: object, **kwargs: object) -> _FakeProcess:
+        captured.append(args)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    ok = await busctl.set_property(
+        "org.bluealsa", "/org/bluealsa/hci0/dev_X/a2dpsnk/source",
+        "org.bluez.MediaTransport1", "Volume", "q", "64",
+    )
+
+    assert ok is True
+    assert captured == [(
+        "busctl", "--system", "set-property",
+        "org.bluealsa", "/org/bluealsa/hci0/dev_X/a2dpsnk/source",
+        "org.bluez.MediaTransport1", "Volume", "q", "--", "64",
+    )]
+
+
+async def test_set_property_dash_prefixed_value_lands_after_double_dash(
+    monkeypatch,
+) -> None:
+    """A value starting with `-` must not be parsed as a busctl option."""
+    captured: list[tuple[object, ...]] = []
+
+    async def fake_spawn(*args: object, **kwargs: object) -> _FakeProcess:
+        captured.append(args)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    await busctl.set_property(
+        "org.example", "/path", "org.example.Iface", "Volume", "n", "-64",
+    )
+
+    assert captured[0][-2:] == ("--", "-64")
+
+
+async def test_get_property_returns_none_on_nonzero_exit(monkeypatch) -> None:
+    async def fake_spawn(*args: object, **kwargs: object) -> _FakeProcess:
+        return _FakeProcess(returncode=1, stderr=b"unknown object")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    assert await busctl.get_property(
+        "org.example", "/path", "org.example.Iface", "Volume",
+    ) is None

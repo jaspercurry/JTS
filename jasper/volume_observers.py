@@ -43,9 +43,8 @@ import re
 from functools import partial
 from typing import Optional
 
-from . import librespot_state
+from . import busctl, librespot_state
 from .bluealsa_probe import active_transport_path
-from .busctl import run_busctl
 from .log_event import log_event
 from .music_sources import Source
 from .volume_coordinator import VolumeCoordinator
@@ -237,7 +236,7 @@ class VolumeObserver:
         path = await _bluez_alsa_active_transport_path()
         if path is None:
             return None
-        out = await _busctl_get_property_value(
+        out = await busctl.get_property(
             "org.bluealsa", path,
             "org.bluez.MediaTransport1", "Volume",
             bus="--system",
@@ -253,26 +252,3 @@ class VolumeObserver:
         except ValueError:
             return None
         return max(0, min(127, v))
-
-
-async def _busctl_get_property_value(
-    bus_name: str,
-    object_path: str,
-    interface: str,
-    prop: str,
-    *,
-    bus: str = "--system",
-) -> Optional[str]:
-    """Run `busctl get-property` and return the raw stdout, or None
-    on any error. Caller parses the typed-variant value."""
-    result = await run_busctl(
-        "get-property",
-        bus_name, object_path, interface, prop,
-        bus=bus,
-    )
-    if result is None:
-        logger.debug("busctl get-property %s.%s failed", interface, prop)
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.decode("utf-8", "replace").strip()
