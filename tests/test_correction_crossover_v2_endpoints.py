@@ -36,7 +36,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -566,12 +565,12 @@ def test_status_publishes_the_banked_seat_level_once(banked, request):
     load.assert_called_once()
 
 
-def test_an_old_state_file_with_a_cloud_block_loads_and_drops_it(monkeypatch):
-    """A state file from a build that still ran the cloud groups carries
-    ``cloud`` and ``evidence.cloud_artifacts``. It still loads everywhere, no
-    surface reports or grades that stale block, and the next persist does not
-    carry it. The applied candidate still survives a re-arm's new session id
-    (#2079)."""
+def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch):
+    """A state file from an older build carries ``cloud``,
+    ``evidence.cloud_artifacts`` and ``evidence.household_findings``. It still
+    loads everywhere, no surface reports or grades those stale blocks, and the
+    next persist does not carry them. The applied candidate still survives a
+    re-arm's new session id (#2079)."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
     from jasper.cli.doctor import correction
 
@@ -596,6 +595,7 @@ def test_an_old_state_file_with_a_cloud_block_loads_and_drops_it(monkeypatch):
         "evidence": {
             "bundle_session_id": "bundle-1",
             "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"},
+            "household_findings": [{"household_copy": "An old finding.", "at": 1.0}],
         },
     })
     monkeypatch.setattr(
@@ -603,7 +603,7 @@ def test_an_old_state_file_with_a_cloud_block_loads_and_drops_it(monkeypatch):
     )
 
     block = v2status.crossover_v2_status_block()
-    assert not {"cloud", "cloud_chart"} & set(block)
+    assert not {"cloud", "cloud_chart", "findings"} & set(block)
     grade = block["post_apply_grade"]
     assert grade["state"] == v2grade.GRADE_UNVERIFIED
     assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
@@ -627,22 +627,6 @@ def test_an_old_state_file_with_a_cloud_block_loads_and_drops_it(monkeypatch):
     assert state["candidate"] == {"fingerprint": "fp-original"}
     assert "cloud" not in state
     assert state["evidence"] == {"bundle_session_id": "bundle-2"}
-
-
-def _seeded_session_with_a_banked_finding(copy: str) -> None:
-    """A completed measuring session whose fit banked one household finding."""
-    v2state.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "evidence": {
-            "bundle_session_id": "bundle-stage-1",
-            v2durable.FINDING_HOUSEHOLD_REFS_KEY: [
-                {"household_copy": copy, "at": time.time()},
-            ],
-        },
-    })
 
 
 def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
@@ -713,7 +697,6 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     assert "fc_selection" not in (v2state.load_v2_state() or {})
 
 
-_FINDING_COPY = "Two measurements of how this speaker's ranges balance disagreed."
 _RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
 
 
@@ -755,13 +738,6 @@ def _dig(payload, path, *, missing=None):
     ("seed", "state_path", "status_path", "expected"),
     (
         pytest.param(
-            lambda: _seeded_session_with_a_banked_finding(_FINDING_COPY),
-            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY, 0, "household_copy"),
-            ("findings", 0, "household_copy"),
-            _FINDING_COPY,
-            id="banked-finding",
-        ),
-        pytest.param(
             lambda: _seeded_session_with_a_reservation(
                 {"ripple_reservation": _RIPPLE_RESERVATION}),
             ("measure", "ripple_reservation"),
@@ -783,8 +759,8 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     seed, state_path, status_path, expected,
 ):
     """Walks the real seam: seeded durable state -> the REAL re-arm conductor
-    -> the REAL ``persist_conductor_state`` -> the three surfaces the
-    disclosure has to reach (durable state, ``/state``, the done screen).
+    -> the REAL ``persist_conductor_state`` -> the two surfaces the
+    disclosure has to reach (durable state and ``/state``).
     """
     seed()
     v2state.persist_conductor_state(
@@ -804,40 +780,13 @@ def test_stage_2_keeps_what_the_measuring_session_disclosed(
     assert _dig(status, status_path) == expected
 
 
-@pytest.mark.parametrize(
-    ("seed", "state_path", "cleared_state", "status_path", "cleared_status"),
-    (
-        pytest.param(
-            lambda: _seeded_session_with_a_banked_finding(
-                "An old finding nobody re-measured."),
-            ("evidence", v2durable.FINDING_HOUSEHOLD_REFS_KEY),
-            # REMOVED from the evidence map, not written as None.
-            _ABSENT,
-            ("findings",),
-            [],
-            id="banked-finding",
-        ),
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"ripple_reservation": _RIPPLE_RESERVATION}),
-            ("measure",),
-            # Still there, holding None: the key is the whole measure block.
-            None,
-            ("measure",),
-            None,
-            id="ripple-reservation",
-        ),
-    ),
-)
-def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
-    seed, state_path, cleared_state, status_path, cleared_status,
-):
+def test_a_fresh_measurement_clears_what_the_previous_session_disclosed():
     """The converse, and the reason the predicate is MEASURE rather than an
     unconditional carry: a new measuring session owns the answer to "what did
     this measurement learn", so a clean retake must not replay a caveat about a
     capture the household already replaced.
     """
-    seed()
+    _seeded_session_with_a_reservation({"ripple_reservation": _RIPPLE_RESERVATION})
 
     # A fresh full session: its own session_phases include MEASURE.
     v2state.persist_conductor_state(
@@ -846,139 +795,9 @@ def test_a_fresh_measurement_clears_what_the_previous_session_disclosed(
         evidence={"bundle_session_id": "bundle-fresh"},
     )
 
-    assert _dig(v2state.load_v2_state(), state_path, missing=_ABSENT) is cleared_state
-    assert _dig(v2status.crossover_v2_status_block(), status_path) == cleared_status
-
-
-def _plant_unbankable_v2_state(state: Any) -> None:
-    """Plant durable state that ``save_v2_state`` itself would REFUSE.
-
-    Since #2839 the writer passes ``allow_nan=False``, so it can no longer
-    produce a state file carrying a non-finite number. A file written by a
-    build that predates that guard still can, and ``json.loads`` accepts the
-    bare ``NaN`` / ``Infinity`` literals on the way back in — so the FILE, not
-    the writer, is the surface the reader guards below defend, exactly as
-    ``10 ** 400`` is (JSON integers are unbounded and no writer produces one
-    either). Written the way that build would have: the envelope through the
-    real writer, the value it now refuses spliced in after.
-    """
-    v2state.save_v2_state({"session_id": "cap_placeholder"})
-    path = Path(v2state._state_path())
-    envelope = json.loads(path.read_text(encoding="utf-8"))
-    path.write_text(
-        json.dumps({**envelope, **state}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _findings_state(rows: Any) -> None:
-    """Durable state whose projection is exactly ``rows``.
-
-    Planted as a file rather than through ``save_v2_state``: the rows here are
-    hostile by construction, and some of them are values the writer refuses
-    since #2839 — see :func:`_plant_unbankable_v2_state`. The subject of these
-    tests is the projection layer, not the writer.
-    """
-    _plant_unbankable_v2_state({
-        "session_id": "cap_projection",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-        "evidence": {
-            "bundle_session_id": "bundle-1",
-            v2durable.FINDING_HOUSEHOLD_REFS_KEY: rows,
-        },
-    })
-
-
-@pytest.mark.parametrize("copy", [
-    42,                     # the gate's own mutation subject — `str(42)` = "42"
-    42.5,
-    True,                   # bool is an int; `str(True)` = "True"
-    None,                   # `str(None or "")` = "" — falsy, but still not text
-    ["a sentence"],
-    {"text": "a sentence"},
-    "",
-    "   ",
-    "\n\t ",
-])
-def test_a_row_without_a_real_sentence_is_dropped_never_coerced(copy):
-    """**A finding is prose or it is nothing.** Never `str()`-ed into existence.
-
-    The failure this forbids is not cosmetic: a coerced row puts a fabricated
-    sentence — "42", "True", "None" — into the one register this program
-    promises is household-readable, on the screen that tells someone their
-    speaker is tuned. Dropping is the honest answer to a row this build cannot
-    read.
-    """
-    _findings_state([{"household_copy": copy, "at": time.time()}])
-    assert v2status.crossover_v2_status_block()["findings"] == []
-
-
-def test_a_good_row_survives_beside_every_unusable_one():
-    """Guards the guard: the drops above are a FILTER, not this layer refusing
-    to project at all. A test suite where every projection came back empty
-    would pass the assertions above while shipping nothing."""
-    _findings_state([
-        {"household_copy": 42, "at": time.time()},
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-        "not even an object",
-        {"household_copy": "", "at": time.time()},
-    ])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-    ]
-
-
-@pytest.mark.parametrize("at", [
-    None,
-    "2026-07-29T10:00:00Z",   # an ISO string is not this file's clock
-    True,                     # bool is an int, and it is not a timestamp
-    [1_700_000_000.0],
-    float("nan"),
-    float("inf"),
-    float("-inf"),
-    10 ** 400,                # nit 1: `float()` RAISES OverflowError here
-])
-def test_an_unusable_clock_becomes_none_and_never_takes_the_row_with_it(at):
-    """**The date is dropped; the sentence is not.** An unreadable ``at`` means
-    "we cannot say when", which the envelope renders as "From your measurement
-    earlier: …" — a real disclosure with no date CLAIM. Losing the whole finding
-    over a bad byte in its timestamp would trade a missing date for a missing
-    diagnosis.
-
-    ``10 ** 400`` is the nit-1 case and it is reachable through the file, not
-    theoretical: JSON integers are unbounded, `json` round-trips one happily,
-    and `float()` on it RAISES `OverflowError` rather than returning `inf` — on
-    the wizard's 1.5 s poll path, where an escape is a 500 on a plain page load.
-    """
-    _findings_state([{"household_copy": "A real one.", "at": at}])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": None},
-    ]
-
-
-def test_the_projection_reads_only_its_two_fields():
-    """A durable row written by a later build — one that persists the mechanism
-    beside the copy — must not leak that field onto `/state`. The reader NAMES
-    what it takes rather than passing a row through, so a field added upstream
-    cannot publish itself here."""
-    _findings_state([{
-        "household_copy": "A real one.",
-        "at": 1_700_000_000.0,
-        "mechanism": "M7",
-        "evidence": {"disagreement_db": 3.2307},
-    }])
-    assert v2status.crossover_v2_status_block()["findings"] == [
-        {"household_copy": "A real one.", "at": 1_700_000_000.0},
-    ]
-
-
-@pytest.mark.parametrize("rows", [None, {}, "findings", 7, [None, 5, "x"]])
-def test_a_malformed_projection_block_reads_as_no_findings(rows):
-    """A whole projection key that is not a list of objects is "nothing banked",
-    never a crash on the poll path."""
-    _findings_state(rows)
-    assert v2status.crossover_v2_status_block()["findings"] == []
+    # Still there, holding None: the key is the whole measure block.
+    assert _dig(v2state.load_v2_state(), ("measure",), missing=_ABSENT) is None
+    assert v2status.crossover_v2_status_block()["measure"] is None
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():
@@ -1188,42 +1007,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
-def test_the_predicted_curve_is_strided_under_the_chart_cap():
-    """D4: the predicted curve reaches the wire through the chart decimation.
-    The stride divides with ceiling, so the cap is a hard bound (#1858):
-    ``ceil(1031 / 256) = 5``, never floor's 4."""
-    n = v2projection.CHART_CURVE_MAX_JSON_POINTS * 4 + 7  # not a multiple of the cap
-    freqs = [100.0 + i for i in range(n)]
-    mags = [float(i % 5) for i in range(n)]
-    raw = {"freqs_hz": freqs, "magnitude_db": mags}
-
-    v2state.save_v2_state({"session_id": "cap_x", "verify_priors": {"predicted_sum": raw}})
-    predicted = v2status.crossover_v2_status_block()["prediction"]["curve"]
-    assert len(predicted["freqs_hz"]) == len(predicted["magnitude_db"])
-    stride = -(-n // v2projection.CHART_CURVE_MAX_JSON_POINTS)
-    assert stride == 5
-    assert len(predicted["freqs_hz"]) == len(range(0, n, stride))
-    assert len(predicted["freqs_hz"]) == 207
-    assert len(predicted["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-
-
-def test_a_realized_prediction_stays_within_the_chart_cap():
-    """Gate finding on #1858 (SF-1): pin the REALIZED wire length, not the
-    constants that feed it. The persist-time decimator (``_decimate_sum``)
-    and the chart-time re-decimation (``decimate_curve_for_chart``) are driven
-    at real FFT-bin grid sizes — the 65536- and 16384-point windows' 32769-
-    and 8193-bin grids — so the bound is a property of the functions, not of
-    one fixture that happens to clear it.
-    """
-    for n_fft in (1 << 16, 1 << 14):
-        freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)
-        persisted = v2durable._decimate_sum((freqs, np.zeros(freqs.size)))
-        rendered = v2projection.decimate_curve_for_chart(
-            persisted["freqs_hz"], persisted["magnitude_db"],
-        )
-        assert len(rendered["freqs_hz"]) <= v2projection.CHART_CURVE_MAX_JSON_POINTS
-
-
 def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     """Issue #1858: ``_decimate_sum`` must anti-alias before reducing point
     count, not stride-pick raw bins.
@@ -1284,37 +1067,6 @@ def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
     # a stride-picked raw bin is dominated by whichever ripple phase it
     # happened to land on, comparable to the ripple's own amplitude.
     assert np.median(old_err) > 1.0
-
-
-def test_an_ungraded_prediction_reaches_the_wire_as_unknown_never_a_pass():
-    """``None`` is load-bearing on every field of this block.
-
-    Three absences, three honest shapes: no priors at all ⇒ no block; a curve
-    with no stored report (a state written before D4, or a prediction the
-    evaluator refused) ⇒ the curve with ``overall_within_target`` **None** and no
-    bands — never ``False``, which would read as a measured failure, and never
-    ``True``, which would fabricate a pass."""
-    v2state.save_v2_state({"session_id": "cap_x", "verify_priors": None})
-    assert v2status.crossover_v2_status_block()["prediction"] is None
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "verify_priors": {"predicted_sum": None, "predicted_spec": None},
-    })
-    assert v2status.crossover_v2_status_block()["prediction"] is None
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "verify_priors": {
-            "predicted_sum": {"freqs_hz": [100.0, 200.0], "magnitude_db": [0.0, 0.0]},
-            "predicted_spec": None,
-        },
-    })
-    prediction = v2status.crossover_v2_status_block()["prediction"]
-    assert prediction["curve"]["freqs_hz"] == [100.0, 200.0]
-    assert prediction["overall_within_target"] is None
-    assert prediction["spec_bands"] == []
-    assert prediction["reference_db"] is None
 
 
 def test_observe_apply_success_marks_the_state_applied():

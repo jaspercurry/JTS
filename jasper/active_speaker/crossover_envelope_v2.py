@@ -9,12 +9,10 @@ import logging
 from typing import Any, Mapping
 
 from .driver_safety import driver_floor_issues
-from ..json_fields import as_mapping, finite_float as _finite
+from ..json_fields import as_mapping
 from ..log_event import log_event
 from .measurement_view import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
-from .frequency_display import prepare_frequency_curve
-from .crossover_v2.durable_state import FINDING_HOUSEHOLD_REFS_KEY
 from .crossover_v2.coordinator import series_position_from_state
 from .crossover_v2.position_gate import RETAKE_ENDPOINT
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
@@ -49,7 +47,7 @@ from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 
 logger = logging.getLogger(__name__)
 
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 18
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 19
 
 _STEP_IDS = (
     "speaker_setup",
@@ -185,10 +183,6 @@ def _envelope(
         **round_capture(as_mapping(status.get("capture")), verdict, advertise_capture=advertise_capture),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),
-        "round": None,
-        "candidate_review": None,
-        "prediction": None,
-        "findings": [],
     }
 
 
@@ -267,8 +261,6 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             "timing": dict(as_mapping(status.get("timing"))),
             "progress": {"position": 0, "total": len(_STEP_IDS)},
             "applied": _applied_chip(status),
-            "round": None,
-            "candidate_review": None,
         }
 
     v2 = _v2(status)
@@ -437,146 +429,3 @@ def crossover_v2_phase(
             return PHASE_CHECK
         return PHASE_REVIEW
     return PHASE_DONE
-
-
-CHART_CURVE_MAX_JSON_POINTS = 256
-
-
-def decimate_curve_for_chart(freqs: Any, mags: Any) -> dict[str, Any] | None:
-    """Stride a stored curve down to at most :data:`CHART_CURVE_MAX_JSON_POINTS`.
-
-    The stride divides with ceiling, so the bound holds for every input
-    length: floor division let a curve persisted just under twice the cap
-    through undecimated (#1858). ``None`` when there is no usable pair: an
-    empty stored curve means no curve, never a measured flat one.
-    """
-    if not isinstance(freqs, list) or not isinstance(mags, list):
-        return None
-    n = min(len(freqs), len(mags))
-    if n == 0:
-        return None
-    step = max(1, -(-n // CHART_CURVE_MAX_JSON_POINTS))
-    return {
-        "freqs_hz": [_finite(f) for f in freqs[:n:step]],
-        "magnitude_db": [_finite(m) for m in mags[:n:step]],
-    }
-
-
-def prediction_status(state: Any) -> dict[str, Any] | None:
-    """The PREDICTED post-apply response and its stored spec verdict, or
-    ``None`` (two-stage commission D4).
-
-    Both halves were already computed — the curve by ``_decimate_sum`` at
-    persist time, the verdict by the conductor's accountability seam against
-    the FULL-RESOLUTION tuple. This projects; it never grades.
-
-    **``curve`` and ``spec`` are independently absent, and all four
-    combinations are reachable.** Enumerated because a consumer has to read
-    each one differently:
-
-    1. *Both present* — the ordinary closed session. Draw the curve, state the
-       verdict.
-    2. *Curve, no report* — a state written before D4, or a prediction the
-       evaluator refused. Draw the curve, say the verdict is unknown; **do
-       not** infer one from the picture.
-    3. *Neither* — no session has closed a candidate. This function returns
-       ``None`` outright rather than an empty shell.
-    4. *Report, no curve* — **the least obvious of the four.** The verdict
-       was stashed BEFORE the improvement gate ran and the curve only after
-       it returned, so a refusal between the two persisted a report with
-       ``predicted_sum`` still ``None`` — honest, not a leak: the spec verdict
-       did evaluate that prediction. The refusal that produced this shape is
-       retired (``accountability``'s item 2); a pre-retirement state still
-       carries it, and a consumer shows the verdict with no curve to draw.
-
-    So ``overall_within_target`` is ``None`` — not ``False`` — whenever no
-    report was stored. ``None`` here means "unknown", and a consumer must not
-    read it as permission. ``False`` is the opposite: a real graded verdict
-    that the prediction misses the spec, which is exactly what state 4 carries.
-    """
-    priors = (state or {}).get("verify_priors")
-    if not isinstance(priors, Mapping):
-        return None
-    raw_curve = priors.get("predicted_sum")
-    spec = priors.get("predicted_spec")
-    spec = spec if isinstance(spec, Mapping) else {}
-    curve = None
-    if isinstance(raw_curve, Mapping):
-        curve = decimate_curve_for_chart(raw_curve.get("freqs_hz"), raw_curve.get("magnitude_db"))
-        if curve is not None:
-            curve = prepare_frequency_curve(
-                {**curve, "band_hz": raw_curve.get("band_hz")},
-                {**spec, "excluded_bands_hz": spec.get("excluded_intervals")},
-            )
-    if curve is None and not spec:
-        return None
-    bands = spec.get("bands")
-    return {
-        "curve": curve,
-        "spec_bands": [
-            {
-                "f_lo_hz": b.get("f_lo_hz"),
-                "f_hi_hz": b.get("f_hi_hz"),
-                "within_target": b.get("within_target"),
-                "max_deviation_db": b.get("max_deviation_db"),
-                "tolerance_db": b.get("tolerance_db"),
-            }
-            for b in bands
-            if isinstance(b, Mapping)
-        ] if isinstance(bands, list) else [],
-        "overall_within_target": (
-            spec.get("overall_within_target")
-            if isinstance(spec.get("overall_within_target"), bool)
-            else None
-        ),
-        "reference_db": _finite(spec.get("reference_db")),
-        "comparison": (
-            dict(spec["comparison"])
-            if isinstance(spec.get("comparison"), Mapping) else None
-        ),
-    }
-
-
-def household_findings_status(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    """The banked findings a household may read, from the durable projection.
-
-    Reads the durable state's rows — never the bundle, and never
-    ``os``-anything: this runs on every wizard poll.
-
-    **Validated, not trusted.** The state file is JSON written by some build,
-    possibly an older or newer one, so every row is checked rather than passed
-    through: a row without usable copy is DROPPED (an empty or non-string
-    sentence is not a finding a household can read), and an unusable ``at``
-    becomes ``None`` — which the envelope renders as "we cannot say when",
-    exactly as an undated failure record does. Fabricating neither a sentence
-    nor a date is the whole contract here, and it is pinned at THIS layer
-    (``tests/test_correction_crossover_v2_endpoints.py``'s projection-contract
-    tests) rather than only through the envelope: a weakened copy check here —
-    ``str(row.get("household_copy") or "")`` — renders a fabricated ``"42"`` on
-    the done screen end to end, and every screen-level assertion stays green
-    while it does.
-
-    Never raises. ``at`` goes through
-    :func:`~jasper.json_fields.finite_float`, which is where the
-    unbounded-JSON-integer ``OverflowError`` is absorbed; this runs on the
-    wizard's 1.5 s poll path, so an escaping conversion would be a 500 on a
-    plain page load — the same failure :func:`_record_when_phrase` above
-    catches for the same reason.
-    """
-    evidence = (state or {}).get("evidence")
-    rows = (
-        evidence.get(FINDING_HOUSEHOLD_REFS_KEY)
-        if isinstance(evidence, Mapping)
-        else None
-    )
-    if not isinstance(rows, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        copy = row.get("household_copy")
-        if not isinstance(copy, str) or not copy.strip():
-            continue
-        out.append({"household_copy": copy, "at": _finite(row.get("at"))})
-    return out

@@ -72,7 +72,6 @@ DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.
 
 __all__ = [
     "DEFAULT_V2_STATE_PATH",
-    "FINDING_HOUSEHOLD_REFS_KEY",
     "MAX_PERSISTED_SUM_POINTS",
     "ConductorState",
     "V2ConductorSnapshot",
@@ -126,7 +125,6 @@ class V2ConductorSnapshot:
         }
 
 
-FINDING_HOUSEHOLD_REFS_KEY = "household_findings"
 MAX_PERSISTED_SUM_POINTS = 512
 
 
@@ -533,17 +531,6 @@ def build_conductor_state(
 
     conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
     if PHASE_MEASURE not in conductor_session_phases:
-        prior_evidence = prior.get("evidence")
-        if (
-            isinstance(prior_evidence, Mapping)
-            and FINDING_HOUSEHOLD_REFS_KEY in prior_evidence
-        ):
-            merged_evidence = dict(state["evidence"] or {})
-            merged_evidence.setdefault(
-                FINDING_HOUSEHOLD_REFS_KEY,
-                prior_evidence[FINDING_HOUSEHOLD_REFS_KEY],
-            )
-            state["evidence"] = merged_evidence
         if isinstance(prior.get("measure"), Mapping) and state["measure"] is None:
             state["measure"] = dict(prior["measure"])
     for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):

@@ -81,9 +81,9 @@ def _every_screen_envelope() -> dict[str, dict]:
     }
 
 
-def test_schema_8_and_v2_step_tuple():
+def test_schema_version_and_v2_step_tuple():
     env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 18
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
@@ -128,7 +128,7 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
     env = _build_envelope_logged(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 18
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
     assert env["flow"] == "v2"
 
 
@@ -253,7 +253,6 @@ def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
     assert env["alternate_actions"] == []
     assert env["terminal_status"] == terminal
     assert env["capture"] is None
-    assert all(env[key] is None for key in ("candidate_review", "prediction", "round"))
 
 
 @pytest.mark.parametrize("previous_failure", [None, {"code": "user_stopped"}])
