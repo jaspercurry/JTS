@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, NamedTuple, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
@@ -72,8 +72,8 @@ class ProgramDefinition:
     description: str
     measure_label: str
     applied_name: str
-    #: Layouts a trial of this program's documents may walk; the first is the default.
-    trial: tuple[str, ...]
+    #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
+    trial: tuple[tuple[str, str], ...]
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
@@ -96,27 +96,27 @@ _PROGRAM_SECTIONS = (
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization", "Measure each driver and refine its response and crossover.",
-        "Measure the baseline", "driver", trial=("speaker_mark",), preview=(2, "emitted_graph", ("driver", "blend")),
+        "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend")),
     ),
     ProgramDefinition(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
-        "Measure the rear woofer", "rear", trial=("seat_express", "rear_express"),
+        "Measure the rear woofer", "rear", trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
     ),
     ProgramDefinition(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
-        trial=("bass_axis", "seat_express"), graph_evidence=True,
+        trial=(("bass/axis", "bass_axis"), ("bass/axis", "seat_express")), graph_evidence=True,
         clears=("room_correction",), base_clears_own=True,
     ),
     ProgramDefinition(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
-        trial=("seat_express", "room_quick"), preview=(1, "room", ("room",)),
+        trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("room",)),
     ),
 )
 PROGRAM_ROWS = _PROGRAM_SECTIONS
@@ -127,7 +127,7 @@ PRESCRIPTION_SECTIONS = tuple(sorted(
 PURPOSES = tuple(name for _, name in sorted(
     [(row.purpose_order, row.purpose) for row in _PROGRAM_SECTIONS] + [(3, PURPOSE_REFERENCE)],
 ))
-#: Tuning order; reference evidence runs through :data:`REFERENCE_PROGRAMS`.
+#: Tuning order.
 RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
 PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
@@ -136,7 +136,7 @@ _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if r
                                 (REGIME_SUMMED,)) for name in PURPOSES}
 # A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
-#: The size of a run whose poses are its own, not a bundled layout's.
+#: The layout a run banks when its poses are its own inline list, not a named layout's.
 CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
 #: Each program's own candidate layer: the names a take may play cleared (ADR-0370).
@@ -242,22 +242,56 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
-#: The ids a round may have banked under a row that has since retired, and the
-#: purpose each reads as. Frozen: a banked id is never renamed or reused (ADR-0366 §6).
-RETIRED_PROGRAM_PURPOSES = MappingProxyType({
-    "close/spot": PURPOSE_REFERENCE,
-    "close/custom": PURPOSE_REFERENCE,
+class RetiredProgram(NamedTuple):
+    """What a retired id's banked rounds read as, and the preset and layout that
+    replace it for a new run; no preset when nothing does."""
+    purpose: str
+    preset: str = ""
+    layout: str = ""
+
+
+#: Every id a round may have banked under a row that has since retired, keyed by the
+#: full banked id, with its ``/custom`` twin. Frozen: a banked id is never renamed or
+#: reused (ADR-0366 §6).
+RETIRED_PROGRAMS = MappingProxyType({
+    "baseline/express": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", "baseline_express"),
+    "baseline/full": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", "baseline_full"),
+    "baseline/custom": RetiredProgram(PURPOSE_SPEAKER, "speaker/mark", CUSTOM_SIZE),
+    "tournament/full": RetiredProgram(PURPOSE_SPEAKER, "tournament/express", "tournament_full"),
+    "tournament/custom": RetiredProgram(PURPOSE_SPEAKER, "tournament/express", CUSTOM_SIZE),
+    "rear/wide": RetiredProgram(PURPOSE_REAR, "rear/express", "rear_wide"),
+    "rear/behind": RetiredProgram(PURPOSE_REAR, "rear/express", "rear_behind"),
+    "rear/pair_mark": RetiredProgram(PURPOSE_REAR, "rear/pair", "speaker_mark"),
+    "rear/pair_behind": RetiredProgram(PURPOSE_REAR, "rear/pair", "rear_behind"),
+    "rear/custom": RetiredProgram(PURPOSE_REAR, "rear/express", CUSTOM_SIZE),
+    "seat/cloud": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cloud"),
+    "seat/cube": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cube"),
+    "seat/express": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_express"),
+    "seat/custom": RetiredProgram(PURPOSE_ROOM, "room/seat", CUSTOM_SIZE),
+    "room/cloud": RetiredProgram(PURPOSE_ROOM, "room/seat", "seat_cloud"),
+    "room/arm": RetiredProgram(PURPOSE_ROOM, "room/seat", "room_quick"),
+    "room/custom": RetiredProgram(PURPOSE_ROOM, "room/seat", CUSTOM_SIZE),
+    "bass/cloud": RetiredProgram(PURPOSE_BASS, "bass/axis", "seat_cloud"),
+    "bass/quick": RetiredProgram(PURPOSE_BASS, "bass/axis", "room_quick"),
+    "bass/nearfield": RetiredProgram(PURPOSE_BASS),
+    "bass/custom": RetiredProgram(PURPOSE_BASS, "bass/axis", CUSTOM_SIZE),
+    "close/spot": RetiredProgram(PURPOSE_REFERENCE),
+    "close/custom": RetiredProgram(PURPOSE_REFERENCE),
 })
+PROGRAM_RETIRED = "measurement_program_retired"
+LAYOUT_NOT_OFFERED = "measurement_layout_not_offered"
 
 
 def run_purpose(run_program: str | None) -> str:
-    """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
-    a custom layout's ``nearfield/custom``, or a retired row's ``close/spot``)."""
+    """The purpose behind a run manifest's program id: a preset (``speaker/mark``),
+    a bare program (``speaker``), or a retired id (``close/spot``)."""
     banked = str(run_program or "")
     name, _, size = banked.partition("/")
     if not name or name in PURPOSES:
         return name
-    return RETIRED_PROGRAM_PURPOSES.get(banked) or program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    if banked in RETIRED_PROGRAMS:
+        return RETIRED_PROGRAMS[banked].purpose
+    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -379,6 +413,9 @@ class MeasurementProgram:
     room_sweep: bool = False
     branch_pair: str = BRANCH_PAIR_DRIVERS
     co_purposes: tuple[str, ...] = ()
+    #: The named layouts this preset offers; ``layout`` is the one these poses are,
+    #: or :data:`CUSTOM_SIZE` for an inline list (ADR-0366 §6).
+    layouts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -404,6 +441,26 @@ class MeasurementProgram:
     @property
     def capture_count(self) -> int:
         return sum(p.repeats + self.room_sweep for p in self.poses)
+
+
+class RetiredProgramError(ValueError):
+    """A retired id named for a new run; ``detail`` names what replaces it."""
+
+    reason = PROGRAM_RETIRED
+
+    def __init__(self, retired: str) -> None:
+        self.detail = {"retired": retired, **RETIRED_PROGRAMS[retired]._asdict()}
+        super().__init__(f"{retired} is retired")
+
+
+class LayoutNotOfferedError(ValueError):
+    """A named layout the run's preset does not offer; ``detail`` names the ones it does."""
+
+    reason = LAYOUT_NOT_OFFERED
+
+    def __init__(self, preset: str, layout: str, offered: tuple[str, ...]) -> None:
+        self.detail = {"preset": preset, "layout": layout, "offered": list(offered)}
+        super().__init__(f"{preset} offers {', '.join(offered)}, not {layout}")
 
 
 class UnknownProgramError(ValueError):
@@ -455,7 +512,8 @@ def _config_text(path: str | Path | None) -> str:
 
 def _load_programs(
     path: str | Path | None = None,
-) -> tuple[Mapping[tuple[str, str], MeasurementProgram], Mapping[str, str]]:
+) -> tuple[Mapping[tuple[str, str], MeasurementProgram], Mapping[str, str],
+           Mapping[str, tuple[tuple[ProgramPose, ...], str | None]]]:
     raw = json.loads(_config_text(path))
     if not isinstance(raw, dict):
         raise ValueError("measurement plan must be an object")
@@ -499,7 +557,7 @@ def _load_programs(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"program {index} must be an object")
-        unknown = set(row) - {"id", "size", "layout", "purpose", "regime", "levels", "stimulus",
+        unknown = set(row) - {"id", "size", "layout", "layouts", "purpose", "regime", "levels", "stimulus",
                               "room_sweep", "branch_pair", "co_purposes"}
         if unknown:
             raise ValueError(f"program {index} has unknown fields: {sorted(unknown)}")
@@ -509,8 +567,12 @@ def _load_programs(
             layout = _text(row["layout"], f"program {index} layout")
         except KeyError as exc:
             raise ValueError(f"program {index} is missing {exc.args[0]}") from None
-        if layout not in layouts:
-            raise ValueError(f"program {program_id}/{size} names unknown layout {layout!r}")
+        offered = row.get("layouts", [layout])
+        if not isinstance(offered, list) or layout not in offered:
+            raise ValueError(f"program {program_id}/{size} must offer its default layout {layout!r}")
+        for name in offered:
+            if name not in layouts:
+                raise ValueError(f"program {program_id}/{size} names unknown layout {name!r}")
         stimulus = row.get("stimulus")
         if stimulus is not None:
             _text(stimulus, f"program {program_id}/{size} stimulus")
@@ -532,7 +594,7 @@ def _load_programs(
             purpose=row.get("purpose", PURPOSE_SPEAKER),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
-            layout=layout, levels=levels,
+            layout=layout, layouts=tuple(offered), levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
@@ -552,7 +614,8 @@ def _load_programs(
         if (program_id, size) not in programs:
             raise ValueError(f"default {program_id}/{size} is not a program")
         defaults[program_id] = size
-    return MappingProxyType(programs), MappingProxyType(defaults)
+    named = {name: (poses, movers.get(name)) for name, poses in layouts.items()}
+    return MappingProxyType(programs), MappingProxyType(defaults), MappingProxyType(named)
 
 def load_programs(
     path: str | Path | None = None,
@@ -562,18 +625,13 @@ def load_programs(
     return _load_programs(path)[0]
 
 
-_PROGRAMS, _DEFAULT_SIZES = _load_programs()
+_PROGRAMS, _DEFAULT_SIZES, _LAYOUTS = _load_programs()
 
 
 def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
     """The prescription sections one program owns; every program's when ``purpose`` is None."""
     return tuple(section.name for row in _PROGRAM_SECTIONS
                  if purpose is None or row.purpose == purpose for section in row.sections if section.reset)
-
-#: Programs a run may name beside the tuning programs: reference evidence no
-#: tuning reader admits (ADR-0360).
-REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))
-
 
 def available_programs() -> tuple[tuple[str, str], ...]:
     """The ``(program_id, size)`` pairs a menu may offer, sorted."""
@@ -591,38 +649,41 @@ def program(program_id: str, size: str | None = None) -> MeasurementProgram:
         raise UnknownProgramError(program_id, requested_size, available_programs()) from None
 
 
-def run_program(program_id: str, poses: str | None = None) -> MeasurementProgram:
-    """Resolve the run's named layout, inline JSON pose list or bearing list
-    (ADR-0298) under the program's own purpose."""
-    selected = program(program_id)
+def run_program(program_id: str, layout: str | None = None, poses: str | None = None) -> MeasurementProgram:
+    """Resolve a run's preset (a bare program id is its default preset) at a named
+    layout it offers, or at an inline JSON pose list or bearing list (ADR-0298,
+    ADR-0366 §6). A retired id refuses by name."""
+    for named in (program_id, poses or ""):
+        if named in RETIRED_PROGRAMS:
+            raise RetiredProgramError(named)
+    name, _, size = program_id.partition("/")
+    selected = program(name, size or None)
+    if layout is not None:
+        if layout not in selected.layouts:
+            raise LayoutNotOfferedError(f"{selected.program_id}/{selected.size}", layout, selected.layouts)
+        layout_poses, mover = _LAYOUTS[layout]
+        selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
     if poses is None:
         return selected
-    purpose = selected.purpose
-    for row in sorted(_PROGRAMS.values(), key=lambda row: row.program_id != program_id):
-        if poses in (row.layout, f"{row.program_id}_{row.size}", f"{row.program_id}/{row.size}"):
-            own = row.purpose == purpose
-            regime = row.regime if own else selected.regime
-            return replace(row, program_id=program_id, purpose=purpose, regime=regime,
-                           co_purposes=row.co_purposes if own else selected.co_purposes,
-                           branch_pair=row.branch_pair if own else selected.branch_pair,
-                           room_sweep=(selected.room_sweep and purpose == PURPOSE_SPEAKER
-                                       and regime == REGIME_PER_DRIVER),
-                           levels=selected.levels, stimulus=row.stimulus if own else selected.stimulus)
-    layout = json.loads(poses) if poses.lstrip().startswith("[") else [
+    rows = json.loads(poses) if poses.lstrip().startswith("[") else [
         {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
-    return replace(selected, size=CUSTOM_SIZE, layout="", poses=tuple(
-        _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(layout)))
+    return replace(selected, layout=CUSTOM_SIZE, poses=tuple(
+        _pose(value, CUSTOM_SIZE, index) for index, value in enumerate(rows)))
 
 
-def trial_program(sections: Collection[str], mover: str | None = None) -> MeasurementProgram | None:
+def trial_program(
+    sections: Collection[str], mover: str | None = None, layout: str | None = None,
+) -> MeasurementProgram | None:
     """The first program the document states of rear, bass, room, speaker (reverse document
-    order), at its first trial layout ``mover`` can walk; ``None`` when it states none."""
+    order): its first trial preset that offers ``layout``, else its first trial layout
+    ``mover`` can walk; ``None`` when it states none."""
     row = next((row for row in reversed(PROGRAM_DOCUMENT_ORDER)
                 if any(section.name in sections for section in row.sections)), None)
     if row is None:
         return None
-    trials = [run_program(row.purpose, layout) for layout in row.trial]
-    return next((trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
+    trials = [run_program(preset, trial_layout) for preset, trial_layout in row.trial]
+    return next((trial for trial in trials if layout in trial.layouts), None) or next(
+        (trial for trial in trials if mover is None or trial.mover in (None, mover)), trials[0])
 
 
 BASE_CANDIDATE = "base"

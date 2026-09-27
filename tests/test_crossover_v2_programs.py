@@ -48,7 +48,7 @@ from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_program
-from jasper.active_speaker.measurement_programs import program as measurement_program
+from jasper.active_speaker.measurement_programs import program as measurement_program, run_program
 from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -590,11 +590,12 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
         assert max(s.effective_peak_dbfs for s in program.stimulus_segments()) <= -65.0
 
 
-@pytest.mark.parametrize(("purpose", "size"), [
-    ("speaker", "mark"), ("room", "arm"), ("room", "cloud"), ("bass", "quick"), ("bass", "cloud"),
+@pytest.mark.parametrize(("purpose", "poses"), [
+    ("speaker", "speaker_mark"), ("room", "room_quick"), ("room", "seat_cloud"), ("bass", "room_quick"),
+    ("bass", "seat_cloud"),
 ])
-def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, size):
-    layout = measurement_program(purpose, size)
+def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, poses):
+    layout = run_program(purpose, poses)
     request = request_for_program(layout, mover=layout.mover or "human")
     _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000,
                                              max_sweep_duration_s=4)

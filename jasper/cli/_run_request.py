@@ -53,14 +53,14 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
         except OSError:
             pass
     if args.plan:
-        if any(getattr(args, key) is not None for key in ("program", "poses", "candidates", "repeats", "mover", "level_db")):
+        if any(getattr(args, key) is not None for key in ("program", "poses", "layout", "candidates", "repeats", "mover", "level_db")):
             raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
             raise ValueError("plan must be an object")
         request = AngleCaptureRequest.from_mapping(document)
         return preflight_levels(request, _facts(request, args))
-    program = run_program(args.program or "speaker", args.poses)
+    program = run_program(args.program or "speaker", args.layout, args.poses)
     if args.repeats is not None:
         try:
             program = replace(program, poses=tuple(replace(pose, repeats=args.repeats) for pose in program.poses))

@@ -409,7 +409,8 @@ class LevelPolicy:
 class AngleCaptureRequest:
     """One ordered walk, with adjacent candidates at each pose.
 
-    ``program`` is provenance; geometry and purpose come from the stops.
+    ``program`` (the preset id) and ``layout`` (its named layout, or ``custom``)
+    are provenance; geometry and purpose come from the stops.
     ``template`` supplies stimulus and overlays to the two spec builders.
     """
 
@@ -417,6 +418,7 @@ class AngleCaptureRequest:
     mover: str = MOVER_HUMAN
     template: MeasureSpec = DEFAULT_TEMPLATE
     program: str = ""
+    layout: str = ""
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
     level_source: str = ""
@@ -513,12 +515,12 @@ class AngleCaptureRequest:
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
         if unknown:
             raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source"}
+        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source", "layout"}
         if missing:
             raise ValueError(f"request must state {', '.join(sorted(missing))}")
         values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
-        for name in ("mover", "program"):
-            if not isinstance(values[name], str):
+        for name in ("mover", "program", "layout"):
+            if not isinstance(values.get(name, ""), str):
                 raise ValueError(f"{name} must be text")
         if not isinstance(values["stops"], list) or not values["stops"]:
             raise ValueError("stops must be a nonempty list")
@@ -813,6 +815,7 @@ def request_for_program(
         level=level, level_source=level_source, levels=levels,
         repeats=repeats, retries_per_pose=retries_per_pose,
         program=f"{program.program_id}/{program.size}",
+        layout=program.layout,
     )
 
 

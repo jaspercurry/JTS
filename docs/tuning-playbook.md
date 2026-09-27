@@ -122,8 +122,8 @@ seconds, supports a speaker claim
 
 ### Document
 
-`jasper-round run --program speaker --poses baseline/express` collects driver
-fits, timing and room evidence in one round; `baseline/full` adds poses.
+`jasper-round run --program speaker --layout baseline_express` collects driver
+fits, timing and room evidence in one round; `baseline_full` adds poses.
 Write one document with every section the evidence supports.
 `jasper-crossover-prescriber judge --help` shows the document's envelope, and
 `jasper-crossover-prescriber contract --round <dir> --section speaker` prints
@@ -406,7 +406,7 @@ charged to program headroom. Keep the bass branch in phase. Carry a filter
 that flattens the front woofer itself on all three chains, so the rear/front
 ratio stays the one you fitted.
 
-A `rear/pair_behind` round takes one pass per pose: 1 m in front, then behind
+A `rear/pair --layout rear_behind` round takes one pass per pose: 1 m in front, then behind
 the cabinet, halfway to the wall at woofer height. Each take repeats both
 woofers on one clock. Use `--repeats 2` for two passes per pose. Its `behind`
 position is a peer row in the pair block and in every preview: `change_db` in the
@@ -418,7 +418,7 @@ A low band below the first room mode can carry rumble without hurting
 the model in the cancellation band.
 
 After a preview predicts the wall-ward null, play the candidates:
-`jasper-round run --program rear --poses rear/behind --candidates base,<a>,<b>,<rear-muted>`
+`jasper-round run --program rear --layout rear_behind --candidates base,<a>,<b>,<rear-muted>`
 uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's `bands[].change_db` only, against rear-muted next to the preview's;
 `late_energy` has no meaning there (no direct arrival behind the cabinet).
@@ -450,9 +450,9 @@ responses and refit them if needed.
 
 This is the hand loop of record for a cardioid box. Keep the cabinet at its wall.
 
-1. At the mark, run `jasper-round run --program speaker --poses speaker/mark --wait`.
+1. At the mark, run `jasper-round run --program speaker --wait`.
    Fit, trial and apply the speaker there, then bank the model:
-   `jasper-round run --program rear --poses rear/pair_mark --wait`.
+   `jasper-round run --program rear/pair --layout speaker_mark --wait`.
 2. Write the rear seed (`contract --section rear` carries one as `seed`) and preview variants from that pair round:
    `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
    Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
@@ -498,12 +498,12 @@ rows, then `across_positions`: per-figure median, worst value and
   and level. Seat trials disclose `too_few_repeats`; cross-seat spread cannot replace it.
 - Room `spread_rms_db`, beside `median`, is RMS of per-bin cross-seat standard
   deviations from coverage floor to ceiling. Read `median.n_positions` with it.
-  Three seats make this estimate noisy; seven or eleven use `run --layout seat_cube`
-  or `run --layout seat_cloud` (counts: `measurement_plans.json`'s named layouts).
+  Three seats make this estimate noisy; seven or eleven use `run --program room --layout seat_cube`
+  or `--layout seat_cloud` (counts: `measurement_plans.json`'s named layouts).
 
 `room-grade` across this trial's candidate sets is not a candidate comparison:
 rear weight also changes band level. For a plain box, skip the rear pair and
-rear variants; use `jasper-round run --program room --poses room/seat --wait`,
+rear variants; use `jasper-round run --program room --wait`,
 then compose the room fit with `--set`, trial it and apply the chosen document.
 
 ## Five rules that hold everywhere

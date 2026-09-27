@@ -452,7 +452,7 @@ def bank_seat_round(
     """
     round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY)
     stops = angle_capture.resolve_request(
-        angle_capture.request_for_program(measurement_programs.program("seat", "cube"))
+        angle_capture.request_for_program(measurement_programs.run_program("room", "seat_cube"))
     )
     magnitudes = (
         [np.full(SEAT_GRID_HZ.shape, -30.0)] * len(stops)

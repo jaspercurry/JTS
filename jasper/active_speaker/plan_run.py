@@ -243,7 +243,7 @@ async def run_plan(
     from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
     manifest.request_fingerprint = request_fingerprint(request)
-    manifest.program = request.program
+    manifest.program, manifest.layout = request.program, request.layout
     manifest.spl_monitor = spl_monitor
     manifest.asked = {
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),

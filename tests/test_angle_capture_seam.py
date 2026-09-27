@@ -812,10 +812,10 @@ def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth(
 @pytest.mark.parametrize(
     "program",
     [
-        mp.program("baseline", "express"),
-        mp.program("baseline", "full"),
+        mp.run_program("speaker", "baseline_express"),
+        mp.run_program("speaker", "baseline_full"),
     ],
-    ids=["baseline/express", "baseline/full"],
+    ids=["baseline_express", "baseline_full"],
 )
 def test_a_program_becomes_its_own_walk_in_table_order(
     program: mp.MeasurementProgram,
@@ -846,14 +846,14 @@ def test_a_program_becomes_its_own_walk_in_table_order(
         for pose in program.poses
         for _ in range(pose.repeats + program.room_sweep)
     ]
-    assert request.program == f"{program.program_id}/{program.size}"
+    assert (request.program, request.layout) == (f"{program.program_id}/{program.size}", program.layout)
 
 
 def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     """A program says WHERE to measure; the mover says what it can reach."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.request_for_program(
-            mp.program("baseline", "express"), mover=ac.MOVER_ARM,
+            mp.run_program("speaker", "baseline_express"), mover=ac.MOVER_ARM,
         )
 
     assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
@@ -869,9 +869,9 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
     [
         (mp.program("tournament", "express"), ()),
         (mp.program("tournament", "express"), ("fp-a", "fp-b")),
-        (mp.program("tournament", "full"), ("fp-a", "fp-b", "fp-c")),
-        (mp.program("baseline", "express"), ("fp-a", "fp-b")),
-        (mp.program("rear", "behind"), ("base", "fp-a", "muted")),
+        (mp.run_program("tournament", "tournament_full"), ("fp-a", "fp-b", "fp-c")),
+        (mp.run_program("speaker", "baseline_express"), ("fp-a", "fp-b")),
+        (mp.run_program("rear", "rear_behind"), ("base", "fp-a", "muted")),
     ],
     ids=["no-cycle", "one-pose", "three-poses", "with-repeats", "rear-behind"],
 )
@@ -932,7 +932,7 @@ def test_summed_candidate_walk_requires_the_supported_execution_path(candidates)
 
 def test_three_configs_at_three_poses_use_three_placement_grants():
     request = ac.request_for_program(
-        mp.program("tournament", "full"), candidates=("base", "fp-a", "fp-b"),
+        mp.run_program("tournament", "tournament_full"), candidates=("base", "fp-a", "fp-b"),
     )
     entries = _candidate_batch_plan(request).entries
     gate = PositionGate()
@@ -966,7 +966,7 @@ def test_three_configs_at_three_poses_use_three_placement_grants():
 
 def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
     request = ac.request_for_program(
-        mp.program("tournament", "full"), candidates=("base", "fp-a", "fp-b"),
+        mp.run_program("tournament", "tournament_full"), candidates=("base", "fp-a", "fp-b"),
     )
     first, second, third = _candidate_batch_plan(request).entries[:3]
     gate = PositionGate()
@@ -999,20 +999,16 @@ def test_a_retake_or_recovery_needs_a_new_grant_and_rejects_stale_actions():
 
 
 @pytest.mark.parametrize(
-    ("program_id", "size"),
-    [("seat", "cube"), ("seat", "express")],
-    ids=["seat/cube", "seat/express"],
+    "layout", ["seat_cube", "seat_express"],
 )
-def test_a_categorized_program_walks_summed_whatever_the_candidates_say(
-    program_id: str, size: str,
-) -> None:
+def test_a_categorized_program_walks_summed_whatever_the_candidates_say(layout: str) -> None:
     """The room is measured THROUGH the speaker stage it sits on.
 
     So a seat pose is a SUMMED capture even with no candidate named, which for
     a bearing selects per-driver. The category and the head offset ride from
     the table's pose onto the stop unchanged.
     """
-    program = mp.program(program_id, size)
+    program = mp.run_program("room", layout)
     request = ac.request_for_program(program, candidates=())
 
     assert {stop.regime for stop in request.stops} == {ac.REGIME_SUMMED}
@@ -1079,7 +1075,7 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
     of them and the geometry claims no mark distance -- the take record says
     where the head was instead.
     """
-    program = mp.program("seat", "cube")
+    program = mp.run_program("room", "seat_cube")
     stops = ac.resolve_request(ac.request_for_program(program))
 
     assert len(stops) == len({stop.prompt.text for stop in stops}) == 7
@@ -1094,7 +1090,7 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
 
 @pytest.mark.parametrize("elevation", [0, 10])
 def test_position_gate_names_the_behind_pose_without_changing_the_action_body(elevation):
-    request = ac.request_for_program(mp.program("rear", "pair_behind"), candidates=("rear-candidate",))
+    request = ac.request_for_program(mp.run_program("rear/pair", "rear_behind"), candidates=("rear-candidate",))
     front, behind = ac.resolve_request(request)
     gate = PositionGate()
     actions = [gate.invitation(SimpleNamespace(screen={**capture_plan.position_screen_keys(stop.prompt),
@@ -1174,7 +1170,7 @@ def test_shipped_program_geometry_and_full_capture_price(
     candidates: tuple[str, ...], regime: str, phase: str, price: dict,
 ) -> None:
     request = ac.request_for_program(
-        mp.program("baseline", "express"), candidates=candidates,
+        mp.run_program("speaker", "baseline_express"), candidates=candidates,
     )
     stops = tuple(stop for stop in ac.resolve_request(request) if candidates or stop.regime == ac.REGIME_PER_DRIVER)
     geometries = [capture_plan.position_geometry(stop.prompt) for stop in stops]
@@ -1221,9 +1217,9 @@ def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
     assert len({doc_pose_key(take) for take in takes}) == 7
 
 
-@pytest.mark.parametrize("size", ["cloud", "arm"])
-def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
-    program = mp.program("room", size)
+@pytest.mark.parametrize("layout", ["seat_cloud", "room_quick"])
+def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(layout):
+    program = mp.run_program("room", layout)
     request = ac.request_for_program(program, mover=program.mover or ac.MOVER_HUMAN, candidates=("base", "room-fp"))
     plan = _candidate_batch_plan(request)
     entries = plan.entries
@@ -1242,12 +1238,12 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
 
 
 @pytest.mark.parametrize(
-    ("program_id", "size", "candidates", "sweep_s", "level_ladder_dbfs", "stimulus_s"),
+    ("program_id", "layout", "candidates", "sweep_s", "level_ladder_dbfs", "stimulus_s"),
     [
-        ("tournament", "express", (), None, (), None),
-        ("tournament", "express", ("fp-a", "fp-b"), 2.0, (), 4.0),
-        ("room", "arm", ("base", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
-        ("room", "cloud", (), None, (), None),
+        ("tournament", "tournament_express", (), None, (), None),
+        ("tournament", "tournament_express", ("fp-a", "fp-b"), 2.0, (), 4.0),
+        ("room", "room_quick", ("base", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
+        ("room", "seat_cloud", (), None, (), None),
     ],
     ids=[
         "tournament-express-no-cand-no-sweep",
@@ -1257,11 +1253,11 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(size):
     ],
 )
 def test_walk_price_reports_stimulus_seconds_for_named_programs(
-    program_id: str, size: str, candidates: tuple[str, ...],
+    program_id: str, layout: str, candidates: tuple[str, ...],
     sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
     stimulus_s: float | None,
 ) -> None:
-    program = mp.program(program_id, size)
+    program = mp.run_program(program_id, layout)
     request = ac.request_for_program(
         program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN,
         template=ac.walk_template(
@@ -1438,7 +1434,7 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_request_round_trip_and_capture_schedule(repeats, candidates):
     request = ac.request_for_program(
-        mp.program("room", "arm"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
+        mp.run_program("room", "room_quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         retries_per_pose=2,
         level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
@@ -1526,15 +1522,15 @@ def test_invalid_walk_fields_refuse_by_name(fields, reason):
     assert refused.value.reason == reason
 
 
-@pytest.mark.parametrize("program,size,mover,reason", [
-    ("room", "arm", ac.MOVER_ARM, None),
-    ("room", "arm", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
-    ("bass", "quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
-    ("seat", "cloud", ac.MOVER_HUMAN, None),
-    ("seat", "cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
+@pytest.mark.parametrize("program,layout,mover,reason", [
+    ("room", "room_quick", ac.MOVER_ARM, None),
+    ("room", "room_quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
+    ("bass", "room_quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
+    ("room", "seat_cloud", ac.MOVER_HUMAN, None),
+    ("room", "seat_cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
 ])
-def test_program_mover_constraints_refuse_by_name(program, size, mover, reason):
-    row = mp.program(program, size)
+def test_program_mover_constraints_refuse_by_name(program, layout, mover, reason):
+    row = mp.run_program(program, layout)
     if reason is None:
         assert ac.request_for_program(row, mover=mover).mover == mover
     else:
