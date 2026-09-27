@@ -23,14 +23,6 @@
 # source block.
 : "${ENV_DIR:?}" "${STATE_DIR:?}" "${SYSTEMD_DIR:?}" "${CAMILLA_CONF:?}" "${LOCAL_SBIN_DIR:?}"
 JASPER_RETIRED_LEFTOVERS=(
-    # No backup, deliberately: nothing reads audio_topology.env for routing, so
-    # a `.retired.*` copy would preserve ghost state under a name the doctor
-    # does NOT warn about. jasper-doctor's check_fanin_asound_wiring WARNs on
-    # the file's presence and names re-running the installer as the fix — this
-    # row is the half that makes that sentence true.
-    # REMOVAL CONDITION: that check drops its WARN AND no Pi still carries
-    # /etc/asound.conf.dmix-mode-backup.
-    "file|${STATE_DIR}/audio_topology.env /etc/asound.conf.dmix-mode-backup|the dmix/fanin topology switch state"
     # Library copies older installs published that nothing reads any more: the
     # installer libs beside build-sandbox.sh (deploy/bin/jasper-contained-build
     # sources that one alone), the core-graph park list and the Apple-dongle

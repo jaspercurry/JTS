@@ -43,7 +43,6 @@ REASON_ASOUND_LEGACY_RENDERER_BLOCK = "asound_legacy_renderer_block"
 REASON_ASOUND_LANE_MISSING = "asound_lane_missing"
 REASON_ASOUND_LANE_WRONG_SLAVE = "asound_lane_wrong_slave"
 REASON_ASOUND_LANE_WIDTH_SHEAR = "asound_lane_width_shear"
-REASON_ASOUND_STALE_TOPOLOGY_STATE = "asound_stale_topology_state"
 
 REASON_FANIN_UNIT_MISSING = "fanin_unit_missing"
 REASON_FANIN_UNIT_NOT_ENABLED = "fanin_unit_not_enabled"
@@ -319,20 +318,6 @@ def check_fanin_asound_wiring() -> CheckResult:
             "own substream. Re-run deploy/install.sh to restore the fan-in "
             "asoundrc.",
             reason=drift_reason,
-        )
-
-    # REMOVAL CONDITION (see deploy/lib/install/retirements.sh's matching
-    # note): drop this WARN once no Pi still carries
-    # /etc/asound.conf.dmix-mode-backup either.
-    stale_state = Path("/var/lib/jasper/audio_topology.env")
-    if stale_state.exists():
-        return CheckResult(
-            label,
-            "warn",
-            f"fan-in asoundrc is correct, but stale {stale_state} still "
-            f"exists from the retired dmix/fanin switcher. Re-run "
-            f"deploy/install.sh to archive/remove it.",
-            reason=REASON_ASOUND_STALE_TOPOLOGY_STATE,
         )
 
     return CheckResult(label, "ok", "renderer/test lanes 0..4")
