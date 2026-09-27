@@ -176,6 +176,9 @@ class TurnLifecycle:
         # both boundaries and local VAD must not become a second writer of
         # end-of-input.
         self.manual_endpoint_this_turn: bool = False
+        # Frames the push-to-talk source delivered to this turn, whatever the
+        # provider then did with them: none is the typed no_frames failure.
+        self.manual_frames: int = 0
         self.speech = SpeechActivity()
 
         # Turns since daemon start that were asked a question and produced no
@@ -224,6 +227,7 @@ class TurnLifecycle:
         self.manual_endpoint_this_turn = (
             self._push_to_talk.active_source is not None
         )
+        self.manual_frames = 0
         # Silero's internal LSTM state must not leak across turns.
         self._reset_input()
         self.user_speech_seen = False
@@ -823,6 +827,15 @@ class TurnLifecycle:
                 chunks_received=chunks_received,
                 endpointer=self.endpointer_label(),
                 turn_lost=lost_mid_reply,
+            )
+        elif self.manual_endpoint_this_turn and not self.manual_frames:
+            # The same typed failure a press the remote cannot carry ends in
+            # (issue #3346): a hold is a question the household asked.
+            play_no_answer_cue = self._log_no_answer(
+                "manual_mic.hold_failed",
+                end_reason=reason,
+                source=self._push_to_talk.active_source,
+                reason="no_frames",
             )
         elif bytes_sent == 0:
             self._log_no_answer(

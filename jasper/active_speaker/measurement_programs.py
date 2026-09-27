@@ -15,7 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
+from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id
 
@@ -77,6 +77,10 @@ class ProgramDefinition:
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
+    #: Applied layers every take of this purpose plays cleared, and whether its
+    #: base also clears the purpose's own layer (doctrine §1a; ADR-0370).
+    clears: tuple[str, ...] = ()
+    base_clears_own: bool = False
 
 
 # Row order is the tuning order; stored documents retain their existing orders.
@@ -106,6 +110,7 @@ _PROGRAM_SECTIONS = (
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         trial=("bass_axis", "seat_express"), graph_evidence=True,
+        clears=("room_correction",), base_clears_own=True,
     ),
     ProgramDefinition(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3),),
@@ -122,18 +127,20 @@ PRESCRIPTION_SECTIONS = tuple(sorted(
 PURPOSES = tuple(name for _, name in sorted(
     [(row.purpose_order, row.purpose) for row in _PROGRAM_SECTIONS] + [(3, PURPOSE_REFERENCE)],
 ))
-#: Tuning order; reference is reached only through the close/spot program.
+#: Tuning order; reference evidence runs through :data:`REFERENCE_PROGRAMS`.
 RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
 PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-# A reference take may also be one driver near its cone (ADR-0360).
-_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = (REGIME_SUMMED, REGIME_NEAR_FIELD)
+# A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
+_REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The size of a run whose poses are its own, not a bundled layout's.
 CUSTOM_SIZE = "custom"
 GRAPH_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if row.graph_evidence)
+#: Each program's own candidate layer: the names a take may play cleared (ADR-0370).
+CANDIDATE_LAYERS = tuple(row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER)
 
 
 def program_entries(topology: OutputTopology) -> tuple[dict[str, Any], ...]:
@@ -151,9 +158,18 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
 
 
+def cleared_layers(purpose: str | None, *, base: bool) -> tuple[str, ...]:
+    """The applied candidate layers a take of ``purpose`` plays cleared, on the
+    run's base or on a candidate it names (ADR-0370)."""
+    row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
+    if row is None:
+        return ()
+    return row.clears + ((row.candidate_fields[0].name,) if base and row.base_clears_own else ())
+
+
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
-    """The drivers a near-field row may play here: every measured driver of a
-    mono speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
+    """The drivers a pose may play alone here: every measured driver of a mono
+    speaker, and none of a stereo pair's until #5697 (ADR-0360)."""
     return tuple(sorted(
         measurement_target_id(target["role"], target.get("output_variant", "primary"))
         for target in active_driver_targets(topology)
@@ -204,18 +220,16 @@ def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> st
     return resolved
 
 
-def validated_pose_driver(driver: str, *, regime: str, purpose: str | None, kind: str,
-                          distance_m: float | None) -> str:
-    """The one driver a pose plays, a measurement target id (ADR-0360): a pose
-    names one exactly when it is a reference near-field pose, and then sits
-    close, within :data:`NEAR_FIELD_MAX_DISTANCE_M` of the dust cap."""
+def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> str:
+    """The one driver a pose plays alone, a measurement target id, at any kind
+    and distance (ADR-0366). Only a reference pose names one, until a tuning
+    reader admits a one-driver take, and one on any regime but summed must."""
     if not isinstance(driver, str):
         raise ValueError(f"a pose driver is a measurement target id, got {driver!r}")
-    if bool(driver) != (purpose == PURPOSE_REFERENCE and regime == REGIME_NEAR_FIELD):
-        raise ValueError(f"a pose names its driver exactly when it is a {PURPOSE_REFERENCE} "
-                         f"{REGIME_NEAR_FIELD} pose")
-    if driver and not (kind == POSE_KIND_CLOSE and at_driver_near_field(driver, distance_m)):
-        raise ValueError(f"a driver's pose is a close pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m")
+    if driver and purpose != PURPOSE_REFERENCE:
+        raise ValueError(f"only a {PURPOSE_REFERENCE} pose names its driver")
+    if not driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
+        raise ValueError(f"a {PURPOSE_REFERENCE} {regime} pose names the one driver it plays")
     return driver
 
 
@@ -228,13 +242,22 @@ def validated_branch_pair(branch_pair: str, regime: str) -> str:
     return branch_pair
 
 
+#: The ids a round may have banked under a row that has since retired, and the
+#: purpose each reads as. Frozen: a banked id is never renamed or reused (ADR-0366 §6).
+RETIRED_PROGRAM_PURPOSES = MappingProxyType({
+    "close/spot": PURPOSE_REFERENCE,
+    "close/custom": PURPOSE_REFERENCE,
+})
+
+
 def run_purpose(run_program: str | None) -> str:
     """The purpose behind a run manifest's program id (``speaker``, ``speaker/full``,
-    or a custom layout's ``nearfield/custom``)."""
-    name, _, size = str(run_program or "").partition("/")
+    a custom layout's ``nearfield/custom``, or a retired row's ``close/spot``)."""
+    banked = str(run_program or "")
+    name, _, size = banked.partition("/")
     if not name or name in PURPOSES:
         return name
-    return program(name, None if size == CUSTOM_SIZE else size or None).purpose
+    return RETIRED_PROGRAM_PURPOSES.get(banked) or program(name, None if size == CUSTOM_SIZE else size or None).purpose
 
 
 def run_purposes(run_program: str) -> tuple[str, ...]:
@@ -367,8 +390,7 @@ class MeasurementProgram:
             validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
         for pose in self.poses:
-            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose,
-                                  kind=pose.kind, distance_m=pose.distance_m)
+            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
@@ -545,14 +567,6 @@ def prescription_sections(purpose: str | None = None) -> tuple[str, ...]:
     return tuple(section.name for row in _PROGRAM_SECTIONS
                  if purpose is None or row.purpose == purpose for section in row.sections if section.reset)
 
-# Compatibility values derived from the config, which remains their owner.
-ANCHOR_REPEATS = _PROGRAMS[("baseline", "full")].poses[0].repeats
-SEAT_OFFSET_M = max(
-    abs(component)
-    for pose in _PROGRAMS[("seat", "cloud")].poses
-    for component in pose.seat_offset_m or ()
-)
-CLOSE_DISTANCE_M = _PROGRAMS[("close", "spot")].poses[0].distance_m
 #: Programs a run may name beside the tuning programs: reference evidence no
 #: tuning reader admits (ADR-0360).
 REFERENCE_PROGRAMS = tuple(sorted({row.program_id for row in _PROGRAMS.values() if row.purpose == PURPOSE_REFERENCE}))

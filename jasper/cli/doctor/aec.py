@@ -58,7 +58,7 @@ from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
-    _parked_follower_result,
+    parked_follower_result,
     run,
 )
 
@@ -271,7 +271,7 @@ def _assess_audio_profile(status: dict) -> CheckResult:
 @doctor_check()
 def check_audio_profile_runtime() -> CheckResult:
     """Summarise requested vs applied mic/AEC profile runtime truth."""
-    parked = _parked_follower_result("Audio profile")
+    parked = parked_follower_result("Audio profile")
     if parked is not None:
         return parked
 
@@ -332,7 +332,7 @@ def _assess_chip_aec_alignment(
 @doctor_check()
 def check_chip_aec_alignment() -> CheckResult:
     """Report the reconciler's chip-AEC alignment verdict, unaltered."""
-    parked = _parked_follower_result("Chip-AEC alignment")
+    parked = parked_follower_result("Chip-AEC alignment")
     if parked is not None:
         return parked
     return _assess_chip_aec_alignment(
@@ -559,7 +559,7 @@ def check_aec_bridge_running() -> CheckResult:
     nudge), only suppressing it to ok when the operator explicitly
     opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
     shows up as a hard fail."""
-    parked = _parked_follower_result("AEC bridge")
+    parked = parked_follower_result("AEC bridge")
     if parked is not None:
         return parked
     from ...mics import xvf3800
@@ -1264,7 +1264,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     after this code lands) — skipped, not a fault; a running bridge with no
     readable windows on a schema that owes them is missing evidence — warn.
     Both assessments are pure functions over the snapshot."""
-    parked = _parked_follower_result("AEC bridge output")
+    parked = parked_follower_result("AEC bridge output")
     if parked is not None:
         return parked
     is_active = str(
@@ -1691,7 +1691,7 @@ def check_aec_bridge_dtln_engine() -> CheckResult:
     that's the legacy dual-stream / single-stream path, working
     as intended. Journal parsing is delegated to
     `_assess_dtln_engine` so it can be unit-tested in isolation."""
-    parked = _parked_follower_result("DTLN engine")
+    parked = parked_follower_result("DTLN engine")
     if parked is not None:
         return parked
     if not parse_bool_value(os.environ.get(DTLN_ENABLED_ENV)):

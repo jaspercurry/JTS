@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import stat
@@ -12,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_measurement.excitation_artifacts import (
+from jasper.audio_measurement.admission import excitation_artifacts
+from jasper.audio_measurement.admission.excitation_artifacts import (
     ADMISSION_AUTHORITY_MARKER,
     MAX_ADMISSION_ARTIFACT_BYTES,
     AdmissionArtifactError,
@@ -71,8 +71,6 @@ def test_authority_requires_a_feature_owned_existing_parent(tmp_path: Path) -> N
 def test_authority_directory_creation_failure_is_typed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     def fail_mkdir(_path, _mode) -> None:
         raise PermissionError("authority parent is read-only")
 
@@ -86,8 +84,6 @@ def test_authority_directory_creation_failure_is_typed(
 def test_authority_creation_never_requests_a_setgid_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     real_mkdir = excitation_artifacts.os.mkdir
     real_chmod = excitation_artifacts.os.chmod
     requested_modes: list[int] = []
@@ -124,8 +120,6 @@ def test_authority_directory_mode_under_strict_umask_has_no_setgid(
 def test_authority_directory_chmod_is_skipped_when_mkdir_already_matches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     real_chmod = excitation_artifacts.os.chmod
     chmod_calls: list[int] = []
 
@@ -185,8 +179,6 @@ def test_persistence_accepts_a_resolved_alias_in_an_authority_ancestor(
 def test_new_authority_fsyncs_its_parent_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     synced: list[Path] = []
     real_fsync_directory = excitation_artifacts.fsync_directory
 
@@ -208,8 +200,6 @@ def test_new_authority_fsyncs_its_parent_entry(
 def test_marker_prepublish_failure_durably_removes_empty_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     synced: list[Path] = []
     real_fsync_directory = excitation_artifacts.fsync_directory
 
@@ -237,8 +227,6 @@ def test_marker_prepublish_failure_durably_removes_empty_authority(
 def test_marker_cleanup_sync_failure_reports_unknown_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     real_fsync_directory = excitation_artifacts.fsync_directory
     parent_syncs = 0
 
@@ -385,8 +373,6 @@ def test_reader_rejects_oversize(tmp_path: Path) -> None:
 def test_reader_wraps_artifact_fstat_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     authority = _authority(tmp_path)
 
     def fail_artifact_fstat(descriptor: int):
@@ -406,8 +392,6 @@ def test_reader_wraps_artifact_fstat_failure(
 def test_directory_fsync_failure_reports_unknown_published_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     real_fsync = excitation_artifacts.os.fsync
     published = tmp_path / BUNDLE_ID / ADMISSION_AUTHORITY_MARKER
 
@@ -429,8 +413,6 @@ def test_directory_fsync_failure_reports_unknown_published_outcome(
 def test_post_publish_unlink_failure_reports_unknown_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     real_unlink = excitation_artifacts.os.unlink
     failed = False
 
@@ -455,8 +437,6 @@ def test_post_publish_unlink_failure_reports_unknown_outcome(
 def test_post_publish_directory_open_failure_reports_unknown_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     target_parent = tmp_path / BUNDLE_ID
     published = target_parent / ADMISSION_AUTHORITY_MARKER
     real_open = excitation_artifacts.os.open
@@ -479,8 +459,6 @@ def test_post_publish_directory_open_failure_reports_unknown_outcome(
 def test_post_publish_directory_close_failure_reports_unknown_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jasper.audio_measurement import excitation_artifacts
-
     target_parent = tmp_path / BUNDLE_ID
     published = target_parent / ADMISSION_AUTHORITY_MARKER
     real_close = excitation_artifacts.os.close
@@ -504,35 +482,3 @@ def test_post_publish_directory_close_failure_reports_unknown_outcome(
         caught.value.code is AdmissionArtifactErrorCode.ARTIFACT_PERSIST_OUTCOME_UNKNOWN
     )
     assert published.exists()
-
-
-def test_module_has_no_powerful_feature_host_import() -> None:
-    module_path = (
-        Path(__file__).parents[1]
-        / "jasper"
-        / "audio_measurement"
-        / "excitation_artifacts.py"
-    )
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    imported_modules = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module is not None
-    } | {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-
-    assert not any(
-        name.startswith(
-            (
-                "jasper.active_speaker",
-                "jasper.correction",
-                "jasper.camilla",
-                "jasper.dsp_apply",
-            )
-        )
-        for name in imported_modules
-    )

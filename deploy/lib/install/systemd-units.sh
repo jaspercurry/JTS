@@ -280,7 +280,7 @@ install_web_unit_files() {
         fi
         for extension in service socket; do
             install -m 0644 \
-                "${REPO_DIR}/deploy/${source_unit}.${extension}" \
+                "${REPO_DIR}/deploy/systemd/${source_unit}.${extension}" \
                 "${SYSTEMD_DIR}/${unit}.${extension}"
         done
     done
@@ -288,7 +288,7 @@ install_web_unit_files() {
 
 # Renderer/DSP + assistant wizard ports. Forbidden = the WAKE_DETECTION
 # wizards, which a Zero-2-W-class board never runs. Kept in step with
-# deploy/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
+# deploy/systemd/jasper-web-streambox.socket and nginx-jasper-streambox.conf by
 # tests/test_web_main_imports.py.
 validate_streambox_web_socket() {
     local socket="${SYSTEMD_DIR}/jasper-web.socket"
@@ -363,7 +363,7 @@ install_resilience_identity_unit_files() {
         "0644 deploy/systemd/jasper-usb-hcd-recover.service ${SYSTEMD_DIR}/jasper-usb-hcd-recover.service" \
         "0644 deploy/systemd/jasper-journal-review.service ${SYSTEMD_DIR}/jasper-journal-review.service" \
         "0644 deploy/systemd/jasper-journal-review.timer ${SYSTEMD_DIR}/jasper-journal-review.timer" \
-        "0755 scripts/journal-review.sh /usr/local/sbin/jasper-journal-review"
+        "0755 deploy/bin/journal-review.sh /usr/local/sbin/jasper-journal-review"
 }
 
 # USB host-controller recovery: a long-lived kernel-log follow that re-binds a
@@ -807,8 +807,8 @@ release_fanin_coupling_fence() {
 
 forget_core_graph_park_record() {
     # Closes the window park_audio_clients_for_core_graph_restart opened. Once
-    # the restart tail has CONVERGED, the reconcilers it invokes (audio
-    # hardware, outputd, source intent, AEC, grouping, fan-in coupling) OWN
+    # the restart tail has CONVERGED, the reconcilers it invokes (audio hardware,
+    # outputd, source intent, accessory, AEC, grouping, fan-in coupling) OWN
     # every JASPER_CORE_GRAPH_PARK_UNITS entry, and one they left stopped is
     # stopped on purpose: an output lane the hardware reconciler refused to
     # validate, a follower's snapserver. Replaying the park record over that
@@ -1325,8 +1325,104 @@ _start_core_graph_units() {
     release_fanin_coupling_fence
 }
 
+reconcile_aec_state() {
+    ensure_state_dir
+    # /wake owns the independent host-microphone preference. Seed it Off so a
+    # fresh install never exports room audio merely because USB Audio Input is
+    # enabled; the UI must record an explicit household choice first.
+    jasper_env_file_seed_absent "${STATE_DIR}/usb_mic.env" 0644 0770 \
+        JASPER_USB_MIC=disabled JASPER_USB_MIC_LEG=primary
+    # aec_mode.env has one BASH writer: ensure_mode_file in the run below.
+    local aec_bridge_marker="/run/jasper-aec-reconcile/aec-bridge-ready"
+    systemctl enable jasper-aec-reconcile.service
+    if ! install_run_bounded 125 -- /usr/local/sbin/jasper-aec-reconcile --reason install; then
+        echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+        if [[ -e "$aec_bridge_marker" ]]; then
+            echo "  WARN: AEC bridge marker still present ($aec_bridge_marker) from a prior pass"
+        else
+            echo "  WARN: AEC bridge marker absent ($aec_bridge_marker); echo cancellation is off until the next reconcile"
+        fi
+    fi
+}
+
+reconcile_grouping_state() {
+    # Grouping reconciler runs at BOOT (and on every install) so a BONDED
+    # speaker survives reboots/deploys: it re-derives the snapcast args +
+    # the outputd round-trip lane env, drives the CamillaDSP bonded/solo
+    # config, pins the snapcast stream bindings, and (re)starts the snap
+    # units per the wizard intent. On a solo speaker it is a no-op
+    # oneshot (grouping off => stop both units, clear derived env) —
+    # cost-free. This enables the RECONCILER, not grouping: snapserver/
+    # snapclient still ship disabled and only the reconciler starts them
+    # on explicit wizard opt-in.
+    systemctl enable jasper-grouping-reconcile.service
+    systemctl restart jasper-grouping-reconcile.service || {
+        echo "  WARN: grouping reconcile failed. Check logs with: journalctl -u jasper-grouping-reconcile -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
+}
+
+resolve_fanin_coupling_default() {
+    systemctl enable jasper-fanin-coupling-auto.service
+    install_run_bounded "${FANIN_COUPLING_PASS_BOUND_SEC}" -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
+        echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
+}
+
+# The rest of the runtime tail, once the core graph is back. "$1" is the
+# install profile; only `full` reconciles AEC.
+_converge_runtime_units() {
+    local profile="$1" unit
+    # Mux is core arbitration infrastructure, not a selectable source: start it
+    # on every install. A bonded follower lacks the allowed/shared marker that
+    # its ConditionPathExists= needs.
+    systemctl enable --now jasper-mux.service
+    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
+        2>/dev/null || true
+    reapply_source_intent
+    # A running wizard is on the old code; its .socket starts the new one.
+    for unit in "${WIZARD_UNITS[@]}"; do
+        systemctl stop "${unit}.service" 2>/dev/null || true
+    done
+    # Before the grouping and coupling passes, which call jasper-control's
+    # restart broker (jasper-fanin-coupling-auto.service is After= it); the
+    # low-memory build park may have stopped it.
+    restart_jasper_control_and_input
+    # Before the AEC reconcile, which takes over its accessory half on full, and
+    # before the park-record forget: where wake detection does not run, this
+    # reconciler owns jasper-voice (ADR-0217).
+    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || {
+        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+        JASPER_CORE_GRAPH_TAIL_DEGRADED=1
+    }
+    if [[ "${profile}" == full ]]; then
+        # An absent Array parks voice instead of leaving it on an unfed UDP socket.
+        reconcile_aec_state
+    fi
+    reconcile_grouping_state
+    # After grouping, so the pass sees the settled active-leader state.
+    resolve_fanin_coupling_default
+    # Last step that can leave a core-graph unit deliberately stopped.
+    forget_core_graph_park_record
+    # Gated on the wizard's stash file, which main()'s migrate_wifi_guardian
+    # seeds after this function returns.
+    systemctl enable jasper-wifi-guardian.service
+    systemctl enable --now jasper-wifi-recover.timer
+    # Disarms StartLimitAction=reboot through runtime drop-ins only while boots loop.
+    systemctl enable jasper-bootloop-guard.service
+    enable_usb_hcd_recover
+    # A bare enable leaves the timer inactive until the next boot; the start
+    # refreshes identity before its first tick.
+    systemctl enable --now jasper-identity-reconcile.timer
+    systemctl start jasper-identity-reconcile.service || \
+        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
+    systemctl enable --now jasper-journal-review.timer || \
+        echo "  (journal-review timer not enabled — non-fatal)"
+}
+
 start_streambox_runtime_units() {
-    local unit
     _start_core_graph_units jasper-camilla.service jasper-fanin.service \
         jasper-outputd.service jasper-audio-hardware-reconcile.service \
         jasper-control.service jasper-source-intent-reconcile.service \
@@ -1336,37 +1432,8 @@ start_streambox_runtime_units() {
     # device-activated DHCP). Skips cleanly when the resolved role cannot
     # provide management transport or no UDC exists yet.
     enable_usbgadget
-    # Mux is core arbitration infrastructure, not a user-selectable source.
-    # Keep it available (role guard still parks followers); its ~1 Hz idle loop
-    # is cheaper and safer than coupling output policy to aggregate source state.
-    systemctl enable --now jasper-mux.service
     systemctl enable jasper-fanin-coupling-auto.service
-    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
-        2>/dev/null || true
-    reapply_source_intent
-    for unit in "${WIZARD_UNITS[@]}"; do
-        systemctl stop "${unit}.service" 2>/dev/null || true
-    done
-    reconcile_grouping_state
-    resolve_fanin_coupling_default
-    # Last step that can leave a core-graph unit deliberately stopped.
-    forget_core_graph_park_record
-    systemctl enable jasper-wifi-guardian.service
-    systemctl enable --now jasper-wifi-recover.timer
-    systemctl enable jasper-bootloop-guard.service
-    enable_usb_hcd_recover
-    systemctl enable --now jasper-identity-reconcile.timer
-    systemctl start jasper-identity-reconcile.service || \
-        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl enable --now jasper-journal-review.timer || \
-        echo "  (journal-review timer not enabled — non-fatal)"
-    # Enabling only arms these for the NEXT boot; deploy health checks this
-    # boot. Mirrors the full path: restart the bridge so an already-paired
-    # remote picks up new code, then let the reconciler publish the mic source
-    # a paired remote needs.
-    restart_jasper_control_and_input
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
-        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
+    _converge_runtime_units streambox
 }
 
 mask_distro_background_units() {
@@ -1565,76 +1632,7 @@ install_systemd_units() {
         jasper-voice.service \
         jasper-control.service \
         jasper-input.service
-
-    # Mux is core arbitration infrastructure, not a selectable source. Start it
-    # on a fresh install as well as enabling boot; its role ExecCondition skips
-    # a bonded follower safely.
-    systemctl enable --now jasper-mux.service
-    systemctl try-restart "${JASPER_LOCAL_SOURCE_REFRESH_UNITS[@]}" \
-        2>/dev/null || true
-    reapply_source_intent
-    # The wizard services are socket-activated now. Any currently-
-    # running instance is on the old code; stop it so the next incoming
-    # request brings up the new code via the .socket. Idempotent: if the
-    # service is already inactive (post-idle-exit or never started), the
-    # stop is a no-op.
-    for unit in "${WIZARD_UNITS[@]}"; do
-        systemctl stop "${unit}.service" 2>/dev/null || true
-    done
-    # jasper-input is always-on (HID accessory bridge) — restart so any
-    # already-plugged-in knob picks up new code without waiting for boot.
-    restart_jasper_control_and_input
-    # Optional adapter-backed mic sources are profile-gated. Reconcile after
-    # code deploy so a paired WiiM Remote 2 starts immediately, while speakers
-    # without one never load the BLE decoder at all.
-    install_run_bounded 65 -- /opt/jasper/.venv/bin/jasper-accessory-reconcile --reason install || \
-        echo "  WARN: accessory reconcile failed; optional remote mics may stay inactive until next boot"
-
-    # Reconcile software AEC against whatever mic hardware is actually
-    # present right now. This replaces the old one-way "enable if
-    # Array is 6-ch" install step: if a previous install left voice on
-    # udp:9876 but the Array is currently absent, reconcile actively
-    # clears that stale state and parks voice instead of letting it
-    # watchdog-loop on an unfed UDP socket.
-    reconcile_aec_state
-    reconcile_grouping_state
-    # Converge the fan-in ring coupling (the only central transport) and resolve
-    # the USB combo (on a gadget box). Runs AFTER grouping reconcile so the pass
-    # sees the settled active-leader state. A no-op on an already-converged box
-    # (confirm path, no daemon bounce).
-    resolve_fanin_coupling_default
-    # Last step that can leave a core-graph unit deliberately stopped.
-    forget_core_graph_park_record
-    # WiFi profile guardian: oneshot at boot, gated by
-    # ConditionPathExists= on the wizard's stash file. Enabling is safe
-    # on fresh installs because the unit silently no-ops until the
-    # wizard saves once. main()'s migrate_wifi_guardian step, which runs
-    # after this function returns, seeds that stash for SSH-driven setup.
-    systemctl enable jasper-wifi-guardian.service
-    # WiFi recover timer: no resident RAM. Every few minutes it runs a tiny
-    # oneshot that exits after one NM active-connection read when WiFi is
-    # healthy; when WiFi is down it can run the Pi 5 scan-suppression
-    # repair and then delegate profile activation/recreation to the
-    # guardian. `--now` makes the first-deploy recovery loop live.
-    systemctl enable --now jasper-wifi-recover.timer
-    # Boot-loop guard: oneshot at boot; records the boot timestamp and
-    # disarms StartLimitAction=reboot via runtime drop-ins only when
-    # boots are looping. Safe on fresh installs (first boots never trip).
-    systemctl enable jasper-bootloop-guard.service
-    enable_usb_hcd_recover
-    # Identity reconciler: boot + 5-min timer; pure observer (writes
-    # only /var/lib/jasper/identity.env). `enable --now`, NOT bare
-    # `enable`: enable alone arms the timer for the NEXT boot but
-    # leaves it inactive until then — the same enable-vs-start trap as
-    # the wizard-socket lesson above. Caught on hardware 2026-06-11
-    # (timer inactive after first deploy; doctor's snapshot-staleness
-    # warn was the backstop). --now is idempotent on redeploys. The
-    # one-shot service `start` keeps identity fresh immediately so the
-    # allowlist/doctor don't wait for the first timer tick.
-    systemctl enable --now jasper-identity-reconcile.timer
-    systemctl start jasper-identity-reconcile.service || \
-        echo "  (identity reconcile failed — non-fatal; doctor will flag)"
-    systemctl enable --now jasper-journal-review.timer
+    _converge_runtime_units full
     echo
     echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }

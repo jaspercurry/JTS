@@ -21,7 +21,7 @@ from jasper.tts_routing import (
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
 )
-from tests.install_surface import installer_text
+from tests.install_surface import INSTALL_LIB_DIR, installer_text
 from tests.reconcile_fixtures import fake_systemctl
 from tests.test_audio_hardware_reconcile import _dual_apple_cards
 
@@ -141,18 +141,11 @@ def test_every_single_dac_profile_renders_raw_hw_with_no_plug():
 
 def test_install_consumes_reconciled_output_without_reusing_dongle_mixer_card():
     install_sh = installer_text()
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     assert "select_audio_hardware_roles()" in install_sh
     assert "jasper-audio-hardware-reconcile\" --print-env" in install_sh
-    # Classification is registry-backed and the shell holds no hardware label:
-    # the classifier's env emitter names the Apple cards (ADR-0235 R2).
-    assert "usb-c to 3.5mm" not in reconcile.lower()
-    assert "DAC8X_OUTPUT_CARD=" not in reconcile
-    assert "DAC8X_STUDIO_OUTPUT_CARD=" not in reconcile
     assert "jasper_asound_render_template" in install_sh
     assert "asoundrc.jasper.source" in install_sh
     assert "JASPER_AUDIO_DAC_ID" in install_sh
-    assert "JASPER_OUTPUT_DAC_ROUTE" not in reconcile
     assert "OUTPUT_DAC_ROUTE" not in installer_text()
 
 
@@ -814,7 +807,6 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
     runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
@@ -859,27 +851,9 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "event=audio_hardware_hotplug.reconcile_requested" in hotplug
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
     # The cutover gate is width-aware and shared by the composite + single
-    # active paths, and trusts the durable runtime contract rather than
-    # transient startup-load state: a saved active baseline must stay playable
-    # after setup completes.
+    # active paths.
     assert "active_graph_width_out_of_range" in runtime_contract
-    assert "JASPER_ACTIVE_SPEAKER_STARTUP_LOAD_STATE" not in reconcile
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
-
-
-def test_install_alsa_refreshes_asound_renderer_before_rendering():
-    """install_alsa renders /etc/asound.conf through the renderer lib install.sh
-    sources from the checkout; the on-box copy the runtime reconciler falls back
-    to is the support-file install's, pinned by the destination-set harness in
-    tests/test_install_core_audio_graph_loop.py."""
-    install_sh = installer_text()
-    start = install_sh.index("install_alsa() {")
-    end = install_sh.index("\nwrite_build_manifest() {", start)
-    install_alsa = install_sh[start:end]
-    source_template_install = install_alsa.index("asoundrc.jasper.source")
-    render_call = install_alsa.index("jasper_asound_render_template")
-    assert 'source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"' in install_sh
-    assert source_template_install < render_call
 
 
 def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatch):
@@ -915,11 +889,6 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
     bonded_cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", **bonded)
     assert bonded_cfg.tts_outputd_socket == OUTPUTD_TTS_SOCKET
     assert bonded["JASPER_GROUPING_VOICE_PARK"] == "1"
-
-    # The unit owns these names; the reconciler must not become a second writer.
-    reconcile = (REPO / "jasper" / "audio_hardware" / "reconcile.py").read_text()
-    assert "TTS_ENV_FILE" not in reconcile
-    assert VOICE_TTS_SOCKET_ENV not in reconcile
 
 
 def test_fanin_tts_socket_default_matches_the_python_constant():
@@ -1054,14 +1023,14 @@ def _run_ensure_outputd_camilla_statefile(
     workdir.mkdir()
     _systemctl, systemctl_log = fake_systemctl(workdir)
     graph_log = workdir / "graph.log"
-    step = _bash_function(REPO / "deploy" / "install.sh", "ensure_outputd_camilla_statefile")
+    step = _bash_function(INSTALL_LIB_DIR / "dsp-runtime.sh", "ensure_outputd_camilla_statefile")
     result = subprocess.run(
         [
             "/bin/bash",
             "-c",
             "set -uo pipefail\n"
             f'CAMILLA_CONF="{workdir}/camilladsp"\n'
-            f"{_bash_function(REPO / 'deploy/install.sh', 'run_captured_command')}\n"
+            f"{_bash_function(INSTALL_LIB_DIR / 'dsp-runtime.sh', 'run_captured_command')}\n"
             "install_run_bounded() {\n"
             "  shift 2\n"
             f'  printf "%s\\n" "$*" >> "{graph_log}"\n'

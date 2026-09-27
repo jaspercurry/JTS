@@ -44,8 +44,13 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ... import audio_profile_state, conversation_history, mic_mute_persistence
-from ...accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
+from ... import audio_profile_state, conversation_history, mic_mute_persistence, mux_mode_persistence
+from ...active_speaker.design_draft import DEFAULT_DESIGN_DRAFT_PATH
+from ...control.control_token import TOKEN_FILE
+from ...sound.profile import PROFILE_PATH
+from ...sound.settings import SETTINGS_PATH
+from ...volume_persistence import VolumePersistence
+from ...accessories.mic_env import DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE
 from ...env_load import (
     GROUPING_ENV_FILE,
     PEERING_ENV_PATH,
@@ -117,7 +122,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         ),
         paths=(
             # Security gate: present-but-unreadable = CSRF gate silently off.
-            "/var/lib/jasper/control_token",
+            TOKEN_FILE,
             # SSOT files jasper-control re-reads FRESH on every /state / endpoint
             # call (it is not restarted on a wizard save).
             GROUPING_ENV_FILE,
@@ -127,11 +132,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
             str(audio_profile_state.DEFAULT_AEC_MODE_PATH),
-            # /state's sound card: load_profile() + load_sound_settings() are
-            # called fresh on every /state aggregation (control.state_aggregate),
-            # so a 0600 regression silently degrades the dashboard sound card.
-            "/var/lib/jasper/sound_profile.json",
-            "/var/lib/jasper/sound_settings.json",
+            PROFILE_PATH,
+            SETTINGS_PATH,
             str(DEFAULT_CAMILLA_STATEFILE),
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
         ),
@@ -139,9 +141,9 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     DaemonReadSpec(
         unit="jasper-web",
         # The full (non-root) unit. The streambox variant
-        # (deploy/jasper-web-streambox.service) runs as root and self-skips at
+        # (deploy/systemd/jasper-web-streambox.service) runs as root and self-skips at
         # runtime; the drift test pins against this non-root unit.
-        unit_file="deploy/jasper-web.service",
+        unit_file="deploy/systemd/jasper-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(
@@ -158,24 +160,20 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         paths=(
             # EQ editor + the sound config family.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
-            # Wizard SSOT / status files re-read fresh on page render.
             VOICE_PROVIDER_ENV_PATH,
             WAKE_MODEL_ENV_PATH,
             TRANSIT_ENV_PATH,
-            # weather_setup._load_state opens this on every /assistant/weather/ render,
-            # same shape as transit.env above.
             WEATHER_ENV_PATH,
             SPEAKER_NAME_ENV_PATH,
             TOOL_STATE_ENV_PATH,
-            # /sound/ wizard reads the active profile + global settings.
-            "/var/lib/jasper/sound_profile.json",
-            "/var/lib/jasper/sound_settings.json",
-            "/var/lib/jasper/active_speaker_design_draft.json",
+            PROFILE_PATH,
+            SETTINGS_PATH,
+            str(DEFAULT_DESIGN_DRAFT_PATH),
         ),
     ),
     DaemonReadSpec(
         unit="jasper-chat-web",
-        unit_file="deploy/jasper-chat-web.service",
+        unit_file="deploy/systemd/jasper-chat-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(),
@@ -188,19 +186,19 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-correction-web",
-        unit_file="deploy/jasper-correction-web.service",
+        unit_file="deploy/systemd/jasper-correction-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=("audio", "jts-ring"),
         paths=(
             # The graphs the measurement daemon validates, applies and rolls back.
             str(CANONICAL_CAMILLA_CONFIG_DIR / "*.yml"),
-            "/var/lib/jasper/active_speaker_design_draft.json",
+            str(DEFAULT_DESIGN_DRAFT_PATH),
         ),
     ),
     DaemonReadSpec(
         unit="jasper-bluetooth-web",
-        unit_file="deploy/jasper-bluetooth-web.service",
+        unit_file="deploy/systemd/jasper-bluetooth-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=("bluetooth",),
@@ -212,7 +210,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
     ),
     DaemonReadSpec(
         unit="jasper-system-web",
-        unit_file="deploy/jasper-system-web.service",
+        unit_file="deploy/systemd/jasper-system-web.service",
         user="jasper-web",
         group="jasper",
         supplementary_groups=(),
@@ -220,7 +218,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             # The dashboard writes nothing and proxies the rest to
             # jasper-control. Its one on-disk read is the token canonical_page()
             # embeds — and the token read fails safe to gate-OFF on EACCES.
-            "/var/lib/jasper/control_token",
+            TOKEN_FILE,
         ),
     ),
     DaemonReadSpec(
@@ -230,8 +228,8 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         group="jasper",
         supplementary_groups=("jasper-intsecrets",),
         paths=(
-            "/var/lib/jasper/mux_mode.json",
-            "/var/lib/jasper/speaker_volume.json",
+            mux_mode_persistence.DEFAULT_PATH,
+            VolumePersistence.DEFAULT_PATH,
         ),
     ),
     DaemonReadSpec(
@@ -251,10 +249,10 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             mic_mute_persistence.DEFAULT_PATH,
         ),
     ),
-    # jasper-input's one on-disk read is the accessory reconciler's published
-    # mic sources, which decide whether this process also runs an accessory mic
-    # adapter task (ADR-0225); an unreadable file costs the box its remote
-    # microphone. The adapter's 'bluetooth' grant is absent here because the
+    # jasper-input's one on-disk read is the accessory reconciler's adapter
+    # plan, which decides whether this process also runs an accessory mic
+    # adapter task (ADR-0225, ADR-0372); an unreadable file costs the box its
+    # remote microphone. The adapter's 'bluetooth' grant is absent here because the
     # unit does not declare it either — resolve_identity picks it up from the
     # user's own group memberships.
     DaemonReadSpec(
@@ -263,7 +261,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
         user="jasper-input",
         group="jasper",
         supplementary_groups=("input",),
-        paths=(DEFAULT_ACCESSORY_MIC_ENV_FILE,),
+        paths=(DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE,),
     ),
     DaemonReadSpec(
         unit="jasper-usbmic",

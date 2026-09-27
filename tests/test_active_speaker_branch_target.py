@@ -20,11 +20,11 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_chain import (
-    CrossoverSection,
     chain_response,
     crossover_response_db,
     radiating_band_hz,
 )
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,

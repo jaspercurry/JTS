@@ -70,12 +70,18 @@ from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
 )
-from jasper.active_speaker.branch_chain import branch_headroom_db
+from jasper.active_speaker.branch_chain import (
+    branch_headroom_db,
+    HEADROOM_MARGIN_DB,
+    crossover_response_db,
+    radiating_band_hz,
+)
 from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.peq import PEQ, predicted_response
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.biquad import SHELF_Q, filter_response_db
+from jasper.active_speaker.crossover_section import CrossoverSection
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)
 
@@ -2406,9 +2412,6 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
     seam that DOES know: ``branch_chain``, which the composer stamps with and
     the emitter charges with.
     """
-    from jasper.active_speaker.branch_chain import (
-        HEADROOM_MARGIN_DB, CrossoverSection, branch_headroom_db,
-    )
     from jasper.active_speaker.camilla_yaml import linearization_headroom_db
 
     resp, envelope = _two_dip_response()
@@ -2479,10 +2482,6 @@ def _crossed_over_woofer(fc_hz: float = 2000.0, order: int = 4):
     +11.6155 dB (Q 8.0) at 2747 Hz and +5.9619 dB at 2196 Hz, both inside the
     stopband, for a net acoustic contribution of +1.06 and -1.60 dB.
     """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db,
-    )
-
     sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
     db = crossover_response_db(_NATIVE_FREQS_HZ, sections)
     resp = _driver_response("woofer", db)
@@ -2498,8 +2497,6 @@ def test_the_fit_places_no_boost_in_the_drivers_own_stopband():
     Asserted against the UNBOUNDED fit on the same response, so this cannot
     pass by the fixture simply having nothing to boost.
     """
-    from jasper.active_speaker.branch_chain import radiating_band_hz
-
     resp, envelope, sections = _crossed_over_woofer()
     band = radiating_band_hz(sections)
     vocabulary = FitVocabulary(allow_boost=True)
@@ -2528,8 +2525,6 @@ def test_the_bound_is_boost_only_cuts_still_reach_out_of_band_leakage():
     conductor fixture proved the cost of getting this wrong: its tweeter's real
     +6 dB bump sits 100 Hz BELOW Fc, and refusing to cut it turned a passing
     correction into a refused one.)"""
-    from jasper.active_speaker.branch_chain import radiating_band_hz
-
     fc_hz = 2000.0
     resp, envelope, sections = _crossed_over_woofer(fc_hz=fc_hz)
     sections_band = radiating_band_hz(sections)
@@ -2573,8 +2568,6 @@ def test_the_bound_does_not_move_the_target_level_or_the_give_back():
     ``branch_level_bands_hz``, the bands the realized-level verdict grades.)
     #1809's bound must move neither.
     """
-    from jasper.active_speaker.branch_chain import radiating_band_hz
-
     resp, envelope, sections = _crossed_over_woofer()
     unbounded = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
@@ -2623,10 +2616,6 @@ def _solve_band_fixture(
 
     Returns ``(resp, envelope, sections, radiating_band_hz, solve_top_hz)``.
     """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db, radiating_band_hz,
-    )
-
     sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=False),)
     band = radiating_band_hz(sections)
     solve_top_hz = band[1] * 2.0 ** STOPBAND_GAIN_MARGIN_OCTAVES
@@ -2936,10 +2925,6 @@ def test_an_inverted_radiating_band_falls_back_to_the_core_mask():
     returns ``lo > hi``). Its core band is still the whole core mask, as before
     #1929, rather than the role dropping out.
     """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db, radiating_band_hz,
-    )
-
     squeezed = (
         CrossoverSection(fc_hz=2000.0, order=4, highpass=True),
         CrossoverSection(fc_hz=2200.0, order=4, highpass=False),
@@ -2961,10 +2946,6 @@ def _sub_floor_tweeter(fc_hz: float, order: int = 2):
     reference tier with the production-default ``driver_class`` — the shape
     whose radiating band lands at or past its own core mask's top edge.
     """
-    from jasper.active_speaker.branch_chain import (
-        CrossoverSection, crossover_response_db, radiating_band_hz,
-    )
-
     sections = (CrossoverSection(fc_hz=fc_hz, order=order, highpass=True),)
     resp = _driver_response(
         "tweeter", crossover_response_db(_NATIVE_FREQS_HZ, sections),

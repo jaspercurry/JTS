@@ -14,6 +14,7 @@ from dbus_next import Variant
 
 from jasper.accessories import wiim_remote_mic
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_UDP_PORT
+from jasper.accessories.status import MicLink
 from jasper.accessories.wiim_remote_mic import (
     BLUEZ_DEVICE_IFACE,
     BLUEZ_GATT_CHARACTERISTIC_IFACE,
@@ -851,7 +852,7 @@ async def test_subscription_setup_failure_releases_acquired_resources(
         monkeypatch.setattr(bus, stage, fail_async)
 
     with pytest.raises(error):
-        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig())
+        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig(), MicLink())
 
     expected = ["start_notify", "stop_notify"] if stage == "reservation" else []
     assert bus.journal == [*expected, "bus_disconnect"]
@@ -868,7 +869,7 @@ async def test_run_subscription_bounds_a_hung_connect_and_disconnects(monkeypatc
     monkeypatch.setattr(wiim_remote_mic, "BUS_CONNECT_TIMEOUT_SEC", 0.01)
 
     with pytest.raises(TimeoutError):
-        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig())
+        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig(), MicLink())
 
     assert bus.journal == ["bus_disconnect"]
     assert sink.closed is False
@@ -900,7 +901,7 @@ async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic.MicAdapterConfig()
+                wiim_remote_mic.MicAdapterConfig(), MicLink(),
             ),
             drive(),
         ),
@@ -947,7 +948,7 @@ async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic.MicAdapterConfig()
+                wiim_remote_mic.MicAdapterConfig(), MicLink(),
             ),
             drive(),
         ),
@@ -991,7 +992,7 @@ async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
     await asyncio.wait_for(
         asyncio.gather(
             wiim_remote_mic._run_subscription(
-                wiim_remote_mic.MicAdapterConfig()
+                wiim_remote_mic.MicAdapterConfig(), MicLink(),
             ),
             drive(),
         ),
@@ -1018,10 +1019,70 @@ async def test_a_dead_bus_ends_the_subscription_rather_than_wedging(monkeypatch)
 
     await asyncio.wait_for(
         asyncio.gather(
-            wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig()),
+            wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig(), MicLink()),
             drive(),
         ),
         timeout=5,
     )
 
     assert sink.closed
+
+
+@pytest.mark.parametrize(
+    ("lost", "connected_after"), [("remote", False), ("bus", None)],
+)
+async def test_the_link_is_ready_from_notify_start_until_it_goes(
+    monkeypatch, lost, connected_after,
+):
+    """The published link facts (issue #3346): a reconnect goes straight to
+    ready, a remote that goes to sleep reads disconnected, and a dead bus
+    says nothing about the remote."""
+    bus, _sink = _subscription_harness(monkeypatch)
+    monkeypatch.setattr(restart_broker, "manage_units", lambda *a, **k: {"ok": True})
+    link = MicLink()
+    published: list[dict] = []
+    link.register(lambda: published.append(dict(link.facts)))
+
+    async def drive():
+        await _wait_until(lambda: link.facts["subscribed"], what="the subscription")
+        (bus.push_disconnect if lost == "remote" else bus.push_bus_loss)()
+
+    await asyncio.wait_for(
+        asyncio.gather(
+            wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig(), link),
+            drive(),
+        ),
+        timeout=5,
+    )
+
+    assert published == [
+        {"connected": True, "subscribed": True},
+        {"connected": connected_after, "subscribed": False},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("remote_connected", "report", "connected"),
+    [
+        (False, WIIM_VOICE_REPORT_REFERENCE, False),
+        (True, bytes((0x01, 0x01)), True),
+    ],
+    ids=["asleep", "no_voice_report"],
+)
+async def test_an_attempt_that_cannot_subscribe_publishes_what_bluez_said(
+    monkeypatch, remote_connected, report, connected,
+):
+    """A sleeping remote reads disconnected, not a fault; a connected one the
+    adapter cannot subscribe to stays visible as such."""
+    bus, _sink = _subscription_harness(monkeypatch)
+    for ifaces in bus.managed.values():
+        if BLUEZ_DEVICE_IFACE in ifaces:
+            ifaces[BLUEZ_DEVICE_IFACE]["Connected"] = remote_connected
+        if BLUEZ_GATT_DESCRIPTOR_IFACE in ifaces:
+            ifaces[BLUEZ_GATT_DESCRIPTOR_IFACE]["Value"] = report
+    link = MicLink()
+
+    with pytest.raises(DeviceNotReady):
+        await wiim_remote_mic._run_subscription(wiim_remote_mic.MicAdapterConfig(), link)
+
+    assert link.facts == {"connected": connected, "subscribed": False}

@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
+from jasper.accessories import status as accessory_status
 from jasper.service_units import JASPER_VOICE_SERVICE
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
@@ -88,7 +89,7 @@ def _record_systemctl(
 ) -> list[list[str]]:
     """Record every `systemctl` call, answering the diagnostics oneshot's
     ActiveState probe with ``active_state``."""
-    from jasper.control import aec_endpoints
+    from jasper.control.handlers import system as system_routes
 
     started: list[list[str]] = []
 
@@ -98,7 +99,7 @@ def _record_systemctl(
             return SimpleNamespace(returncode=0, stdout=active_state, stderr="")
         return proc()
 
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", fake_run)
+    monkeypatch.setattr(system_routes.subprocess, "run", fake_run)
     return started
 
 
@@ -118,7 +119,7 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
     """
     from jasper.cli import doctor as doctor_mod
     from jasper.cli.doctor import _harness as doctor_harness
-    from jasper.control import aec_endpoints
+    from jasper.control.handlers import system as system_routes
 
     cached = {
         "fails": 2,
@@ -139,8 +140,8 @@ def test_diagnostics_serves_the_cached_oneshot_and_runs_no_doctor(
             return _FakeProc()
         return _spy
 
-    monkeypatch.setattr(aec_endpoints.subprocess, "run", _record("subprocess.run"))
-    monkeypatch.setattr(aec_endpoints.subprocess, "Popen", _record("subprocess.Popen"))
+    monkeypatch.setattr(system_routes.subprocess, "run", _record("subprocess.run"))
+    monkeypatch.setattr(system_routes.subprocess, "Popen", _record("subprocess.Popen"))
     for name in ("main", "render_json"):
         monkeypatch.setattr(doctor_mod, name, _record(f"doctor.{name}"))
     # `run_async` resolves this in `_harness`'s own globals, so a
@@ -1045,12 +1046,17 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
 
+    readiness = {
+        "wiim_remote_2": {"armed": True, "ready": False, "not_ready": "disconnected"},
+    }
+
     async def fake_status(socket_path, cmd, timeout=None):  # noqa: ARG001
         return {
             "state": "WAKE", "input_ended": False, "spend_allowed": True,
             "connection_paused": False, "mic_muted": False,
             "duck_active": False, "music_dbfs": -32.0,
             "wake_legs": [], "push_to_talk_only": True,
+            "push_to_talk": readiness,
         }
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_status)
 
@@ -1058,6 +1064,49 @@ def test_state_voice_push_to_talk_only_flows_from_session_status(
     assert status == 200
     assert body["voice"]["reachable"] is True
     assert body["voice"]["push_to_talk_only"] is True
+    assert body["voice"]["push_to_talk"] == readiness
+
+
+@pytest.mark.parametrize(
+    ("armed", "link", "expected"),
+    [
+        (
+            True, {"connected": False, "subscribed": False},
+            {"armed": True, "ready": False, "not_ready": "disconnected"},
+        ),
+        (
+            False, {"connected": None, "subscribed": False},
+            {"armed": False, "ready": False, "not_ready": "link_unknown"},
+        ),
+    ],
+    ids=["armed_asleep", "registered_unverified"],
+)
+def test_state_reports_each_registered_remote_while_voice_is_parked(
+    server_with_coordinator, monkeypatch, tmp_path, armed, link, expected,
+):
+    """With voice down, /state.voice.push_to_talk reads the accessory
+    reconciler's published files and jasper-input's status, so a remote that
+    is registered but not armed shows on a streambox whose voice stays parked
+    until one is armed (ADR-0372)."""
+    base, _ = server_with_coordinator
+    armed_file = tmp_path / "accessory-mics.env"
+    monkeypatch.setenv("JASPER_ACCESSORY_MIC_ENV_FILE", str(armed_file))
+    published = "JASPER_MANUAL_MIC_SOURCES=wiim_remote_2=udp:9892\n"
+    (tmp_path / "accessory-adapters.env").write_text(published)
+    if armed:
+        armed_file.write_text(published)
+    monkeypatch.setattr(
+        accessory_status, "snapshot",
+        lambda *_args: {"published": True, "bridges": {
+            "wiim_remote_2": {"restarts": 0, "last_error": None, "link": link},
+        }},
+    )
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["voice"]["reachable"] is False
+    assert body["voice"]["push_to_talk"] == {"wiim_remote_2": expected}
 
 
 class FakeCamillaMetrics:

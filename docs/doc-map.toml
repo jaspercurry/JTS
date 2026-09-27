@@ -179,7 +179,7 @@ code = [
   "jasper/conversation_history.py",
   "jasper/web/chat_setup.py",
   "jasper/cli/doctor/web.py",
-  "deploy/jasper-chat-web.*",
+  "deploy/systemd/jasper-chat-web.*",
   "deploy/nginx-jasper.conf",
   "deploy/nginx/**",
 ]
@@ -356,7 +356,7 @@ code = [
   "jasper/tools/spotify.py",
   "jasper/web/spotify_setup.py",
   "deploy/bin/jasper-librespot-event",
-  "deploy/jasper-web.*",
+  "deploy/systemd/jasper-web.*",
   "deploy/systemd/librespot.service",
   "scripts/claim-librespot.sh",
   "tests/test_spotify*.py",
@@ -523,7 +523,7 @@ code = [
   "jasper/web/pair_flow.py",
   "deploy/assets/correction/js/**",
   "deploy/assets/correction/crossover.css",
-  "deploy/jasper-correction-web.*",
+  "deploy/systemd/jasper-correction-web.*",
   "docs/active-crossover-information-design.md",
 ]
 docs = [
@@ -759,7 +759,7 @@ code = [
   "deploy/systemd/jasper-input.service",
   "deploy/systemd/jts-audio.slice",
   "deploy/systemd/jts-mic.slice",
-  "deploy/jasper-system-web.*",
+  "deploy/systemd/jasper-system-web.*",
   "deploy/bin/jasper-apply-airplay-mode",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/bin/jasper-bootloop-guard",

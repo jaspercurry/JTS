@@ -8,12 +8,12 @@ No asyncio; the only heavy import is
 NumPy (used for ``np.ndarray`` typing in ``build_capture_health`` and the
 buffer shapes the recorder passes in).
 
-This is the lower layer of the recorder: :mod:`recording_backend` and the
-thin ``jasper.web.wake_corpus_setup`` HTTP adapter import the constants +
-functions they need from here.
+This is the lower layer of the recorder: the recorder modules above it and
+the thin ``jasper.web.wake_corpus_setup`` HTTP adapter import the
+constants + functions they need from here.
 ``enter_corpus_test_mode`` / ``exit_corpus_test_mode`` couple to
 ``RecordingBackend`` only through the HTTP layer (enter/exit handlers) and
-through ``RecordingBackend._maybe_recover_stale_test_mode`` calling
+through ``active_session.maybe_recover_stale_test_mode`` calling
 ``exit_corpus_test_mode``.
 """
 from __future__ import annotations

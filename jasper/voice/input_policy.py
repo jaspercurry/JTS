@@ -9,9 +9,6 @@ adapters own wire-format translation. This module is the small contract
 between them: it turns the currently selected input stream into facts a
 provider can safely consume.
 
-It is deliberately side-effect-free. Callers pass the already-loaded
-Config-like object; no hardware probes, env-file reads, or systemd calls
-happen here.
 """
 from __future__ import annotations
 
@@ -20,6 +17,7 @@ from typing import Any
 
 from .catalog import provider_by_id
 
+from jasper.audio_profile_state import PROFILE_XVF_CHIP_AEC, PROFILE_XVF_SOFTWARE_AEC3
 from jasper.mics.xvf3800 import ALSA_CARD_NAMES
 from jasper.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_udp_device
 
@@ -108,7 +106,7 @@ def contract_from_config(cfg: Any) -> SpeechInputContract:
         udp[0].lower() in ("", "0.0.0.0", aec_host)
     ):
         return SpeechInputContract(
-            profile="xvf_chip_aec" if chip_enabled else "xvf_software_aec3",
+            profile=PROFILE_XVF_CHIP_AEC if chip_enabled else PROFILE_XVF_SOFTWARE_AEC3,
             source=mic_device,
             echo_cancelled=True,
             denoised=True,

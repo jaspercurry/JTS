@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import grp
 import os
-import re
 import shlex
 import stat as _stat
 import subprocess
@@ -148,7 +147,7 @@ def run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
 #: is a FAILURE, since a probe that never finished proved nothing.
 PROBE_FRAMES = "4800"
 
-def _parse_systemd_environment(text: str) -> dict[str, str]:
+def parse_systemd_environment(text: str) -> dict[str, str]:
     """Parse ``systemctl show -p Environment`` output into key/value pairs."""
     text = text.strip()
     if text.startswith("Environment="):
@@ -165,35 +164,6 @@ def _parse_systemd_environment(text: str) -> dict[str, str]:
         env[key] = value.strip().strip('"').strip("'")
     return env
 
-
-def _camilla_block_field(text: str, block: str, key: str) -> str | None:
-    """The FIRST value of ``key`` inside the top-level ``block:`` of a
-    CamillaDSP config text (comment + surrounding quotes stripped), or None
-    when block or key is absent.
-
-    The value is ``""`` for a key whose value is a nested block (a mixer name
-    like ``channel_select:``), so ``... is not None`` is the presence test.
-
-    A deliberately fail-soft line scan that never raises, unlike
-    ``yaml.safe_load`` on a malformed config — the doctor must stay total.
-    Block-scoped, but not depth-scoped: use it only for keys unambiguous at
-    any depth within their block. Depth-sensitive safety fields such as
-    ``devices.volume_limit`` use
-    :func:`jasper.camilla_config_contract.parse_camilla_devices_config`."""
-    in_block = False
-    for raw in text.splitlines():
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not raw.startswith((" ", "\t")):
-            in_block = stripped == f"{block}:"
-            continue
-        if not in_block:
-            continue
-        match = re.match(rf"^\s+{re.escape(key)}:\s*([^#]*)", raw)
-        if match:
-            return match.group(1).strip().strip("'\"")
-    return None
 
 def group_writable_dir(
     st: os.stat_result, *, expected_group: str, require_setgid: bool = True
@@ -296,7 +266,7 @@ def service_state_failure(
     return None
 
 
-def _parked_follower_result(label: str) -> CheckResult | None:
+def parked_follower_result(label: str) -> CheckResult | None:
     """The `ok` row a liveness check returns while this speaker is parked as a
     bonded follower, or None so the caller falls through to its real probe.
     The parked state is intended and was observed, so `ok` with a reason

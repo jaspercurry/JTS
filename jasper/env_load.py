@@ -54,6 +54,7 @@ AIRPLAY_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-airplay.env"
 AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
+GOOGLE_CREDENTIALS_ENV_PATH = "/var/lib/jasper-secrets/google_credentials.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 #: PERSISTENT (never /run) so a bonded speaker boots with the content lane
@@ -90,13 +91,9 @@ ENV_FILES = (
     SPEAKER_NAME_ENV_PATH,
     SPOTIFY_CREDENTIALS_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
-    # High-value provider/Google secrets live in jasper-secrets (voice+web), while HA +
-    # Spotify integration secrets live in jasper-intsecrets (voice+control+mux+web). A
-    # non-member CLI/daemon that runs env_load simply reads {} for an unreadable
-    # compartment file (parse_env_file is fail-soft on EACCES); the root jasper-doctor
-    # reads them fine.
+    # Compartment non-members load no values on EACCES; root doctor can read them.
     "/var/lib/jasper-secrets/voice_keys.env",
-    "/var/lib/jasper-secrets/google_credentials.env",
+    GOOGLE_CREDENTIALS_ENV_PATH,
     "/var/lib/jasper-secrets/google_routes.env",
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,

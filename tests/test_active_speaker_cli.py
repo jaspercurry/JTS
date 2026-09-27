@@ -294,6 +294,30 @@ def test_path_audit_cli_json_passes_complete_evidence(tmp_path: Path, capsys):
     assert payload["load_gate"] == "hardware_probe_required"
 
 
+@pytest.mark.parametrize("output", ["--json", None])
+@pytest.mark.parametrize("write,status", [
+    (lambda path: path.mkdir(), "unreadable"),
+    (lambda path: path.write_bytes(b"\xff\xfe"), "invalid"),
+    (lambda path: path.write_text("{", encoding="utf-8"), "invalid"),
+    (lambda path: path.write_text("{}", encoding="utf-8"), "invalid"),
+])
+def test_path_audit_cli_reports_unusable_evidence_as_the_load_doors_do(tmp_path: Path, capsys, write, status, output):
+    evidence_path = tmp_path / "path_safety.json"
+    write(evidence_path)
+
+    code = main(["path-audit", str(evidence_path), *([output] if output else [])])
+
+    assert code == 1
+    printed = capsys.readouterr().out
+    if output:
+        payload = json.loads(printed)
+        assert (payload["status"], payload["ok_to_load_active_config"]) == (status, False)
+        assert payload["issues"][0]["code"] == f"path_safety_evidence_{status}"
+    else:
+        assert f"Path safety: {status}" in printed
+        assert f"path_safety_evidence_{status}" in printed
+
+
 def test_path_audit_cli_requires_evidence_or_requirements():
     try:
         main(["path-audit"])

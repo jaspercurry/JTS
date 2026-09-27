@@ -62,6 +62,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
+from ..platform import systemd
 from .. import google_routes, location_state, transit
 from ..atomic_io import locked_transform_env_file, write_env_file
 from ..transit import geocode as geocode_mod
@@ -599,6 +600,5 @@ def make_server(
     state_path: str = TRANSIT_ENV_PATH,
     weather_path: str = WEATHER_ENV_PATH,
 ) -> ThreadingHTTPServer:
-    from ..platform import systemd
     cfg = {"state_path": state_path, "weather_path": weather_path}
     return systemd.make_http_server(target, _make_handler(cfg))

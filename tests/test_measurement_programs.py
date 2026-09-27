@@ -19,6 +19,7 @@ from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.candidate_parts import compose_candidate
@@ -27,6 +28,7 @@ from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
+from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
 from jasper.cli import round as round_cli
 
 
@@ -113,7 +115,6 @@ def test_program_table_projections(site):
     ("rear", "seat", 3, 3, 3),
     ("rear", "pair_mark", 1, 1, 2),
     ("bass", "axis", 1, 1, 1),
-    ("close", "spot", 1, 1, 1),
 ])
 def test_shipped_rows(
     program_id: str, size: str, poses: int, moves: int, captures: int
@@ -233,7 +234,7 @@ def test_express_geometry() -> None:
     assert {p.elevation_deg for p in row.poses} == {0, -10, 10}
     assert [
         p.repeats for p in row.poses if (p.azimuth_deg, p.elevation_deg) == (0, 0)
-    ] == [mp.ANCHOR_REPEATS]
+    ] == [mp.program("baseline", "full").poses[0].repeats]
 
 
 @pytest.mark.parametrize("program_id,size", [("baseline", "medium"), ("tournament", "medium"), ("spot", "express"), ("", "")])
@@ -253,7 +254,7 @@ def test_available_programs_is_the_sorted_registry() -> None:
 
     assert choices == (
         ("baseline", "express"), ("baseline", "full"), ("bass", "axis"), ("bass", "cloud"),
-        ("bass", "quick"), ("branches", "express"), ("close", "spot"),
+        ("bass", "quick"), ("branches", "express"), ("drivers", "cardioid"), ("drivers", "each"),
         ("front_rear", "express"), ("nearfield", "cardioid"), ("nearfield", "rear"), ("nearfield", "woofer"),
         ("rear", "behind"), ("rear", "express"), ("rear", "pair"),
         ("rear", "pair_behind"), ("rear", "pair_mark"), ("rear", "seat"), ("rear", "wide"),
@@ -319,7 +320,7 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
             7,
         ),
         # Two seat poses share the (0, 0) bearing and are two different places.
-        ((_seat(0.0, 0.0, 0.0), _seat(mp.SEAT_OFFSET_M, 0.0, 0.0, 2)), 2, 3),
+        ((_seat(0.0, 0.0, 0.0), _seat(0.30, 0.0, 0.0, 2)), 2, 3),
     ],
 )
 def test_counts_split_moves_from_captures(
@@ -344,7 +345,7 @@ def test_the_seat_cube_is_the_head_and_six_face_centres() -> None:
         (0.0, 0.0, 0.30), (0.0, 0.0, -0.30),
     ]
     assert [p.seat_offset_m for p in express.poses] == [
-        (0.0, 0.0, 0.0), (mp.SEAT_OFFSET_M, 0.0, 0.0), (0.0, mp.SEAT_OFFSET_M, 0.0),
+        (0.0, 0.0, 0.0), (0.30, 0.0, 0.0), (0.0, 0.30, 0.0),
     ]
     assert {p.seat_offset_m for p in express.poses} <= {
         p.seat_offset_m for p in cube.poses
@@ -364,25 +365,24 @@ def test_seat_cloud_walks_three_rows_then_above_and_below_the_head() -> None:
     ]
 
 
-def test_close_spot_is_one_close_pose_at_its_own_distance() -> None:
-    pose, = mp.program("close", "spot").poses
-
-    assert pose.kind == mp.POSE_KIND_CLOSE
-    assert pose.distance_m == mp.CLOSE_DISTANCE_M
-    assert pose.seat_offset_m is None
+@pytest.mark.parametrize("banked", ["close/spot", "close/custom"])
+def test_a_retired_row_is_not_runnable_but_its_banked_rounds_read(banked: str) -> None:
+    """A retired id leaves the registry, and a round banked under it still reads (ADR-0366 §6)."""
+    with pytest.raises(mp.UnknownProgramError):
+        mp.program(*banked.split("/"))
+    assert mp.run_purposes(banked) == (mp.run_purpose(banked),) == (mp.PURPOSE_REFERENCE,)
 
 
 def test_configured_defaults_preserve_existing_cli_choices_and_add_room() -> None:
     assert {
         program_id: mp.program(program_id).size
-        for program_id in ("baseline", "tournament", "branches", "seat", "room", "close", "rear")
+        for program_id in ("baseline", "tournament", "branches", "seat", "room", "rear")
     } == {
         "baseline": "express",
         "tournament": "express",
         "branches": "express",
         "seat": "cloud",
         "room": "seat",
-        "close": "spot",
         "rear": "express",
     }
 
@@ -417,7 +417,7 @@ def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(size, poses) -> None
     (mp.PURPOSE_REAR, "", None, SEAT_EXEMPT),
     (mp.PURPOSE_ROOM, "", None, SEAT_EXEMPT),
     (mp.PURPOSE_REFERENCE, "woofer:rear", 0.015, NEAR_FIELD_EXEMPT),
-    (mp.PURPOSE_REFERENCE, "woofer", mp.NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
+    (mp.PURPOSE_REFERENCE, "woofer", NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
     (mp.PURPOSE_REFERENCE, "woofer", 0.5, None),
     (mp.PURPOSE_REFERENCE, "", 0.03, None),
 ])
@@ -456,19 +456,24 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
 @pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
 @pytest.mark.parametrize("purpose,regime,kind,distance_m,driver,accepted", [
     (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.1, "woofer", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.015, "woofer", False),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.5, "woofer:rear", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "tweeter", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_BRANCHES, mp.POSE_KIND_BEARING, None, "woofer", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.3, "", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "", False),
+    (mp.PURPOSE_SPEAKER, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "woofer", False),
     (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
 ])
-def test_a_pose_names_its_driver_exactly_when_it_is_reference_near_field(
+def test_only_a_reference_pose_names_its_driver_on_any_regime_kind_or_distance(
     door, refusal, purpose, regime, kind, distance_m, driver, accepted,
 ) -> None:
-    """Every door a pose enters through judges its driver the same way
-    (ADR-0360): a program row or layout, and a stop in a hand-written plan."""
+    """Every door a pose enters through judges its driver the same way: a
+    program row or layout, and a stop in a hand-written plan. A reference pose
+    names one at any regime, kind and distance, and must on a regime that plays
+    drivers; no tuning purpose names one yet (ADR-0366)."""
     if accepted:
         door(purpose, regime, kind, distance_m, driver)
     else:
@@ -486,6 +491,36 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
     else:
         with pytest.raises(CrossoverV2FlowError):
             ac.request_for_program(mp.program("nearfield"), candidates=candidates)
+
+
+@pytest.mark.parametrize("stops,expected", [
+    (mp.program("drivers", "cardioid"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)),
+                                         ("lateral", ("tweeter",))]),
+    ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
+      ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
+     [("check", ()), ("entry_baseline", ()), ("measure", ()), ("lateral", ("woofer",))]),
+], ids=["one-driver-row", "beside-a-two-driver-stop"])
+def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected) -> None:
+    """A stop naming its driver plays it alone in the far field on MEASURE's
+    sweep, with no CHECK or timing take for it; a stop that plays every driver
+    keeps both (#5696, ADR-0366)."""
+    request = (ac.request_for_program(stops) if isinstance(stops, mp.MeasurementProgram)
+               else ac.AngleCaptureRequest(stops=stops))
+    captures = prepare_plan_captures(request)
+    assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected
+    assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
+
+
+@pytest.mark.parametrize("purpose,base,cleared", [
+    (mp.PURPOSE_BASS, True, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_BASS, False, ("room_correction",)),
+    (mp.PURPOSE_SPEAKER, True, ()), (mp.PURPOSE_ROOM, True, ()), (mp.PURPOSE_REAR, False, ()),
+    (mp.PURPOSE_REFERENCE, True, ()), (None, True, ()),
+])
+def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, cleared) -> None:
+    """A bass take plays the applied speaker layer with room off, and its base
+    plays bass off too; every other purpose plays its layers as composed (ADR-0370)."""
+    assert mp.cleared_layers(purpose, base=base) == cleared
 
 
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:

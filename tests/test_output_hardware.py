@@ -355,8 +355,8 @@ def test_active_dac_profile_id_reads_only_the_reconciler_record(
     )
     assert active_dac_profile_id(path) is None
     assert load_state(path).observed_profile_id is None
-    # A single DAC needs BOTH ready status AND a selected card — mirrors the
-    # bash reconciler's own `apply_observed_single_policy` gate bit for bit.
+    # A single DAC needs BOTH ready status AND a selected card — mirrors
+    # `apply_observed_single_policy` in jasper/audio_hardware/reconcile_hardware.py.
     # OBSERVED does not care; the record already names the hardware it saw.
     write_state(
         OutputHardwareState(

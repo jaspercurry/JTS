@@ -28,8 +28,8 @@ from jasper.active_speaker.program_playback import (
     play_program,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-from jasper.audio_measurement.excitation_admission import FrequencyBand
-from jasper.audio_measurement.playback import PlaybackResult
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.playback import PlaybackResult
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 
 

@@ -15,7 +15,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
@@ -65,7 +65,7 @@ class ClipMetadata:
     deleted: bool = False
     auto_stopped: bool = False
     # True when the recording was force-stopped because the household
-    # muted the mic mid-clip (see recording_backend.MUTE_POLL_INTERVAL_SEC).
+    # muted the mic mid-clip (see clip_recording.MUTE_POLL_INTERVAL_SEC).
     # The audio on disk predates the mute flip (±1 poll interval); the
     # flag tells the operator why the clip ended early.
     mute_stopped: bool = False
@@ -347,25 +347,31 @@ def list_session_summaries(
     return out
 
 
+def unlink_wavs(paths: Iterable[str]) -> tuple[int, int]:
+    """Unlink clip WAVs. Returns (deleted, missing); an unlink that fails
+    for another reason is logged and counted as missing."""
+    deleted = missing = 0
+    for path_str in paths:
+        p_wav = Path(path_str)
+        try:
+            p_wav.unlink()
+            deleted += 1
+        except FileNotFoundError:
+            missing += 1
+        except OSError as e:
+            logger.warning("failed to delete %s: %s", p_wav, e)
+            missing += 1
+    return deleted, missing
+
+
 def delete_session_files(target: Path, data: Mapping[str, Any]) -> tuple[int, int]:
     """Delete every non-deleted clip's WAV files plus the JSON sidecar
     itself. Returns (wavs_deleted, wavs_missing)."""
-    wavs_deleted = 0
-    wavs_missing = 0
-    for c in data.get("clips", []):
-        if c.get("deleted"):
-            # Already-deleted clips have already had their WAVs
-            # removed by delete_clip(); skip + don't count.
-            continue
-        for path_str in (c.get("files") or {}).values():
-            p_wav = Path(path_str)
-            try:
-                p_wav.unlink()
-                wavs_deleted += 1
-            except FileNotFoundError:
-                wavs_missing += 1
-            except OSError as e:
-                logger.warning("failed to delete %s: %s", p_wav, e)
-                wavs_missing += 1
+    # A deleted clip's WAVs were already removed by delete_clip().
+    counts = unlink_wavs(
+        path_str
+        for c in data.get("clips", []) if not c.get("deleted")
+        for path_str in (c.get("files") or {}).values()
+    )
     target.unlink()
-    return wavs_deleted, wavs_missing
+    return counts

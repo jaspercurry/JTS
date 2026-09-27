@@ -19,7 +19,7 @@ from ._shared import REASON_TOPOLOGY_UNREADABLE, CheckResult
 from .correction import (
     REASON_CAMILLA_CONFIG_MISSING,
     REASON_CAMILLA_STATEFILE_UNREADABLE,
-    _active_camilla_config_path,
+    active_camilla_config_path,
 )
 
 REASON_GRAPH_PASSIVE_LAYOUT = "runtime_graph_passive_layout"
@@ -140,7 +140,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
             reason=REASON_GRAPH_PASSIVE_LAYOUT,
         )
 
-    statefile, config_path = evidence.get("camilla_config", _active_camilla_config_path)
+    statefile, config_path = evidence.get("camilla_config", active_camilla_config_path)
     if config_path is None:
         return CheckResult(
             name, "fail",
@@ -371,7 +371,7 @@ def check_active_speaker_baseline_canonical() -> CheckResult:
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     label = "active speaker baseline canonical"
-    statefile, live_path_raw = evidence.get("camilla_config", _active_camilla_config_path)
+    statefile, live_path_raw = evidence.get("camilla_config", active_camilla_config_path)
     if live_path_raw is None:
         # A missing/unreadable outputd statefile is already a real failure at
         # the checks that own it (check_active_speaker_runtime_graph fails when

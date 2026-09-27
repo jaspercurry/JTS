@@ -60,7 +60,7 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
     PlaybackInterrupted,
     PlaybackOutcome,
 )
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.active_speaker.crossover_v2.session import (
     UNPROVEN_LEVEL,
     MeasureOutcome,
@@ -94,9 +94,11 @@ class _Graph:
     #: One entry per install: the level match that stimulus asked for.
     level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
+    cleared_layers: list = field(default_factory=list)
 
-    def select_scope(self, scope, candidate_id="", branch_channels=None):
+    def select_scope(self, scope, candidate_id="", branch_channels=None, cleared_layers=()):
         self.scopes.append((scope, candidate_id))
+        self.cleared_layers.append(tuple(cleared_layers))
 
     async def install(
         self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
@@ -382,6 +384,10 @@ def test_stub_codes_names_every_code_the_engine_can_emit():
         {"kind": MEASURE_KIND_BASELINE, "positions": (22.5,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (True,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
+        # Only a candidate graph has layers to clear (ADR-0370).
+        {"kind": MEASURE_KIND_BASELINE, "cleared_layers": ("room_correction",)},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate", "candidate_id": "fp", "cleared_layers": ("",)},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate", "candidate_id": "fp", "cleared_layers": ("room",)},
     ],
 )
 def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
@@ -641,7 +647,8 @@ async def test_failed_open_cleanup_retains_the_graph_for_a_later_close():
 async def test_each_take_selects_and_records_its_graph_scope_and_program_phase():
     session, parts = _session(play=_Play(wav_path="summed/take.wav"))
     specs = [
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline"),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline",
+                    cleared_layers=("room_correction", "bass_extension")),
         MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
         MeasureSpec(kind=MEASURE_KIND_BASELINE),
     ]
@@ -649,7 +656,10 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
         for spec in specs:
             await session.measure(spec)
     assert parts["graph"].scopes == [("candidate", "baseline"), ("candidate", "fp-a"), ("candidate", "fp-a"), ("drivers", "")]
+    # A take names its parent candidate and the layers its graph played cleared (ADR-0370).
+    assert parts["graph"].cleared_layers == [("room_correction", "bass_extension"), (), (), ()]
     records = parts["records"].banked
+    assert [record.get("cleared_layers") for record in records] == [["room_correction", "bass_extension"], None, None, None]
     assert [record["graph_scope"] for record in records] == ["candidate", "candidate", "candidate", "drivers"]
     assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
     assert len({record["graph_fingerprint"] for record in records}) == 3

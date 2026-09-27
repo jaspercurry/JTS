@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
+from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
@@ -42,14 +43,6 @@ from .spatial import MARK_DISTANCE_M
 STEP_BAND_HZ = (35.0, 400.0)
 #: The piston runs 0.15-0.3 dB short of jts3's measured 15 -> 30 mm step (#5684).
 STEP_TOLERANCE_DB = 0.4
-
-
-def piston_step_db(near_m: float, far_m: float, radius_m: float) -> float:
-    """How far a rigid piston's on-axis level falls from ``near_m`` to ``far_m``,
-    in its low-frequency limit, dB (negative moving away)."""
-    def reach(distance_m: float) -> float:
-        return math.hypot(distance_m, radius_m) - distance_m
-    return 20.0 * math.log10(reach(far_m) / reach(near_m))
 
 
 def played_path_db(config: Mapping[str, Any], freqs_hz: np.ndarray) -> np.ndarray | None:

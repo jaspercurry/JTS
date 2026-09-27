@@ -96,7 +96,7 @@ def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise ActiveSpeakerConfigError(f"could not read {label}: {e}") from e
-    except json.JSONDecodeError as e:
+    except ValueError as e:
         raise ActiveSpeakerConfigError(f"{label} is not valid JSON: {e}") from e
     if not isinstance(payload, dict):
         raise ActiveSpeakerConfigError(f"{label} JSON must be an object")
@@ -136,21 +136,24 @@ def _print_requirements(payload: dict[str, Any]) -> None:
 
 
 def _print_path_audit_summary(payload: dict[str, Any]) -> None:
+    evaluated = "paths" in payload
     print(f"Path safety: {payload['status']}")
-    print(f"Evidence source: {payload['evidence_source']}")
-    print(
-        f"Hardware probe backed: {'yes' if payload['hardware_probe_backed'] else 'no'}"
-    )
+    if evaluated:
+        print(f"Evidence source: {payload['evidence_source']}")
+        print(
+            f"Hardware probe backed: {'yes' if payload['hardware_probe_backed'] else 'no'}"
+        )
     print(f"Load gate: {payload['load_gate']}")
     print(
         f"OK to load active config: {'yes' if payload['ok_to_load_active_config'] else 'no'}"
     )
-    print(f"Blockers: {payload['blocker_count']}")
-    for path in payload["paths"]:
-        print(f"- {path['id']}: {path['status']}")
+    if evaluated:
+        print(f"Blockers: {payload['blocker_count']}")
+        for path in payload["paths"]:
+            print(f"- {path['id']}: {path['status']}")
     if payload["issues"]:
         print("Issues:")
-        _print_issues(payload["issues"], key="path_id")
+        _print_issues(payload["issues"], key="path_id" if evaluated else "code")
 
 
 def _print_environment_summary(payload: dict[str, Any]) -> None:
@@ -235,14 +238,12 @@ def _cmd_path_audit(args: argparse.Namespace) -> int:
             "path-audit requires evidence JSON or --requirements"
         )
 
-    payload = evaluate_path_safety_evidence(
-        _load_json_object(Path(args.evidence), label="path-safety evidence")
-    )
+    payload = path_safety_evidence_payload(args.evidence)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_path_audit_summary(payload)
-    return 0 if payload["requirements_met"] else 1
+    return 0 if payload.get("requirements_met") else 1
 
 
 def _cmd_path_probe(args: argparse.Namespace) -> int:

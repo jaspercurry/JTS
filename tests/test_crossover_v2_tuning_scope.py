@@ -40,7 +40,8 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPES,
     MeasureSpec,
 )
-from jasper.active_speaker.branch_chain import CrossoverSection, crossover_response_complex
+from jasper.active_speaker.branch_chain import crossover_response_complex
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_names import driver_baseline_gain_name
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
@@ -290,25 +291,38 @@ def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile)
 
 
 @pytest.mark.parametrize("purpose", mp.PURPOSES)
-def test_program_baselines_keep_every_applied_layer(tuning_profile, purpose):
+def test_program_baselines_play_every_applied_layer_their_purpose_keeps(tuning_profile, purpose):
+    """A program's base is the applied candidate, and its take plays every
+    applied layer but those its purpose clears: a bass base plays room and bass
+    off, a bass trial room off (ADR-0370)."""
     saved = _saved_tuning(tuning_profile)
     snapshot = saved["recomposition_snapshot"]
     snapshot["room_correction"] = _room_correction()
     snapshot["bass_extension"] = BASS_EXTENSION
     before = deepcopy(saved)
     candidate = candidate_from_applied_profile(tuning_profile.topology, saved)
-    graph = yaml.safe_load(compile_tuning_graph(tuning_profile, candidate=candidate))
     assert candidate.linearization and candidate.blend_correction
     assert candidate.room_correction == snapshot["room_correction"]
     assert candidate.bass_extension.items() >= snapshot["bass_extension"].items()
-    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose),))
-    spec, = ac.stop_specs(request, baseline_id=candidate.fingerprint,
-                         prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose),
+                                            ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose, candidate_id="fp-trial")),
+                                     candidates=(mp.BASE_CANDIDATE, "fp-trial"))
+    spec, trial = ac.stop_specs(request, baseline_id=candidate.fingerprint,
+                                prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    text = compile_tuning_graph(tuning_profile, candidate=candidate, cleared_layers=spec.cleared_layers)
     assert spec.candidate_id == candidate.fingerprint
     assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
+    bass = purpose == mp.PURPOSE_BASS
+    assert (spec.cleared_layers, trial.cleared_layers) == (
+        (("room_correction", "bass_extension"), ("room_correction",)) if bass else ((), ()))
+    assert extract_room_peqs_from_config_text(text) == ([] if bass else list(candidate_room_peqs(candidate)))
+    played = deepcopy(saved)
+    if bass:
+        del played["recomposition_snapshot"]["room_correction"], played["recomposition_snapshot"]["bass_extension"]
     expected, issues = compile_applied_fixture(
-        tuning_profile.topology, applied_profile=saved,
+        tuning_profile.topology, applied_profile=played,
     )
+    graph = yaml.safe_load(text)
     assert not issues and graph == yaml.safe_load(expected)
     assert graph["devices"]["volume_limit"] == 0.0
     assert not set(graph["filters"]) & sound_filter_slot_names()

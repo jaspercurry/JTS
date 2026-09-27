@@ -41,7 +41,7 @@ from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, r
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis

@@ -15,6 +15,7 @@ import pytest
 from jasper.audio_buffer import AudioBuffer
 from jasper.voice.turn_lifecycle import State
 from jasper.voice_daemon import PRE_ROLL_FRAMES
+from tests._manual_mics import publish_remote_ready
 from tests._wake_loop import wake_loop_for_tests
 
 
@@ -80,7 +81,8 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
     wl._mic = wl._wake_legs.legs["on"].mic = mic
     remote = Mic()
     if trigger == "remote":
-        wl._push_to_talk.sources["remote"] = SimpleNamespace(mic=remote)
+        wl._push_to_talk.sources["wiim_remote_2"] = SimpleNamespace(mic=remote)
+        publish_remote_ready(monkeypatch)
     source = remote if trigger == "remote" else mic
     wl._wake_legs.legs["on"].detector.score_frame = lambda frame: float(trigger == "wake" and frame[0] == 0)
     wl._play_listening_chirp = AsyncMock()
@@ -108,7 +110,7 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
         await asyncio.wait_for(mic.queue.join(), 1.0)
         if trigger != "wake":
             starter = asyncio.create_task(wl.manual_session_start(
-                "remote" if trigger == "remote" else None,
+                "wiim_remote_2" if trigger == "remote" else None,
             ))
         await asyncio.wait_for(entered.wait(), 1.0)
         for tag in range(1, 11):

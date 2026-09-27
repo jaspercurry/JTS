@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import yaml
 
@@ -23,8 +23,7 @@ from ..profile import (
     required_driver_roles,
 )
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .devices import _finite_float, _positive_int
 from .topology import _channels_for_role
 

@@ -148,7 +148,7 @@ def build_v2_wired_run_and_consume(
                 )
             finally:
                 restore = door.isolation.restore_result if door.isolation else None
-                v2state._persist_execution_result(session_id, volume_restore=restore or "not_opened")
+                v2state.persist_execution_result(session_id, volume_restore=restore or "not_opened")
             if result.reason and result.reason != "complete_requested":
                 if result.reason == signals.stop_reason or result.cancelled:
                     raise CaptureStopped("capture stopped")
@@ -158,7 +158,7 @@ def build_v2_wired_run_and_consume(
         except BaseException as exc:  # noqa: BLE001 - persist every terminal arm
             code = publish_failure(exc)
             detail = result.detail if result is not None else ""
-            v2state._persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
+            v2state.persist_terminal_failure(conductor, code, detail=detail or exception_detail(exc))
             raise
         else:
             try:

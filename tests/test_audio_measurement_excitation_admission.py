@@ -9,7 +9,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from jasper.audio_measurement.excitation_admission import (
+from jasper.audio_measurement.admission.excitation_admission import (
     ExcitationLimits,
     ExcitationRequest,
     FrequencyBand,

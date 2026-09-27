@@ -7,10 +7,11 @@
 One behavior per verb: what each publishes, and that the two writing verbs
 are the only thing that moves the durable record
 (``jasper.audio_measurement.household_mic``). The vendor lookup is faked at
-the function boundary, so no test here reaches the network.
+the function boundary or at its opener, so no test here reaches the network.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement.household_mic import read_household_mic
-from jasper.cli import _refusal, mic_calibration
+from jasper.cli import _refusal, _vendor_calibration, mic_calibration
 
 SAMPLE_CAL = "20 -1\n100 0\n1000 1\n"
 
@@ -61,7 +62,7 @@ def test_fetch_stores_the_vendor_calibration_and_remembers_the_mic(
             orientation=orientation, root=root,
         )
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", fake_fetch)
 
     code, answer = _run(
         ["fetch", "--model", "dayton_imm6", "--serial", "700-1234",
@@ -83,12 +84,12 @@ def test_fetch_stores_the_vendor_calibration_and_remembers_the_mic(
     ("error", "code", "reason"),
     [
         (
-            calibration.CalibrationNotFoundError,
+            _vendor_calibration.CalibrationNotFoundError,
             _refusal.EXIT_REFUSED,
             mic_calibration.REFUSE_VENDOR_NOT_FOUND,
         ),
         (
-            calibration.CalibrationUpstreamError,
+            _vendor_calibration.CalibrationUpstreamError,
             _refusal.EXIT_REFUSED,
             mic_calibration.REFUSE_VENDOR_UNREACHABLE,
         ),
@@ -107,7 +108,7 @@ def test_a_failed_vendor_lookup_refuses_by_name_and_writes_nothing(
     def fake_fetch(**_kwargs):
         raise error("the vendor said no")
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", fake_fetch)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", fake_fetch)
 
     exit_code, document = _run(
         ["fetch", "--model", "dayton_imm6", "--serial", "700-1234"], capsys
@@ -124,25 +125,104 @@ def test_a_failed_vendor_lookup_refuses_by_name_and_writes_nothing(
     [
         ["fetch", "--model", "no-such-mic", "--serial", "700-1234"],
         ["fetch", "--model", "dayton_imm6", "--serial", "  "],
+        ["fetch", "--model", "minidsp_umik2", "--serial", "abc"],
     ],
 )
 def test_an_impossible_lookup_refuses_before_the_vendor_is_reached(
     store: Path, monkeypatch, capsys, argv,
 ):
-    """A model nothing registers and an empty serial name no lookup, so they
-    are answered without a fetch -- which is what leaves the ValueError above
-    to mean the vendor's file."""
+    """A model nothing registers, an empty serial and a miniDSP serial with no
+    digits name no lookup, so they are answered without a fetch -- which is
+    what leaves the ValueError above to mean the vendor's file."""
 
     def never(**_kwargs):  # pragma: no cover - the point is that it is not called
         raise AssertionError("the fetcher was reached")
 
-    monkeypatch.setattr(calibration, "fetch_vendor_calibration", never)
+    monkeypatch.setattr(_vendor_calibration, "fetch_vendor_calibration", never)
 
     code, document = _run(argv, capsys)
 
     assert code == _refusal.EXIT_REFUSED
     assert document["reason"] == mic_calibration.REFUSE_LOOKUP_INVALID
     assert not store.exists()
+
+
+DAYTON_TOOL = "https://support.daytonaudio.com/MicrophoneCalibrationTool"
+
+
+class _Endless(io.RawIOBase):
+    """An answer that never ends, so it is only ever read up to a bound."""
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            raise AssertionError("the whole answer was read")
+        return (SAMPLE_CAL.encode() * (size // len(SAMPLE_CAL) + 1))[:size]
+
+
+class _CutOff(io.BytesIO):
+    """A body that ends before its declared length: short, bytes still owed."""
+
+    length = 1000
+
+
+@pytest.mark.parametrize(
+    ("answer", "code", "reason"),
+    [
+        pytest.param(
+            _Endless, _refusal.EXIT_UNREADABLE, mic_calibration.REASON_FILE_UNREADABLE,
+            id="past-the-upload-cap",
+        ),
+        pytest.param(
+            lambda: _CutOff(SAMPLE_CAL.encode()),
+            _refusal.EXIT_REFUSED, mic_calibration.REFUSE_VENDOR_UNREACHABLE,
+            id="cut-off-body",
+        ),
+        pytest.param(
+            lambda: io.BytesIO(b'<html><a href="https://127.0.0.1/cal.txt">file</a></html>'),
+            _refusal.EXIT_REFUSED, mic_calibration.REFUSE_VENDOR_LINK_OFF_HOST,
+            id="loopback-link",
+        ),
+        pytest.param(
+            lambda: io.BytesIO(b'<a href="http://support.daytonaudio.com/files/cal.txt">file</a>'),
+            _refusal.EXIT_REFUSED, mic_calibration.REFUSE_VENDOR_LINK_OFF_HOST,
+            id="cleartext-link",
+        ),
+        pytest.param(
+            lambda: io.BytesIO(b'<a href="file:///etc/passwd.txt">file</a>'),
+            _refusal.EXIT_REFUSED, mic_calibration.REFUSE_VENDOR_LINK_OFF_HOST,
+            id="local-file-link",
+        ),
+        pytest.param(
+            lambda: io.BytesIO(b"<html><style>@keyframes pulse {\n50% { opacity: .5 }\n"
+                               b"100% { opacity: 1 }\n}</style></html>"),
+            _refusal.EXIT_REFUSED, mic_calibration.REFUSE_VENDOR_UNREACHABLE,
+            id="markup-with-numeric-lines",
+        ),
+    ],
+)
+def test_a_hostile_vendor_answer_refuses_by_name_and_reaches_nothing_else(
+    store: Path, tmp_path, monkeypatch, capsys, answer, code, reason,
+):
+    """The real fetch path against a faked network: what the lookup form
+    answers is refused by name, no other address is requested, and nothing is
+    filed. Any other request would be answered with a good calibration."""
+    requested: list[str] = []
+
+    def open_(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        requested.append(url)
+        return answer() if url == DAYTON_TOOL else io.BytesIO(SAMPLE_CAL.encode())
+
+    monkeypatch.setattr(_vendor_calibration._OPENER, "open", open_)
+
+    exit_code, document = _run(
+        ["fetch", "--model", "dayton_imm6", "--serial", "700-1234"], capsys
+    )
+
+    assert (exit_code, document["reason"]) == (code, reason)
+    assert requested == [DAYTON_TOOL]
+    assert not store.exists()
+    assert not any((tmp_path / "cal").rglob("*.json"))
 
 
 def test_upload_stores_a_local_file_and_remembers_the_mic(store: Path, tmp_path, capsys):

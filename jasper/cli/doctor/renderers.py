@@ -29,8 +29,8 @@ from ._shared import (
     CheckResult,
     PROBE_FRAMES,
     exception_detail,
-    _parked_follower_result,
-    _parse_systemd_environment,
+    parked_follower_result,
+    parse_systemd_environment,
     run,
     systemctl_unavailable_result,
 )
@@ -270,7 +270,7 @@ def check_librespot_running(cfg: Config) -> CheckResult:
 
     librespot has no local control HTTP, so health is systemd state
     plus binary presence."""
-    parked = _parked_follower_result(LIBRESPOT_SERVICE)
+    parked = parked_follower_result(LIBRESPOT_SERVICE)
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -309,7 +309,7 @@ def check_shairport_sync_ap2() -> CheckResult:
     AND the systemd unit is active. The Debian Trixie apt package
     is AP1-only; the installer's source build emits a binary whose
     `-V` output contains 'AirPlay2'."""
-    parked = _parked_follower_result("shairport-sync AP2")
+    parked = parked_follower_result("shairport-sync AP2")
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -350,7 +350,7 @@ def check_shairport_sync_ap2() -> CheckResult:
 def check_nqptp_running() -> CheckResult:
     """nqptp is required for AirPlay 2 timing. Without it,
     shairport-sync's AP2 path silently fails to handshake."""
-    parked = _parked_follower_result("nqptp.service")
+    parked = parked_follower_result("nqptp.service")
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -394,7 +394,7 @@ def check_airplay_advert_resolves() -> CheckResult:
     interface is torn down and rebuilt under ~1 s after they registered.
     """
     label = "avahi: _airplay._tcp resolves"
-    parked = _parked_follower_result(label)
+    parked = parked_follower_result(label)
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -443,7 +443,7 @@ def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     source selection and guarded handoff stop working; if fan-in has
     restarted into its safe NONE state, music may stay silent."""
-    parked = _parked_follower_result("jasper-mux")
+    parked = parked_follower_result("jasper-mux")
     if parked is not None:
         return parked
     unit_state = evidence.unit_state("jasper-mux.service")
@@ -468,7 +468,7 @@ def check_bluealsa() -> CheckResult:
     bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
     must be active for "phone-as-Bluetooth-source → speaker"
     to work end-to-end."""
-    parked = _parked_follower_result("bluealsa")
+    parked = parked_follower_result("bluealsa")
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -500,7 +500,7 @@ def check_bluealsa() -> CheckResult:
 @doctor_check()
 def check_bluetooth_pairing_policy() -> CheckResult:
     """Verify the JTS no-code pairing agent is installed and idle-closed."""
-    parked = _parked_follower_result("Bluetooth pairing policy")
+    parked = parked_follower_result("Bluetooth pairing policy")
     if parked is not None:
         return parked
     intentional_off = _intentional_source_off(
@@ -654,7 +654,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     pattern doesn't match what librespot is broadcasting, every
     cold-start `play X` returns 'no spotify target device available'
     — a silent severe failure this check catches."""
-    parked = _parked_follower_result("Spotify Connect device")
+    parked = parked_follower_result("Spotify Connect device")
     if parked is not None:
         return parked
     label = "Spotify Connect device"
@@ -1009,7 +1009,7 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
 
     env_map: dict[str, str] = {}
     # Least authoritative first, so the better source overwrites it.
-    env_map.update(_parse_systemd_environment(
+    env_map.update(parse_systemd_environment(
         _renderer_unit_property("Environment", unit) or ""
     ))
     env_map.update(_unit_runtime_environ(unit))

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
@@ -17,11 +17,11 @@ from jasper.camilla_config_contract import (
 from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
 from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
+from ..camilla_names import blend_correction_name, room_peq_name
 from ..graph_safety import view_from_yaml_dict
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .decorate_dynamic_bass import _dynamic_bass_graph, _with_dynamic_bass
 from .decorate_protection import _add_baseline_protection
 from .decorate_rear import (
@@ -40,10 +40,8 @@ from .devices import (
 from .document import _atomic_write_text, _reserialize_keeping_header, logger
 from .filters import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
-    _blend_correction_name,
     _emit_baseline_filter_definitions,
     linearization_slot,
-    _room_peq_name,
     _validated_blend_correction,
     _validated_driver_corrections,
     _validated_linearization,
@@ -196,11 +194,11 @@ def emit_active_speaker_baseline_config(
     mixer_yaml = _emit_split_mixer(preset, apply_region_polarity=False)
     pipeline_yaml = _emit_baseline_pipeline(
         preset,
-        room_peq_names=[_room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
+        room_peq_names=[room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
         preference_filter_names=[spec.name for spec in emitted_preference_filters],
         linearization=safe_linearization,
         blend_correction_names=[
-            _blend_correction_name(i)
+            blend_correction_name(i)
             for i in range(1, len(safe_blend_correction) + 1)
         ],
     )

@@ -246,6 +246,18 @@ WIIM_REMOTE_2 = RemoteProfile(
 KNOWN_PROFILES: list[RemoteProfile] = [VK01, WIIM_REMOTE_2]
 
 
+def adapter_mic_profiles() -> tuple[RemoteProfile, ...]:
+    """Profiles that can publish a manual mic source through an adapter."""
+
+    return tuple(
+        profile for profile in KNOWN_PROFILES
+        if profile.mic.status == "adapter"
+        and profile.mic.capture_profile_id
+        and profile.mic.device
+        and profile.mic.adapter_host_service
+    )
+
+
 def lookup(vendor_id: int, product_id: int) -> RemoteProfile | None:
     """Return the profile for a USB (vid, pid), or None."""
     for profile in KNOWN_PROFILES:

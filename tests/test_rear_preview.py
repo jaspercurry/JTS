@@ -26,13 +26,22 @@ from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REA
 from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, gradient_residual_db, magnitude_db
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
+from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_prescription_document import document
+from tests.test_rear_output_foundation import _rear_pair
 from tests.test_round_views_rear import (
     _PAIR_GAP_MS, _PAIR_LEVEL_GAP_DB, _branch_diagnostic,
     banked_candidates, packet_of, pair_round, rear_round,
 )
 
 __all__ = ["banked_candidates"]
+
+
+@pytest.fixture(autouse=True)
+def cardioid_box(monkeypatch):
+    """The declared layout a rear preview compiles its stage at: one mono
+    cabinet of front woofer 0, tweeter 1 and rear woofer 2."""
+    monkeypatch.setattr(crossover_prescriber, "load_output_topology", lambda: _rear_pair("mono")[1])
 
 
 def _preview(tmp_path, capsys, sections, root=None, extra=()):
@@ -237,18 +246,30 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
 @pytest.mark.parametrize("case,code", [
     ("both", "prescription_malformed"), ("no_round", "evidence_unreadable"),
     ("summed", "rear_preview_needs_pair_round"), ("invalid", "rear_calibration_invalid"),
+    ("no_rear_output", "rear_calibration_topology_unsupported"),
 ])
-def test_preview_refusals(tmp_path, capsys, case, code):
+def test_preview_refusals(tmp_path, capsys, monkeypatch, case, code):
     section = diagnostic_seed(48000)
     sections = {"rear_calibration": section}
     if case == "both":
         sections["room"] = {}
     if case == "invalid":
         section["sample_rate_hz"] = 44100
+    if case == "no_rear_output":
+        monkeypatch.setattr(crossover_prescriber, "load_output_topology",
+                            lambda: _active_topology("mono", "active_2_way"))
     root = None if case in ("both", "no_round") else (
         rear_round(tmp_path) if case == "summed" else pair_round(tmp_path))
     answer = _preview(tmp_path, capsys, sections, root)
     assert (answer["code"], answer["detail"]["section"]) == (code, "rear_calibration")
+
+
+def test_the_preview_compiles_the_stage_at_the_declared_cabinet(tmp_path, capsys):
+    """The stage lands on the declared rear output, with the front chain on the
+    declared front woofer; the seed's muted rear output stays muted."""
+    stage = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, pair_round(tmp_path))["compiled_stage"]
+    assert stage["filters"]["rear_out2_output_gain"]["parameters"]["mute"] is True
+    assert [step["channels"] for step in stage["pipeline"] if step.get("type") == "Filter"][0] == [0]
 
 
 def test_pair_takes_share_a_window_and_remove_each_clock_shift():

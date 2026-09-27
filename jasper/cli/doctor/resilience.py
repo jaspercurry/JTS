@@ -52,6 +52,8 @@ REASON_UNITS_RESTARTED = "units_restarted"
 REASON_REQUIRED_UNIT_INACTIVE = "required_unit_inactive"
 
 REASON_ACCESSORY_BRIDGE_RESTART_LOOP = "accessory_bridge_restart_loop"
+REASON_ACCESSORY_MIC_NOT_READY = "accessory_mic_not_ready"
+REASON_ACCESSORY_MIC_NOT_ARMED = "accessory_mic_not_armed"
 REASON_ACCESSORY_STATUS_UNAVAILABLE = "accessory_status_unavailable"
 REASON_ACCESSORY_BRIDGES_NOT_CONFIGURED = "accessory_bridges_not_configured"
 
@@ -253,10 +255,22 @@ def check_accessory_bridges() -> CheckResult:
     ``active`` while one bridge loops. ``last_error`` in the published
     status is set only while a bridge waits out its backoff, so it is the
     live "looping now" signal, not the cumulative ``restarts`` count.
+
+    Each armed or registered accessory mic also reports its readiness here. A
+    remote asleep is ``disconnected``, which is normal; under any other
+    not-ready code a hold cannot stream for as long as it lasts. A registered
+    remote the reconciler has not armed is its own warning (ADR-0372).
     """
     label = "accessory bridges"
     snap = accessory_status.snapshot()
-    if not snap["published"]:
+    mics = accessory_status.mic_readiness(
+        evidence.mic_presence().accessory_sources, snap,
+    )
+    unarmed = [
+        f"{source} ({mic['not_ready']})"
+        for source, mic in mics.items() if not mic["armed"]
+    ]
+    if not snap["published"] and not unarmed:
         return CheckResult(
             label, "skipped",
             "no accessory status published — see 'required units active' "
@@ -264,7 +278,7 @@ def check_accessory_bridges() -> CheckResult:
             reason=REASON_ACCESSORY_STATUS_UNAVAILABLE,
         )
     bridges = snap["bridges"]
-    if not bridges:
+    if not bridges and not unarmed:
         return CheckResult(
             label, "skipped", "no accessory bridges configured",
             reason=REASON_ACCESSORY_BRIDGES_NOT_CONFIGURED,
@@ -281,8 +295,31 @@ def check_accessory_bridges() -> CheckResult:
             ),
             reason=REASON_ACCESSORY_BRIDGE_RESTART_LOOP,
         )
+    if unarmed:
+        return CheckResult(
+            label, "warn",
+            "push-to-talk mic registered but not armed: " + ", ".join(unarmed)
+            + " — `journalctl -u jasper-accessory-reconcile` names why",
+            reason=REASON_ACCESSORY_MIC_NOT_ARMED,
+        )
+    faults = [
+        f"{source} ({mic['not_ready']})" for source, mic in mics.items()
+        if mic["not_ready"] not in (None, accessory_status.MIC_NOT_READY_DISCONNECTED)
+    ]
+    if faults:
+        return CheckResult(
+            label, "warn",
+            "armed push-to-talk mic not ready: " + ", ".join(faults),
+            reason=REASON_ACCESSORY_MIC_NOT_READY,
+        )
+    armed = "".join(
+        f"; {source} armed, "
+        + ("ready" if mic["ready"] else f"not ready ({mic['not_ready']})")
+        for source, mic in mics.items()
+    )
     return CheckResult(
-        label, "ok", f"{len(bridges)} accessory bridges running with no restart loop",
+        label, "ok",
+        f"{len(bridges)} accessory bridges running with no restart loop{armed}",
     )
 
 
@@ -302,8 +339,9 @@ def check_voice_unit_running() -> CheckResult:
 
     Severity follows the tier. A full box runs an always-on wake loop, so
     ``inactive`` fails. A streambox runs the assistant only while a
-    mic-bearing remote is paired (ADR-0217): with none paired the state is
-    correct and reads ``skipped``, and with one paired ``inactive`` warns —
+    mic-bearing remote is armed (ADR-0217, ADR-0372): with none armed the
+    state is correct and reads ``skipped``, and with one armed ``inactive``
+    warns —
     the remote's talk button gets no answer, but the reconciler that owns
     that lifecycle may still be mid-pass.
 
@@ -319,7 +357,7 @@ def check_voice_unit_running() -> CheckResult:
     if evidence.streambox_awaiting_accessory():
         return CheckResult(
             label, "skipped",
-            "streambox tier with no mic-bearing remote paired — the "
+            "streambox tier with no mic-bearing remote armed — the "
             "assistant runs only while one is",
             reason=REASON_VOICE_UNIT_NOT_FULL_PROFILE,
         )
@@ -342,7 +380,7 @@ def check_voice_unit_running() -> CheckResult:
         return CheckResult(
             label, "skipped",
             f"{_VOICE_UNIT} parked by its voice-input gate — the AEC "
-            "reconciler found neither a local nor an accessory mic",
+            "reconciler found neither a local nor an armed accessory mic",
             reason=REASON_VOICE_UNIT_PARKED_NO_INPUT,
         )
     # Only a file that says nothing: an unreadable or invalid one is a
@@ -357,7 +395,7 @@ def check_voice_unit_running() -> CheckResult:
     if streambox:
         return CheckResult(
             label, "warn",
-            f"{_VOICE_UNIT} is inactive while a mic-bearing remote is paired, "
+            f"{_VOICE_UNIT} is inactive while a mic-bearing remote is armed, "
             "so the remote's talk button gets no answer. "
             "`journalctl -u jasper-accessory-reconcile` names why the "
             "reconciler that owns this unit's lifecycle did not start it.",

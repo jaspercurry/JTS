@@ -73,7 +73,7 @@ def crossover_v2_status_block(
     # Count is derived from its persistence owner on every state read. Keeping
     # a second copy in journey state made crash recovery and offline store
     # repair observable as two contradictory counts.
-    store_count = v2state._attempt_loop_store_snapshot().model_error_count
+    store_count = v2state.attempt_loop_store_snapshot().model_error_count
     try:
         needs_recovery = bool(v2volume.session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):

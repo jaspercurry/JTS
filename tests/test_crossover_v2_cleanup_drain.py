@@ -25,7 +25,7 @@ async def test_terminal_restore_replaces_the_previous_run(monkeypatch, failure, 
     door = SimpleNamespace(isolation=None)
     monkeypatch.setattr(v2state, "load_v2_state", lambda: state)
     monkeypatch.setattr(v2state, "save_v2_state", lambda value, **kw: saved.append(value["execution"].copy()))
-    monkeypatch.setattr(v2state, "_persist_terminal_failure", lambda *a, **kw: None)
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda *a, **kw: None)
     def persist(*args, **kwargs):
         if failure is OSError:
             raise OSError(28, "disk full")

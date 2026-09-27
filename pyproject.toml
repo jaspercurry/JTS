@@ -312,9 +312,7 @@ module = [
     "jasper.active_speaker.startup_load",
     "jasper.aec_sweep",
     "jasper.assistant_loudness",
-    # calibration and peq: latent type debt kept on the baseline, not fixed
-    # inside a relocation.
-    "jasper.audio_measurement.calibration",
+    # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
     "jasper.bluetooth.scan",
@@ -356,7 +354,6 @@ module = [
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.wake_corpus.recording_backend",
     "jasper.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",

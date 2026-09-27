@@ -15,7 +15,7 @@ import numpy as np
 from jasper.active_speaker.crossover_v2 import position_cycle
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
-    build_crossover_evidence_packet,
+    round_evidence,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundInputs,
@@ -49,28 +49,19 @@ class BankedRound:
 
 def load_banked_round(round_dir: Path) -> BankedRound:
     """Read one round — banked tree or LIVE session bundle — into a
-    :class:`BankedRound`.
+    :class:`BankedRound`, its packet read through :func:`~.evidence_packet.round_evidence`.
 
-    Which of the two it is, and so where the flow state, design draft and
-    applied profile come from, is :func:`~.round_inputs.round_inputs`' answer;
-    it rides on :attr:`BankedRound.inputs` so the views read the same files this
-    packet was built from. Raises :class:`RoundViewsError` when the directory is
-    neither shape, when a banked tree holds more than one session, or when the
-    bundle carries no readable evidence packet. It does NOT judge what the round
-    banked — what a view needs, the view says (#3478, #3482).
+    Which of the two it is, and so where its inputs come from, is
+    :func:`~.round_inputs.round_inputs`' answer; they ride on
+    :attr:`BankedRound.inputs`. Raises :class:`RoundViewsError` when the
+    directory is neither shape, when a banked tree holds more than one session,
+    or when a packet built on read finds no crossover-v2 bundle. It does NOT
+    judge what the round banked — what a view needs, the view says (#3478, #3482).
     """
     round_dir = Path(round_dir)
     inputs = round_inputs(round_dir)
     try:
-        packet = build_crossover_evidence_packet(
-            inputs.session_dir,
-            state_path=inputs.state_path,
-            driver_draft_path=inputs.design_draft_path,
-            applied_profile_path=inputs.applied_profile_path,
-            repeat_floor_path=inputs.repeat_floor_path,
-            declared_geometry_path=inputs.declared_geometry_path,
-            statefile_path=inputs.statefile_path,
-        )
+        packet = round_evidence(inputs)
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc
 

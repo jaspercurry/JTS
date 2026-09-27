@@ -32,12 +32,12 @@ from jasper.active_speaker.linearization_fit import (
     FitVocabulary, LinearizationFilter, complex_correction_response, core_level_band_hz, fit_driver_linearization, measurement_hole_bands_hz,
 )
 from jasper.active_speaker.profile import CrossoverRegion
-from jasper.audio_measurement.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
+    ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM,
     AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis,
 )
 from jasper.cli import crossover_prescriber, round_views
@@ -46,44 +46,11 @@ from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.round_packet import _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
 from jasper.active_speaker.candidate_bank import find_banked_candidate
-from jasper.active_speaker import candidate_parts, commissioning_experiment
+from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
-from jasper.active_speaker.commissioning_experiment import commissioning_candidate
-from jasper.active_speaker.crossover_v2.alignment_prescription import PRESCRIPTION_OUTSIDE_DECLARED_WINDOW, PRESCRIPTION_OUT_OF_LOBE
-from jasper.active_speaker.measured_crossover_candidate import effective_preset
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.crossover_v2_fixtures import _fixture_applied_profile
-
-
-@pytest.mark.parametrize("basis,fc_hz", [(None, 2500), (120, None)])
-def test_commissioning_requires_known_alignment_lobe(tmp_path, monkeypatch, basis, fc_hz):
-    topology = mono_output_topology()
-    draft = standard_design_draft(topology)
-    declared = candidate_from_design_draft(topology, draft)
-    read_prescription = commissioning_experiment.read_alignment_prescription
-
-    def read_at_corner(document, **kwargs):
-        prescription = read_prescription(document, **{**kwargs, "fc_hz": fc_hz})
-        assert prescription.out_of_lobe is None
-        return prescription
-
-    monkeypatch.setattr(commissioning_experiment, "read_alignment_prescription", read_at_corner)
-    alignment = {
-        "base": True, "pose": {"deg": 0, "elevation_deg": 0},
-        "committed": {"delay_us": 157.5, "polarity": "inverted"},
-        "seed": {"delay_us": basis}, "trim_db": {"woofer": 0, "tweeter": -3},
-        "timing_verdict": "measured", "status": ALIGNMENT_OK,
-        "objective": "summed_fit_committed", "record_id": "mark.json",
-    }
-    result = commissioning_experiment.bank_commissioning_experiment(
-        tmp_path / "round", {"run_id": "test"}, {"draft": draft}, [alignment],
-    )
-    assert result["status"] == "alignment_unmeasured"
-    assert result["reason"] == "commissioning_alignment_unavailable"
-    candidate = find_banked_candidate(result["candidate_fingerprint"], root=tmp_path).candidate
-    assert candidate.alignment == declared.alignment
-    assert candidate.role_attenuations_db == alignment["trim_db"]
 
 
 @pytest.fixture
@@ -903,18 +870,13 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     assert packet["packet_fingerprint"] == json.loads(capsys.readouterr().out)["packet_fingerprint"]
 
 
-@pytest.mark.parametrize("trial,delay,seed,polarity,status,objective,confidence,reason", [
-    (False, 157.5, 120, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, ""),
-    (True, -157.5, -120, "normal", ALIGNMENT_OK, "summed_fit_committed", 0.9, ""),
-    (False, 1200, 1200, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, PRESCRIPTION_OUTSIDE_DECLARED_WINDOW),
-    (False, 500, 120, "inverted", ALIGNMENT_OK, "summed_fit_committed", 0.9, PRESCRIPTION_OUT_OF_LOBE),
-    (False, 157.5, 120, "inverted", ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, "summed_fit_committed", 0.9,
-     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW),
-    (False, 157.5, 120, "inverted", None, "summed_fit_committed", 0.9, "commissioning_alignment_unavailable"),
-    (False, 0, 0, "normal", ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM, 0, ALIGNMENT_ESTIMATED_FLAT_SUM),
+@pytest.mark.parametrize("trial,delay,seed,polarity,objective,confidence", [
+    (False, 157.5, 120, "inverted", "summed_fit_committed", 0.9),
+    (True, -157.5, -120, "normal", "summed_fit_committed", 0.9),
+    (False, 0, 0, "normal", ALIGNMENT_ESTIMATED_FLAT_SUM, 0),
 ])
-def test_first_speaker_experiment_banks_measured_alignment_for_apply(
-    speaker_round, tmp_path, monkeypatch, trial, delay, seed, polarity, status, objective, confidence, reason,
+def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
+    speaker_round, tmp_path, monkeypatch, trial, delay, seed, polarity, objective, confidence,
 ):
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
@@ -922,15 +884,12 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
     assert analysis["alignment_status"] == ALIGNMENT_OK
     analysis.update(delay_us=delay, polarity=polarity, trim_db={"woofer": 0, "tweeter": -3},
-                    alignment_seed_delay_us=seed, alignment_status=status, alignment_objective=objective,
+                    alignment_seed_delay_us=seed, alignment_status=ALIGNMENT_OK, alignment_objective=objective,
                     alignment_confidence=confidence, timing_verdict="measured" if objective == "summed_fit_committed" else "estimate",
                     residual_rms_db=.2, margin_db=.4, repeat_spread_db=.1, repeat_spread_us=2,
                     timing_graph_fingerprint="played-timing" if objective == "summed_fit_committed" else None)
     topology = mono_output_topology()
     draft = standard_design_draft(topology)
-    draft["driver_research"]["crossover_candidates"][0].update(
-        delay_ms=0.4, delay_target_role="woofer", upper_polarity="inverted",
-    )
     declared = candidate_from_design_draft(topology, draft)
     monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.load_output_topology_strict", lambda: topology)
@@ -958,63 +917,14 @@ def test_first_speaker_experiment_banks_measured_alignment_for_apply(
     banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
                         design_draft_path=root / "design-draft.json", applied_profile_path=tmp_path / "absent.json")
     packet = json.loads((banked.path / "packet.json").read_text())
-    first = packet["commissioning"]
-    assert first["status"] == ("alignment_unmeasured" if reason else "awaiting_apply"), first
-    assert first["reason"] == reason
-    assert first["alignment"]["take_id"] == group["takes"][0]["take_id"]
+    assert "commissioning" not in packet
+    assert not (banked.path.parent / "commissioning.json").exists()
     pair = next(row for row in packet["alignment"] if row["take_id"] == group["takes"][0]["take_id"])
-    assert {key: first["alignment"][key] for key in pair} == pair
     assert pair["committed"] == {"delay_us": delay, "polarity": polarity}
     assert pair["trim_db"] == analysis["trim_db"]
     assert pair["graph_fingerprint"] == ("played-timing" if objective == "summed_fit_committed" else group["capture_basis"]["graph_fingerprint"])
     assert group["capture_basis"]["graph_fingerprint"] != "played-timing"
-    candidate = find_banked_candidate(first["candidate_fingerprint"], root=tmp_path / "bank").candidate
-    assert candidate.role_attenuations_db == analysis["trim_db"]
-    if reason:
-        assert candidate.alignment == declared.alignment
-        assert effective_preset(candidate) == effective_preset(declared)
-        assert f"alignment_unmeasured: {reason}" in (banked.path / INDEX_FILENAME).read_text()
-    else:
-        assert candidate.alignment.delay_us == abs(delay)
-        assert candidate.alignment.delay_role == ("tweeter" if delay >= 0 else "woofer")
-        assert candidate.alignment.polarity == ("invert" if polarity == "inverted" else "keep")
-        assert first["alignment"]["prescription"]["checked_at_fc_hz"] == 2500
-    assert candidate.source_preset == declared.source_preset
-    assert candidate.analysis["measurement_status"] == "unmeasured"
-    assert not candidate.linearization and not candidate.room_correction
-    assert commissioning_candidate(topology, draft, root=tmp_path / "bank").fingerprint == candidate.fingerprint
     assert not (tmp_path / "absent.json").exists()
-
-
-@pytest.mark.parametrize("missing,reason", [
-    ("topology", "commissioning_declaration_unavailable"),
-    ("take", "commissioning_alignment_unavailable"),
-    ("delay_us", "commissioning_alignment_unavailable"),
-    ("polarity", "commissioning_alignment_unavailable"),
-    ("invalid_topology", "commissioning_candidate_unavailable"),
-])
-def test_first_experiment_unavailable_codes(speaker_round, tmp_path, missing, reason):
-    root, *_ = speaker_round
-    inputs = round_inputs(root)
-    draft = standard_design_draft(mono_output_topology())
-    take = {"selected": True, "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0},
-            "take_id": "mark", "artifacts": {"record_id": "mark.json"},
-            "analysis": {"delay_us": 150, "polarity": "normal", "trim_db": {"woofer": 0, "tweeter": -3}}}
-    if missing == "topology":
-        draft.pop("topology")
-    elif missing == "invalid_topology":
-        draft["topology"] = {"kind": "invalid"}
-    else:
-        take["analysis"].pop(missing, None)
-    write_manifest(root, groups=[{"set_id": "mark", "base": True, "capture_basis": {},
-                                  "takes": [] if missing == "take" else [take]}])
-    (root / "design-draft.json").write_text(json.dumps(draft))
-    mark_state(inputs.session_dir, "applied")
-    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
-                        design_draft_path=root / "design-draft.json", applied_profile_path=tmp_path / "absent.json")
-    result = json.loads((banked.path / "packet.json").read_text())["commissioning"]
-    assert (result["status"], result["reason"]) == ("unavailable", reason)
-    assert "candidate_fingerprint" not in result
 
 
 @pytest.mark.parametrize("incumbent_role,remaining", [("tweeter", 40.0), ("woofer", 3.0)])

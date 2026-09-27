@@ -12,13 +12,14 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import nearfield_view as nv, round_inputs
 from jasper.audio_measurement.gating import f_trusted_floor_hz
+from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.cli import round_views
 from tests.run_manifest_fixture import write_manifest
 
 # A banked curve's grid runs to 20 kHz; a near-field sweep stops at 2 kHz.
 FREQS = np.geomspace(20.0, 20_000.0, 600)
-STEP = nv.piston_step_db(0.015, 0.030, 0.057)
+STEP = piston_step_db(0.015, 0.030, 0.057)
 
 
 def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0)):
@@ -39,10 +40,6 @@ def _graph(pad_db):
                                  "mapping": [{"dest": 0, "sources": [{"channel": 0, "gain": 0.0, "inverted": False}]}]}},
             "filters": {"pad": {"type": "Gain", "parameters": {"gain": pad_db}}},
             "pipeline": [{"type": "Mixer", "name": "route"}, {"type": "Filter", "channels": [0], "names": ["pad"]}]}
-
-
-def test_a_rigid_piston_falls_2_12_db_from_15_to_30_mm_on_a_114_mm_cone():
-    assert STEP == pytest.approx(-2.12, abs=0.01)
 
 
 @pytest.mark.parametrize("diameters,rear_extra_db,verdicts", [

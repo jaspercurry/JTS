@@ -24,10 +24,6 @@ TAKES_THIS_ROUND = "<this-round>"
 TAKES_THIS_BUNDLE = "<this-round's bundle>"
 TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
-TAKES_FAR_AND_CLOSE = (
-    "--far-round", TAKES_THIS_ROUND, "--close-round", "<other-round>",
-    "--close-m", "<distance-m>",
-)
 
 
 class ViewArtifact(NamedTuple):
@@ -82,10 +78,9 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
     ), schema="jts_compare/1", per_take=True),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA),
-    # The batch spans one set per played candidate, so this view reads the
-    # round rather than a set.
+    # The banker writes this view; agents read it in packet["rear"].
     "rear": ViewArtifact(
-        "rear_view.json", purposes=(PURPOSE_REAR,),
+        "rear_view.json", ("--run", "<run-id>"), producer="jasper-round wait", purposes=(PURPOSE_REAR,),
         bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/1",
     ),
     "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,), builder="round_bookkeeping.bass", packet="bass", schema=BASS_VIEW_SCHEMA),
@@ -94,7 +89,6 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
         "--after-set", "<set-id>", "--change", "<change>",
     ), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/1"),
     "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,), schema="jts_delay_landscape/1"),
-    "close-reference": ViewArtifact("close_reference.json", TAKES_FAR_AND_CLOSE, purposes=(PURPOSE_SPEAKER,), schema="jts_close_reference/1"),
     "nearfield": ViewArtifact("nearfield_view.json", purposes=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1"),
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
     # The packet owns these two names, so the rows take those constants rather
@@ -126,7 +120,6 @@ VIEW_PURPOSES = {
 ANSWER_SCHEMAS = {
     "speaker-fit": "jts_speaker_fit/1",
     "repeat --set": "jts_repeat/1",
-    "close-reference --distance": "jts_mic_distance/1",
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact

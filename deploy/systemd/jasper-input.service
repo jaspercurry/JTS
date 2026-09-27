@@ -37,14 +37,15 @@ SupplementaryGroups=input
 CapabilityBoundingSet=
 SystemCallFilter=@system-service
 
-# Hardening — the process reads /dev/input/event* and the published accessory
-# mic sources, watches udev, talks to BlueZ, and makes localhost HTTP/UDP calls.
+# Hardening — the process reads /dev/input/event* and the accessory
+# reconciler's adapter plan, watches udev, talks to BlueZ, and makes localhost
+# HTTP/UDP calls.
 # /dev/input/event* access comes from the `input` supplementary group above,
 # which is also why the mic adapter's former PrivateDevices=true cannot come
 # across: it would hide the input nodes this process exists to read.
 ProtectSystem=strict
-# Its only write: the supervisor's per-bridge status.json, which
-# /state.resilience.accessory_bridges reads. Under ProtectSystem=strict a bare
+# Its only write: the supervisor's per-bridge status.json, which jasper-voice
+# and the doctor read. Under ProtectSystem=strict a bare
 # mkdir under /run fails, so the directory has to come from RuntimeDirectory=;
 # 0750 root-of-unit jasper-input:jasper lets jasper-control (Group=jasper)
 # read it. Reaped on stop, which is what keeps the file from outliving the

@@ -12,10 +12,11 @@ from typing import Sequence
 from jasper.audio_measurement.program import RoleBand
 from .angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop, resolve_request, stop_specs, design_axis_spec
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
+from .crossover_v2.contracts import REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD
 from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_MEASURE, PHASE_LATERAL
 from .crossover_v2.measure_spec import MeasureSpec
 from .measurement_programs import (
-    BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
+    BASE_CANDIDATE, REGIME_NEAR_FIELD, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
     POSE_KIND_BEARING, BRANCH_PAIR_DRIVERS, candidate_identity,
 )
 
@@ -40,7 +41,8 @@ def prepare_plan_captures(
                         prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
                         roles_bands=roles_bands)
     captures: list[PlanCapture] = []
-    if any(stop.regime == REGIME_PER_DRIVER for stop in request.stops):
+    # CHECK plays every driver; a stop naming its driver plays that one alone and needs none (ADR-0366).
+    if any(stop.regime == REGIME_PER_DRIVER and not stop.driver for stop in request.stops):
         captures.append(PlanCapture(
             AngleStop(0, REGIME_PER_DRIVER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
@@ -66,9 +68,10 @@ def prepare_plan_captures(
                            vertical_deg=stop.elevation_deg,
                            pose_prompts=(resolved[offset // request.repeats].prompt.text,))
             if stop.driver:
-                spec = replace(spec, branch_target_ids=(stop.driver,), regime=stop.regime)
+                spec = replace(spec, branch_target_ids=(stop.driver,), regime=(
+                    MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else spec.regime))
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER else PHASE_LATERAL
+            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
     return tuple(captures)
 

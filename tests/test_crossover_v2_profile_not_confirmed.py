@@ -30,6 +30,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_SPL_CEILING_EXCEEDED,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2.program_transaction import StimulusCaptureStopped
 from jasper.active_speaker.driver_safety import (
     compute_driver_safety_profile,
 )
@@ -42,6 +43,7 @@ from jasper.active_speaker.program_playback import (
     ProgramPlaybackError,
     ProgramPlaybackRefused,
 )
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web.correction_runtime import refusal_envelope
@@ -207,11 +209,6 @@ def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
     """A capture stop is outside the program family (it stops a TAKE, not an
     admission), but a ceiling trip must not fall back to internal_error — the
     household can act on this one by lowering the level."""
-    from jasper.active_speaker.crossover_v2.program_transaction import (
-        StimulusCaptureStopped,
-    )
-    from jasper.audio_measurement.playback import PlaybackObservation
-
     ceiling_trip = StimulusCaptureStopped(
         "spl_ceiling_exceeded", "measured above ceiling", PlaybackObservation(),
     )

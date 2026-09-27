@@ -16,17 +16,15 @@ both load on a 1 GB Pi).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
-from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
-from jasper.audio_measurement.piston import far_field_ceiling_hz
 from jasper.biquad import (
     RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_complex, freq_trig,
 )
+
+from .crossover_section import CrossoverSection
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB
@@ -153,17 +151,6 @@ def _shelf_asymptotes(filters: Sequence[Mapping[str, Any]]) -> list[float]:
             else min(freq * _SHELF_ASYMPTOTE_RATIO, _NYQUIST_HZ)
         )
     return out
-
-
-@dataclass(frozen=True)
-class CrossoverSection:
-    """One Linkwitz-Riley section a branch runs through. ``order`` is the LR order the graph
-    emits (:data:`jasper.active_speaker.profile.SUPPORTED_LR_ORDERS`).
-    """
-
-    fc_hz: float
-    order: int
-    highpass: bool
 
 
 def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection, ...]]:
@@ -371,72 +358,6 @@ def radiating_band_hz(
         else:
             hi_hz = min(hi_hz, section.fc_hz * (ratio - 1.0) ** (1.0 / order))
     return lo_hz, hi_hz
-
-
-#: Driver diameters of margin added to the piston far-field distance by
-#: :func:`recommended_distance`; chosen so #3501's anchor cases land right
-#: (5.5 in/2.5 kHz -> ~12 in, 12 in/500 Hz -> ~25 in, 2.5 in/2.5 kHz -> ~5 in).
-K_MARGIN = 2.0
-
-#: Placement slop the operator is held to, metres (+/- 0.5 in); priced by
-#: :func:`placement_tolerance_db`.
-PLACEMENT_TOLERANCE_M = 0.0127
-
-#: Aim slop that costs nothing measurable in a close capture's validity band
-#: (woofer is omnidirectional there).
-AIM_TOLERANCE_DEG = 5.0
-
-
-def placement_tolerance_db(
-    distance_m: float, *, tolerance_m: float = PLACEMENT_TOLERANCE_M
-) -> float:
-    """MAGNITUDE of the 1/r correction's uncertainty under ``+/- tolerance_m`` of mic
-    placement, dB. An uncertainty, never a signed gain to apply.
-    """
-    return 20.0 * math.log10((float(distance_m) + float(tolerance_m)) / float(distance_m))
-
-
-def recommended_distance(
-    diameter_m: float,
-    fc_hz: float,
-    *,
-    sound_speed_m_s: float = DEFAULT_SOUND_SPEED_M_S,
-) -> dict[str, Any]:
-    """Where to put the mic for a close reference of this driver (#3501). ``r =
-    2*a**2/lambda_top + K_MARGIN*diameter`` at ``f_top = fc/2``; both terms returned
-    separately (margin dominates, far-field term is the correction).
-    """
-    diameter = float(diameter_m)
-    if diameter <= 0.0:
-        raise ValueError(f"diameter must be positive, got {diameter_m}")
-    if fc_hz <= 0.0:
-        raise ValueError(f"fc must be positive, got {fc_hz}")
-    f_top = 0.5 * float(fc_hz)
-    lambda_top = float(sound_speed_m_s) / f_top
-    radius = 0.5 * diameter
-    far_field_m = 2.0 * radius**2 / lambda_top
-    margin_m = K_MARGIN * diameter
-    distance_m = far_field_m + margin_m
-    return {
-        "driver_diameter_m": diameter,
-        "driver_diameter_in": diameter / METERS_PER_INCH,
-        "fc_hz": float(fc_hz),
-        "band_top_hz": f_top,
-        "wavelength_top_m": lambda_top,
-        "far_field_term_m": far_field_m,
-        "margin_term_m": margin_m,
-        "k_margin": K_MARGIN,
-        "distance_m": distance_m,
-        "distance_in": distance_m / METERS_PER_INCH,
-        "direct_gain_over_1m_db": 20.0 * math.log10(1.0 / distance_m),
-        "placement_tolerance_m": PLACEMENT_TOLERANCE_M,
-        "placement_tolerance_db": placement_tolerance_db(distance_m),
-        "aim_tolerance_deg": AIM_TOLERANCE_DEG,
-        "far_field_ceiling_hz": far_field_ceiling_hz(
-            diameter, distance_m, sound_speed_m_s=sound_speed_m_s
-        ),
-        "sound_speed_m_s": float(sound_speed_m_s),
-    }
 
 
 def chain_response(

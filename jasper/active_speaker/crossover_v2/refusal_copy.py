@@ -160,7 +160,7 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # measurement and the model cancels out of a measured-vs-model grade.
 REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # The apply transaction came back blocked or raised.
-# ``_persist_terminal_failure`` scopes its §5.6 evidence reset away from this
+# ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
@@ -460,6 +460,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "bass_fit_run_mismatch": ReasonSpec(
         "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "", "The selected run does not match this manifest.",
         next_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
+    ),
+    # See ADR-0371
+    "room_not_banked": ReasonSpec(
+        "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement.",
+        next_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})

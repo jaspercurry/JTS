@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.playback import PlaybackObservation
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationProgram
 from jasper.audio_measurement.snr_policy import framed_ambient_band_report
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder, select_capture_channel

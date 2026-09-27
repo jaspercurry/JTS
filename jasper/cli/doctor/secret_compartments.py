@@ -36,8 +36,7 @@ Severity diverges from the rest of the doctor on purpose: under-permission
 (a non-member, or the world, CAN read) FAILs — a confidentiality regression is
 invisible everywhere else and re-tightens only on an explicit re-deploy.
 
-Reports are strictly secret-free: owner / group / octal-mode / daemon-name
-only, never a byte of the secret.
+Reports show metadata only, never secret content.
 """
 from __future__ import annotations
 
@@ -49,6 +48,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ...accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
+from ...env_load import GOOGLE_CREDENTIALS_ENV_PATH, SPOTIFY_CREDENTIALS_ENV_PATH
+from ...google_routes import GOOGLE_ROUTES_SECRET_FILE
+from ...home_assistant import HA_ENV_FILE
+from ...voice.provider_state import KEYS_FILE
 from ...google_creds import DEFAULT_TOKEN_DIR as GOOGLE_DEFAULT_TOKEN_DIR
 from ...google_creds import registry_path as google_registry_path
 from . import privsep
@@ -113,12 +116,9 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "jasper-web",
         ),
         files=(
-            # The 3 LLM API keys, split out of voice_provider.env.
-            "/var/lib/jasper-secrets/voice_keys.env",
-            # Google OAuth client secret + the per-account refresh-token tree.
-            "/var/lib/jasper-secrets/google_credentials.env",
-            # Billable Google Routes API key written by /assistant/transit/.
-            "/var/lib/jasper-secrets/google_routes.env",
+            KEYS_FILE,
+            GOOGLE_CREDENTIALS_ENV_PATH,
+            GOOGLE_ROUTES_SECRET_FILE,
             google_registry_path,
             f"{GOOGLE_DEFAULT_TOKEN_DIR}/*.json",
         ),
@@ -137,8 +137,8 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
             "jasper-web",
         ),
         files=(
-            "/var/lib/jasper-intsecrets/home_assistant.env",
-            "/var/lib/jasper-intsecrets/spotify_credentials.env",
+            HA_ENV_FILE,
+            SPOTIFY_CREDENTIALS_ENV_PATH,
             legacy_cache_path,
             registry_path,
             f"{DEFAULT_CACHE_DIR}/*.json",

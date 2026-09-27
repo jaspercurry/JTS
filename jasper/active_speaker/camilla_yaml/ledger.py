@@ -5,14 +5,13 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.biquad import PeqFilter, total_positive_boost_db
 
 from ..profile import ActiveSpeakerPreset
 
-if TYPE_CHECKING:
-    from ..branch_chain import CrossoverSection
+from ..crossover_section import CrossoverSection
 from .topology import _ordered_regions
 
 BASELINE_HEADROOM_DB = 0.0
@@ -48,7 +47,7 @@ MAX_PROGRAM_HEADROOM_DB = 40.0
 
 def program_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
-    *, branch_context: Mapping[str, tuple[Sequence["CrossoverSection"], float]],
+    *, branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
     room_peqs: Sequence[PeqFilter] = (),
     baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     output_trim_db: float = 0.0,
@@ -102,7 +101,7 @@ def boost_headroom_by_role(
 def linearization_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
     *,
-    branch_context: Mapping[str, tuple[Sequence["CrossoverSection"], float]],
+    branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
 ) -> float:
     """Program-domain attenuation the emitted linearization boost needs, dB.
 

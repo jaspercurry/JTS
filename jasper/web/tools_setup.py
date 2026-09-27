@@ -59,6 +59,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypeVar
 
+from ..platform import systemd
 from ..env_load import TOOL_STATE_ENV_PATH
 from ..log_event import log_event
 from ..tools.tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
@@ -764,7 +765,6 @@ def make_server(
 ) -> ThreadingHTTPServer:
     """Build the tools wizard server. `target` is a socket / (host, port)
     tuple / int port per systemd.make_http_server's contract."""
-    from ..platform import systemd
     if apply_ts_path is None:
         apply_ts_path = os.path.join(os.path.dirname(state_path), "tools_apply.ts")
     return systemd.make_http_server(

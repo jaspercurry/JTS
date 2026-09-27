@@ -339,9 +339,9 @@ class Evidence:
     def camilla_config_path(self) -> str | None:
         """The config path CamillaDSP's statefile names, read once; None when
         the statefile is unreadable or names nothing."""
-        from .correction import _active_camilla_config_path
+        from .correction import active_camilla_config_path
 
-        _statefile, path = self.get("camilla_config", _active_camilla_config_path)
+        _statefile, path = self.get("camilla_config", active_camilla_config_path)
         return path
 
     def camilla_config_text(self) -> str | None:
@@ -408,7 +408,7 @@ class Evidence:
         return self.get("install_profile_is_streambox", _install_profile_is_streambox)
 
     def streambox_awaiting_accessory(self) -> bool:
-        """ADR-0217: streambox tier, no mic-bearing accessory paired yet."""
+        """ADR-0217: streambox tier, no mic-bearing accessory armed yet."""
         return (
             self.install_profile_is_streambox()
             and not self.mic_presence().accessory_present

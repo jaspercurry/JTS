@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_corpus import recording_backend
+from jasper.wake_corpus import clip_recording, recording_backend
 from jasper.web import wake_corpus_setup
 
 from tests._log_events import event_records
@@ -45,7 +45,7 @@ def test_begin_session_refused_while_muted(
     _write_mute(mute_path, True)
     with pytest.raises(recording_backend.MicMutedError, match="muted"):
         mute_backend.begin_session("jasper")
-    assert mute_backend.session_id() is None
+    assert mute_backend.status_snapshot()["session_id"] is None
     assert event_records(caplog, "wake_corpus.mute_refused")
 
 
@@ -74,7 +74,7 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     monkeypatch, mute_backend, mute_path: Path, caplog,
 ) -> None:
 
-    monkeypatch.setattr(recording_backend, "MUTE_POLL_INTERVAL_SEC", 0.05)
+    monkeypatch.setattr(clip_recording, "MUTE_POLL_INTERVAL_SEC", 0.05)
     _write_mute(mute_path, False)
     mute_backend.begin_session("jasper")
     mute_backend.start_recording("quiet", "near")
@@ -97,7 +97,7 @@ def test_mute_mid_recording_stops_clip_and_flags_it(
     assert event_records(caplog, "wake_corpus.mute_stop")
     # The flag persists into the session metadata sidecar.
     # RecordingBackend.stop_recording appends to the in-memory clip list
-    # under the lock, then calls _save_metadata() OUTSIDE the lock on the
+    # under the lock, then writes the sidecar OUTSIDE the lock on the
     # same background thread — so the list_clips() poll above can observe
     # the new clip before the sidecar write lands. Poll the sidecar itself,
     # with the same deadline discipline as above, instead of assuming a

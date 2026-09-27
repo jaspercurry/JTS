@@ -12,7 +12,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_P
 from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import _roles
 
-from jasper.active_speaker import applied_tune, baseline_profile, commissioning_experiment, commissioning_coordinator as coordinator
+from jasper.active_speaker import applied_tune, baseline_profile, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import REFERENCE_PROGRAMS, RUNNABLE_PROGRAMS
@@ -25,7 +25,6 @@ from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import parse_utc_iso
 from jasper.web import correction_crossover_v2_status as v2status, sound_active_speaker
 from jasper.web.correction_crossover_v2_grade import GRADE_NOT_APPLIED
-from tests.test_active_speaker_baseline_profile import _v2_candidate
 from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
 import pytest
@@ -114,7 +113,6 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
         topology, design_draft=draft, crossover_preview=_ready_preview(),
         baseline_profile=_applied_baseline_profile(permissions={"may_compile": status != "blocked"}),
         applied_profile=applied if status == "applied" else None, recent_rounds=recent,
-        first_experiment={"candidate_fingerprint": "measured-fp"} if action == "save_baseline_profile" else None,
     )
     assert [step["id"] for step in view["steps"]] == ["layout", "research", "profile"]
     assert sum(step["status"] == "active" for step in view["steps"]) <= 1
@@ -125,7 +123,6 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     if reason_code is not None:
         assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
-    assert view["combined_groups"] == []
     if action == "save_baseline_profile":
         assert view["next_action"]["body"] == {}
     elif action == "copy_prompt":
@@ -144,7 +141,7 @@ def test_program_order_consumers(consumer):
                         if isinstance(action, argparse._SubParsersAction))
         order = next(action.choices for action in commands.choices["run"]._actions
                      if action.dest == "program")
-        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("close", "nearfield")
+        assert tuple(order[len(RUNNABLE_PROGRAMS):]) == REFERENCE_PROGRAMS == ("drivers", "nearfield")
         order = order[:len(RUNNABLE_PROGRAMS)]
     else:
         order = tuple(next_program_action(
@@ -174,7 +171,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     assert ids & rear_ids == (rear_ids if rear else set())
     assert ("speaker/mark" in ids) is not passive
     assert ("branches/express" in ids) is not passive
-    assert {"seat/cube", "room/cloud", "room/seat", "close/spot"} <= ids
+    assert {"seat/cube", "room/cloud", "room/seat"} <= ids
     near_field = {"nearfield/woofer", "nearfield/rear", "nearfield/cardioid"}
     assert ids & near_field == (set() if passive else near_field if rear else {"nearfield/woofer"})
     assert sum(choice["default"] for choice in choices) == 1
@@ -252,7 +249,6 @@ def test_preview_and_displaced_profile_keep_existing_actions(displaced):
         _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview() if displaced else {},
         baseline_profile=_applied_baseline_profile(), applied_profile=_applied_anchor() if displaced else None,
         applied_profile_verdict=APPLIED_PROFILE_DISPLACED if displaced else "",
-        first_experiment={"candidate_fingerprint": "measured-fp"},
     )
     assert view["status"] == ("ready_to_save_profile" if displaced else "needs_driver_values")
     assert view["next_action"]["id"] == ("save_baseline_profile" if displaced else "save_driver_values")
@@ -290,7 +286,7 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
                "source": {"measured_candidate_fingerprint": "content-fp"}}
     view = build_commissioning_view(
         _topology(), design_draft=_ready_design(), crossover_preview=_ready_preview(),
-        first_experiment={"candidate_fingerprint": "measured-fp"}, baseline_profile=review,
+        baseline_profile=review,
         applied_profile=applied if applied_fingerprint else None,
     )
     if applied_fingerprint:
@@ -343,21 +339,6 @@ def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypat
             for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == (
                 expected or dict.fromkeys(("candidate", "record", "config_path", "applied_at")))
     assert check_row(doctor.check_active_speaker_applied_graph()).get("applied_identity") == expected
-
-
-@pytest.mark.parametrize("packet,status,reason", [
-    ({"status": "awaiting_apply", "reason": ""}, "measured", None),
-    ({"status": "alignment_unmeasured", "reason": "delay_out_of_bounds"}, "alignment_unmeasured", "delay_out_of_bounds"),
-    ({}, "declared", None),
-])
-def test_household_experiment_reads_packet_alignment(monkeypatch, tmp_path, packet, status, reason):
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = replace(_v2_candidate(preset), analysis={"evidence": {"commissioning": packet}})
-    monkeypatch.setattr(commissioning_experiment, "commissioning_candidate", lambda *a: candidate)
-    view = load_commissioning_view(topology)
-    assert view["first_experiment"]["alignment"] == {"status": status, "reason": reason}
-    assert view["first_experiment"]["candidate_fingerprint"] == (candidate.fingerprint if packet else None)
-    assert view["first_experiment"]["complete"] is bool(packet)
 
 
 @pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/woofer"])
