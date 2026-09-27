@@ -383,7 +383,9 @@ async def test_every_resource_exits_in_reverse_of_entry(teardown_trace) -> None:
 async def test_daemon_lifetime_order(
     teardown_trace, first, first_phase, second, second_phase,
 ):
-    """NN-6: cue baking precedes mic parks; #4789: adopt holds before capture."""
+    """NN-6: cue baking precedes mic parks; #4789: adopt holds before capture;
+    the connection escalates a provider failure through the tts cue, so it
+    must exit before tts does."""
     await _run_daemon_once(teardown_trace)
     assert (
         teardown_trace.index_of(first, first_phase)

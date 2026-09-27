@@ -64,6 +64,8 @@ def test_logfmt_quotes_value_with_whitespace_ssid_case():
     'fields,expected',
     [
         ({'label': 'a "quoted" name'}, 'event=x.y label="a \\"quoted\\" name"'),
+        # Backslashes are escaped before quotes, or a trailing backslash
+        # could escape the closing quote.
         ({'path': 'C:\\dir\\x'}, 'event=x.y path="C:\\\\dir\\\\x"'),
         ({'kv': 'a=b'}, 'event=x.y kv="a=b"'),
     ],

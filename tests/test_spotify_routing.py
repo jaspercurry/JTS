@@ -34,6 +34,8 @@ def test_normalise_strips_articles_and_punctuation():
     'title,artist,spotify_artist,expected',
     [
         ('Hey Jude', 'The Beatles', 'The Beatles', True),
+        # Matching is title-only: artist disagreement (cover-band credit,
+        # remaster-suffix attribution) is tolerated.
         ('HEY JUDE!', 'Some Cover Band', 'The Beatles', True),
         ('Hey Jude', 'The Beatles', 'The Beatles - Remastered 2015', True),
         ('Float On', 'Modest Mouse', 'The Beatles', False),
