@@ -21,9 +21,8 @@ from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 from jasper.speaker_layout import LOWEST_DRIVER_ROLE_BY_MAIN_MODE, cardioid_cabinet_channels
 
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH
+from jasper.json_fields import issue as _issue
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
-
-from ._common import issue as _issue
 
 
 ACTIVE_BASELINE_SOURCE = (

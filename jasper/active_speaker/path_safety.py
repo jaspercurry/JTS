@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import sha256_file, utc_now_iso as _utc_now
+from jasper.json_fields import issue as _issue, sha256_file, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from jasper.paths import resolve_state_path
 
-from ._common import coerce_finite_float, issue as _issue, software_guard_needed
+from ._common import coerce_finite_float, software_guard_needed
 from .calibration_level import MAX_TEST_LEVEL_DBFS
 from .driver_protection import (
     format_protection_hz,

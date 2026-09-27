@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from jasper.json_fields import issue as _issue
 from jasper.output_topology import OutputTopology, topology_config_fingerprint
 
 from ._common import BASELINE_TOPOLOGY_CHANGED
@@ -45,7 +46,7 @@ def readiness_snapshot(
     protected = None
 
     def issue(code: str, message: str, severity: str = "blocker") -> None:
-        issues.append({"severity": severity, "code": code, "message": message})
+        issues.append(_issue(severity, code, message))
 
     if topology is None:
         issue(

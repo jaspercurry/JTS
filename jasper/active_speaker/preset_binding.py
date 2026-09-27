@@ -10,6 +10,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
+from jasper.json_fields import issue as _issue
 from jasper.output_topology import (
     OutputTopology,
     SpeakerChannel,
@@ -19,7 +20,7 @@ from jasper.output_topology import (
 )
 from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE, DEFAULT_SUB_CROSSOVER_HZ, WAY_COUNT_BY_MAIN_MODE
 
-from ._common import gate as _gate, issue as _issue
+from ._common import gate as _gate
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .declaration_vocabulary import (
     _normalise_filter_type,

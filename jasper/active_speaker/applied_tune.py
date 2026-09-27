@@ -12,13 +12,13 @@ from typing import Any, Callable, Mapping, Sequence
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.biquad import FilterSpec
+from jasper.json_fields import issue as _issue
 from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
 from . import baseline_profile, baseline_record, candidate_bank, measurement_emit, runtime_contract
 from . import design_draft as design_drafts
-from ._common import issue as _issue
 from .crossover_declaration import assert_crossover_honours_declared_floor
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_on_declaration
 from .rear_calibration import rear_operating_facts

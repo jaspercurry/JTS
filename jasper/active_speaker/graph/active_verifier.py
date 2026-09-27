@@ -13,7 +13,7 @@ import yaml
 
 from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
-from jasper.json_fields import as_float, finite_float
+from jasper.json_fields import as_float, finite_float, issue as _issue
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.speaker_layout import (
@@ -25,7 +25,6 @@ from jasper.speaker_layout import (
     measurement_target_id,
 )
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
-from .._common import issue as _issue
 from ..camilla_yaml import BASELINE_HEADROOM_DB, BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
