@@ -28,6 +28,7 @@ from ._common import (
     DRIVER_CLASSES,
     MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
+    REIMPORT_RESEARCH,
     DriverFields,
     issue as _issue,
 )
@@ -56,7 +57,6 @@ from .declaration_vocabulary import (
 SCHEMA_VERSION = 1
 DESIGN_DRAFT_KIND = "jts_active_speaker_design_draft"
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
-_REIMPORT_RESEARCH = "; import the research again at /sound/speaker/ with the current prompt"
 DEFAULT_DESIGN_DRAFT_PATH = Path("/var/lib/jasper/active_speaker_design_draft.json")
 DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 _DESIGN_DRAFT_WRITE_LOCK = threading.RLock()
@@ -303,18 +303,14 @@ def _normalise_driver_common(raw: Any, prefix: str, *, research: bool) -> dict[s
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
-def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
+def _normalise_manual_driver(raw: Any, prefix: str) -> dict[str, Any]:
     # Legacy manual values had no provenance. Preserve them as pinned: an
     # upgrade must never silently replace an attenuation the operator may have
     # chosen for driver safety. New UI-generated sensitivity proposals send
     # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
-    raw = _mapping(raw, "manual_settings.driver")
-    driver = _normalise_driver_common(raw, "manual_settings.driver", research=False)
-    target_id = _text(
-        raw.get("target_id") if isinstance(raw, Mapping) else None,
-        "manual_settings.driver.target_id",
-        max_chars=160,
-    )
+    raw = _mapping(raw, prefix)
+    driver = _normalise_driver_common(raw, prefix, research=False)
+    target_id = _text(raw.get("target_id"), f"{prefix}.target_id", max_chars=160)
     if target_id:
         driver["target_id"] = target_id
     installation = normalise_installation(raw.get("installation"))
@@ -417,13 +413,13 @@ def normalise_driver_research(
     research_schema_version = raw.get("artifact_schema_version")
     if type(research_schema_version) is not int or research_schema_version != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:  # noqa: E721
         raise ActiveSpeakerDesignDraftError(
-            f"driver_research.artifact_schema_version must be {DRIVER_RESEARCH_RESULT_SCHEMA_VERSION}{_REIMPORT_RESEARCH}",
+            f"driver_research.artifact_schema_version must be {DRIVER_RESEARCH_RESULT_SCHEMA_VERSION}{REIMPORT_RESEARCH}",
             code="research_version_unsupported",
         )
     _reject_unknown_keys(raw, "driver_research", {
         "artifact_schema_version", "kind", "drivers", "crossover_candidates",
         "human_review", "request_fingerprint", "result_fingerprint",
-    }, _REIMPORT_RESEARCH)
+    }, REIMPORT_RESEARCH)
     if raw.get("kind") != DRIVER_RESEARCH_KIND:
         raise ActiveSpeakerDesignDraftError(
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
@@ -436,9 +432,9 @@ def normalise_driver_research(
             _mapping(item, f"driver_research.drivers[{index}]"),
             f"driver_research.drivers[{index}]",
             DRIVER_RESEARCH_FIELDS,
-            _REIMPORT_RESEARCH,
+            REIMPORT_RESEARCH,
         )
-        drivers.append(_normalise_driver_common(item, "driver", research=True))
+        drivers.append(_normalise_driver_common(item, f"driver_research.drivers[{index}]", research=True))
     target_ids = [
         str(driver["target_id"]) for driver in drivers if driver.get("target_id")
     ]
@@ -483,10 +479,10 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
     )
     drivers = [
-        _normalise_manual_driver(item)
-        for item in _sequence(
+        _normalise_manual_driver(item, f"manual_settings.drivers[{index}]")
+        for index, item in enumerate(_sequence(
             raw.get("drivers"), "manual_settings.drivers", limit=_MAX_DRIVERS
-        )
+        ))
     ]
     target_ids = [
         str(driver["target_id"]) for driver in drivers if driver.get("target_id")

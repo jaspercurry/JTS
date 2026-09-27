@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasper.output_topology import OutputTopology
-from .driver_protection import declared_protection_highpass_floor_hz
 
 
 def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any]:
@@ -54,9 +53,6 @@ def resolve_design_inputs(
                 facts["cabinet"] = {key: value for key, value in facts["cabinet"].items()
                                     if key != "enclosure_kind"}
             edits = manual_rows.get(target_id, {})
-            if declared_protection_highpass_floor_hz(edits) is not None and not edits.get("recommended_highpass_hz"):
-                facts.pop("recommended_highpass_hz", None)
-                facts.pop("recommended_highpass_slope_db_per_octave", None)
             if not facts and not edits:
                 continue
             driver = _overlay(facts, edits)

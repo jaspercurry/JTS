@@ -11,6 +11,7 @@ import re
 from typing import Any, Mapping, TypedDict
 
 from jasper.active_speaker import commissioning_coordinator, design_draft
+from jasper.active_speaker._common import MINIMUM_CROSSOVER_LABEL
 from jasper.active_speaker.design_inputs import resolve_design_inputs
 from jasper.active_speaker.driver_pad import PAD_KINDS
 from jasper.active_speaker.driver_safety import (
@@ -39,7 +40,7 @@ class SpeakerSetupView(TypedDict):
 DRIVER_FIELDS = {
     "nominal_impedance_ohm": "Nominal impedance (ohms)",
     "sensitivity_db_2v83_1m": "Sensitivity (dB at 2.83 V / 1 m)",
-    "recommended_highpass_hz": "Minimum crossover (Hz)",
+    "recommended_highpass_hz": MINIMUM_CROSSOVER_LABEL,
     "recommended_highpass_slope_db_per_octave": "Minimum slope (dB/octave)",
     "recommended_lowpass_hz": "Maximum crossover (Hz)",
     "gain_offset_db": "Custom level trim (dB)",

@@ -289,8 +289,8 @@ def driver_test_signal_plan_from_edges(
     the class table keeps (#2874).
 
     ``declared_floor_hz`` is the wider excitation floor
-    (:func:`~.driver_protection.driver_excitation_floor_hz`); the protective
-    high-pass above is its second arm and stands in when the caller has none.
+    (:func:`~.driver_protection.driver_excitation_floor_hz`); the declared low
+    limit stands in when the caller has none.
     """
 
     role_id = str(role or "").strip().lower()

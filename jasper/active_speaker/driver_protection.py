@@ -342,7 +342,6 @@ PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
 LOW_LIMIT_PLAUSIBILITY_FACTOR = 4.0
 
 LOW_LIMIT_DECLARED = "declared"
-LOW_LIMIT_LEGACY_PROTECTION_FILTER = "legacy_protection_filter"
 LOW_LIMIT_STYLE_DEFAULT = "style_default"
 
 #: One operator-facing phrase per low-limit provenance. Every surface that
@@ -350,9 +349,6 @@ LOW_LIMIT_STYLE_DEFAULT = "style_default"
 #: an unlabelled class-table figure cannot read as a second floor.
 LOW_LIMIT_PROVENANCE_LABELS = {
     LOW_LIMIT_DECLARED: "manufacturer declared",
-    LOW_LIMIT_LEGACY_PROTECTION_FILTER: (
-        "inferred from a stored protective high-pass"
-    ),
     LOW_LIMIT_STYLE_DEFAULT: "class fallback; nothing declared",
 }
 
@@ -385,24 +381,6 @@ class DriverLowLimit:
             float(published) if published is not None else 0.0,
             PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
         )
-
-
-def _declared_highpass_filter(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    filters = driver.get("required_protection_filters")
-    if not isinstance(filters, list):
-        return None
-    best: Mapping[str, Any] | None = None
-    for item in filters:
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind") or "").strip().lower() != "highpass":
-            continue
-        cutoff = coerce_finite_float(item.get("cutoff_hz"))
-        if cutoff is None or cutoff <= 0:
-            continue
-        if best is None or cutoff > float(best["cutoff_hz"]):
-            best = item
-    return best
 
 
 def driver_low_limit_plausibility_band_hz(
@@ -460,14 +438,13 @@ def resolve_driver_low_limit(
 
     1. The OWNER (``recommended_highpass_hz``): a sourced manufacturer figure
        wins outright, including below the style default.
-    2. A stored ``required_protection_filters`` high-pass, when no owner is
-       declared — the backwards-compatible read, labelled as inferred and
-       resolving to the STRICTER number so a deployed box never loosens.
-    3. The style default, labelled as a code default; see
-       :func:`apply_driver_low_limit` for the one thing it may not do.
+    2. The style default, labelled as a code default; see
+       :func:`apply_driver_low_limit` for the one thing it may not do. A stored
+       high-pass never stands in for the owner: its normaliser refuses a
+       high-pass without one (#2902).
 
-    ``None`` means no low limit at all (no owner, no stored high-pass, no style
-    anchor) — "unchanged behaviour", never a floor of zero.
+    ``None`` means no low limit at all (no owner, no style anchor) —
+    "unchanged behaviour", never a floor of zero.
     """
 
     if not isinstance(driver, Mapping):
@@ -483,19 +460,6 @@ def resolve_driver_low_limit(
             rationale=(
                 "the manufacturer's declared minimum recommended crossover "
                 "frequency"
-            ),
-        )
-    legacy = _declared_highpass_filter(driver)
-    if legacy is not None:
-        return DriverLowLimit(
-            frequency_hz=float(legacy["cutoff_hz"]),
-            slope_db_per_octave=coerce_finite_float(
-                legacy.get("minimum_slope_db_per_octave")
-            ),
-            provenance=LOW_LIMIT_LEGACY_PROTECTION_FILTER,
-            rationale=(
-                "inferred from a stored protective high-pass requirement; no "
-                "minimum recommended crossover frequency is declared"
             ),
         )
     anchor = driver_protection_profile(role, driver_style=driver_style).min_highpass_hz
@@ -570,17 +534,15 @@ def _band_pair(value: Any) -> tuple[float, float] | None:
 def driver_excitation_floor_hz(driver: Any) -> float | None:
     """The declared low edge below which this driver may not be excited.
 
-    The declared owner, then a stored protective high-pass, then the declared
-    ``measurement_band_hz`` low edge. The style default is deliberately NOT
-    reached: this bounds a SWEEP, and the class table is a tone-gate fallback,
-    not a frequency a driver may be driven to. ``None`` means undeclared.
+    The declared owner, then the declared ``measurement_band_hz`` low edge. The
+    style default is deliberately NOT reached: this bounds a SWEEP, and the
+    class table is a tone-gate fallback, not a frequency a driver may be driven
+    to. ``None`` means undeclared.
     """
 
     if not isinstance(driver, Mapping):
         return None
     declared = coerce_finite_float(driver.get("recommended_highpass_hz"))
-    if declared is None or declared <= 0:
-        declared = declared_protection_highpass_floor_hz(driver)
     if declared is not None and declared > 0:
         return declared
     band = _band_pair(driver.get("measurement_band_hz"))

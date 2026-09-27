@@ -56,6 +56,8 @@ MANUAL_DRIVER_FIELDS = (
 DRIVER_RESEARCH_FIELDS = frozenset(MANUAL_DRIVER_FIELDS) | {
     "sources", "unknowns", "field_provenance",
 }
+REIMPORT_RESEARCH = "; import the research again at /sound/speaker/ with the current prompt"
+MINIMUM_CROSSOVER_LABEL = "Minimum crossover (Hz)"
 MANUAL_CANDIDATE_FIELDS = {
     "between_roles", "frequency_hz", "filter_type", "slope_db_per_octave",
     "confidence", "rationale", "warnings", "lower_polarity", "upper_polarity",

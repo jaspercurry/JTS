@@ -2597,7 +2597,7 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     tweeter = manual["drivers"][1]
     tweeter["hard_excitation_band_hz"][0] = 2000
     tweeter["measurement_band_hz"][0] = 2000
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000
+    tweeter["recommended_highpass_hz"] = 2000
     manual["drivers"][0]["required_protection_filters"] = []
     seed = _draft(topology)
     draft = build_design_draft(topology, driver_research=seed["driver_research"], manual_settings=manual,
@@ -4401,7 +4401,7 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         draft = json.loads(path.read_text())
         tweeter = draft["manual_settings"]["drivers"][1]
         if fault == "live_floor":
-            tweeter["required_protection_filters"][0]["cutoff_hz"] = 3000.0
+            tweeter["recommended_highpass_hz"] = 3000.0
             tweeter["hard_excitation_band_hz"][0] = 3000.0
             tweeter["measurement_band_hz"][0] = 3000.0
             draft["manual_settings"]["crossover_candidates"][0]["frequency_hz"] = 3500.0
@@ -4413,9 +4413,9 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
     if fault == "declaration":
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
-        draft["manual_settings"]["drivers"][1].pop("required_protection_filters")
         for driver in (draft["manual_settings"]["drivers"][1], *draft["driver_research"]["drivers"]):
             driver.pop("recommended_highpass_hz", None)
+            driver.pop("recommended_highpass_slope_db_per_octave", None)
         path.write_text(json.dumps(draft))
     elif fault == "graph":
         compile_graph = v2apply.compile_tuning_graph

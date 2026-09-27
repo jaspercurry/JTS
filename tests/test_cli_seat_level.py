@@ -500,6 +500,7 @@ async def test_commissioning_uses_current_draft_and_checks_protection_before_cle
         if change == "protection":
             for driver in (draft["manual_settings"]["drivers"][1], *draft["driver_research"]["drivers"]):
                 driver.pop("recommended_highpass_hz", None)
+                driver.pop("recommended_highpass_slope_db_per_octave", None)
             draft["manual_settings"]["drivers"][1].pop("required_protection_filters", None)
         else:
             draft["manual_settings"]["drivers"][1]["gain_offset_db"] = -12.0
