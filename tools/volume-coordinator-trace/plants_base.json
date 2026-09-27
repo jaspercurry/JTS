@@ -1,0 +1,122 @@
+[
+ [
+  "jasper/volume_coordinator.py",
+  "return float(db) <= percent_to_db(0) + MUTE_DB_EPSILON",
+  "return float(db) <= percent_to_db(0) - MUTE_DB_EPSILON"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "MUTE_DB_EPSILON = 1e-6",
+  "MUTE_DB_EPSILON = 0.3"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "    return int(level) <= 0",
+  "    return int(level) < 0"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "if current_db is not None and current_db <= db + RECONCILE_DRIFT_DB:",
+  "if current_db is not None and current_db < db + RECONCILE_DRIFT_DB:"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "if persisted_db is not None and persisted_db < -RECONCILE_DRIFT_DB:",
+  "if persisted_db is not None and persisted_db <= -RECONCILE_DRIFT_DB:"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "            previous_db is not None\n            and previous_db < -RECONCILE_DRIFT_DB\n        )\n        live_guard_active",
+  "            previous_db is not None\n            and previous_db <= -RECONCILE_DRIFT_DB\n        )\n        live_guard_active"
+ ],
+ [
+  "jasper/volume_diagnostics.py",
+  "and float(persisted_main_volume_db) < -RECONCILE_DRIFT_DB",
+  "and float(persisted_main_volume_db) <= -RECONCILE_DRIFT_DB"
+ ],
+ [
+  "jasper/volume_diagnostics.py",
+  "and float(main_volume_db) < -RECONCILE_DRIFT_DB",
+  "and float(main_volume_db) <= -RECONCILE_DRIFT_DB"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "            and abs(expected_db - current_db) <= RECONCILE_DRIFT_DB\n            and not mute_drift",
+  "            and abs(expected_db - current_db) < RECONCILE_DRIFT_DB\n            and not mute_drift"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:\n            return\n        if self._defer_for_dsp_writer",
+  "        if abs(drift) < RECONCILE_DRIFT_DB and not mute_drift:\n            return\n        if self._defer_for_dsp_writer"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "                if abs(drift) <= RECONCILE_DRIFT_DB and not mute_drift:\n                    return\n                louder",
+  "                if abs(drift) < RECONCILE_DRIFT_DB and not mute_drift:\n                    return\n                louder"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        return volume_mode(source) == VolumeMode.CAMILLA_MASTER\n",
+  "        return volume_mode(source) == VolumeMode.CAMILLA_MASTER or source == Source.BLUETOOTH\n"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        if held_for < MEASUREMENT_AUTOCLEAR_SEC:",
+  "        if held_for <= MEASUREMENT_AUTOCLEAR_SEC:"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        if self._measurement_active and not self._measurement_holds_fader():\n            self._measurement_active = False",
+  "        if self._measurement_active and not self._measurement_holds_fader():\n            pass"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "                self._measurement_active_at = _measurement_monotonic()\n                self._measurement_lapse_logged = False",
+  "                self._measurement_active_at = _measurement_monotonic()"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        if self._measurement_holds_fader():\n            raise VolumeClaimRefused(",
+  "        if False and self._measurement_holds_fader():\n            raise VolumeClaimRefused("
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "            if level > 0 and self._measurement_holds_fader():\n                return False",
+  "            if level >= 0 and self._measurement_holds_fader():\n                return False"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        self._lapse_stranded_measurement_flag()\n        if self._voice_session_active or self._measurement_active:\n            return\n",
+  "        if self._voice_session_active or self._measurement_active:\n            return\n"
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "        if self._measurement_active:\n            return\n        if current_db is None:\n            # Camilla restart blip; next tick retries.",
+  "        if current_db is None:\n            # Camilla restart blip; next tick retries."
+ ],
+ [
+  "jasper/volume_coordinator.py",
+  "            if self._measurement_active:\n                self._measurement_active_at = _measurement_monotonic()",
+  "            if self._measurement_active:\n                self._measurement_active_at = _measurement_monotonic() - 1.0"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "                or camilla_before > guard_db + RECONCILE_DRIFT_DB\n",
+  "                or camilla_before >= guard_db + RECONCILE_DRIFT_DB\n"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "            and current_db < -RECONCILE_DRIFT_DB\n        )\n        volume_guard_active",
+  "            and current_db <= -RECONCILE_DRIFT_DB\n        )\n        volume_guard_active"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "                include_live_guard\n                and current_db is not None\n                and current_db < -RECONCILE_DRIFT_DB",
+  "                include_live_guard\n                and current_db is not None\n                and current_db <= -RECONCILE_DRIFT_DB"
+ ],
+ [
+  "jasper/volume_handoff.py",
+  "                previous_db is not None\n                and previous_db < -RECONCILE_DRIFT_DB\n            )\n        )",
+  "                previous_db is not None\n                and previous_db <= -RECONCILE_DRIFT_DB\n            )\n        )"
+ ]
+]

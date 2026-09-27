@@ -1,0 +1,7 @@
+[
+ ["jasper/volume_curve.py", "    return db is not None and float(db) < -RECONCILE_DRIFT_DB", "    return db is not None and float(db) <= -RECONCILE_DRIFT_DB"],
+ ["jasper/volume_curve.py", "    return float(db) <= percent_to_db(0) + MUTE_DB_EPSILON", "    return float(db) <= percent_to_db(0) - MUTE_DB_EPSILON"],
+ ["jasper/volume_curve.py", "    return int(level) <= 0", "    return int(level) < 0"],
+ ["jasper/volume_coordinator.py", "        prev_carries = volume_mode(prev_source) == VolumeMode.CAMILLA_MASTER", "        prev_carries = volume_mode(prev_source) == VolumeMode.PUSH"],
+ ["jasper/volume_diagnostics.py", "    live_guard_db = main_volume_db if guard_in_effect(main_volume_db) else None", "    live_guard_db = None"]
+]
