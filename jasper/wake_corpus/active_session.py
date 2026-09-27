@@ -204,7 +204,6 @@ def _clear_session_state_locked(backend: RecordingBackend) -> None:
     backend._enabled_legs = default_enabled_legs(backend._ports)
     backend._capture_plan = None
     backend._audio_context = None
-    backend._current_plan_conformance = None
 
 
 def _load_session_data(
