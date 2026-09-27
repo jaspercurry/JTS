@@ -353,6 +353,17 @@ def test_fatal_headline_survives_tail_truncation(
             {"tests/test_unrelated.py": "gadget.sh\n"},
             ("tests/test_unrelated.py",),
         ),
+        (
+            # An installer lib's tests mostly name install.sh, which sources it.
+            "deploy/lib/install/widget.sh",
+            ("tests/test_basename.py", "tests/test_via_installer.py"),
+            {
+                "tests/test_basename.py": "widget.sh\n",
+                "tests/test_via_installer.py": "deploy/install.sh\n",
+                "tests/test_unrelated.py": "gadget.sh\n",
+            },
+            ("tests/test_unrelated.py",),
+        ),
     ],
     ids=(
         "lane-resolver",
@@ -360,6 +371,7 @@ def test_fatal_headline_survives_tail_truncation(
         "doctor-nested-module",
         "add-tests-naming-basename-and-helper-importer",
         "add-tests-naming-names-nothing",
+        "installer-lib-also-names-install-sh",
     ),
 )
 def test_fast_lane_routes_internal_support_files_to_their_guards(

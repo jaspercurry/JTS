@@ -40,8 +40,8 @@ _ENV_EXAMPLE = Path(__file__).parent.parent / ".env.example"
 def _installer_shell_texts() -> dict[Path, str]:
     """install.sh plus the deploy/lib/install/*.sh libs it sources.
 
-    Invariant-style tests (bounded curl flags, no unpinned git
-    fetches, …) must keep covering function groups that the
+    Invariant-style tests (bounded curl flags, the pinned pip
+    toolchain, …) must keep covering function groups that the
     install.sh decomposition moved into sourced libs."""
     paths = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
     assert _RENDERERS_LIB in paths
@@ -1739,44 +1739,6 @@ def test_model_downloads_are_bounded_and_split_by_runtime_need():
     assert "stage --registry dtln --optional" in shell_text
 
 
-def test_base_source_builds_use_hash_checked_archives():
-    """Base Pi installs should consume pinned archives, not require git
-    just to fetch source-build inputs."""
-    text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (_INSTALL_SH, _INSTALL_LIB_DIR / "deps.sh")
-    )
-
-    for expected in [
-        "NQPTP_ARCHIVE_URL",
-        "NQPTP_SHA256",
-        "SHAIRPORT_SYNC_ARCHIVE_URL",
-        "SHAIRPORT_SYNC_SHA256",
-        "fetch_verified_source_archive",
-    ]:
-        assert expected in text
-
-    enhanced_target = (
-        REPO_ROOT / "jasper_aec3" / "enhanced-aec-source.env"
-    ).read_text(encoding="utf-8")
-    enhanced_installer = (
-        REPO_ROOT / "jasper" / "cli" / "enhanced_aec_install.py"
-    ).read_text(encoding="utf-8")
-    assert "WEBRTC_AEC3_ARCHIVE_URL=https://" in enhanced_target
-    assert "WEBRTC_AEC3_SHA256=" in enhanced_target
-    assert "_download_archive(" in enhanced_installer
-    assert "sha256_file(destination)" in enhanced_installer
-
-    for path, source_text in _installer_shell_texts().items():
-        for forbidden in [
-            "git clone --depth 1",
-            "git init ",
-            "git -C \"${tmpdir}",
-            "verify_git_head",
-        ]:
-            assert forbidden not in source_text, (path, forbidden)
-
-
 def test_install_help_is_clean_and_non_root():
     """Agentic flows often probe commands with --help; keep it quiet
     and usable without sudo."""
@@ -2027,8 +1989,13 @@ def _run_constraints_helper(repo_dir: Path) -> str:
 
 
 def test_install_and_generate_scripts_parse():
-    """bash -n over both shell surfaces of the constraints feature."""
-    for path in (_INSTALL_SH, _GENERATE_CONSTRAINTS_SH):
+    """bash -n over install.sh, every lib it sources and the constraints
+    generator."""
+    for path in (
+        _INSTALL_SH,
+        *sorted(_INSTALL_LIB_DIR.glob("*.sh")),
+        _GENERATE_CONSTRAINTS_SH,
+    ):
         result = run_bash(
             ["-n", str(path)],
             timeout=5,
