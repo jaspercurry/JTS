@@ -26,7 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.install_surface import JASPER_GROUP_STUBS, installer_text
+from tests.install_surface import (
+    JASPER_GROUP_STUBS,
+    installer_shell_paths,
+    installer_text,
+)
 from tests.shell_runner import run_bash
 
 
@@ -43,7 +47,7 @@ def _installer_shell_texts() -> dict[Path, str]:
     Invariant-style tests (bounded curl flags, the pinned pip
     toolchain, …) must keep covering function groups that the
     install.sh decomposition moved into sourced libs."""
-    paths = [_INSTALL_SH, *sorted(_INSTALL_LIB_DIR.glob("*.sh"))]
+    paths = installer_shell_paths()
     assert _RENDERERS_LIB in paths
     return {p: p.read_text(encoding="utf-8") for p in paths}
 
