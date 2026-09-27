@@ -46,6 +46,7 @@ from jasper.accounts import Account
 from jasper.atomic_io import advisory_file_lock
 from jasper.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
+from jasper.control.volume_ops import with_coordinator
 from jasper.dsp_apply import camilla_graph_mutation
 from jasper.spotify_router import AccountClient, Router
 from jasper.music_sources import Source
@@ -62,9 +63,15 @@ from jasper.volume_scales import (
     spotify_percent_to_listening_level,
 )
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_owner import ClaimKind, VolumeClaimRefused
+from jasper.volume_owner import (
+    ClaimKind,
+    VolumeClaimRefused,
+    VolumeOwner,
+    volume_owner,
+)
 from jasper.volume_persistence import VolumePersistence
 from jasper.volume_curve import percent_to_db
+from jasper.web import sound_profile_apply
 
 
 @pytest.fixture(autouse=True)
@@ -1989,6 +1996,51 @@ async def test_env_target_and_registered_provider_read_current_persisted_intent(
         persistence.save_listening_level(level)
         assert await volume_process.env_canonical_target_db() == pytest.approx(percent_to_db(level))
         assert await camilla._canonical_target_db_provider() == pytest.approx(percent_to_db(level))
+
+
+@pytest.mark.parametrize("builder", ["jasper-control", "sound-settings", "canonical-target"])
+async def test_short_lived_coordinators_take_the_registered_owner(
+    builder, tmp_path, monkeypatch,
+):
+    """One owner per process (`volume_owner.install_volume_owner`): once the
+    process registers, each short-lived builder's coordinator arbitrates
+    through that owner; before it registers, the coordinator builds its own."""
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "speaker_volume.json"))
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.setattr(
+        camilla, "primary_controller", lambda: _FakeCamilla(db=percent_to_db(50)),
+    )
+    monkeypatch.setattr(renderer, "RendererClient", lambda **_: _FakeBackend())
+    built: list[VolumeCoordinator] = []
+
+    def recording(**kwargs) -> VolumeCoordinator:
+        built.append(VolumeCoordinator(**kwargs))
+        return built[-1]
+
+    monkeypatch.setattr("jasper.volume_coordinator.VolumeCoordinator", recording)
+
+    async def no_op(_coord) -> None:
+        return None
+
+    build = {
+        "jasper-control": lambda: with_coordinator(
+            no_op, camilla_host="127.0.0.1", camilla_port=1234,
+        ),
+        "sound-settings": lambda: (
+            sound_profile_apply._reconcile_volume_curve_after_settings(
+                camilla_factory=camilla.primary_controller,
+            )
+        ),
+        "canonical-target": volume_process.env_canonical_target_db,
+    }[builder]
+
+    await build()
+    volume_process.install_env_canonical_target_provider()
+    await build()
+
+    own, shared = (coord.volume_owner for coord in built)
+    assert shared is volume_owner()
+    assert isinstance(own, VolumeOwner) and own is not shared
 
 
 async def test_transition_refreshes_from_disk(tmp_path, pushes):

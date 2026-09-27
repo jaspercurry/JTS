@@ -403,6 +403,7 @@ layers = [
   "volume_process",
   # Ranked above aec: transitively imports aec.bridge_engines via assistant_loudness/cues/config/voice/audio_profile_state (#4719).
   "volume_coordinator",
+  "volume_carrier",
   "aec : usage_writer",
   "accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
   "audio_runtime_settings",
