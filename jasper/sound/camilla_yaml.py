@@ -889,10 +889,8 @@ def render_flat_cutover_configs(
     """Write the flat startup config, WRITE-ON-CHANGE. The single writer.
 
     ``outputd-cutover.yml`` — the flat startup graph, width-matched to the saved
-    topology and coupled to the rings at both halves (ADR-0100). There is one
-    file: the ``shm_ring`` sibling this used to write beside it collapsed into
-    it when the ring became the only transport, so a deploy or CamillaDSP
-    restart can no longer re-seed a box onto a graph its transport cannot serve.
+    topology and coupled to the rings at both halves (ADR-0100). Deploy and
+    CamillaDSP restart must use this same ring-backed graph.
 
     THREE callers must produce a byte-identical file or the box's graph depends
     on which one ran last: ``deploy/install.sh`` at deploy time,

@@ -744,8 +744,7 @@ class Config:
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
             # when something blocks normal voice response (spend cap,
-            # connection failure). Defaults to http://${hostname}; the
-            # speaker no longer ships an HTTPS cert.
+            # connection failure).
             management_url=_env(
                 "JASPER_MANAGEMENT_URL", f"http://{hostname}",
             ),

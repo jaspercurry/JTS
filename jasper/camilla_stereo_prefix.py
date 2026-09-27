@@ -200,18 +200,10 @@ def build_stereo_prefix(
     # global attenuation is the caller-supplied output trim (manual headroom
     # and/or loudness matching, both opt-in, both default 0).
     #
-    # The trim is a NUMBER, never a filter's presence: `sound_preamp` is emitted
-    # ALWAYS, at 0 dB when nothing is configured. It used to be gated on the
-    # profile doing something ("a flat profile can't clip from EQ, so it plays
-    # at unity"), which made the filter appear and disappear as a gain crossed
-    # the flat window — a structural change, and CamillaDSP rebuilds its filter
-    # group and resets every filter's state across one. Emitting it always makes
-    # that crossing a parameter write like every other EQ gesture.
-    #
-    # The dropped promise, stated because it is user-visible: a configured
-    # headroom trim now attenuates even while the profile is flat, where it
-    # previously did not — max SPL given up. `devices.volume_limit` remains the
-    # hard clip guard either way; the trim is comfort accounting.
+    # Always emit sound_preamp, including at 0 dB. Adding or removing a filter
+    # makes CamillaDSP rebuild its group and reset filter state; changing only
+    # the gain preserves that state. A configured trim also attenuates a flat
+    # profile; devices.volume_limit remains independent of this trim.
     trim_db = max(0.0, float(output_trim_db))
     # -0.0 formats as "-0.0000", which would make two graphs that are the same
     # number look like different bytes to every comparison downstream.

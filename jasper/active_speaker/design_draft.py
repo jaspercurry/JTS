@@ -1190,11 +1190,8 @@ def save_design_draft(
         )
         draft["path"] = str(target)
         draft["revision"] = current_revision + 1
-        # 0640 + the parent's group: the crossover-accept seam writes this
-        # store from the ROOT jasper-correction-web process, while /sound/
-        # reads it as jasper-web (group jasper), and /var/lib/jasper is group
-        # jasper but not setgid. A root:root 0640 store renders the design
-        # page empty against something it cannot open.
+        # Both web readers and the correction writer run as jasper-web:jasper.
+        # Inherit the parent's group for 0640: /var/lib/jasper is not setgid.
         atomic_write_text(
             target,
             # allow_nan=False: fail at the writer that produced the non-finite
