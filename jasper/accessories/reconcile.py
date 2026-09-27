@@ -14,7 +14,8 @@ Adapters run as tasks inside the always-on ``jasper-input`` process
 the adapters it names. The plan leads the armed file voice reads: a source is
 armed only once the restarted host reports its adapter up, and leaves the
 armed file before its adapter stops (ADR-0372). This module's only systemd
-action for the mic half is to ``try-restart`` that host when the plan changes —
+action for the mic half is to ``try-restart`` that host when the plan changes,
+or when the install asks (``--restart-hosts``) so the host loads new code —
 never enable, disable or stop it, which would take the HID button bridge
 (volume, push-to-talk) down with it.
 
@@ -79,8 +80,8 @@ VOICE_UNIT = JASPER_VOICE_SERVICE
 # voice_follows_accessory_mic.
 VOICE_INPUT_GATE_UNIT = AEC_RECONCILE_SERVICE
 BLUEZ_DISCOVERY_TIMEOUT_SEC = 5.0
-# Per adapter host, and only when the published set changed: one try-restart,
-# then one active-state probe of the result.
+# Per adapter host, on a pass that restarts it: one try-restart, then one
+# active-state probe of the result.
 _ADAPTER_SYSTEMCTL_CALLS = 2
 _ADAPTER_TIMEOUT_BUDGET_SEC = (
     _ADAPTER_SYSTEMCTL_CALLS * SYSTEMCTL_TIMEOUT_SEC
@@ -374,10 +375,11 @@ def refresh_adapter_hosts(
     """Converge each adapter host against the sources just published.
 
     ``restart`` is the *apply* step and runs only when the published set
-    changed, because a restart is what makes the host re-read the file.
-    ``try-restart`` only, never enable/disable/stop: the host is the always-on
-    HID bridge, whose unit state the installer owns, and stopping it for an
-    unpaired accessory would take volume and push-to-talk with it.
+    changed, because a restart is what makes the host re-read the file, or
+    when the install needs the host on its new code. ``try-restart`` only,
+    never enable/disable/stop: the host is the always-on HID bridge, whose
+    unit state the installer owns, and stopping it for an unpaired accessory
+    would take volume and push-to-talk with it.
 
     ``require_active`` is the *observe* step and runs on every pass, changed
     set or not. ``try-restart`` succeeds against a host that is stopped or
@@ -604,6 +606,7 @@ async def reconcile_once(
     env_file: str = DEFAULT_ACCESSORY_MIC_ENV_FILE,
     systemctl: Systemctl = _systemctl,
     reason: str = "manual",
+    restart_hosts: bool = False,
 ) -> AccessoryMicPlan:
     intent_error: BluetoothSourceIntentError | None = None
     try:
@@ -653,7 +656,7 @@ async def reconcile_once(
     # behind a green oneshot.
     plan_file = adapter_plan_path(env_file)
     armed_body = _body(env_file)
-    host_changed = render_manual_mic_env(
+    host_changed = restart_hosts or render_manual_mic_env(
         plan.sources, header=ADAPTER_PLAN_HEADER,
     ) != _body(plan_file)
     try:
@@ -743,6 +746,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--env-file", default=DEFAULT_ACCESSORY_MIC_ENV_FILE)
     parser.add_argument("--reason", default="manual")
     parser.add_argument("--reason-file", default=DEFAULT_RECONCILE_REQUEST_FILE)
+    parser.add_argument(
+        "--restart-hosts", action="store_true",
+        help="restart the adapter hosts even when the plan is unchanged, "
+        "withdrawing their sources first (the install's new code)",
+    )
     return parser.parse_args(argv)
 
 
@@ -755,7 +763,10 @@ def main(argv: list[str] | None = None) -> int:
     # the direct boot/install starts, which carry no request file.
     reason = claim_reconcile_request(args.reason_file) or args.reason
     try:
-        asyncio.run(reconcile_once(env_file=args.env_file, reason=reason))
+        asyncio.run(reconcile_once(
+            env_file=args.env_file, reason=reason,
+            restart_hosts=args.restart_hosts,
+        ))
         return 0
     except AccessoryReconcileError as exc:
         log_event(
