@@ -200,7 +200,7 @@ def read_applied_profile_verdict(applied: Mapping[str, Any] | None) -> str:
     nothing polled reaches this.
     """
 
-    from .baseline_profile import (
+    from .baseline_profile import (  # lazy: import cost — jasper-web loads this module
         APPLIED_PROFILE_CONFIG_MISSING,
         applied_profile_displacement,
     )

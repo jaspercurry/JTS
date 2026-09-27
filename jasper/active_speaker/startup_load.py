@@ -22,6 +22,7 @@ from jasper.dsp_apply import (
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.output_topology import OutputTopology
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
+from jasper.active_speaker.crossover_preview import current_crossover_preview
 
 from ._common import gate as _gate
 from .calibration_level import (
@@ -45,6 +46,7 @@ from .path_safety import (
 from .runtime_contract import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     safe_graph_for_current_topology,
+    write_camilla_statefile,
 )
 from .safe_playback import load_safe_playback_state
 from .state_paths import baseline_profile_state_path, commission_load_state_path, startup_load_state_path
@@ -727,16 +729,14 @@ def reemit_staged_startup_anchor(
     """
     import tempfile
 
-    from jasper.active_speaker.crossover_preview import current_crossover_preview
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
-    from jasper.active_speaker.staging import (
+    from jasper.active_speaker.staging import (  # lazy: test_ring_active_endpoint patches staging
         StagedAnchorLockContended,
         stage_protected_startup_config,
         staged_anchor_lock,
         staged_config_path,
         staged_metadata_path,
     )
-    from jasper.atomic_io import atomic_write_json, atomic_write_text
+    from jasper.atomic_io import atomic_write_json, atomic_write_text  # lazy: test_ring_active_endpoint patches atomic_io
 
     # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
     # refused run does no work and touches nothing at all.

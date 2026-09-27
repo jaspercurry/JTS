@@ -16,6 +16,7 @@ from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_LOCATOR_WINDOW_S
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import CalibrationCurve
@@ -82,14 +83,14 @@ def _capture_to_magnitude(
 
     import numpy as np
 
-    from jasper.audio_measurement import (
+    from jasper.audio_measurement import (  # lazy: keeps this module numpy-free
         analysis,
         calibration as calibration_mod,
         deconv,
         gating,
         quality,
     )
-    from jasper.audio_measurement import sweep as sweep_mod
+    from jasper.audio_measurement import sweep as sweep_mod  # lazy: keeps this module numpy-free
 
     has_cal = has_mic_calibration or calibration is not None
     sample_rate = int(sweep_meta["sample_rate"])
@@ -111,15 +112,11 @@ def _capture_to_magnitude(
     alignment = None
     if ambient_duration_s is not None:
         from scipy.signal import resample_poly
-        from jasper.audio_measurement.alignment import assert_alignment_confident
+        from jasper.audio_measurement.alignment import assert_alignment_confident  # lazy: keeps this module numpy-free
 
         # Locate across the full legal capture window at 16 kHz.  The largest
         # correlation is <=2**20, then only the final <=2**21 full-rate crop is
         # deconvolved on the 1 GB Pi.
-        from jasper.active_speaker.test_signal_plan import (
-            CROSSOVER_CAPTURE_LOCATOR_WINDOW_S,
-        )
-
         locator_input, locator_crop_start = deconv.cap_capture_tail(
             raw_captured,
             sweep_len=len(reference),
@@ -246,7 +243,7 @@ def _capture_to_magnitude(
             noise_smoothed = calibration_mod.apply_calibration_curve(
                 noise_freqs, noise_smoothed, calibration
             )
-        from jasper.audio_measurement import snr_policy
+        from jasper.audio_measurement import snr_policy  # lazy: keeps this module numpy-free
 
         # One band table for every term below. The signal side (measured by the
         # caller) must use this same table: the two are subtracted per band_id.
@@ -412,7 +409,7 @@ def summed_capture_curve(
     lower_shoulder_hz = crossover_fc_hz / 2
     span = None
     if freqs is not None:
-        from jasper.audio_measurement.analysis import shoulder_span
+        from jasper.audio_measurement.analysis import shoulder_span  # lazy: keeps this module numpy-free
 
         band = overlap_hz or (float(freqs[0]), float(freqs[-1]))
         span = shoulder_span(freqs[(freqs >= band[0]) & (freqs <= band[1])],
@@ -436,7 +433,7 @@ def summed_capture_curve(
     if floor_hz is not None:
         if crossover_fc_hz < floor_hz or lower_shoulder_hz < floor_hz:
             return unusable("gate_excludes_lower_shoulder")
-        from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO
+        from jasper.audio_measurement.gating import NEAR_FLOOR_RATIO  # lazy: keeps this module numpy-free
 
         near = floor_hz <= lower_shoulder_hz < NEAR_FLOOR_RATIO * floor_hz
     return SummedCaptureCurve(

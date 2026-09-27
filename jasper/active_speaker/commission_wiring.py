@@ -17,6 +17,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from jasper.active_speaker.calibration_level import load_calibration_level_state
+from jasper.active_speaker.crossover_preview import current_crossover_preview
+from jasper.output_topology import OutputTopology, topology_is_passive_mains
+
 from ._common import coerce_finite_float
 
 PathLoader = Callable[[str], Awaitable[bool]]
@@ -83,7 +87,6 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
     """
     if preset is not None:
         return preset, None
-    from jasper.active_speaker.crossover_preview import current_crossover_preview
 
     preview = current_crossover_preview()
     if preview.get("status") == "ready_for_protected_staging":
@@ -93,8 +96,6 @@ def resolve_commission_inputs(preset: Any = None) -> tuple[Any, dict[str, Any] |
 
 def _is_passive_mains(topology: Any) -> bool:
     """Whether this topology's mains carry no inter-driver crossover."""
-    from jasper.output_topology import OutputTopology, topology_is_passive_mains
-
     return isinstance(topology, OutputTopology) and topology_is_passive_mains(
         topology
     )
@@ -105,7 +106,7 @@ def _passive_mains_preset(topology: Any) -> Any:
 
     Never the bundled 2-way JSON, which names drivers this box does not have.
     """
-    from jasper.active_speaker.preset_binding import build_passive_mains_preset
+    from jasper.active_speaker.preset_binding import build_passive_mains_preset  # lazy: import cost — jasper-web loads this module
 
     compiled, raw_issues, _gates = build_passive_mains_preset(topology)
     if compiled is not None:
@@ -162,7 +163,7 @@ def resolve_commission_preset(
     if _is_passive_mains(topology):
         return _passive_mains_preset(topology)
     if crossover_preview is not None:
-        from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
+        from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview  # lazy: test_active_speaker_capture_preset patches preset_binding
 
         compiled, raw_issues, _gates = compile_preset_from_crossover_preview(
             topology,
@@ -173,7 +174,7 @@ def resolve_commission_preset(
         issues = [issue for issue in raw_issues if isinstance(issue, dict)]
         raise CommissionPresetResolutionError(issues)
 
-    from jasper.active_speaker.tone_plan import load_active_speaker_preset
+    from jasper.active_speaker.tone_plan import load_active_speaker_preset  # lazy: test_active_speaker_capture_preset patches tone_plan
 
     return load_active_speaker_preset(
         os.environ.get("JASPER_ACTIVE_SPEAKER_PRESET") or None
@@ -191,8 +192,7 @@ def write_commission_path_safety(
     ``build_startup_load_preflight`` binds to this evidence to prove the
     all-muted staged config is a valid rollback anchor.
     """
-    from jasper.active_speaker.calibration_level import load_calibration_level_state
-    from jasper.active_speaker.path_safety import (
+    from jasper.active_speaker.path_safety import (  # lazy: import cost — jasper-web loads this module
         build_startup_load_path_safety_evidence,
         write_path_safety_evidence,
     )

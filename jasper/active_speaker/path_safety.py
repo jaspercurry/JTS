@@ -33,6 +33,7 @@ from .driver_protection import (
 )
 from .environment import CAMILLA_CLASS_ACTIVE_PARKED, classify_camilla_config_text
 from .profile import ActiveSpeakerConfigError
+from .staging import load_staged_startup_config
 
 SCHEMA_VERSION = 1
 PATH_SAFETY_EVIDENCE_KIND = "jts_active_speaker_path_safety_evidence"
@@ -680,8 +681,6 @@ def build_startup_load_path_safety_evidence(
     """
 
     if staged_config is None:
-        from .staging import load_staged_startup_config
-
         staged = load_staged_startup_config()
     else:
         staged = staged_config

@@ -87,6 +87,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     stage1_plan_max_attempts,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
 __all__ = [
     "REGIME_PER_DRIVER",
@@ -1048,7 +1049,6 @@ def session_lateral_walk(
     :func:`stage1_plan_max_attempts`, the same producer the emitted plan
     sets ``max_attempts`` from.
     """
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER

@@ -48,6 +48,12 @@ from .driver_safety import (
 )
 from .installation import normalise_installation
 from .profile import SUPPORTED_POLARITY
+from .declaration_vocabulary import (
+    declared_filter_type_compiles,
+    declared_slope_db_per_octave_compiles,
+    supported_declaration_filter_types,
+    supported_declaration_slopes_db_per_octave,
+)
 
 SCHEMA_VERSION = 1
 DESIGN_DRAFT_KIND = "jts_active_speaker_design_draft"
@@ -127,17 +133,10 @@ def _crossover_filter_type(raw: Any, field_name: str) -> str | None:
     ``crossover_preview_filter_unsupported`` blocker several screens later with
     nothing left pointing at the field that caused it.
 
-    ``staging`` is asked rather than answered for: it owns the declared
-    spellings in both directions, so accepted-here and compilable-there are one
-    answer by construction. Imported inside the call because it is the compiler
-    and this module is a persistence layer -- the same reason
-    ``crossover_declaration`` reaches for it this way.
+    ``declaration_vocabulary`` is asked rather than answered for: it owns the
+    declared spellings in both directions, so accepted-here and
+    compilable-there are one answer by construction.
     """
-
-    from .declaration_vocabulary import (
-        declared_filter_type_compiles,
-        supported_declaration_filter_types,
-    )
 
     if raw is None or raw == "":
         return None
@@ -159,11 +158,6 @@ def _crossover_slope_db_per_octave(raw: Any, field_name: str) -> float | None:
     the pair exists: 18 dB/octave is a perfectly ordinary number that no
     supported filter order compiles to.
     """
-
-    from .declaration_vocabulary import (
-        declared_slope_db_per_octave_compiles,
-        supported_declaration_slopes_db_per_octave,
-    )
 
     value = _positive_float(raw, field_name)
     if value is None:

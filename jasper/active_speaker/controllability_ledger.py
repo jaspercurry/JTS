@@ -95,7 +95,7 @@ def read_controllability_ledger(root: Path | None = None) -> dict[str, Any]:
     Sorted for determinism only. **Not chronological**: a bundle directory is
     named ``uuid4().hex[:12]``, so path order carries no time information.
     """
-    from jasper.active_speaker.bundles import sessions_dir
+    from jasper.active_speaker.bundles import sessions_dir  # lazy: test_correction_crossover_v2_endpoints patches bundles.sessions_dir
 
     bundle_root = Path(root) if root is not None else sessions_dir()
     try:

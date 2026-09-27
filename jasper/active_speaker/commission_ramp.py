@@ -39,10 +39,13 @@ from .camilla_yaml import COMMISSIONING_HEADROOM_DB, STARTUP_LIMITER_CLIP_LIMIT_
 from .camilla_names import STARTUP_MUTE_GAIN_DB, driver_limiter_name
 from .safe_playback import (
     arm_safe_playback_session,
+    floor_audio_confirmed_for_target,
+    floor_audio_retry_allowed_for_target,
     load_safe_playback_state,
     playback_target_signature,
     record_floor_audio_operator_result,
     record_safe_playback_result,
+    stop_safe_playback_session,
 )
 from .staging import (
     prepare_driver_commissioning_config,
@@ -53,6 +56,7 @@ from .commission_load import (
     rollback_driver_commissioning_config,
 )
 from .startup_load import load_commission_load_state
+from .profile import required_driver_roles
 
 logger = logging.getLogger(__name__)
 
@@ -1102,7 +1106,6 @@ async def abort_ramp(
 
     Always available, always re-mutes.
     """
-    from .safe_playback import stop_safe_playback_session
 
     rollback = await rollback_driver_commissioning_config(
         load_config=load_config,
@@ -1234,7 +1237,6 @@ def _present_roles(prepare: dict[str, Any]) -> set[str]:
     own mask, and a 2-way must not be asked for a non-existent ``mid``. Falls
     back to the audible role when the way count is absent.
     """
-    from .profile import required_driver_roles
 
     way_count = prepare.get("way_count")
     if isinstance(way_count, int) and way_count > 0:
@@ -1244,14 +1246,10 @@ def _present_roles(prepare: dict[str, Any]) -> set[str]:
 
 
 def _floor_confirmed(safe_state: dict[str, Any], target: dict[str, Any]) -> bool:
-    from .safe_playback import floor_audio_confirmed_for_target
-
     return floor_audio_confirmed_for_target(safe_state, target)
 
 
 def _silent_retry(safe_state: dict[str, Any], target: dict[str, Any]) -> bool:
-    from .safe_playback import floor_audio_retry_allowed_for_target
-
     return floor_audio_retry_allowed_for_target(safe_state, target)
 
 

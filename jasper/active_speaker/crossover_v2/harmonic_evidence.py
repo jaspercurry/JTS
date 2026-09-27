@@ -24,10 +24,40 @@ from typing import Any
 import numpy as np
 
 from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
-from jasper.audio_measurement.program import ExcitationProgram, KIND_COURTESY_TONE, write_program_wav
+from jasper.audio_measurement.program import (
+    ExcitationProgram,
+    FrequencyBand,
+    KIND_COURTESY_TONE,
+    KIND_SWEEP,
+    MEASURE_SWEEP_F_HI_HZ,
+    MEASURE_SWEEP_F_LO_HZ,
+    PROGRAM_SAMPLE_RATE_HZ,
+    RoleBand,
+    _intersect_band,
+    build_measure_program,
+    write_program_wav,
+)
 from jasper.json_fields import sha256_file
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
+from jasper.audio_measurement import deconv
+from jasper.audio_measurement.calibration import (
+    DEFAULT_SIGN_CONVENTION,
+    SUPPORTED_MODELS,
+    parse_calibration_text,
+)
+from jasper.audio_measurement.distortion import read_segment_distortion, worst_clear_of_floor
+from jasper.audio_measurement.program_analysis import (
+    CAPTURE_BOUND_MARGIN_S,
+    MeasurementGeometry,
+    MeasurementPriors,
+    analysis_diagnostic_summary,
+    analyze_program_capture,
+    estimate_drift,
+    locate_global_offset,
+    locate_segments,
+)
+from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 from .round_inputs import banked_round_of, round_inputs
 
 from ..profile import DRIVER_ROLES_BY_WAY
@@ -38,6 +68,7 @@ from .evidence_packet import (
     round_artifact_dir,
 )
 from .journey import PHASE_MEASURE
+from .programs import courtesy_prelude_for_phase, leading_pilot_role, pilot_gains
 
 __all__ = [
     "DEFAULT_BANDS_HZ",
@@ -231,14 +262,6 @@ def _banked_sweep_durations_s(
     raw = state.get("measure_sweep_durations_s")
     if not isinstance(raw, Mapping):
         return None
-    from jasper.audio_measurement.program import (
-        MEASURE_SWEEP_F_HI_HZ,
-        MEASURE_SWEEP_F_LO_HZ,
-        PROGRAM_SAMPLE_RATE_HZ,
-        FrequencyBand,
-        _intersect_band,
-    )
-    from jasper.audio_measurement.sweep import synchronized_sweep_metadata
 
     durations: dict[str, float] = {}
     for role in bands:
@@ -306,17 +329,6 @@ def rebuild_measure_program(
     Solve unbanked volume and prelude; use banked sweep durations when present.
     Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
-    from jasper.audio_measurement.program import (
-        FrequencyBand,
-        RoleBand,
-        build_measure_program,
-    )
-
-    from .programs import (
-        courtesy_prelude_for_phase,
-        leading_pilot_role,
-        pilot_gains,
-    )
 
     roles = banked_roles(state)
     raw_gains = state.get("gain_plan_db")
@@ -585,10 +597,6 @@ def _sign_convention(calibration_id: str) -> str:
     catch it — which is why the convention is resolved from the id the SESSION
     banked rather than from a default or a flag.
     """
-    from jasper.audio_measurement.calibration import (
-        DEFAULT_SIGN_CONVENTION,
-        SUPPORTED_MODELS,
-    )
 
     parts = set(str(calibration_id).split("-"))
     for key, spec in SUPPORTED_MODELS.items():
@@ -613,7 +621,6 @@ def _calibration_for(captures: list[dict[str, Any]], text: str | None):
                 "carries the microphone's own response across an octave"
             ),
         }
-    from jasper.audio_measurement.calibration import parse_calibration_text
 
     calibration_id = str(captures[0]["sidecar"].get("setup_calibration_id") or "")
     convention = _sign_convention(calibration_id)
@@ -681,19 +688,6 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
     not evidence about a speaker — and a sidecar carrying NONE of the gate
     fields is refused outright: zero comparisons is not a passed gate.
     """
-    from jasper.audio_measurement import deconv
-    from jasper.audio_measurement.distortion import read_segment_distortion
-    from jasper.audio_measurement.program import KIND_SWEEP
-    from jasper.audio_measurement.program_analysis import (
-        CAPTURE_BOUND_MARGIN_S,
-        MeasurementGeometry,
-        MeasurementPriors,
-        estimate_drift,
-        locate_global_offset,
-        locate_segments,
-        analysis_diagnostic_summary,
-        analyze_program_capture,
-    )
 
     banked = sidecar.get("diagnostic") or {}
     compared = sum(
@@ -840,7 +834,6 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
 
     worst: dict[str, Any] = {}
     floor_fraction: dict[str, float] = {}
-    from jasper.audio_measurement.distortion import worst_clear_of_floor
 
     for order in orders:
         pooled = np.median(

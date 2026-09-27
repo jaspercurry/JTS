@@ -361,12 +361,8 @@ class MeasureSpec:
         })
 
     def _check_pose_axis(self) -> None:
-        """Axis, bearing and elevation, checked by the module that owns the frame.
-
-        The import is deferred because :mod:`.spatial` costs ~1,100 modules
-        including ``numpy``; only the paths that state a pose pay for it.
-        """
-        from .spatial import MARK_DISTANCE_M, PositionGeometry
+        """Axis, bearing and elevation, checked by the module that owns the frame."""
+        from .spatial import MARK_DISTANCE_M, PositionGeometry  # lazy: spatial imports NumPy; only pose checks pay for it
 
         bearings: tuple[int | None, ...] = self.positions or (None,)
         for bearing in bearings:

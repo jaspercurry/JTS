@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
+from jasper.camilla import CamillaConfigRejected
 
 from .._common import MeasurementGraphRefused
 from .journey import PHASE_CHECK
@@ -33,6 +34,9 @@ from .program_transaction import (
     StimulusCapture,
 )
 from .session_seams import EngineSeams, RecordStore, VolumeClaim
+from ..commissioning_admission import ActiveCommissioningAdmissionError, running_graph_fingerprint
+from ..program_playback import ProgramPlaybackError
+from .measure_spec import GRAPH_SCOPE_DRIVERS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram, RoleBand
@@ -79,13 +83,6 @@ async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
     ``docs/historical/crossover-measurement-v2-campaign-record.md``,
     "Confirming a program graph is live".
     """
-    from jasper.camilla import CamillaConfigRejected
-
-    from ..commissioning_admission import (
-        ActiveCommissioningAdmissionError,
-        running_graph_fingerprint,
-    )
-    from ..program_playback import ProgramPlaybackError
 
     try:
         normalized = await cam.normalize_config_raw(submitted_yaml, best_effort=False)
@@ -131,13 +128,13 @@ def bind_program_playback_seams(
     the measurement graph mid-capture; ``readmit`` re-reads the WAV bytes fresh
     rather than trusting the composed program.
     """
-    from jasper.dsp_apply import dsp_writer_lock
+    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_crossover_v2_program_transaction patches dsp_apply.dsp_writer_lock
 
-    from ..program_admission import (
+    from ..program_admission import (  # lazy: test_crossover_v2_program_transaction patches program_admission
         readmit_program_from_wav,
         readmit_summed_program_from_wav,
     )
-    from ..program_playback import verified_program_aplay
+    from ..program_playback import verified_program_aplay  # lazy: test_crossover_v2_program_transaction patches program_playback
 
     if not graph_yaml:
         raise ValueError("playback requires its installed measurement graph")
@@ -202,9 +199,7 @@ def bind_program_composer(
     ``graph_yaml`` supplies the installed graph, including any driver overlays.
     ``before_play`` runs after its live proof, inside the same writer lock.
     """
-    from jasper.audio_measurement.program import write_program_wav
-
-    from .measure_spec import GRAPH_SCOPE_DRIVERS
+    from jasper.audio_measurement.program import write_program_wav  # lazy: test_crossover_v2_measurement_volume_drift patches write_program_wav
 
     ordinals = count()
     bundle_dir = Path(store.bundle_dir)
