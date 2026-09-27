@@ -60,11 +60,19 @@ class _FakeProcess:
         return self._stdout, self._stderr
 
 
+@pytest.mark.parametrize(
+    ("signature", "value"),
+    [
+        ("q", "64"),
+        ("n", "-64"),  # a dash-prefixed value must not be parsed as an option
+    ],
+)
 async def test_set_property_argv_carries_system_bus_signature_and_double_dash(
-    monkeypatch,
+    monkeypatch, signature, value,
 ) -> None:
     """Pin for #4806: the Bluetooth volume write's exact shape (bus,
-    verb, signature, and the `--` guard before the typed value)."""
+    verb, signature, and the `--` guard before the typed value, even
+    when the value itself starts with `-`)."""
     captured: list[tuple[object, ...]] = []
 
     async def fake_spawn(*args: object, **kwargs: object) -> _FakeProcess:
@@ -75,34 +83,15 @@ async def test_set_property_argv_carries_system_bus_signature_and_double_dash(
 
     ok = await busctl.set_property(
         "org.bluealsa", "/org/bluealsa/hci0/dev_X/a2dpsnk/source",
-        "org.bluez.MediaTransport1", "Volume", "q", "64",
+        "org.bluez.MediaTransport1", "Volume", signature, value,
     )
 
     assert ok is True
     assert captured == [(
         "busctl", "--system", "set-property",
         "org.bluealsa", "/org/bluealsa/hci0/dev_X/a2dpsnk/source",
-        "org.bluez.MediaTransport1", "Volume", "q", "--", "64",
+        "org.bluez.MediaTransport1", "Volume", signature, "--", value,
     )]
-
-
-async def test_set_property_dash_prefixed_value_lands_after_double_dash(
-    monkeypatch,
-) -> None:
-    """A value starting with `-` must not be parsed as a busctl option."""
-    captured: list[tuple[object, ...]] = []
-
-    async def fake_spawn(*args: object, **kwargs: object) -> _FakeProcess:
-        captured.append(args)
-        return _FakeProcess()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
-
-    await busctl.set_property(
-        "org.example", "/path", "org.example.Iface", "Volume", "n", "-64",
-    )
-
-    assert captured[0][-2:] == ("--", "-64")
 
 
 async def test_get_property_returns_none_on_nonzero_exit(monkeypatch) -> None:
