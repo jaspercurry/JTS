@@ -5,7 +5,6 @@
 """Canonical capture-plan contract for the wake-corpus recorder."""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -40,6 +39,7 @@ from jasper.aec.bridge_engines import (
     DTLN_ENABLED_ENV,
 )
 from jasper.env_load import parse_bool_value
+from jasper.json_fields import lenient_json_fingerprint
 from jasper.log_event import log_event
 from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
@@ -90,17 +90,8 @@ _CAPTURE_PLAN_PROBE_ERRORS = (
 logger = logging.getLogger("jasper-wake-corpus-web")
 
 
-def _stable_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def stable_digest(value: Any, *, length: int = 16) -> str:
-    digest = hashlib.sha256(_stable_json(value).encode("utf-8")).hexdigest()
-    return digest[:length]
-
-
-def _fingerprint_value(value: Any) -> str:
-    return stable_digest(value, length=16)
+def fingerprint_mapping(value: Mapping[str, Any]) -> str:
+    return lenient_json_fingerprint(value)[:16]
 
 
 def _contract_hash_source(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -137,7 +128,7 @@ class WakeCorpusCapturePlan:
         payload = json.loads(json.dumps(dict(data), default=str))
         plan_id = str(payload.get("plan_id") or "").strip()
         if not plan_id and assign_plan_id:
-            plan_id = stable_digest(_contract_hash_source(payload), length=16)
+            plan_id = fingerprint_mapping(_contract_hash_source(payload))
             payload["plan_id"] = plan_id
         return cls(payload)
 
@@ -216,10 +207,6 @@ class PlanConformance:
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
-
-
-def fingerprint_mapping(value: Mapping[str, Any]) -> str:
-    return _fingerprint_value(value)
 
 
 # The dac_reference fingerprint asks "which physical DAC, and what is its

@@ -30,6 +30,7 @@ from jasper.fanin.status import (
     extract_direct_sample,
     read_fanin_status,
 )
+from jasper.json_fields import sha256_text
 from jasper.local_sources import local_source_lifecycle
 from jasper.local_sources.markers import (
     SHARED_LABEL,
@@ -43,7 +44,6 @@ from jasper.output_hardware import current_usb_data_role
 from jasper.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 from jasper.source_intent import (
     SOURCE_STATUS_PATH,
-    intent_fingerprint,
     parse_source_intents,
     read_intent,
     source_intent_sources,
@@ -866,7 +866,7 @@ def _reconcile_once(
         )
         return 1
 
-    fingerprint = intent_fingerprint(text)
+    fingerprint = sha256_text(text)
     intents, problems = parse_source_intents(text)
     failures = len(problems)
     outcomes: dict[str, dict[str, str]] = {}

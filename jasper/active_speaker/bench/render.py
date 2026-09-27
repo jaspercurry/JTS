@@ -51,7 +51,6 @@ Upstream citations verified against the pinned CamillaDSP v4.1.3 source
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import resource
@@ -66,7 +65,7 @@ import numpy as np
 import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.json_fields import sha256_file
+from jasper.json_fields import sha256_file, sha256_text
 
 PINNED_CAMILLADSP_VERSION = "v4.1.3"
 _VERSION_SUBSTRING = "4.1.3"
@@ -444,12 +443,6 @@ class DeterminismReceipt:
         return self.first.output_sha256 == self.second.output_sha256
 
 
-def config_shape_sha256(yaml_text: str) -> str:
-    """R8's "shape" identity: the exact byte content of a derived config."""
-
-    return hashlib.sha256(yaml_text.encode("utf-8")).hexdigest()
-
-
 def _declared_playback_destination(config_text: str, *, config_path: Path) -> str:
     """The destination the config itself names: ``devices.playback.filename``.
 
@@ -648,9 +641,7 @@ def render_with_determinism_receipt(
     )
     _preserve_render_output(declared_output_path, second_output_path, label="second")
 
-    receipt = DeterminismReceipt(
-        config_sha256=config_shape_sha256(config_text), first=first, second=second
-    )
+    receipt = DeterminismReceipt(config_sha256=sha256_text(config_text), first=first, second=second)
     if not receipt.deterministic:
         raise RenderError(
             "render is non-deterministic for this config shape "
@@ -773,7 +764,6 @@ __all__ = [
     "RenderError",
     "RenderInvocation",
     "check_free_space",
-    "config_shape_sha256",
     "estimate_render_bytes",
     "extract_channel",
     "reference_soft_clip",

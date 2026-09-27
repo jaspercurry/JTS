@@ -22,6 +22,7 @@ import pytest
 from dbus_next.errors import AuthError
 
 from jasper import source_intent
+from jasper.json_fields import sha256_text
 from jasper.local_sources import reconcile as source_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
@@ -1634,7 +1635,7 @@ def test_power_route_reports_success_when_only_a_SIBLING_source_failed(
             status_path,
             {
                 "completed_monotonic_ns": time.monotonic_ns(),
-                "intent_fingerprint": source_intent.intent_fingerprint(
+                "intent_fingerprint": sha256_text(
                     Path(env_path).read_text(encoding="utf-8"),
                 ),
                 "sources": {

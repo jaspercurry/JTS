@@ -11,7 +11,6 @@ arbitrary lifecycle operation.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -30,6 +29,7 @@ from jasper.atomic_io import (
 from jasper.control.restart_broker import manage_units
 from jasper.env_file import parse_env_lines
 from jasper.env_load import SOURCE_INTENT_ENV
+from jasper.json_fields import sha256_text
 from jasper.local_sources import local_source_lifecycle, local_source_lifecycles
 from jasper.log_event import log_event
 from jasper.music_sources import Source
@@ -341,10 +341,6 @@ def _failed_siblings(sources: Mapping[str, Any], source: Source) -> str:
     return "; ".join(failures)[:300]
 
 
-def intent_fingerprint(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 _INTENT_ENV_OWNER = "JTS /sources intent control"
 
 
@@ -413,7 +409,7 @@ def request_source_intent(
             request_started_ns = time.monotonic_ns()
             write(env_path, {key: value})
             try:
-                fingerprint = intent_fingerprint(read_intent(env_path))
+                fingerprint = sha256_text(read_intent(env_path))
             except RuntimeError as exc:
                 log_event(
                     logger,

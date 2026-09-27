@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
-from jasper.json_fields import canonical_json_bytes, require_finite
+from jasper.json_fields import canonical_json_bytes, freeze_json, require_finite
 
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
@@ -41,42 +41,12 @@ def _canonical_state(
     *,
     field_name: str,
 ) -> tuple[str, str]:
-    """Freeze one JSON-domain DSP state and return JSON plus SHA-256.
-
-    JSON's encoder accepts lossy Python shapes such as tuples and mappings with
-    non-string keys. Those shapes are unsuitable for an *exact* rollback
-    identity: ``{1: ...}`` and ``{"1": ...}``, for example, serialize to the
-    same object key. Normalize only the real JSON data model and reject the
-    ambiguous shapes before any DSP mutation.
-    """
+    """Freeze one JSON-domain DSP state and return JSON plus SHA-256; an
+    ambiguous shape (:func:`freeze_json`) is refused before any DSP mutation."""
 
     if not isinstance(state, Mapping) or not state:
         raise NullWalkError(f"{field_name} must be a non-empty mapping")
-
-    def freeze(value: Any, *, path: str) -> Any:
-        if value is None or type(value) in {bool, int, str}:
-            return value
-        if type(value) is float:
-            if not math.isfinite(value):
-                raise NullWalkError(f"{field_name} contains a non-finite number")
-            return value
-        if isinstance(value, Mapping):
-            frozen: dict[str, Any] = {}
-            for key, nested in value.items():
-                if type(key) is not str:
-                    raise NullWalkError(
-                        f"{field_name} contains a non-string key at {path}"
-                    )
-                frozen[key] = freeze(nested, path=f"{path}.{key}")
-            return frozen
-        if type(value) is list:
-            return [
-                freeze(nested, path=f"{path}[{index}]")
-                for index, nested in enumerate(value)
-            ]
-        raise NullWalkError(f"{field_name} contains a non-JSON value at {path}")
-
-    canonical = canonical_json_bytes(freeze(state, path="$"))
+    canonical = canonical_json_bytes(freeze_json(state, field=field_name, error=NullWalkError))
     return canonical.decode("ascii"), hashlib.sha256(canonical).hexdigest()
 
 

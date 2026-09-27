@@ -20,9 +20,10 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path, config_text_sha256
+from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
+from jasper.json_fields import sha256_text
 from jasper.log_event import log_event
 from jasper.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
@@ -63,7 +64,7 @@ async def apply_candidate(
             preference_filters, trim_db = sound_settings.saved_sound_layers()
             text = compile_tuning_graph(declaration, candidate=selected,
                 preference_filters=preference_filters, output_trim_db=trim_db)
-            sha = config_text_sha256(text)
+            sha = sha256_text(text)
             proof = runtime_contract.prove_desired_graph(topology, text, snapshot=baseline_record.recomposition_snapshot_for(
                 selected, declaration=declaration, design_draft=draft))
             if not runtime_contract.desired_graph_approved(proof):

@@ -12,8 +12,6 @@ no hardware mutation.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, cast
@@ -29,6 +27,7 @@ from .json_fields import (
     CodedFieldError,
     JsonFields,
     issue as _issue,
+    lenient_json_fingerprint,
 )
 from .output_hardware import (
     OutputHardwareState,
@@ -681,15 +680,9 @@ class OutputTopology:
 
 
 def canonical_fingerprint(payload: Mapping[str, Any] | None) -> str:
-    """SHA-256 over one canonically serialised payload.
-
-    Public because ``active_speaker.baseline_profile`` consumes it: the two
-    modules fingerprint the same artifacts and a second copy of the
-    serialisation would let their digests drift apart silently.
-    """
-
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    """The topology, baseline and measurement fingerprint rule:
+    :func:`jasper.json_fields.lenient_json_fingerprint` of ``payload``."""
+    return lenient_json_fingerprint(payload)
 
 
 def topology_config_fingerprint(topology: OutputTopology) -> str:

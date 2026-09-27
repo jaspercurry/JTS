@@ -16,6 +16,7 @@ import pytest
 
 from jasper import source_intent
 from jasper.control.restart_broker import START_ONLY_UNITS
+from jasper.json_fields import sha256_text
 from jasper.music_sources import Source
 from jasper.local_sources import reconcile as source_reconcile
 from tests._log_events import event_fields
@@ -50,7 +51,7 @@ def _write_target_status(
                 else completed_monotonic_ns
             ),
             "intent_fingerprint": (
-                source_intent.intent_fingerprint(text)
+                sha256_text(text)
                 if fingerprint is None
                 else fingerprint
             ),
@@ -584,7 +585,7 @@ def test_production_status_reader_rejects_writable_parent(tmp_path, monkeypatch)
         path=status_path,
         source=Source.BLUETOOTH,
         desired="disabled",
-        intent_fingerprint=source_intent.intent_fingerprint(
+        intent_fingerprint=sha256_text(
             Path(env_path).read_text(encoding="utf-8")
         ),
         not_before_monotonic_ns=0,
