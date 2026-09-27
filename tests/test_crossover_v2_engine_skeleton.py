@@ -20,7 +20,6 @@ from typing import Any, Mapping
 
 import pytest
 
-from jasper.active_speaker.driver_acoustics import CAPTURE_GEOMETRIES
 from jasper.volume_latch import READBACK_TOLERANCE_DB
 from jasper.audio_measurement.program_analysis import polarity_label
 
@@ -34,14 +33,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
-    MEASURE_REGIMES,
     POLARITIES,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
     REGIME_NEAR_FIELD,
-    REGIME_REFERENCE_AXIS,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
@@ -464,11 +461,6 @@ def test_the_measure_kinds_are_the_index_columns_and_no_more():
 # --------------------------------------------------------------------------- #
 # the cheap vocabulary copy must not drift off the modules that own the words
 # --------------------------------------------------------------------------- #
-
-
-def test_the_regime_words_are_driver_acoustics_own():
-    assert set(MEASURE_REGIMES) == set(CAPTURE_GEOMETRIES)
-    assert {REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS} == set(MEASURE_REGIMES)
 
 
 def test_the_polarity_words_are_the_measurement_frames_own():

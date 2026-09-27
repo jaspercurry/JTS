@@ -84,12 +84,8 @@ class QualityModel:
         (overlap SNR - this) is reported capped at that ceiling.
 
     Driver verdict logic (read by the active-crossover driver analyzers; the
-    room and ramp profiles carry values but do not consume them):
-      silent_peak_dbfs: a per-driver capture peaking at/below this is
-        ``silent``.
+    room and ramp profiles carry a value but do not consume it):
       null_threshold_db: a crossover null at least this deep is "present".
-      overlap_min_bins: minimum FFT bins for a stable overlap-band mean; below
-        it the reading is marked unusable.
     """
 
     # --- structural (shared) ---
@@ -110,20 +106,15 @@ class QualityModel:
     null_cap_margin_db: float = 10.0
 
     # --- driver verdict logic ---
-    silent_peak_dbfs: float = -45.0
     null_threshold_db: float = 6.0
-    overlap_min_bins: int = 4
 
 
-# Room correction (listening-position). The driver-verdict fields carry the
-# dataclass defaults and are unused by the room flow.
+# Room correction (listening-position). The driver-verdict field carries the
+# dataclass default and is unused by the room flow.
 ROOM = QualityModel()
 
-# Active-crossover driver checks. The three verdict fields are spelled out
-# rather than defaulted because they are the driver_acoustics values this
-# profile owns; they happen to equal the dataclass defaults today.
+# Active-crossover driver checks. The verdict field is spelled out rather than
+# defaulted because this profile owns it; it equals the dataclass default today.
 DRIVER = QualityModel(
-    silent_peak_dbfs=-45.0,
     null_threshold_db=6.0,
-    overlap_min_bins=4,
 )

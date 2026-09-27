@@ -123,9 +123,9 @@ def crossover_null_depth_db(
     with ``shoulders_hz`` (from :func:`shoulder_span`) rather than letting :func:`numpy.interp`
     clamp silently at the grid edge.
 
-    Homed here, not beside its acoustic caller, because both consumers (``active_speaker.
-    driver_acoustics``, ``crossover_v2.delay_landscape``) live ABOVE this package and
-    ``jasper.audio_measurement`` may import neither (the boundary SSOT guard).
+    Homed here, not beside its acoustic caller, because its consumer
+    (``crossover_v2.delay_landscape``) lives ABOVE this package and
+    ``jasper.audio_measurement`` may not import it (the boundary SSOT guard).
     """
     lower_hz, upper_hz = (
         (
