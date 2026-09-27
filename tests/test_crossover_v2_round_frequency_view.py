@@ -651,8 +651,8 @@ def test_an_archive_run_whose_takes_banked_no_curves_says_so(tmp_path, monkeypat
 
     run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
 
-    assert run.metadata.get("curves") == (
-        None if curves else {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED})
+    assert (run.measurement_family, run.metadata.get("curves")) == (
+        "speaker_response", None if curves else {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED})
 
 
 def test_mixed_candidate_archive_keeps_exact_takes_and_played_graphs(tmp_path, monkeypatch):

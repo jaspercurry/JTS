@@ -37,6 +37,7 @@ __all__ = [
     "Measurement",
     "MeasurementCaptureIdentityError",
     "bundle_measurements",
+    "has_banked_take",
     "measurement_documents",
     "reopen_measurement_capture",
     "reopen_measurement_record",
@@ -171,6 +172,12 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
 def _load(take: Path) -> Mapping[str, Any]:
     """One banked file's JSON, or empty when it is not readable."""
     return read_json_mapping(take) or {}
+
+
+def has_banked_take(bundle_dir: Path) -> bool:
+    """Whether the bundle banked a take, by its file alone: only a take record
+    lands under :data:`BANKED_TAKE_GLOB`."""
+    return next((Path(bundle_dir) / EVIDENCE_ROOT / "artifacts").glob(BANKED_TAKE_GLOB), None) is not None
 
 
 def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:

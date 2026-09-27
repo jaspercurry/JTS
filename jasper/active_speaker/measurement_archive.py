@@ -21,7 +21,7 @@ from . import bundles
 from .frequency_view import FrequencyRun, FrequencySeries
 from .measurement_document import frequency_run_from_documents
 from .crossover_v2.evidence_packet import CrossoverEvidencePacketError, entry_evidence
-from .crossover_v2.record_index import measurement_documents
+from .crossover_v2.record_index import has_banked_take, measurement_documents
 from .crossover_v2.round_frequency_view import frequency_run as packet_frequency_run
 from .crossover_v2.round_inputs import capture_identity
 
@@ -69,13 +69,13 @@ def _combined_position_metadata(
 
 
 def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
-    """List every bundle that banked a take, reading only its first take."""
+    """List every bundle that banked a take."""
 
     runs = []
     for entry in bundles.list_bundles(sessions_dir):
         run_id = str(entry.get("session_id") or "")
         bundle_dir = Path(str(entry.get("bundle_dir") or ""))
-        if not run_id or next(measurement_documents(bundle_dir), None) is None:
+        if not run_id or not has_banked_take(bundle_dir):
             continue
         runs.append(ArchivedMeasurement(
             id=run_id,
@@ -84,12 +84,6 @@ def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
             state=str(entry.get("state") or "") or None,
         ))
     return tuple(runs)
-
-
-def _disclosed(run: FrequencyRun) -> FrequencyRun:
-    """A run with no curve says why instead of drawing nothing (ADR-0373)."""
-    return run if run.series else replace(
-        run, metadata={**run.metadata, "curves": {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}})
 
 
 def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
@@ -108,10 +102,12 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
         state=run.state,
     )
 
-    if retained is None:
-        return _disclosed(direct)
+    if retained is None or not (direct.series or retained.series):
+        # A run with no curve says why instead of drawing nothing (ADR-0373).
+        return direct if direct.series else replace(direct, metadata={
+            **direct.metadata, "curves": {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}})
     if not direct.series:
-        return _disclosed(replace(retained, started_at=run.started_at, state=run.state))
+        return replace(retained, started_at=run.started_at, state=run.state)
     identities = {capture_identity(curve.details, set_id=curve.details.get("set_id") or curve.id)
                   for curve in direct.series if curve.details.get("role") == "summed"}
     if len(identities) > 1:

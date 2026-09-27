@@ -92,13 +92,9 @@ function responseRun(slot, id) {
       angles_deg: [0, 7, 14],
       trusted_floor_hz: 200,
       excluded_bands_hz: [[900, 1100]],
-      smoothing: {
-        average_fractional_octave: 3,
-        positions_fractional_octave: 6,
-      },
     },
     series: [
-      responseSeries("average", "average", true),
+      responseSeries("entry", "entry_baseline", true),
       responseSeries("7-deg", "measurement", false, { validity_floor_hz: 250 }),
       responseSeries("14-deg", "analysis", false, { validity_floor_hz: 250 }),
     ],
@@ -213,7 +209,7 @@ assert.deepEqual(chartPayloads.at(-1).frequencyRangeHz, [20, 20000]);
 check(resetRange.disabled, 'reset restores the full frequency range');
 check(
   chart.series.map((series) => series.draw).join(",") === "true,false,false",
-  "only the aggregate is visible by default",
+  "only the curve the run marks visible is drawn by default",
 );
 check(
   JSON.stringify(chart.series[1].dash) !== JSON.stringify(chart.series[2].dash),
