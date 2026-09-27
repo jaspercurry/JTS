@@ -41,7 +41,6 @@ from jasper.active_speaker.measurement_document import frequency_run_from_docume
 from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker import frequency_plot
-from jasper.active_speaker.crossover_envelope_v2 import prediction_status
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.round_view_builders import analyzed_frequency_run
 from jasper.active_speaker import measurement_archive
@@ -102,7 +101,7 @@ def test_frequency_view_gives_the_baseline_its_own_reference_frame():
 
 
 @pytest.mark.parametrize("reference", [-24, None])
-def test_saved_and_predicted_views_share_display_rules(reference):
+def test_saved_view_display_rules(reference):
     raw = {"freqs_hz": [50, 150, 200, 500, 1000, 20000],
            "magnitude_db": [-29, -25, -24, -23, -22, -21], "band_hz": [100, 10000]}
     metadata = {"reference_db": reference, "validity_floor_hz": 143, "trusted_floor_hz": 357,
@@ -111,11 +110,7 @@ def test_saved_and_predicted_views_share_display_rules(reference):
                               reference_db=reference, **raw)
     assert series is not None
     saved = neutral_view(FrequencyRun("run", "speaker_response", (series,), metadata=metadata))
-    predicted = prediction_status({"verify_priors": {"predicted_sum": raw, "predicted_spec": {
-        **metadata, "excluded_intervals": metadata["excluded_bands_hz"],
-    }}})
     display = saved["runs"][0]["series"][0]["display"]
-    assert predicted["curve"]["display"] == display
     assert display == {
         "deviation_db": [None, -1, 0, 1, 2, None] if reference is not None else [None] * 6,
         "valid_band_hz": [143, 10000],

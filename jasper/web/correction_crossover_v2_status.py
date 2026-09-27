@@ -106,7 +106,6 @@ def crossover_v2_status_block(
         "attempts_loop": {
             "store_count": store_count,
         },
-        "findings": _projection.household_findings_status(state),
         # The across-rounds view no single receipt can carry: per spec band,
         # how much of what was commanded arrived, over how many banked rounds,
         # and how much those rounds disagreed. Read from the banked receipts

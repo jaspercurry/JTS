@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-from jasper.active_speaker import crossover_envelope_v2 as projection
 from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from jasper.active_speaker.crossover_v2.verification import (
     RESULT_INCONCLUSIVE,
@@ -18,7 +17,7 @@ from jasper.active_speaker.crossover_v2.verification import (
     RESULT_VERIFIED_TARGET,
 )
 from jasper.active_speaker.grade_coverage import asked_beyond_mark
-from jasper.json_fields import finite_float
+from jasper.json_fields import as_mapping, finite_float
 
 
 # The vocabulary of ``crossover_v2.post_apply_grade.state`` (PR-L4 item 4).
@@ -53,9 +52,10 @@ GRADE_SPATIAL_UNMEASURABLE = "unmeasurable"
 def grade_inputs(state: Mapping[str, Any] | None) -> dict[str, Any]:
     """The status fields the post-apply grade reads, projected from the durable ``state``."""
     state = state or {}
+    priors = as_mapping(state.get("verify_priors"))
     return {
         "applied": bool(state.get("applied")), "candidate": state.get("candidate"), "verify": state.get("verify"),
-        "prediction": projection.prediction_status(state),
+        "predicted_comparison": as_mapping(priors.get("predicted_spec")).get("comparison"),
     }
 
 
@@ -170,10 +170,7 @@ def _post_apply_grade(block: Mapping[str, Any], *, spatial_required: bool = Fals
     absolute = absolute if isinstance(absolute, Mapping) else {}
     tracking_status = str(integration.get("status") or "")
     absolute_status = str(absolute.get("status") or "")
-    prediction = block.get("prediction")
-    prediction = prediction if isinstance(prediction, Mapping) else {}
-    comparison = prediction.get("comparison")
-    comparison = comparison if isinstance(comparison, Mapping) else {}
+    comparison = as_mapping(block.get("predicted_comparison"))
     improvement_db = finite_float(comparison.get("improvement_db"))
     required_db = finite_float(comparison.get("required_db"))
     absolute_miss_db, absolute_worst_hz = finite_float(absolute.get("max_db")), finite_float(absolute.get("worst_hz"))
