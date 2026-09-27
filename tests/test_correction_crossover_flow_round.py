@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, program
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_program
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
@@ -37,17 +37,33 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
         planned.append(request.program), preview(request, *args))[1])
-    visible = available_programs()
-    choices = measurement_view.round_choices({}, "room/seat")
+    visible = [(f"{name}/{size}", layout) for name, size in available_programs()
+               for layout in run_program(f"{name}/{size}").layouts]
+    choices = measurement_view.round_choices({}, "room/seat@seat_cube")
     assert planned == ["room/seat"]
-    assert [c["id"] for c in choices] == [f"{name}/{size}" for name, size in visible]
+    assert [c["id"] for c in choices] == [
+        preset if layout == run_program(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
-    assert [c["id"] for c in choices if c["default"]] == ["room/seat"]
+    assert [c["id"] for c in choices if c["default"]] == ["room/seat@seat_cube"]
     assert [(c["poses"], c["captures"]) for c in choices] == [
-        (program(name, size).mic_move_count, program(name, size).capture_count) for name, size in visible]
-    selected = next(c for c in choices if c["id"] == "room/seat")
-    assert selected["action"]["body"]["plan"]["program"] == "room/seat"
-    assert len(selected["action"]["body"]["plan"]["stops"]) == 3
+        (run_program(preset, layout).mic_move_count, run_program(preset, layout).capture_count)
+        for preset, layout in visible]
+    selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
+    plan = selected["action"]["body"]["plan"]
+    assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)
+
+
+@pytest.mark.parametrize("link,opened", [
+    ("seat/cube", "room/seat@seat_cube"), ("rear/pair_mark", "rear/pair@speaker_mark"),
+    ("seat/express", "room/seat"), ("close/spot", None), ("bass/custom", None),
+])
+def test_a_retired_id_link_opens_the_choice_that_replaces_it(monkeypatch, link, opened):
+    """A link banked before the fold (ADR-0366 §6) opens its preset at its layout, or is
+    refused on its own row when nothing on the page replaces it."""
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
+    choices = measurement_view.round_choices({}, link)
+    default, = (c for c in choices if c["default"])
+    assert (default["id"], default.get("code") == REASON_MEASUREMENT_PROGRAM_NOT_OFFERED) == (opened or link, not opened)
 
 
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):
@@ -107,7 +123,7 @@ def test_a_conductor_context_refusal_discloses_on_its_row_instead_of_500(monkeyp
 
     assert code == 200
     choices = {c["id"]: c for c in envelope["round_choices"]}
-    assert len(choices) == len(available_programs())
+    assert len(choices) == sum(len(run_program(f"{name}/{size}").layouts) for name, size in available_programs())
     selected = choices["speaker/mark"]
     assert selected["code"] == REASON_MEASUREMENT_TARGETS_MISSING
     assert "action" not in selected
