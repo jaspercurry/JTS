@@ -116,13 +116,12 @@ from jasper.audio_measurement.program_analysis import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     MeasurementPriors,
-    _band_rms_dbfs,
-    _earliest_strong_peak,
     _global_offset,
     _locate_segments,
-    _stimulus_shape,
     analyze_program_capture,
 )
+from jasper.audio_measurement.program_analysis.check import _band_rms_dbfs
+from jasper.audio_measurement.program_analysis.locate import _earliest_strong_peak, _locate_in_window, _stimulus_shape
 
 from tests._log_events import event_fields, event_fields_in, event_records
 
@@ -1506,7 +1505,6 @@ def test_the_seam_returns_both_of_the_aligners_scores():
     shape underneath that number -- an absent witness scoring a peakedness two
     orders of magnitude above its own presence.
     """
-    from jasper.audio_measurement.program_analysis import _locate_in_window
     from jasper.audio_measurement.alignment import cross_correlation_alignment
 
     prog = _measure_program()

@@ -7,7 +7,7 @@ a capture source reports against the frames the host decoded. No thresholds — 
 discrepancy is a fail, since one missing quantum is a phase discontinuity that corrupts the
 whole deconvolution regardless of what fraction of frames it is (#1765). The received count is
 taken before ``deconv.cap_capture_length`` truncates. Arithmetic and vocabulary only, no
-logging: ``program_analysis._verify_capture_integrity`` owns the pass/fail vocabulary.
+logging: ``program_analysis.verify_integrity._verify_capture_integrity`` owns the pass/fail vocabulary.
 """
 
 from __future__ import annotations

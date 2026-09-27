@@ -12,7 +12,7 @@ Three households' worth of that advice sends someone to turn up a volume the
 measurement had already proved was fine.
 
 ``summed_sweep_heard`` is a locate-CONFIDENCE check, not a level check — see
-``program_analysis._verify_capture_integrity``, whose own docstring calls it
+``program_analysis.verify_integrity._verify_capture_integrity``, whose own docstring calls it
 "the summed sweep's own locate confidence". Reading it as "nobody could hear
 the speaker" was the inference; the pilot is the evidence that refutes it.
 
