@@ -5,14 +5,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
+from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
 from jasper.json_fields import finite_float
+from jasper.speaker_layout import measurement_target_parts
+from ..measurement_programs import POSE_KIND_SEAT, gate_exemption
 from .measure_spec import CANDIDATE_SCOPES
+from .spatial import MARK_DISTANCE_M
 
 
 def _finite(value: Any) -> Any:
@@ -61,6 +66,22 @@ def analysis_provenance(
         "stimulus_dbfs": max((float(segment.gain_db) for segment in stimuli or program.stimulus_segments()), default=None),
         "mark_distance_m": float(geometry.mic_distance_m) if geometry is not None else None,
     }
+
+
+def take_trusted_band(
+    *, purpose: str | None, kind: str | None, distance_m: float | None, driver: str,
+    roles: Sequence[str], diameters_mm_by_role: Mapping[str, float], room: DeclaredGeometry | None,
+) -> TrustedBand:
+    """The band a take trusts, from its pose, the drivers that played (its
+    ``driver`` alone, or every one of ``roles``) and the declared room
+    (ADR-0366 §3). A seat states no distance; any other pose that states none
+    sits at the mark."""
+    distance = None if kind == POSE_KIND_SEAT else MARK_DISTANCE_M if distance_m is None else float(distance_m)
+    played = (measurement_target_parts(driver)[0],) if driver else tuple(roles)
+    return trusted_band(
+        distance_m=distance, driver=driver, room=room,
+        gated=gate_exemption(purpose, driver=driver, distance_m=distance) is None,
+        diameters_mm=tuple(diameters_mm_by_role.get(role) for role in played))
 
 
 def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> dict[str, Any]:

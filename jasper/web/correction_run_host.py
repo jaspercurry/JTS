@@ -8,7 +8,7 @@ from jasper.active_speaker.program_failure import classify_program_failure
 
 from jasper.web import correction_crossover_v2_volume as v2volume
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import asyncio
 import logging
 from pathlib import Path
@@ -21,7 +21,9 @@ from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
-from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, enrich_capture_record
+from jasper.active_speaker.crossover_v2.capture_provenance import (
+    analysis_blocks, enrich_capture_record, take_trusted_band,
+)
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
@@ -29,6 +31,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
+from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
@@ -62,8 +65,10 @@ def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> di
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        provenance: Any = None,
                        check_target_capture_dbfs: float | None = None,
-                       capture_indexes: tuple[int, ...] = ()) -> tuple[Any, Any]:
+                       capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
+    roles = tuple(band.role for band in conductor.roles_bands)
+    diameters = context.radiating_diameter_mm_by_role if context is not None else {}
     index = 0
     phase = ""
     answer: Any = None
@@ -91,6 +96,15 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             fields = {**fields, **analysis_blocks(result),
                       **_kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
+        try:
+            fields["trusted_band"] = asdict(take_trusted_band(
+                purpose=record.get("measurement_purpose"), kind=record.get("pose_kind"),
+                distance_m=record.get("mark_distance_m"), driver=record.get("pose_driver") or "",
+                roles=roles, diameters_mm_by_role=diameters, room=load_declared_geometry()))
+        except (OSError, ValueError) as exc:
+            # The take banks without a band; its reader states one (ADR-0366 §3).
+            log_event(logger, "correction.take_band_not_banked", level=logging.WARNING,
+                      take_id=record["take_id"], error_type=type(exc).__name__)
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),
@@ -182,7 +196,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, provenance=provenance,
-                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes)
+                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes,
+                                          context=context)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(device, evidence_store, spl_monitor=door.spl_monitor)

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import nearfield_view as nv, round_inputs
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
@@ -114,6 +115,31 @@ def test_placements_past_the_near_field_read_gated_in_the_rounds_room(tmp_path, 
         (None, None, "not_evaluated")]
     rows = json.loads(Path(answer["out"]).read_text())["takes"][0]["bands"]
     assert [row["trusted"] for row in rows] == [False] * 6 + [True]
+
+
+def test_a_placement_states_the_band_its_take_banked(tmp_path, monkeypatch, capsys):
+    """A take states the band it banked, as the declarations stood when it was
+    measured; a take banked without one states it from the round's
+    declarations (ADR-0366 §3)."""
+    monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "undeclared.json")
+    bundle = tmp_path / "sessions" / "nearfield"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
+    banked = {"low_hz": 123.0, "low_source": "gate_floor", "high_hz": 4000.0, "high_source": "far_field_ceiling",
+              "undeclared": []}
+    take, unbanked = _take("w500", "woofer", 500, 86.0), _take("w1000", "woofer", 1000, 80.0, seed=1)
+    record = take_artifact_path(bundle, take["artifacts"]["record_id"])
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"trusted_band": banked}))
+    write_manifest(bundle, program="drivers/each",
+                   groups=[{"set_id": "drivers", "capture_basis": {}, "takes": [take, unbanked]}])
+
+    assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
+
+    driver, = json.loads(capsys.readouterr().out)["drivers"]
+    stated, stated_here = (placement["trusted_band"] for placement in driver["placements"])
+    assert stated == banked
+    assert (stated_here["low_source"], stated_here["undeclared"]) == ("gate_floor", ["room_undeclared", "driver_size_undeclared"])
 
 
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
