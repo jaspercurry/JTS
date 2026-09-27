@@ -237,7 +237,7 @@ def _index_html(csrf_token: str = "", *, page_mode: str = "eq") -> bytes:
 """
     )
     page_island = _sound_page_island(page_mode=page_mode, follower=False)
-    script = "speaker" if page_mode == "speaker" else "main"
+    script = "main" if page_mode == "eq" else page_mode
     body = editor_chrome + page_island + f'<script type="module" src="/assets/sound-profile/js/{script}.js"></script>'
     return canonical_page(
         title,

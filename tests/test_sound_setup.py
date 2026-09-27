@@ -891,8 +891,9 @@ def _crossover_child_row() -> tuple[str, str]:
     [("eq", "EQ"), ("speaker", "Speaker setup"), ("output", "Output")],
 )
 def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
-    """All three modes share the design system and the static module; only the
-    EQ mode renders the Off/Saved/Draft chrome, and none inlines logic."""
+    """All three modes share the design system and each loads its own static
+    module; only the EQ mode renders the Off/Saved/Draft chrome, and none
+    inlines logic."""
     html = sound_setup._index_html(page_mode=page_mode).decode()
 
     assert "/assets/app.css" in html
@@ -903,7 +904,7 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     assert f'"mode": "{page_mode}"' in html
     # The editor is a static ES module (served + revalidated by nginx), the
     # same delivery model as /system/, with no inline logic left in the page.
-    module = "speaker" if page_mode == "speaker" else "main"
+    module = {"eq": "main", "speaker": "speaker", "output": "output"}[page_mode]
     assert f'<script type="module" src="/assets/sound-profile/js/{module}.js">' in html
     assert "<script>" not in html
 
@@ -1060,7 +1061,7 @@ def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
     assert leader_paths == ["/sound/output/"]
     assert "http://jts3.local/sound/output/" in html
     assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
-    assert "/assets/sound-profile/js/main.js" not in html
+    assert "/assets/sound-profile/js/output.js" not in html
     assert 'id="view-body"' not in html
     # The crossover row hangs under Speaker setup, not this page.
     assert _crossover_child_row()[1] + "</a>" not in html

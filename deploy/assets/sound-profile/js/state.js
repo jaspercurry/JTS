@@ -36,19 +36,14 @@ function resetEqEditor() {
   eqEditor.nameDraft = '';
 }
 
-// The /sound/output/ wizard's record: the saved sound settings it edits plus
-// the in-flight picks of its own steps.
-var outputPage = {
-  // volume_floor_db is absent until /state carries it: savedVolumeFloorDb()
-  // then falls back to volumeFloorDefault() (backend-owned) rather than this
-  // module keeping a second copy of the default.
-  soundSettings: {headroom_trim_db: 0, match_loudness: false},
-  blocked: false,          // ./settings: the graph refused to carry EQ
-  i2sHat: null,
-  volumeFloorDraftDb: null,
-};
-
 function el(id) { return document.getElementById(id); }
+function status(msg, isErr) {
+  var node = el('status');
+  if (node) {
+    node.textContent = msg || '';
+    node.className = 'status-line' + (isErr ? ' status-line--err' : '');
+  }
+}
 var pageData = (function() {
   var id = (el('sound-page-data') || {}).textContent?.trim() ?
     'sound-page-data' : 'sound-follower-data';
@@ -70,7 +65,7 @@ export {
   el,
   eqEditor,
   followerMode,
-  outputPage,
   pageMode,
   resetEqEditor,
+  status,
 };
