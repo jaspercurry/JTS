@@ -407,7 +407,7 @@ def build_driver_commission_load_preflight(
     # this preflight runs inside the long-lived control daemon and the
     # socket-activated wizards, which never `EnvironmentFile=`d it and stay
     # alive across a reconcile.
-    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed
+    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed  # lazy: tests/_armed_transport.py patches ring_active_endpoint_armed
 
     candidate_playback_device = candidate.get("playback_device")
     transport_is_ring = candidate_playback_device in RING_PCM_DEVICES

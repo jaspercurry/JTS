@@ -21,7 +21,11 @@ from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
 )
-from jasper.active_speaker.delay_graph import quantized_delay_ms
+from jasper.active_speaker.delay_graph import (
+    DelayGraphProofError,
+    prove_static_delay_binding,
+    quantized_delay_ms,
+)
 from jasper.audio_measurement.null_walk import (
     MAX_DSP_DELAY_US,
     DspPredecessor,
@@ -71,6 +75,7 @@ from .rear_calibration import (
     RearCalibrationError,
     read_rear_calibration,
 )
+from .linearization_fit import linearization_filters_by_role
 
 SCHEMA_VERSION = 1
 CANDIDATE_KIND = "jts_measured_crossover_candidate_v2"
@@ -908,8 +913,6 @@ def compile_candidate_config(
     excluded by ``apply_region_polarity=False``.
     """
 
-    from .linearization_fit import linearization_filters_by_role
-
     preset = effective_preset(candidate)
     corrections = driver_corrections(candidate)
     linearization = linearization_filters_by_role(candidate.linearization)
@@ -936,11 +939,6 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     """
 
     import yaml as _yaml
-
-    from jasper.active_speaker.delay_graph import (
-        DelayGraphProofError,
-        prove_static_delay_binding,
-    )
 
     preset = effective_preset(candidate)
     view = view_from_yaml_dict(_yaml.safe_load(yaml_text))

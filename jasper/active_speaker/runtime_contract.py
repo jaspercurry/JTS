@@ -50,8 +50,11 @@ from jasper.output_topology import (
 from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 from jasper import paths
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
+from jasper.active_speaker.playback_route import ActiveLaneCapabilityGap, active_lane_capability_gap
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 
-from .camilla_yaml import _reserialize_keeping_header
+from .camilla_yaml import PARKED_CONFIG_NAME, _reserialize_keeping_header
 from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name as _commission_mute_name
 from .graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE, _active_graph_evidence
 from .graph_safety import (
@@ -152,11 +155,6 @@ def parked_muted_exits(topology: OutputTopology | None = None) -> str:
     Fail-soft: any unreadable topology falls back to the general pair rather
     than raising inside a reporting surface.
     """
-
-    from jasper.active_speaker.playback_route import (
-        ActiveLaneCapabilityGap,
-        active_lane_capability_gap,
-    )
 
     try:
         resolved = topology or load_output_topology_strict()
@@ -1608,8 +1606,7 @@ def outputd_active_lane_decision(
             ok=False, width=None, reason=f"active_graph_cap_channels_invalid:{cap}",
         )
 
-    from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
+    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path  # lazy: test_ring_active_endpoint patches staging.staged_metadata_path
 
     primary_statefile = paths.camilla_statefile(statefile_path)
     _selected, primary_problem = _config_path_from_statefile_with_reason(
@@ -1729,8 +1726,7 @@ def parked_muted_config_path(path: str | Path | None = None) -> Path:
     owns that directory constant, so there is one spelling of it).
     """
 
-    from jasper.active_speaker.camilla_yaml import PARKED_CONFIG_NAME
-    from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
+    from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR  # lazy: test_runtime_convergence redirects staging.DEFAULT_CAMILLA_CONFIG_DIR
 
     return Path(path) if path else Path(DEFAULT_CAMILLA_CONFIG_DIR) / PARKED_CONFIG_NAME
 
@@ -1769,8 +1765,7 @@ def build_parked_muted_graph(
     so no caller can persist parked bytes that were not proved safe.
     """
 
-    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
-    from jasper.active_speaker.profile import ActiveSpeakerConfigError
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config  # lazy: test_active_speaker_runtime_contract patches camilla_yaml
 
     contract = classify_output_contract(topology)
     # A stereo capture feeds the mixer, so park at least 2 channels: a 1-output
@@ -1885,8 +1880,7 @@ def safe_graph_for_current_topology(
     The PARKED shape needs nothing either way — its ``File`` sink is DAC- and
     transport-agnostic by construction."""
 
-    from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path
+    from jasper.active_speaker.staging import staged_metadata_path as default_staged_path  # lazy: test_ring_active_endpoint patches staging.staged_metadata_path
 
     topology = topology or load_output_topology_strict()
     contract = classify_output_contract(topology)
@@ -2297,8 +2291,7 @@ def _materialise_parked_muted_config(
 
     import tempfile
 
-    from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.dsp_apply import validate_camilla_config
+    from jasper.dsp_apply import validate_camilla_config  # lazy: test_active_speaker_runtime_contract patches dsp_apply.validate_camilla_config
 
     topology = topology or load_output_topology_strict()
     text, graph = build_parked_muted_graph(topology, config_path=config_path)

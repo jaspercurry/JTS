@@ -89,7 +89,7 @@ def candidate_artifact_paths(root: Path) -> list[Path]:
 
 def _bank_root(root: Path | None) -> Path:
     """Where the bank IS, defaulting to the on-box bundle store both readers scan."""
-    from jasper.active_speaker.bundles import sessions_dir
+    from jasper.active_speaker.bundles import sessions_dir  # lazy: import cost — jasper-control loads this module
 
     return Path(root) if root is not None else sessions_dir()
 
@@ -217,7 +217,7 @@ def load_candidate_artifact(path: Path) -> Any | None:
     """Parse and integrity-check one candidate artifact, or ``None`` (unreadable, oversized,
     malformed JSON, or a fingerprint mismatch).
     """
-    from jasper.active_speaker.measured_crossover_candidate import (
+    from jasper.active_speaker.measured_crossover_candidate import (  # lazy: keeps NumPy out of jasper-control
         MeasuredCrossoverCandidate,
         MeasuredCrossoverCandidateError,
     )

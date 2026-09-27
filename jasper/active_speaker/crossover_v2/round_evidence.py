@@ -11,6 +11,9 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
+from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.spatial_combine import decimate_curve_to_analysis_grid
+
 from .contracts import CrossoverV2ContractError, ResponseCurve, _text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -92,11 +95,6 @@ def measured_response_from_analysis(
     program_id = str(getattr(analysis, "program_id", "") or "")
     if summed is None or not program_id:
         return None
-
-    from jasper.audio_measurement.analysis import smooth_fractional_octave
-    from jasper.audio_measurement.spatial_combine import (
-        decimate_curve_to_analysis_grid,
-    )
 
     try:
         grid, coarse_db = decimate_curve_to_analysis_grid(

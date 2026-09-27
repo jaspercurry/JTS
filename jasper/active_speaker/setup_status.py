@@ -19,6 +19,7 @@ from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.json_fields import as_mapping
 from jasper.output_topology import OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
+from jasper.multiroom.config import is_active_member, load_config
 
 from .candidate_bank import load_applied_candidate
 from .crossover_contract import (
@@ -57,8 +58,6 @@ _PROGRAM_BAKE_SOURCE = (
 
 def _grouped_active_runtime() -> bool:
     """Fresh Active-owned scope fact for both bonded leaders and followers."""
-
-    from jasper.multiroom.config import is_active_member, load_config
 
     return is_active_member(load_config())
 
@@ -104,7 +103,7 @@ def _commissioning_transport(topology: Any) -> str | None:
     ``None`` or duck-typed topology raises a class no sibling derivation does,
     and an observability field must never stop ``/system/snapshot`` answering.
     """
-    from .playback_route import resolve_active_playback_device
+    from .playback_route import resolve_active_playback_device  # lazy: test_active_speaker_setup_status patches playback_route
 
     try:
         device, _source = resolve_active_playback_device(topology)

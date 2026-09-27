@@ -35,6 +35,7 @@ from jasper.capture_protocol import (
     CapturePlanEntry,
     CaptureSpecError,
 )
+from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
 
 # --- Contract constants -------------------------------------------------------
 
@@ -526,10 +527,6 @@ def build_crossover_sweep_spec(
     is applied silently when nothing has already been chosen for the session.
     """
     if stimulus_duration_ms is None:
-        # Lazy import: the kernel module pulls numpy/scipy, and the socket-
-        # activated wizard builds specs on a light process.
-        from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
-
         stimulus_duration_ms = int(round(DEFAULT_DURATION_S * 1000))
     if ambient_duration_ms < 0:
         raise CaptureSpecError("ambient_duration_ms must be >= 0")

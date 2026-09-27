@@ -13,6 +13,9 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.sound.profile import sound_filter_slot_names
+
+from ..commissioning_admission import parse_running_graph
 
 __all__ = ["COMPARABILITY_BOUNDARY", "tuning_scope_fingerprint"]
 
@@ -33,8 +36,6 @@ def tuning_scope_fingerprint(graph_text: str | None) -> str:
     compare equal to every other one.
     """
 
-    from ..commissioning_admission import parse_running_graph
-
     return json_fingerprint(
         _without_preference_layer(parse_running_graph(graph_text))
     )
@@ -46,8 +47,6 @@ def _without_preference_layer(graph: Mapping[str, Any]) -> dict[str, Any]:
     Both blocks must be scrubbed: ``filters`` carries the slots' parameters,
     ``pipeline`` carries which of them are wired.
     """
-
-    from jasper.sound.profile import sound_filter_slot_names
 
     slots = sound_filter_slot_names()
     scoped = dict(graph)

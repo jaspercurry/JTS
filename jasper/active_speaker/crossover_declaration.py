@@ -48,6 +48,11 @@ from .test_signal_plan import (
     declared_protection_floor_hz,
     strictest_crossover_highpass_hz,
 )
+from .declaration_vocabulary import (
+    declaration_filter_type,
+    declaration_slope_db_per_octave,
+    same_declared_filter_type,
+)
 
 __all__ = [
     "CROSSOVER_BELOW_DECLARED_FLOOR",
@@ -122,8 +127,6 @@ class CrossoverGeometry:
         """Whether both name the same filter, asked of the module that compiles
         it — a household's ``"LR"`` is not a crossover change."""
 
-        from .declaration_vocabulary import same_declared_filter_type
-
         return same_declared_filter_type(self.filter_type, other.filter_type)
 
     def matches(self, other: "CrossoverGeometry") -> bool:
@@ -182,11 +185,6 @@ def preset_crossover_geometry(
     entries and this seam writes one), or a region no declared spelling
     compiles to. Each is a real refusal — the alternative is guessing.
     """
-
-    from .declaration_vocabulary import (
-        declaration_filter_type,
-        declaration_slope_db_per_octave,
-    )
 
     regions = tuple(getattr(preset, "crossover_regions", None) or ())
     if len(regions) != 1:

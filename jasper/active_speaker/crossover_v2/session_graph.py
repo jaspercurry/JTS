@@ -21,6 +21,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
+from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
 logger = logging.getLogger(__name__)
 _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
@@ -313,7 +314,6 @@ class MeasurementSessionGraph:
         Preference EQ is outside tuning scope. An unparseable entry loses this
         comparison, but its saved text remains available for restoration.
         """
-        from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 
         try:
             current = tuning_scope_fingerprint(yaml_text)

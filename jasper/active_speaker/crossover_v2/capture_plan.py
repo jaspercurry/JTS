@@ -35,6 +35,10 @@ from jasper.audio_measurement.program import (
 from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 from jasper.speaker_layout import measurement_target_name
+from jasper.active_speaker.session_volume_plan import (
+    DEFAULT_WALL_CLOCK_CEILING_S,
+    MAX_WALL_CLOCK_CEILING_S,
+)
 
 from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
@@ -897,7 +901,7 @@ def v2_first_begin_timeout_s() -> float:
     honoured, whatever this knob says.
     """
 
-    from jasper.capture_protocol import MAX_TTL_S
+    from jasper.capture_protocol import MAX_TTL_S  # lazy: test_correction_crossover_v2_endpoints patches capture_protocol.MAX_TTL_S
 
     return bounded_env_float(
         "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
@@ -1016,10 +1020,6 @@ def wall_clock_ceiling_s(capture_target: int) -> float:
     3-entry baseline; ``session_volume_plan.MAX_WALL_CLOCK_CEILING_S`` owns the
     hard cap.
     """
-    from jasper.active_speaker.session_volume_plan import (
-        DEFAULT_WALL_CLOCK_CEILING_S,
-        MAX_WALL_CLOCK_CEILING_S,
-    )
 
     extra = max(0, capture_target - CAPTURE_PLAN_TARGET)
     return min(

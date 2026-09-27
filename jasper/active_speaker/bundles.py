@@ -233,7 +233,7 @@ def _calibration_sha256(calibration_id: str) -> str | None:
     if not calibration_id:
         return None
     try:
-        from jasper.audio_measurement.calibration import load_calibration_record
+        from jasper.audio_measurement.calibration import load_calibration_record  # lazy: keeps NumPy out of jasper-web
 
         record = load_calibration_record(calibration_id)
     except (FileNotFoundError, ValueError, OSError, KeyError, TypeError):
