@@ -148,33 +148,76 @@ def test_write_manual_mic_env_publishes_and_removes_file(tmp_path: Path):
     assert reconcile.write_manual_mic_env({}, path=str(path)) is False
 
 
-def test_no_change_boot_reconcile_does_not_restart_the_adapter_host(
+@pytest.mark.parametrize(
+    ("flags", "expected_calls", "armed_during"),
+    [
+        ((), [HOST_ACTIVE_PROBE], []),
+        (
+            ("--restart-hosts",),
+            [HOST_REFRESH, HOST_ACTIVE_PROBE],
+            [("restart", False), ("verify", False)],
+        ),
+    ],
+    ids=["boot", "install"],
+)
+def test_an_unchanged_plan_restarts_the_adapter_host_only_when_asked(
     monkeypatch,
     tmp_path: Path,
+    caplog,
+    flags,
+    expected_calls,
+    armed_during,
 ):
+    """With the plan unchanged nothing is applied — but the host is still
+    observed, because that is the pass on which a bridge that died after the
+    last change would otherwise stay dead and unreported. The install asks for
+    the restart that loads its new code, and that pass withdraws the armed
+    source, restarts the host, and re-arms only once the adapter answers
+    (ADR-0372), without bouncing voice."""
     env_file = tmp_path / "accessory-mics.env"
     _publish_steady_state(env_file)
     calls = []
+    recording = _recording_systemctl(monkeypatch, calls)
+    observed = []
+
+    def systemctl(args):
+        if tuple(args) == HOST_REFRESH:
+            observed.append(("restart", env_file.exists()))
+        return recording(args)
+
+    _adapter_reports(monkeypatch)
+    reported = accessory_status.snapshot
+
+    def adapter_status(*args):
+        observed.append(("verify", env_file.exists()))
+        return reported(*args)
 
     async def fake_bluez():
         return {"/org/bluez/hci0/dev_CA_AC_04_04_09_D7": _bluez_device()}
 
+    # main() runs the pass on its real systemctl, which spawns through here.
+    monkeypatch.setattr(
+        "jasper.systemd_probe.subprocess.run",
+        lambda args, **_kwargs: systemctl(args[1:]),
+    )
+    monkeypatch.setattr(reconcile, "read_install_profile", lambda: "full")
     monkeypatch.setattr(reconcile, "bluez_managed_objects", fake_bluez)
     monkeypatch.setattr(reconcile, "source_intent_enabled", lambda _source: True)
     monkeypatch.setattr(reconcile, "local_sources_allowed", lambda: (True, None))
+    monkeypatch.setattr(accessory_status, "snapshot", adapter_status)
 
-    asyncio.run(
-        reconcile.reconcile_once(
-            env_file=str(env_file),
-            systemctl=_recording_systemctl(monkeypatch, calls),
-            reason="boot",
-        ),
-    )
+    with caplog.at_level(logging.INFO):
+        assert reconcile.main([
+            "--env-file", str(env_file), "--reason", "test",
+            "--reason-file", str(tmp_path / "no-request"), *flags,
+        ]) == 0
 
-    # The published set is unchanged, so nothing is applied — but the host is
-    # still observed, because that is the pass on which a bridge that died
-    # after the last change would otherwise stay dead and unreported.
-    assert calls == [HOST_ACTIVE_PROBE]
+    assert calls == expected_calls
+    assert observed == armed_during
+    assert env_file.read_text(encoding="utf-8") == _PUBLISHED
+    fields = event_fields(caplog, "accessory_mic.reconciled")
+    assert fields["host_restarted"] == str(int(bool(flags)))
+    assert (fields["armed"], fields["env_changed"]) == ("wiim_remote_2", "0")
 
 
 def test_bluez_discovery_timeout_is_bounded_and_observable(
