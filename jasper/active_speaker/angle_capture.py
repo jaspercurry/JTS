@@ -11,7 +11,7 @@ representation the evidence sidecar, the ``wide`` rule and the attribution stage
 read.
 
 These poses are FORWARD-MODEL INPUT, never a pose-ratio statistic: the lateral-walk
-statistic was retired as invalidated (PR #2717, #2711), and the P2 complex-summation
+statistic was retired as invalidated, and the P2 complex-summation
 model consumes each angle's transfer function directly.
 
 This module never constructs :data:`~.crossover_v2.journey.PHASE_LATERAL` -- it returns

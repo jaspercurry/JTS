@@ -37,7 +37,7 @@ CONTROL_COMB_NMP_GAIN = 1.2
 CONTROL_COMB_MP_GAIN = 0.8
 
 #: A known MINIMUM-phase magnitude change must move excess group delay by less
-#: than this. It is the instrument's false-positive scale, and the 2026-08-19
+#: than this. It is the instrument's false-positive scale, and a
 #: passing run read 0.5 us against it.
 CONTROL_MAX_FALSE_POSITIVE_US = 2.0
 

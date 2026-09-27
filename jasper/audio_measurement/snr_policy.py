@@ -64,12 +64,6 @@ def band_levels_dbfs(
     Each entry's ``level_dbfs`` is ``20*log10`` of the band's RMS amplitude — what a band-pass
     filter followed by an RMS meter would read.
 
-    Fixed in #1838: the previous per-BIN-mean (PSD-like) implementation read low by
-    ``7.27 + 10*log10(n_bins)`` dB and was not even a stable statistic — ``n_bins`` scales with
-    input length, so the SAME stationary noise over 1/2/4 s read -111.4/-114.4/-117.1 dBFS. That
-    was benign while every consumer used it in a ratio (SNR verdicts cancel it), until #1829's
-    absolute per-driver level solve read the room 18-39 dB too quiet and killed a field session.
-
     Parseval-exact: one-sided ``rfft`` bins weighted to two-sided energy, Hann window-energy
     loss divided out by its own ``sum(w**2)``. UNBIASED against closed-form white-noise band
     power; residual spread (chi-square, up to ~0.8 dB on a 60-bin band) is not an accuracy
@@ -231,9 +225,8 @@ def apply_noise_band_fallback(
     **The fallback changes the band's UNITS** — a ``"deconvolved"`` band is a gated
     transfer-function level (``20*log10|Y/X|``, per-bin power MEAN); a
     ``"raw_ambient_fallback"`` band is a band-INTEGRATED RMS dBFS over ungated one-second
-    frames. The substitution is not a constant offset, nor stable in sweep length (SC-1 SNR
-    units defect, 2026-08-01: error ran -22.08 to +11.11 dB at 8 s and -13.32 to +27.44 dB at
-    1 s on the summed-crossover capture).
+    frames. The substitution is not a constant offset, nor stable in sweep length (error ran
+    -22.08 to +11.11 dB at 8 s and -13.32 to +27.44 dB at 1 s on the summed-crossover capture).
 
     Correct for what it was built for (#1563: a WIDE per-driver near-field sweep where the
     uncovered bands are ones the gate doesn't read) — not a licence to mix domains inside a

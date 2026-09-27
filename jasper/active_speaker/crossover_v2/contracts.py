@@ -93,7 +93,7 @@ class NoCrossoverSectionsError(CrossoverV2ContractError):
 class CandidateFcDisagreementError(CrossoverV2ContractError):
     """Sections in one candidate context name more than one crossover corner.
 
-    The 2026-08-10 defect's shape, refused at construction.
+    The dual-Fc defect's shape, refused at construction.
     """
 
     refusal_reason = "candidate_fc_disagreement"
@@ -167,7 +167,7 @@ class CandidateAcousticContext(FingerprintedRecord):
 
     A context owns the corner AND the sections together, so a planner holding
     one cannot ask a second question about which crossover it is planning — the
-    2026-08-10 dual-Fc defect, made impossible.
+    dual-Fc defect, made impossible.
 
     Agreement is checked at construction and is EXACT, not toleranced: these
     sections are built in-process from a single float, so any inequality is a

@@ -143,7 +143,7 @@ def audition_summary() -> dict[str, Any] | None:
 
 def rear_compare_yaml(applied_yaml: str, *, rear_muted: bool, trim_db: float) -> str:
     # float(), not just a bound check: a numpy scalar passes every comparison and
-    # then the YAML dumper cannot represent it (met on jts3, 2026-09-21).
+    # then the YAML dumper cannot represent it.
     trim_db = float(trim_db)
     if not 0.0 <= trim_db <= MAX_COMPARE_TRIM_DB:
         raise ValueError("compare trim is outside its attenuation range")

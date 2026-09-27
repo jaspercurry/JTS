@@ -400,8 +400,8 @@ def _wrong_mic(record: Any, device: Mapping[str, Any] | None) -> str | None:
     """Whether ``record``'s calibration is for a DIFFERENT mic than ``device``.
 
     Calibration is frequency-magnitude, so applying the wrong mic's curve
-    corrupts a same-frequency measurement (the 2026-07-20 incident: a Dayton
-    iMM-6C capture silently carried a remembered UMIK-2 calibration).
+    corrupts a same-frequency measurement (concretely: a Dayton iMM-6C
+    capture once silently carried a remembered UMIK-2 calibration).
 
     Conservative and anchored, never a fuzzy label guess: it reuses the SAME
     curated ``SUPPORTED_MODELS``/``model_label_aliases`` registry the wizard's

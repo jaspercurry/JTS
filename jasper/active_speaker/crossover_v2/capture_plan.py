@@ -437,8 +437,8 @@ if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
 
 # --- the POST-APPLY walk's own pose set -------------------------------------- #
 #
-# The design axis is a MEMBER of this walk, not just the anchor in front of it
-# (owner ruling, 2026-08-24): VERIFY's anchor is consumed by the tracking
+# The design axis is a MEMBER of this walk, not just the anchor in front of it:
+# VERIFY's anchor is consumed by the tracking
 # verdict and never joins the group, so without this row the post-apply group
 # banks no on-axis position record at all.
 #
@@ -683,7 +683,7 @@ class PlanShapeError(CrossoverV2FlowError):
     A distinct subclass, not a new top-level exception, so every existing
     ``except CrossoverV2FlowError`` still catches it. Lets
     ``classify_program_failure`` tell a malformed *request* (this) apart from
-    a genuine capture-chain fault, which the owner ruled (2026-08-13) reads
+    a genuine capture-chain fault, which reads
     as a loose fit under ``program_unplayable``'s "re-check the driver
     details" copy.
     """

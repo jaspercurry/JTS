@@ -525,7 +525,7 @@ def running_graph_matches_staged_anchor(
     (``commission_load.load_driver_commissioning_config``): CamillaDSP acks the
     inline ``SetConfig`` before its readback side reflects the new graph, so a
     read taken immediately after the load can still return the staged all-muted
-    anchor (hardware-reproduced 2026-07-15, ~22 ms after the apply). The
+    anchor (hardware-reproduced, ~22 ms after the apply). The
     intended commission graph un-mutes exactly ``audible_outputs``; the staged
     anchor hard-mutes every output. So "every intended-audible output is still
     hard-muted AND wired" is the cheapest reliable "the switch has not landed

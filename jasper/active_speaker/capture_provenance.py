@@ -9,7 +9,7 @@ A CHECK/MEASURE program's ROUTING graph loads INLINE via ``SetConfig``, leaving
 running; ``graph.kind`` can never be ``null``.
 
 Observed only under capture retention, not every capture. :func:`volume_fields_agree`
-compares ``main_volume_db``/``session_volume_db``; #2925 T1-2: two reads two lines apart
+compares ``main_volume_db``/``session_volume_db``; #2925: two reads two lines apart
 once disagreed 8.712 dB, unnoticed five days. A failed guarded read nulls its field and
 joins one WARN ``event=active_speaker.capture_provenance``.
 """
@@ -93,7 +93,7 @@ class CaptureProvenanceRecorder:
 
 
 def volume_fields_agree(provenance: CaptureProvenance) -> bool:
-    """Do this record's two volume fields tell the same story? (#2925 T1-2) ``True`` within
+    """Do this record's two volume fields tell the same story? (#2925) ``True`` within
     ``SessionVolumePlan.open``'s tolerance, or when ``session_volume_db`` is ``None``;
     ``None`` ``main_volume_db`` against a declared volume IS a disagreement.
     """
@@ -245,7 +245,7 @@ async def observe_capture_provenance(
         stimulus_peak_dbfs=peak_dbfs,
     )
     if not volume_fields_agree(observed):
-        # #2925 T1-2 tripwire. Companion WARN when the hold owned nothing to hold:
+        # #2925 tripwire. Companion WARN when the hold owned nothing to hold:
         # ``crossover_v2_capture_volume_unheld``.
         log_event(
             logger,

@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 #: pose it says).
 SETTLE_FLOOR_S = 10.0
 
-#: The settle proven on hardware (2026-08-19): the value the graded night
+#: The settle proven on hardware: the value the graded night
 #: ran, spending 5% of the gate's 600 s hold.
 DEFAULT_SETTLE_S = 30.0
 
@@ -971,8 +971,8 @@ def poll_from_status(status: Mapping[str, Any] | None) -> Poll:
     an unbroken run of them is named for what it is. A capture block is not by
     itself a live session -- the wizard keeps the FINISHED session's block
     in its one capture slot, so a terminal ``status`` must be read, not merely
-    the block's presence (measured 2026-08-21: a closed jts3 round was
-    reported stuck 300 s later because the walk had no way to see the close).
+    the block's presence (measured: a closed jts3 round was reported stuck
+    300 s later because the walk had no way to see the close).
     """
     if status is None:
         return Poll(None, True, None, readable=False)

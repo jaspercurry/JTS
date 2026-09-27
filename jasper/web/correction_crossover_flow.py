@@ -72,7 +72,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
       <div id="crossover-round-start" class="form-actions"></div>
     </div>
     <div id="crossover-walk" class="capture-walk" hidden>
-      <!-- Page-local metric/imperial preference (#3629, #1941 Q2). Every
+      <!-- Page-local metric/imperial preference (#3629, #1941). Every
            prompt below already carries both units in one string
            (capture_plan.py's format_position_distance); the toggle only
            reorders which one leads -- see units.js. -->
@@ -81,7 +81,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
         <button type="button" class="segmented__btn" id="crossover-units-metric" aria-pressed="false">cm</button>
       </div>
       <p id="crossover-walk-progress" class="eyebrow"></p>
-      <!-- The per-position picture (#3629, #1941 R11): speaker, the mark,
+      <!-- The per-position picture (#3629, #1941): speaker, the mark,
            and an arrow to this prompt's spot -- see position-diagram.js.
            Hidden whenever the prompt carries no bearing to draw. -->
       <div id="crossover-walk-diagram" class="position-diagram-wrap" hidden></div>

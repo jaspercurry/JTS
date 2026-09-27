@@ -130,7 +130,7 @@ def require_candidate_speaker_identity(candidate: MeasuredCrossoverCandidate, pr
 
 
 def _front_drivers(candidate: MeasuredCrossoverCandidate) -> MeasuredCrossoverCandidate:
-    """The timing take plays the front drivers its prediction models: no bass, the rear muted (#5632 F3)."""
+    """The timing take plays the front drivers its prediction models: no bass, the rear muted (#5632)."""
     rear = candidate.rear_calibration
     return replace(candidate, bass_extension={}, rear_calibration={**rear, "rear_muted": True} if rear else {})
 

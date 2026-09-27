@@ -266,7 +266,7 @@ def observe_apply_success(
         state["candidate"] = dict(selected_candidate)
     state["applied"] = True
     state["previous_applied_profile"] = dict(previous_applied_profile) if previous_applied_profile else None
-    # SF1 (adversarial review, 2026-07-20): do NOT blindly clear an existing
+    # Do NOT blindly clear an existing
     # failure code. In the ordinary happy path it is already None (MEASURE's
     # own accept clears it before the conductor ever triggers auto-apply) —
     # but a terminal session-death code (a Stop, a capture timeout) can
@@ -465,7 +465,7 @@ def persist_terminal_failure(
     with the session (restart at CHECK); post-apply, the applied candidate +
     verify priors survive so ``/v2/verify`` can re-arm.
 
-    SF2 (adversarial review, 2026-07-20): ``REASON_APPLY_FAILED`` is exempted
+    ``REASON_APPLY_FAILED`` is exempted
     from the pre-apply evidence reset. The §5.6 rationale for wiping
     ``accepted_phases``/``gain_plan_db`` is that a DEAD session makes the mic
     position unverifiable — but an auto-apply that came back blocked or
@@ -473,9 +473,7 @@ def persist_terminal_failure(
     still exactly as good as it was. Keeping MEASURE accepted here is what
     lets ``crossover_v2_phase`` resolve to ``PHASE_APPLYING`` (not
     ``PHASE_CHECK``) so the envelope's apply-step failure screen — and the
-    specific blocked-issue nudge layered onto it — can actually render;
-    before this fix the reset always won, so that nudge was unreachable in
-    production (only reachable by injecting the phase directly in a test).
+    specific blocked-issue nudge layered onto it — can actually render.
     """
     from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
 

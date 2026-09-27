@@ -120,7 +120,7 @@ _DOWNSTREAM_GRID_DB: tuple[float, ...] = tuple(
 #: the repeat agreement, and the integrity flags.
 #:
 #: ``max_residual_samples`` and ``glitch_detected`` are deliberately ABSENT.
-#: D7 (``b98e9380f``, 2026-08-18) replaced the estimator behind them, so
+#: Commit ``b98e9380f`` replaced the estimator behind them, so
 #: every capture banked before that commit records a value from the blunter
 #: instrument and comparing either would report a deliberate product
 #: improvement as a broken reconstruction. A banked-vs-replay disagreement
@@ -409,7 +409,7 @@ def rebuild_measure_program(
             "downstream_grid_db": [_DOWNSTREAM_GRID_DB[0], _DOWNSTREAM_GRID_DB[-1]],
             "downstream_grid_step_db": 0.5,
             # Two booleans, not one: "was anything banked" and "was what was banked
-            # usable" are different facts (#2923 fix round 2). Absent from banking is
+            # usable" are different facts (#2923). Absent from banking is
             # (False, False); banked-something-unusable is (True, False); banked and
             # used to compose every attempt above is (True, True) — reaching THIS
             # raise even so means the banked duration was fine and something else is

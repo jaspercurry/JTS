@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What the analyzer is told about each capture (#2291 Phase 5a-iii).
+"""What the analyzer is told about each capture (#2291).
 
 Sibling of :mod:`.programs`: that module answers what a phase plays, this one
 what the analyzer is told about the capture that comes back. Every function is
@@ -63,7 +63,7 @@ def configured_crossover_transfers(
     """``(response_by_role, polarity_sign_by_role)`` for the committed crossover.
 
     ONE derivation, two readers: MEASURE consumes it as §4.2's ``C_c``, the
-    summed-alignment reference as the graph's design target (R18, #1868).
+    summed-alignment reference as the graph's design target (#1868).
     """
     return (
         role_transfers(sections_by_role(source_preset.crossover_regions)),
@@ -79,7 +79,7 @@ def candidate_required_band_hz(
 
     Each role's radiating span unioned with the trim/alignment overlap band.
     The overlap is deliberately UNCLAMPED: a superset is the safe side of a
-    required mask. Single owner of this formula (#2291 Phase 5a-v, #2336 N2).
+    required mask. Single owner of this formula (#2291, #2336).
     """
     overlap = overlap_band_hz(float(fc_hz))
     return {

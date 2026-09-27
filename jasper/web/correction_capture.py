@@ -353,9 +353,9 @@ def _run_capture(
 
     ``idle_hold`` — REQUIRED, no default. This function's job is spawning work
     that outlives its caller's HTTP request, and the socket-activated process
-    `os._exit(0)`s after ~600 s with nothing inbound. On 2026-07-29 (JTS3,
-    issue #1854) that killed a crossover-v2 session mid-verify, because the
-    wizard saw no inbound traffic for the whole measurement. Whether this
+    `os._exit(0)`s after ~600 s with nothing inbound — on JTS3 that killed a
+    crossover-v2 session mid-verify because the wizard saw no inbound traffic
+    for the whole measurement (see issue #1854). Whether this
     kind's runner needs the process kept alive is a decision each call site
     owns and states:
 

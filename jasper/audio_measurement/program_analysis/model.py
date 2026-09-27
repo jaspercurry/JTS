@@ -323,9 +323,9 @@ CHANNEL_MAP_MIN_ISOLATION_DB = 12.0
 # invert it by tens of dB. Set at double `CHANNEL_MAP_TARGET_RISE_DB +
 # CHANNEL_MAP_MIN_ISOLATION_DB` (the discriminator's own two hardware-derived
 # margins stacked): comfortably above any hardware-measured wiring effect,
-# comfortably below the 77 dB gap the 2026-08-16 incident measured (+10 dB
-# commanded, -67 dB captured). NOT gated on pilot SNR validity -- the
-# incident's own SNR reading was itself corrupted by the same wrong window,
+# comfortably below the 77 dB gap a mis-anchored capture once measured (+10 dB
+# commanded, -67 dB captured). NOT gated on pilot SNR validity -- that
+# capture's own SNR reading was itself corrupted by the same wrong window,
 # so waiting on it would blind this exact case. PROVISIONAL.
 DELTA_IMPLAUSIBLE_GAP_DB = 2.0 * (CHANNEL_MAP_TARGET_RISE_DB + CHANNEL_MAP_MIN_ISOLATION_DB)
 
@@ -778,8 +778,8 @@ class PilotObservation:
     a gap no real wiring can produce, so CHECK's ladder reads it as
     mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``
     (unlike ``linearity_ok``): a gap this size means one of the two readings
-    floored while the other did not, and the 2026-08-16 incident's own
-    ``snr_valid`` was itself an artifact of the wrong window being read.
+    floored while the other did not, and a floored reading's own
+    ``snr_valid`` can itself be an artifact of the wrong window being read.
     """
 
     role: str

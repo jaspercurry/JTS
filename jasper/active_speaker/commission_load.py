@@ -60,7 +60,7 @@ COMMISSION_LOAD_PREFLIGHT_KIND = "jts_active_speaker_commission_load_preflight"
 # _live_confirm convergence poll (load_driver_commissioning_config): CamillaDSP
 # acks the inline SetConfig before its readback side reflects the new graph, so
 # the post-load safety read can transiently return the staged all-muted anchor
-# (hardware-reproduced 2026-07-15 on JTS3: ~22 ms after the apply). Re-read on
+# (hardware-reproduced on JTS3: ~22 ms after the apply). Re-read on
 # this interval until the readback stops matching the anchor, bounded by the
 # budget so a load that never takes effect fails closed in a few seconds
 # instead of hanging apply_dsp_config's writer lock.
@@ -776,7 +776,7 @@ async def load_driver_commissioning_config(
         # (1) The RUNNING graph (read back over the websocket, not the file) must
         #     match the intended per-driver mask + keep the protective high-pass.
         #     CamillaDSP acks the inline SetConfig before the readback reflects
-        #     the new graph (hardware-reproduced 2026-07-15: the first read
+        #     the new graph (hardware-reproduced: the first read
         #     ~22 ms after the load still returned the staged all-muted anchor),
         #     so poll until the readback stops matching the anchor — bounded by
         #     LIVE_CONFIRM_CONVERGENCE_BUDGET_S — and only then let the safety

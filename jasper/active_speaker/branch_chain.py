@@ -579,7 +579,7 @@ def branch_chain_peak_db(
     """The evaluated peak of ``crossover ⊗ linearization ⊗ trim``, dB (#1808). The real gain
     this branch applies to the program at its loudest frequency; positive means the
     pre-split headroom has to absorb it. Replaces the per-branch SUM of positive filter
-    gains, which on the 2026-07-28 JTS3 profile charged 22.458 dB against a realized
+    gains, which on a real JTS3 profile charged 22.458 dB against a realized
     peak of +4.00 dB. ``trim_db`` is the branch's own attenuation (always <= 0), added
     exactly. Cut-only short-circuit: with no positive filter gain the answer is ``min(0,
     trim_db)`` without evaluating anything (numpy-free).
@@ -614,7 +614,7 @@ def branch_chain_peak(
 
 def headroom_charge_db(peak_db: float) -> float:
     """Program-domain attenuation a branch peaking at ``peak_db`` needs. ``0.0`` for any chain
-    that never exceeds unity (owner ruling 2026-07-28, #1808); otherwise the peak plus
+    that never exceeds unity (#1808); otherwise the peak plus
     :data:`HEADROOM_MARGIN_DB`.
     """
     if peak_db <= _PEAK_EPS_DB:

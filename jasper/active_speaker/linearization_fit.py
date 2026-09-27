@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The Layer-1a driver-linearization fit engine (#1668 PR-C).
+"""The Layer-1a driver-linearization fit engine (#1668).
 
 Consumes ONE driver's ``DriverResponse`` plus its ``EnvelopeCurve`` and
 produces a cut-PREFERRED PEQ/shelf fit that flattens the driver toward a
@@ -140,9 +140,9 @@ HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
 HF_REALIZATION_TOLERANCE_DB: float = 2.0
 
 # Ceiling on CD-horn spend imposed by the SINGLE-Lowshelf realization, dB —
-# independent of, and binding below, MAX_NORMALIZATION_SPEND_DB. Measured
-# live on JTS3 2026-07-24: the realization passes the quality gate at spend
-# 11.27 and fails from ~11.9 upward. Caps how much lift ONE shelf can
+# independent of, and binding below, MAX_NORMALIZATION_SPEND_DB. Measured:
+# the realization passes the quality gate at spend 11.27 and fails from
+# ~11.9 upward. Caps how much lift ONE shelf can
 # deliver; more needs a different realization (stacked shelves, boost).
 HF_SINGLE_SHELF_SPEND_CAP_DB: float = 11.0
 
@@ -401,7 +401,7 @@ class LinearizationFit:
     # ``_core_or_fallback_mask``. The SSOT for the AUDIBLE-BAND give-back;
     # does NOT place the trim (``resolve_trims_after_fit`` anchors on
     # ``branch_level_bands_hz`` instead — using this one shipped the jts3
-    # horn tweeter 3.67 dB hot, 2026-08-19). 0.0 when no filters emitted.
+    # horn tweeter 3.67 dB hot). 0.0 when no filters emitted.
     correction_giveback_db: float = 0.0
     # #1808 charge: realized peak of the branch chain this
     # fit is emitted into, plus ``branch_chain.HEADROOM_MARGIN_DB`` — exactly
@@ -610,7 +610,7 @@ def _verify_band_and_residual(
     """The honesty ladder's VERIFY level: the SAME residual math the fit
     claim uses, over ``[fit_lo_hz, min(2*fit_hi_hz, grid_top)]`` — roughly
     an octave past the fit band's top. Report-only. ``target_curve_db`` is
-    per-bin since R10a (#1817): a flat array would score a branch's own
+    per-bin (#1817): a flat array would score a branch's own
     crossover rolloff as residual through the handoff.
     """
     verify_hi_hz = min(2.0 * fit_hi_hz, float(grid_hz[-1]))
@@ -835,7 +835,7 @@ def _shelf_stage(
 ) -> LinearizationFilter | None:
     """Fit ONE cut-only Highshelf if the fit band's smoothed slope rises
     faster than :data:`SHELF_SLOPE_THRESHOLD_DB_PER_OCT`. ``None`` when no
-    shelf is warranted. ``shape_db`` (R10a, #1817) is the branch's
+    shelf is warranted. ``shape_db`` (#1817) is the branch's
     re-centred crossover shape; the regression runs on ``smoothed_db -
     shape_db`` so the gate is armed by the branch's OWN slope, not the
     crossover's (a flat tweeter behind a 2 kHz LR4 reads +5.6957 dB/oct raw
@@ -1005,7 +1005,7 @@ def _hf_continuation_stage(
 
     ceiling_idx = int(np.argmin(np.abs(grid_hz - ceiling_hz)))
 
-    # Desired compensation C(f), against the target CURVE since R10a (#1817).
+    # Desired compensation C(f), against the target CURVE (#1817).
     deficit_db = target_curve_db - working_db
     measured_deficit_at_ceiling_db = float(max(0.0, deficit_db[ceiling_idx]))
 
@@ -1455,7 +1455,7 @@ def _lift_stage(
     still binds via ``envelope.allowed_depth_db``. Inert under a cut-only
     vocabulary, not as a formality — chasing every below-target dip would
     silently change what existing callers get. ``contribution``
-    (R10a, #1968) scales the WANTED deficit by the branch's own-output
+    (#1968) scales the WANTED deficit by the branch's own-output
     fraction, gain side only.
 
     Three bounds, applied in order: the stopband-gain guard (#1968,
@@ -1693,7 +1693,7 @@ def fit_driver_linearization(
 
     ``radiating_band_hz`` bounds two things at two widths. LIFT is bounded
     at the band ITSELF (#1809): a driver spending GAIN against its own
-    crossover is a pathology (2026-07-28 JTS3 woofer: +11.6155 dB at 2747
+    crossover is a pathology (a woofer spending +11.6155 dB at 2747
     Hz for +1.06 dB net contribution). The SOLVE is bounded at that band
     widened by
     :data:`~jasper.active_speaker.branch_target.STOPBAND_GAIN_MARGIN_OCTAVES`

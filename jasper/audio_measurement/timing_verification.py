@@ -19,7 +19,7 @@ def timing_verification(
     residual_rms_db: float | None, repeat_noise_db: float | None, *,
     snr_short: Iterable[str] = (), graph_mismatch: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """The saved pair's residual against today's sum; any reason makes it ``not_comparable`` (#5632 F3)."""
+    """The saved pair's residual against today's sum; any reason makes it ``not_comparable`` (#5632)."""
     named = ((REASON_SNR_SHORT, sorted(set(snr_short))), (REASON_GRAPH_MISMATCH, sorted(set(graph_mismatch))))
     reasons = {code: values for code, values in named if values}
     return {"residual_rms_db": residual_rms_db, "repeat_noise_db": repeat_noise_db,
