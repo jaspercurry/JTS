@@ -413,9 +413,6 @@ class VolumeCoordinator:
         if self._pre_mute_level is None and self._level > 0:
             self._pre_mute_level = self._level
             self._mute_token = uuid4().hex
-        elif self._pre_mute_level is not None and self._mute_token is None:
-            # Repair a latch whose token was missing or rejected on load.
-            self._mute_token = uuid4().hex
         saved = self._pre_mute_level or 0
         self._persistence.save_mute_state(
             self._pre_mute_level,
@@ -594,14 +591,6 @@ class VolumeCoordinator:
                 return False
             if persisted_pre_mute is None:
                 self._confirmed_push_mute_tokens.pop(source, None)
-            elif push_mode and persisted_mute_token is None:
-                # Repair a latch whose token was missing or rejected on load.
-                persisted_mute_token = uuid4().hex
-                self._persistence.save_mute_state(
-                    persisted_pre_mute,
-                    persisted_mute_token,
-                )
-                self._mute_token = persisted_mute_token
             if (
                 persisted_pre_mute is not None
                 and push_mode

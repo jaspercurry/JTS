@@ -24,7 +24,8 @@ Core fields tracked:
 - `pre_mute_level` + `mute_token`: the temporary-mute latch and its
   transition identity. The token lets a different process distinguish a
   stale pre-mute renderer observation from a later user change after that
-  exact mute has reached the renderer.
+  exact mute has reached the renderer. A record with one and not the other
+  loads unmuted.
 
 Soft regression at boot. If the saved listening_level is from "long
 enough ago" (default 30 min), we clamp into a safe range [20%, 70%]
@@ -44,10 +45,8 @@ File format (JSON, atomic write via tmp+rename, v2):
         "updated_at": "2026-05-07T15:30:00Z"
     }
 
-v1 files (pre-coordinator) had only `main_volume_db` and `updated_at`.
-On load, a missing `listening_level` is derived from `main_volume_db`
-percent — that's exactly what "speaker volume" meant under the old,
-Camilla-only path, so the migration preserves the user's last setting.
+A record without a valid `listening_level` loads it as None, and boot applies
+the first-boot default.
 """
 from __future__ import annotations
 
@@ -66,11 +65,7 @@ from .atomic_io import (
     atomic_write_text,
 )
 from .volume_curve import db_to_percent, percent_to_db
-from .volume_floor import (
-    DEFAULT_VOLUME_FLOOR_DB,
-    VOLUME_CEILING_DB,
-    VOLUME_FLOOR_MIN_DB,
-)
+from .volume_floor import VOLUME_CEILING_DB, VOLUME_FLOOR_MIN_DB
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +74,8 @@ logger = logging.getLogger(__name__)
 class VolumeRecord:
     main_volume_db: float
     updated_at: datetime
-    # Canonical user-facing volume 0-100 (added in schema v2). When
-    # loading a v1 file, this is derived from main_volume_db percent
-    # by load(). Once the coordinator runs, listening_level is the
-    # source of truth and main_volume is derived from it (or pinned
-    # at 0 dB while a source is active).
+    # Canonical user-facing volume 0-100; main_volume is derived from it (or
+    # pinned at 0 dB while a push-mode source is active).
     listening_level: int | None = None
     # When the user (or an observed source-side slider) last touched
     # the volume. Used by the boot-time idle-reset to decide whether
@@ -97,8 +89,7 @@ class VolumeRecord:
     pre_mute_level: int | None = None
     # Opaque identity for one temporary-mute transition. A long-lived source
     # observer confirms renderer zero against this token before it may treat a
-    # later nonzero observation as a new user intent. None is accepted for
-    # rolling-upgrade / legacy records and migrated by the coordinator.
+    # later nonzero observation as a new user intent.
     mute_token: str | None = None
 
 
@@ -191,11 +182,6 @@ class VolumePersistence:
                 db,
             )
             return None
-        # listening_level + last_used_at — schema v2. v1 files lack
-        # both; migrate by deriving listening_level from main_volume_db using
-        # the historical default curve. That value was the user's last
-        # commanded volume under the Camilla-only path, so the migration
-        # preserves intent even if a calibrated floor setting now exists.
         listening_level: int | None = None
         try:
             raw_level = data.get("listening_level")
@@ -211,13 +197,6 @@ class VolumePersistence:
                     )
         except (TypeError, ValueError):
             listening_level = None
-        if listening_level is None:
-            listening_level = db_to_percent(db, floor_db=DEFAULT_VOLUME_FLOOR_DB)
-            logger.info(
-                "volume persistence: deriving listening_level=%d%% from v1 "
-                "main_volume_db=%.1f (migration)",
-                listening_level, db,
-            )
         last_used_at: datetime | None = None
         try:
             raw_last_used = data.get("last_used_at")
@@ -245,18 +224,17 @@ class VolumePersistence:
                     )
         except (TypeError, ValueError):
             pre_mute_level = None
-        mute_token: str | None = None
         raw_mute_token = data.get("mute_token")
-        if (
-            pre_mute_level is not None
-            and isinstance(raw_mute_token, str)
-            and 0 < len(raw_mute_token) <= 128
-        ):
-            mute_token = raw_mute_token
-        elif raw_mute_token is not None:
+        mute_token = (
+            raw_mute_token
+            if isinstance(raw_mute_token, str) and 0 < len(raw_mute_token) <= 128
+            else None
+        )
+        if (pre_mute_level is None) != (mute_token is None):
             logger.warning(
-                "volume persistence: invalid mute_token; ignoring",
+                "volume persistence: incomplete mute latch; loading unmuted",
             )
+            pre_mute_level = mute_token = None
         # Cache loaded values so subsequent partial-update writes don't
         # lose any field.
         self._current_main_volume_db = db
@@ -412,7 +390,7 @@ def _regress_percent(
 ) -> tuple[int, str]:
     """Shared regression rules. Returns (target_percent, reason).
 
-    No record (pct is None) → first-boot default.
+    No level (pct is None) → first-boot default.
     Fresh → use as-is. Stale + extreme → clamp into [safe_low, safe_high].
     Stale but already in safe band → use as-is.
     """
@@ -451,27 +429,19 @@ def regress_listening_level_if_stale(
     """Compute the listening_level (0-100) to restore at boot.
 
     Prefers `last_used_at` for staleness if present (the timestamp of
-    the last user-initiated change), falling back to `updated_at`.
+    the last user-initiated change), falling back to `updated_at`. A record
+    without a listening_level gets the first-boot default.
     Returns (target_percent, reason_string).
     """
     now = now or datetime.now(timezone.utc)
-    if record is None:
-        return _regress_percent(
-            None, None,
-            stale_after_sec=stale_after_sec,
-            safe_low_pct=safe_low_pct,
-            safe_high_pct=safe_high_pct,
-            first_boot_default_pct=first_boot_default_pct,
-        )
-    pct = record.listening_level
-    if pct is None:
-        # No level recorded — derive from main_volume_db (same as
-        # load() does, but record is the in-memory shape).
-        pct = db_to_percent(record.main_volume_db)
-    age_anchor = record.last_used_at or record.updated_at
-    age_sec = (now - age_anchor).total_seconds()
+    age_sec = (
+        None
+        if record is None
+        else (now - (record.last_used_at or record.updated_at)).total_seconds()
+    )
     return _regress_percent(
-        pct, age_sec,
+        None if record is None else record.listening_level,
+        age_sec,
         stale_after_sec=stale_after_sec,
         safe_low_pct=safe_low_pct,
         safe_high_pct=safe_high_pct,
