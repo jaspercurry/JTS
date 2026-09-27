@@ -484,7 +484,7 @@ class PosesNameALayoutError(ValueError):
 
 class DriverNotOfferedError(ValueError):
     """A run narrowed to a driver its preset cannot play alone here; ``detail``
-    names the ones this speaker offers alone."""
+    names the declared outputs the preset does play alone here."""
 
     reason = DRIVER_NOT_OFFERED
 
@@ -710,15 +710,17 @@ def plan_poses(program: MeasurementProgram, targets: Sequence[str] = (), driver:
     (ADR-0366 §6); a role with no declared output keeps its name for preflight to refuse.
     A pose that names one output (``woofer:rear``), and every inline pose, plays what it
     names. ``driver`` narrows the run to that one output."""
-    if driver and driver not in targets:
-        raise DriverNotOfferedError(program.preset_id, driver, targets)
     runs = [(named, tuple(run)) for named, run in groupby(program.poses, key=lambda pose: pose.driver)]
     poses = tuple(replace(pose, driver=output) for named, run in runs
                   for output in (_outputs(named, targets) if program.layout != CUSTOM_SIZE else (named,))
-                  if not driver or output == driver for pose in run)
-    if not poses:
-        raise DriverNotOfferedError(program.preset_id, driver, targets)
-    return poses
+                  for pose in run)
+    if not driver:
+        return poses
+    narrowed = tuple(pose for pose in poses if pose.driver == driver)
+    if driver not in targets or not narrowed:
+        raise DriverNotOfferedError(program.preset_id, driver,
+                                    tuple(dict.fromkeys(pose.driver for pose in poses if pose.driver in targets)))
+    return narrowed
 
 
 def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:

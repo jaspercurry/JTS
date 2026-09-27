@@ -294,23 +294,26 @@ _NEARFIELD, _DRIVERS = mp.run_program("nearfield"), mp.run_program("drivers")
      _CARDIOID, "", (("woofer:rear", None), ("tweeter", None))),
     (mp.run_program("nearfield", poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", '
                                        '"distance_m": 0.02, "driver": "woofer"}]'), _CARDIOID, "", (("woofer", 0.02),)),
-    (_NEARFIELD, _TWO_WAY, "woofer:rear", None),
-    (_NEARFIELD, _CARDIOID, "tweeter", None),
-    (mp.run_program("speaker"), _CARDIOID, "woofer", None),
 ])
 def test_a_presets_driver_role_plays_each_declared_output(row, targets, driver, walked) -> None:
     """A named layout's pose that names a bare driver role plays each declared output of
     it, one output's placements after the other's; a pose naming one output, or an inline
     pose, plays what it names; an undeclared role keeps its name for preflight to refuse;
-    --driver narrows to one output or refuses by name (ADR-0366 §6)."""
-    if walked is None:
-        with pytest.raises(mp.DriverNotOfferedError) as excinfo:
-            mp.plan_poses(row, targets, driver)
-        assert (excinfo.value.reason, excinfo.value.detail) == (mp.DRIVER_NOT_OFFERED, {
-            "preset": row.preset_id, "driver": driver, "offered": list(targets)})
-        return
+    --driver narrows to one output (ADR-0366 §6)."""
     request = ac.request_for_program(row, targets=targets, driver=driver)
     assert tuple((stop.driver, stop.distance_m) for stop in request.stops) == walked
+
+
+@pytest.mark.parametrize("row,targets,driver,offered", [
+    (_NEARFIELD, _TWO_WAY, "woofer:rear", ["woofer"]),
+    (_NEARFIELD, _CARDIOID, "tweeter", ["woofer", "woofer:rear"]),
+    (mp.run_program("speaker"), _CARDIOID, "woofer", []),
+])
+def test_a_driver_the_preset_does_not_play_alone_refuses_naming_the_ones_it_does(row, targets, driver, offered) -> None:
+    with pytest.raises(mp.DriverNotOfferedError) as excinfo:
+        mp.plan_poses(row, targets, driver)
+    assert (excinfo.value.reason, excinfo.value.detail) == (
+        mp.DRIVER_NOT_OFFERED, {"preset": row.preset_id, "driver": driver, "offered": offered})
 
 
 @pytest.mark.parametrize("program_id,layout,poses,resolved", [
