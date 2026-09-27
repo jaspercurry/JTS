@@ -19,7 +19,7 @@ from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX, spatial_support
@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_median,
     room_median_sha256,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import ROOM_NOT_BANKED, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.json_fields import finite_float, parse_utc_iso
+from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -53,7 +54,7 @@ __all__ = [
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
     'round_inputs', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
-    'ROOM_NOT_BANKED', 'default_out', 'view_path',
+    'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
@@ -344,10 +345,6 @@ def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     """The ``packet.json`` the round's bank wrote, or ``{}`` for a round banked without one."""
     round_dir = inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
     return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
-
-
-#: A banked round holds no room view by the name asked: one run after its bank is not its evidence (ADR-0371).
-ROOM_NOT_BANKED = "room_not_banked"
 
 
 def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:

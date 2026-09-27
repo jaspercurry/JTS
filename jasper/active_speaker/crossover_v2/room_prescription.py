@@ -49,6 +49,7 @@ from jasper.audio_measurement.room_limits import (
     cut_floor_db,
     spatial_support,
 )
+from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float
 
@@ -73,7 +74,6 @@ from .blend_prescription import (
     _FILTER_FIELDS,
 )
 from .room_analysis import RoomMedian, room_composition
-from .round_inputs import ROOM_NOT_BANKED
 
 __all__ = [
     "BOOST_NOT_ADMITTED",
