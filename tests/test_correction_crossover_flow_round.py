@@ -56,11 +56,13 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
 
 @pytest.mark.parametrize("link,opened", [
     ("seat/cube", "room/seat@seat_cube"), ("rear/pair_mark", "rear/pair@speaker_mark"),
-    ("seat/express", "room/seat"), ("close/spot", None), ("bass/custom", None),
+    ("seat/express", "room/seat"), ("nearfield/cardioid", "nearfield/each"), ("drivers/cardioid", "drivers/each"),
+    ("close/spot", None), ("bass/custom", None), ("nearfield/rear", None),
 ])
 def test_a_retired_id_link_opens_the_choice_that_replaces_it(monkeypatch, link, opened):
     """A link banked before the fold (ADR-0366 §6) opens its preset at its layout, or is
-    refused on its own row when nothing on the page replaces it."""
+    refused on its own row when nothing on the page replaces it, as for a row that
+    played one driver where its preset plays each declared one."""
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
     choices = measurement_view.round_choices({}, link)
     default, = (c for c in choices if c["default"])

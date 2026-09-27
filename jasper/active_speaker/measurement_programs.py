@@ -14,7 +14,7 @@ from itertools import groupby
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Collection, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Collection, Mapping, NamedTuple, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
@@ -444,6 +444,11 @@ class MeasurementProgram:
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
 
     @property
+    def preset_id(self) -> str:
+        """The id a run names and banks, ``program_id/size`` (ADR-0366 §6)."""
+        return f"{self.program_id}/{self.size}"
+
+    @property
     def mic_move_count(self) -> int:
         """Distinct places — repeats stay at one place and move nothing."""
 
@@ -465,15 +470,12 @@ class RetiredProgramError(ValueError):
 
 
 class LayoutNotOfferedError(ValueError):
-    """A named layout the run's preset does not offer; ``detail`` names the ones it does,
-    and what replaces a retired row that walked it (``nearfield/rear`` walked ``nearfield_rear``)."""
+    """A named layout the run's preset does not offer; ``detail`` names the ones it does."""
 
     reason = LAYOUT_NOT_OFFERED
 
     def __init__(self, preset: str, layout: str, offered: tuple[str, ...]) -> None:
-        retired = RETIRED_PROGRAMS.get(layout.replace("_", "/", 1))
-        self.detail = {"preset": preset, "layout": layout, "offered": list(offered),
-                       **({"replacement": retired._asdict()} if retired else {})}
+        self.detail = {"preset": preset, "layout": layout, "offered": list(offered)}
         super().__init__(f"{preset} offers {', '.join(offered)}, not {layout}")
 
 
@@ -489,12 +491,12 @@ class PosesNameALayoutError(ValueError):
 
 class DriverNotOfferedError(ValueError):
     """A run narrowed to a driver its preset cannot play alone here; ``detail``
-    names the drivers this speaker declares."""
+    names the ones this speaker offers alone."""
 
     reason = DRIVER_NOT_OFFERED
 
-    def __init__(self, preset: str, driver: str, declared: Sequence[str]) -> None:
-        self.detail = {"preset": preset, "driver": driver, "declared": list(declared)}
+    def __init__(self, preset: str, driver: str, offered: Sequence[str]) -> None:
+        self.detail = {"preset": preset, "driver": driver, "offered": list(offered)}
         super().__init__(f"{preset} cannot play {driver} alone here")
 
 
@@ -709,36 +711,27 @@ def run_program(program_id: str, layout: str | None = None, poses: str | None = 
 
 
 def plan_poses(program: MeasurementProgram, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
-    """The poses a run walks on this speaker. A named layout's pose that names a driver
-    role plays each declared output of that role (``targets``), one output's poses after
-    the other's, so a cardioid's rear woofer follows its front one (ADR-0366 §6); a role
-    with no declared output keeps its name for preflight to refuse. ``driver`` narrows
-    the run to that one output."""
-    preset = f"{program.program_id}/{program.size}"
+    """The poses a run walks on this speaker. A named layout's pose that names a bare
+    driver role (``woofer``) plays each declared output of that role (``targets``), one
+    output's poses after the other's, so a cardioid's rear woofer follows its front one
+    (ADR-0366 §6); a role with no declared output keeps its name for preflight to refuse.
+    A pose that names one output (``woofer:rear``), and every inline pose, plays what it
+    names. ``driver`` narrows the run to that one output."""
     if driver and driver not in targets:
-        raise DriverNotOfferedError(preset, driver, targets)
-    if program.layout == CUSTOM_SIZE:
-        poses = tuple(pose for pose in program.poses if not driver or pose.driver == driver)
-    else:
-        poses = tuple(replace(pose, driver=output) for role, run in _role_runs(program.poses)
-                      for output in _outputs(role, run[0].driver, targets, driver) for pose in run)
+        raise DriverNotOfferedError(program.preset_id, driver, targets)
+    runs = [(named, tuple(run)) for named, run in groupby(program.poses, key=lambda pose: pose.driver)]
+    poses = tuple(replace(pose, driver=output) for named, run in runs
+                  for output in (_outputs(named, targets) if program.layout != CUSTOM_SIZE else (named,))
+                  if not driver or output == driver for pose in run)
     if not poses:
-        raise DriverNotOfferedError(preset, driver, targets)
+        raise DriverNotOfferedError(program.preset_id, driver, targets)
     return poses
 
 
-def _role_runs(poses: Sequence[ProgramPose]) -> Iterator[tuple[str, tuple[ProgramPose, ...]]]:
-    """Consecutive poses naming one driver role; ``""`` for poses that name none."""
-    for role, run in groupby(poses, key=lambda pose: measurement_target_parts(pose.driver)[0] if pose.driver else ""):
-        yield role, tuple(run)
-
-
-def _outputs(role: str, named: str, targets: Sequence[str], driver: str) -> tuple[str, ...]:
-    if driver:
-        return (driver,) if measurement_target_parts(driver)[0] == role else ()
-    if not role:
-        return ("",)
-    return tuple(target for target in targets if measurement_target_parts(target)[0] == role) or (named,)
+def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:
+    """Each declared output of the role a layout pose names; one output (``woofer:rear``)
+    is no role, so it, like a role with no declared output, plays as named."""
+    return tuple(target for target in targets if measurement_target_parts(target)[0] == named) or (named,)
 
 
 def trial_program(

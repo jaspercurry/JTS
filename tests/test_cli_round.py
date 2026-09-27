@@ -938,10 +938,9 @@ def test_program_choices_include_rear():
     (["--program", "rear", "--poses", "rear/pair_mark"], "measurement_program_retired",
      {"retired": "rear/pair_mark", "purpose": "rear", "preset": "rear/pair", "layout": "speaker_mark", "driver": ""}),
     (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
-     {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"],
-      "replacement": {"purpose": "room", "preset": "room/seat", "layout": "seat_cloud", "driver": ""}}),
+     {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
     (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",
-     {"preset": "nearfield/each", "driver": "woofer:rear", "declared": []}),
+     {"preset": "nearfield/each", "driver": "woofer:rear", "offered": []}),
 ])
 def test_a_retired_id_or_an_unoffered_layout_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
     opener = _opener()

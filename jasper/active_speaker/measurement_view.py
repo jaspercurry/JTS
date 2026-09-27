@@ -70,7 +70,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                      or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
     default = program(view["next_action"].get("program") or programs[0])
     retired = RETIRED_PROGRAMS.get(selected_id)
-    if retired is not None and retired.preset and retired.layout != CUSTOM_SIZE:
+    # A retired row that played one driver has no choice here: its preset plays each declared one.
+    if retired is not None and retired.preset and retired.layout != CUSTOM_SIZE and not retired.driver:
         selected_id = _choice_id(run_program(retired.preset), retired.layout)
     refused = bool(selected_id) and selected_id not in plans
     default_id = selected_id or f"{default.program_id}/{default.size}"
