@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import threading
 import time
 import wave
@@ -20,6 +21,7 @@ import pytest
 
 from jasper import audio_profile_state, wake_conditions
 from jasper.cli import wake_enroll
+from jasper.mic_capture import UdpMicCapture as RealUdpMicCapture
 from jasper.wake_corpus import (
     active_session,
     bridge_session,
@@ -34,14 +36,14 @@ from jasper.wake_corpus.errors import NoRecordingError
 from jasper.web import wake_corpus_setup
 
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_until_sync
-from tests._log_events import event_fields
+from tests._log_events import event_fields, event_records
 from tests.wake_corpus_setup_fixtures import (
     _FakeUdpMicCapture,
-    _allow_capture_plan_conformance,
     _backend_fixture,
     _block_recording_task_start,
     _patch_udp,
     _session_metadata,
+    _started_backend,
     _stub_xvf_runtime,
     _use_tmp_bridge_env,
 )
@@ -743,14 +745,10 @@ def test_auto_stop_fires_on_max_duration(
 ) -> None:
     """A forgotten Stop click should auto-stop at MAX_DURATION_SEC
     with the auto_stopped flag set so the operator notices."""
-    _allow_capture_plan_conformance(monkeypatch)
-    b = recording_backend.RecordingBackend(
-        output_dir=tmp_path / "out",
-        ports={"on": 9876},
+    with _started_backend(
+        monkeypatch, tmp_path, ports={"on": 9876},
         max_duration_sec=0.3,  # short for the test
-    )
-    b.start()
-    try:
+    ) as b:
         b.begin_session("jasper")
         b.start_recording("quiet", "near")
         # Wait long enough for auto-stop to fire + the worker
@@ -760,8 +758,6 @@ def test_auto_stop_fires_on_max_duration(
         clips = b.list_clips()
         assert len(clips) == 1
         assert clips[0].auto_stopped is True
-    finally:
-        b.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -1293,38 +1289,48 @@ def test_stop_retry_gives_up_after_max_attempts(
 
 
 def test_recorder_usable_after_stop_retry_abandoned(
-    backend,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     caplog,
 ) -> None:
-    """A later recording can start after stop retries are exhausted."""
+    """A stop whose publication is given up leaves no socket bound: the
+    quiesced capture closed them, so the next Start binds the same ports.
+    Real sockets: the fake capture never binds one."""
+    monkeypatch.setattr("jasper.mic_capture.UdpMicCapture", RealUdpMicCapture)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_ATTEMPTS", 3)
-    backend.begin_session("jasper")
-    backend.start_recording("quiet", "near")
-    with backend._lock:
-        task = backend._current
-        clip_id = backend._current_clip_id
-    generation = (clip_id, task)
-
-    monkeypatch.setattr(clip_recording, "_stop_with_recovery", lambda *a, **k: False)
-    clip_recording._safety_stop(backend, generation, auto=True, mute_stopped=False)
-
-    def _gave_up() -> bool:
+    holders = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(2)]
+    for holder in holders:
+        holder.bind(("127.0.0.1", 0))
+    ports = {
+        leg: holder.getsockname()[1] for leg, holder in zip(("on", "off"), holders)
+    }
+    for holder in holders:
+        holder.close()
+    with _started_backend(monkeypatch, tmp_path, ports=ports) as backend:
+        backend.begin_session("jasper", include_dtln=False)
+        backend.start_recording("quiet", "near")
         with backend._lock:
-            return (
-                backend._pending_stop is None
-                and backend._stop_retry_handle is None
+            task = backend._current
+            generation = (backend._current_clip_id, task)
+        # A lifecycle owner stalled past every retry.
+        assert backend._lifecycle_lock.acquire(blocking=False)
+        try:
+            clip_recording._safety_stop(
+                backend, generation, auto=True, mute_stopped=False,
             )
+            wait_until_sync(
+                lambda: bool(event_records(caplog, "wake_corpus.stop_retry_abandoned")),
+            )
+        finally:
+            backend._lifecycle_lock.release()
+        # These retries take milliseconds, not the production ~17 s, so wait
+        # for the quiesced capture to finish unwinding before the next Start.
+        wait_until_sync(lambda: task._task.done())
 
-    wait_until_sync(_gave_up)
-
-    with backend._lock:
-        assert backend._current is None
-        assert backend._current_clip_id is None
-
-    backend.start_recording("quiet", "near")
+        backend.start_recording("quiet", "near")
+        backend.stop_recording()
 
 
 def test_stale_retry_callback_cannot_stop_the_next_clip(

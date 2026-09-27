@@ -22,6 +22,7 @@ import asyncio
 import json
 import shutil
 import threading
+from contextlib import contextmanager
 from email.message import Message
 from io import BytesIO
 from pathlib import Path
@@ -200,18 +201,31 @@ def _patch_udp(monkeypatch: pytest.MonkeyPatch) -> None:
     # Reset the per-port value map between tests
     _FakeUdpMicCapture.port_to_value = {}
 
-@pytest.fixture(name="backend")
-def _backend_fixture(monkeypatch, tmp_path: Path):
-    """Construct + start a backend rooted in a tmp dir, tear down on
-    test exit. All 4 leg ports configured — matches the production
-    default. Tests that exercise 3-leg mode just don't opt into
-    include_raw_mic_0."""
+@contextmanager
+def _started_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **kwargs,
+) -> Iterator[recording_backend.RecordingBackend]:
+    """A started backend rooted in a tmp dir, shut down on exit."""
     monkeypatch.setenv(
         BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
     )
     _allow_capture_plan_conformance(monkeypatch)
-    b = recording_backend.RecordingBackend(
-        output_dir=tmp_path / "out",
+    b = recording_backend.RecordingBackend(output_dir=tmp_path / "out", **kwargs)
+    b.start()
+    try:
+        yield b
+    finally:
+        b.shutdown()
+
+
+@pytest.fixture(name="backend")
+def _backend_fixture(monkeypatch, tmp_path: Path):
+    """A started backend with every leg port configured — matches the
+    production default. Tests that exercise 3-leg mode just don't opt into
+    include_raw_mic_0."""
+    with _started_backend(
+        monkeypatch,
+        tmp_path,
         ports={
             "on": 9876,
             "off": 9877,
@@ -228,10 +242,8 @@ def _backend_fixture(monkeypatch, tmp_path: Path):
             **wake_ports.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
-    )
-    b.start()
-    yield b
-    b.shutdown()
+    ) as b:
+        yield b
 
 @pytest.fixture(name="running_server_port")
 def _running_server_port_fixture(backend) -> Iterator[int]:
@@ -342,16 +354,11 @@ def _mute_path_fixture(tmp_path: Path) -> Path:
 @pytest.fixture(name="mute_backend")
 def _mute_backend_fixture(monkeypatch, tmp_path: Path, mute_path: Path):
     """Backend wired to a tmp mic_mute.env (same shape as `backend`)."""
-    monkeypatch.setenv(
-        BRIDGE_STATS_PATH_ENV, str(tmp_path / "missing_aec_bridge_stats.json"),
-    )
-    _allow_capture_plan_conformance(monkeypatch)
-    b = recording_backend.RecordingBackend(
-        output_dir=tmp_path / "out",
+    with _started_backend(
+        monkeypatch,
+        tmp_path,
         ports={"on": 9876, "off": 9877, "dtln": 9878},
         max_duration_sec=10.0,
         mic_mute_path=mute_path,
-    )
-    b.start()
-    yield b
-    b.shutdown()
+    ) as b:
+        yield b
