@@ -74,7 +74,7 @@ def test_the_way1_stage_one_walk_names_one_role_and_ends_on_the_entry_baseline()
     assert _way1_index_phase_map() == {
         1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_ENTRY_BASELINE,
     }
-    phases = conductor.session_phases
+    phases = conductor.snapshot().session_phases
     assert phases == (PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE)
     # The "before" is taken once, and immediately before apply.
     assert phases.count(PHASE_ENTRY_BASELINE) == 1

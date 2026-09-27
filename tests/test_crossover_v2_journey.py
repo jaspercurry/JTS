@@ -182,7 +182,7 @@ def test_the_snapshot_reads_the_journey_and_not_a_constructor_echo():
     conductor._journey.accept(PHASE_CHECK, 1)
     snapshot = conductor.snapshot()
     assert snapshot.accepted_phases == (PHASE_CHECK, PHASE_MEASURE)
-    assert snapshot.session_phases == conductor.session_phases
+    assert snapshot.session_phases == conductor._journey.plan.phases
     assert snapshot.applied is False
 
     applied = _conductor(index_phase_map=dict(VERIFY_ONLY_MAP), applied=True)
@@ -195,14 +195,15 @@ def test_session_phases_and_post_apply_verifies_are_public_reads():
     stage1 = _conductor(
         index_phase_map=dict(STAGE1_MAP), post_apply_verifies=True
     )
-    assert stage1.session_phases == JourneyPlan.from_index_map(STAGE1_MAP).phases
-    assert PHASE_VERIFY not in stage1.session_phases
+    stage1_phases = stage1.snapshot().session_phases
+    assert stage1_phases == JourneyPlan.from_index_map(STAGE1_MAP).phases
+    assert PHASE_VERIFY not in stage1_phases
     assert stage1.post_apply_verifies is True
     assert _conductor(index_phase_map=dict(STAGE1_MAP)).post_apply_verifies is False
 
 
 def test_a_conductor_with_no_index_map_walks_the_three_entry_default():
-    assert _conductor().session_phases == (
+    assert _conductor().snapshot().session_phases == (
         PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY
     )
 

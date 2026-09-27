@@ -440,7 +440,7 @@ def _conductor(
         **kwargs,
     )
     if not supplied_baseline and (
-        journey.PHASE_ENTRY_BASELINE not in conductor.session_phases
+        journey.PHASE_ENTRY_BASELINE not in conductor.snapshot().session_phases
     ):
         conductor.set_entry_baseline(_fixture_entry_baseline(conductor))
     return conductor
