@@ -624,6 +624,15 @@ def _active_graph_env(
     return out
 
 
+def _active_dual_apple_env(tmp_path: Path, cards=_DUAL_APPLE_CARDS) -> dict[str, str]:
+    topology_path = _dual_apple_topology(tmp_path, active=True)
+    return {
+        **_dual_apple_cards(tmp_path, cards),
+        "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
+        **_active_graph_env(tmp_path, write_topology=False),
+    }
+
+
 def _active_leader_graph_env(
     tmp_path: Path, *, channels: int = 2, write_crossover_statefile: bool = True
 ) -> dict[str, str]:
@@ -771,9 +780,7 @@ def _apple_steady_outputd_env(*, drop: tuple[str, ...] = (), extra: str = "") ->
 def test_reconcile_publishes_every_env_file_it_owns_group_readable(
     tmp_path: Path, key: str, filename: str
 ) -> None:
-    """A DAC reconcile must not turn a root:jasper env file into root-only:
-    jasper-control needs group read for a fresh /state, and the reconciler both
-    writes and repairs these files."""
+    """jasper-control needs group read when it refreshes /state."""
     seeded = tmp_path / f"seed-{filename}"
     seeded.write_text("JASPER_SEEDED=1\n", encoding="utf-8")
     seeded.chmod(0o600)
@@ -789,8 +796,6 @@ def test_reconcile_publishes_every_env_file_it_owns_group_readable(
 def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
     tmp_path: Path, declare_slot_floor
 ) -> None:
-    """The event's fields are a WHITELIST - a key the renderer resolves but the
-    line never names leaves the wire it rendered undiagnosable."""
 
     declare_slot_floor()
     conf = _staged_ring_conf(tmp_path)
@@ -824,17 +829,8 @@ def test_ring_conf_journal_line_carries_every_field_the_renderer_resolved(
 def test_camilla_waits_for_the_runtime_graph_reconcile_without_being_gated_on_it(
     tmp_path: Path,
 ) -> None:
-    """The reconciler runs before Camilla, and its failure does not stop it.
-
-    Camilla is Restart=always precisely because a stopped CamillaDSP is a
-    silent speaker. A Requires= on this Type=oneshot turns any non-zero
-    reconcile into a dependency failure that leaves the daemon down with
-    nothing to restart it; After= alone still holds the start until the
-    reconciler is terminal, and the reconciler's own non-zero exit is what
-    surfaces the failure. What the Requires= was really carrying — a graph
-    proved against a different topology must not reach these drivers — is the
-    ExecCondition= gate instead (#4416 R8).
-    """
+    """Requires= would defeat Restart=always after a failed oneshot.
+    ExecCondition owns the topology proof instead (#4416 R8)."""
     camilla_unit = (ROOT / "deploy" / "systemd" / "jasper-camilla.service").read_text(
         encoding="utf-8"
     )
@@ -913,15 +909,8 @@ def test_a_blocking_lifecycle_verb_is_bounded_by_the_unit_not_the_manager_cap(
 def test_a_candidate_refused_after_convergence_keeps_the_preliminary_env(
     tmp_path: Path,
 ) -> None:
-    """The SECOND candidate is the only one that may enable final output, so
-    its refusal must leave the box on the first — the one this same validator
-    already accepted — and stop nothing.
-
-    The first candidate publishes the DAC and latency facts the graph render
-    needs; the second derives the active lane from the converged graph. A
-    refusal there means the final graph did not validate, so restarting
-    anything against that lane is what a rejected candidate exists to prevent.
-    """
+    """Only the second candidate can enable final output; its refusal must
+    preserve the already accepted preliminary facts needed for graph rendering."""
     seen: list[str] = []
 
     def accept_then_refuse(**_kwargs: Any) -> tuple[bool, tuple[str, ...]]:
@@ -966,10 +955,7 @@ def test_a_candidate_refused_after_convergence_keeps_the_preliminary_env(
 def test_the_cutover_render_precedes_convergence_which_precedes_the_unit_gate(
     tmp_path: Path,
 ) -> None:
-    """The flat cutover graph is the artifact convergence SELECTS from, and the
-    lane the gate acts on is derived from what convergence wrote. Reordering
-    any pair converges against the previous topology's bytes or gates units on
-    a lane no graph proved."""
+    """Convergence selects the rendered artifact; the unit gate reads its result."""
     order: list[str] = []
     gate = reconcile_units.gate_role_services
 
@@ -1153,11 +1139,8 @@ def test_boot_config_reconcile_failure_refuses_instead_of_proceeding(
 def test_record_change_with_i2s_apply_error_restarts_dac_init_before_exit(
     tmp_path: Path,
 ):
-    """The first-ever pass always writes a changed record (an absent record
-    reads as empty), so a same-pass I2S HAT apply error is enough to exercise
-    the gap: the exit-74 early return sits between the record write and
-    gate_role_services, so the pin restart the changed record earned has to
-    fire at the exit site itself, not only from gate_role_services."""
+    """An absent record changes on the first pass. The exit-74 path occurs
+    before gate_role_services, so it must honor that change itself."""
     result = _run_reconcile(
         tmp_path, "", patches={_BOOT_CONFIG_TARGET: _not_durable_boot_config}
     )
@@ -1205,14 +1188,8 @@ def test_the_pass_is_pinned_to_the_checkout_the_shim_ran_from(tmp_path: Path):
 def test_a_failed_classification_leaves_every_observed_fact_at_its_absent_value(
     tmp_path: Path,
 ):
-    """The classifier is the only source of hardware facts (ADR-0235 R2), so
-    losing it loses all of them at once rather than half of them.
-
-    The Apple control role is one of those facts now: with no record there is
-    no card to name, and the mixer helpers stay off. The run still succeeds --
-    install reads this and must not abort on a box whose classifier could not
-    answer.
-    """
+    """The classifier owns all hardware facts (ADR-0235 R2). Install must
+    still succeed when it cannot answer."""
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
@@ -1308,10 +1285,8 @@ def _parse_print_env(stdout: str) -> dict[str, str]:
 def test_print_env_pins_the_install_contract(
     tmp_path: Path, listing: str, expected: dict[str, str]
 ):
-    """`--print-env` is install.sh's contract with this script
-    (select_audio_hardware_roles in deploy/lib/install/alsa.sh evals it and
-    exports every key). #4478 ports this script to Python -- pin the exact key
-    set and values here so that port cannot silently change this surface."""
+    """select_audio_hardware_roles in deploy/lib/install/alsa.sh evals
+    --print-env and exports every key."""
     result = _run_reconcile(tmp_path, listing, "--print-env")
 
     assert result.returncode == 0, result.stderr
@@ -1358,9 +1333,6 @@ def test_reconcile_arms_each_recognized_single_dac_role(
     dac_format: str,
     apple_output: bool,
 ):
-    """One recognized single DAC, end to end: identity into jasper.env, the
-    declared edge into outputd.env, a raw hw alias into the template, and the
-    unit gate that follows from the profile that DRIVES."""
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
@@ -1578,11 +1550,7 @@ def test_reconcile_names_why_it_stayed_passive_and_stays_passive(
     lane_less: bool,
     expected: str,
 ):
-    """THE FAIL-CLOSED ACTIVATION PROPERTY, and the reason it reports.
-
-    Every arm resolves passive; only the named reason differs, and the three
-    reasons carry different remedies so they may not collapse into one token.
-    """
+    """The three refusal reasons require different remedies."""
     with _lane_less_registry() if lane_less else contextlib.nullcontext():
         result = _run_reconcile(
             tmp_path, INNOMAKER_LISTING, "--reason", "test", patches=patches
@@ -1684,11 +1652,6 @@ def _event_names(stderr: str) -> list[str]:
 def test_every_pass_ends_with_one_exit_event_carrying_its_own_status(
     tmp_path: Path, mode: str, expected_rc: int
 ) -> None:
-    """Every pass ends with one `exit` line naming the code it exits with.
-
-    One teardown runs the outputd.env stage cleanup and publishes that line —
-    and neither may move the code systemd sees.
-    """
     extra: dict[str, str] = {}
     patches: dict[str, Any] | None = None
     read_only = tmp_path / "read-only"
@@ -1730,12 +1693,7 @@ def test_every_pass_ends_with_one_exit_event_carrying_its_own_status(
 def test_help_publishes_no_event_because_reading_usage_is_not_a_pass(
     tmp_path: Path,
 ) -> None:
-    """Every other exit reports itself; an operator reading usage must not.
-
-    One usage, both halves: the shim documents its own `--changed` and hands
-    the rest to the pass's own parser (the interpreter ban is
-    `ExecCondition=`'s alone, and `--help` is not that).
-    """
+    """The interpreter ban applies to ExecCondition, not --help."""
     result = _run_shim(tmp_path, "", "--help")
 
     assert result.returncode == 0, result.stderr
@@ -1758,11 +1716,8 @@ def _failing_interpreter(tmp_path: Path, rc: int) -> dict[str, str]:
 def test_print_env_degrades_to_the_no_dac_row_when_the_pass_cannot_start(
     tmp_path: Path, rc: int
 ) -> None:
-    """install.sh evals this output and reads every key under `set -u`
-    (select_audio_hardware_roles in deploy/lib/install/alsa.sh), so an
-    unstartable interpreter must degrade to the unrecognized-DAC answer with
-    rc 0 rather than abort the install on an empty eval. Only 126/127 mean
-    "no pass ran"; see the sibling below."""
+    """Install evals every key under set -u. Only 126/127 mean no pass ran;
+    a reached verdict must still propagate."""
     result = _run_shim(
         tmp_path, "", "--print-env", extra_env=_failing_interpreter(tmp_path, rc)
     )
@@ -1772,13 +1727,8 @@ def test_print_env_degrades_to_the_no_dac_row_when_the_pass_cannot_start(
 
 
 def test_the_shim_propagates_a_verdict_the_pass_itself_reached(tmp_path: Path) -> None:
-    """An unreadable shared render library is the pass's OWN 66, not a missing
-    interpreter: it must fail the install rather than answer it with defaults.
-
-    The pass runs that check ahead of --print-env, as the shell reconciler did
-    -- install.sh runs this verb from the tree it is about to install from, so
-    a broken library there has to be loud.
-    """
+    """Install probes the checkout it will install. A broken render library
+    is the pass's own refusal, not an absent interpreter."""
     result = _run_shim(
         tmp_path,
         "",
@@ -1967,23 +1917,13 @@ def test_a_signalled_changed_predicate_exits_rather_than_dying_of_the_signal(
 def test_state_written_carries_the_classifier_blocker_codes(
     tmp_path: Path, blocked: bool
 ) -> None:
-    """The codes behind a park reach the journal on the pass's own line.
-
-    The reconciler runs the classifier with its stderr on `/dev/null`, so this
-    line is the only place a pass publishes its verdict.
-    """
+    """The classifier's stderr is suppressed, so this event owns its verdict."""
     extra: dict[str, str] = {}
     expected = "none"
     if blocked:
         # One child of a saved dual-Apple pair is absent, so the record is
         # partial and names which half is missing.
-        extra = {
-            **_dual_apple_cards(tmp_path, ((1, "A", "left"),)),
-            "JASPER_OUTPUT_TOPOLOGY_PATH": str(
-                _dual_apple_topology(tmp_path, active=True)
-            ),
-            **_active_graph_env(tmp_path, write_topology=False),
-        }
+        extra = _active_dual_apple_env(tmp_path, ((1, "A", "left"),))
         expected = "saved_composite_partially_present"
 
     result = _run_reconcile(
@@ -2054,7 +1994,6 @@ def test_reconcile_arms_the_active_lane_at_the_graphs_own_width(
 def test_reconcile_dac8x_width_two_graph_arms_the_active_ring(
     tmp_path: Path, graph_kind: str
 ):
-    """Both graph layouts drive two outputs, over the same active ring."""
     args: tuple[str, ...]
     if graph_kind == "active-leader":
         args = ("--reason", "outputd-failure", "--no-restart")
@@ -2222,11 +2161,8 @@ def test_reconcile_publishes_the_management_transport_verdict_as_a_marker(
 def test_print_env_leaves_the_management_transport_marker_untouched(
     tmp_path: Path, starting_content: str | None, active_usb_role: str,
 ):
-    """--print-env's usage text promises no mutations -- this pin does not
-    expire. (Today's motivation is install.sh's mid-install probe of the
-    PREVIOUS build, #4123, which would flip the gadget's management-transport
-    gate off a stale verdict; that motivation lapses if --print-env ever
-    moves after the source sync, but the no-mutations contract stays.)"""
+    """Install can probe a previous build; --print-env must not change its
+    management-transport gate (#4123)."""
     marker = tmp_path / "management-transport.ok"
     if starting_content is not None:
         marker.write_text(starting_content, encoding="utf-8")
@@ -2291,18 +2227,12 @@ def test_reconcile_dual_apple_records_profile_and_parks_until_dual_sink(
 
 
 def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path):
-    topology_path = _dual_apple_topology(tmp_path, active=True)
-
     result = _run_reconcile(
         tmp_path,
         DUAL_APPLE_LISTING,
         "--reason",
         "test",
-        extra_env={
-            **_dual_apple_cards(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
-            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
-            **_active_graph_env(tmp_path, write_topology=False),
-        },
+        extra_env=_active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
     )
 
     assert result.returncode == 0, result.stderr
@@ -2339,27 +2269,16 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(tmp_path: Path)
 def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
     tmp_path: Path,
 ):
-    """FAIL-CLOSED, at the one arm the legal-endpoint set makes unreachable
-    today: an accepted decision naming NO endpoint device must leave the lane
-    PAIR clear rather than arm the marker off the acceptance alone.
-
-    The pair is one fact with two consumers and outputd bails at startup on the
-    incoherent half-set, so this is what stands between "the legal set grew"
-    and "every composite arms the ring marker".
-    """
+    """The current legal endpoint set cannot reach this accepted/no-endpoint
+    case. Both lane markers must still agree if that set grows."""
     from jasper.active_speaker.runtime_contract import OutputdActiveLaneDecision
 
-    topology_path = _dual_apple_topology(tmp_path, active=True)
     result = _run_reconcile(
         tmp_path,
         DUAL_APPLE_LISTING,
         "--reason",
         "test",
-        extra_env={
-            **_dual_apple_cards(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
-            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
-            **_active_graph_env(tmp_path, write_topology=False),
-        },
+        extra_env=_active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
         patches={
             "jasper.active_speaker.runtime_contract.outputd_active_lane_decision":
                 lambda *_a, **_k: OutputdActiveLaneDecision(
@@ -2391,20 +2310,9 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
 
 
 def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
-    """A saved composite with one dongle gone parks instead of taking over.
-
-    Otherwise the survivor classifies as an ordinary apple_usb_c_dongle,
-    is marked recognized, and the final output is rewired onto it as a
-    plain stereo DAC — while the graph layer, which reads only the saved
-    topology, never follows. The box stays quiet by nobody's decision.
-    """
-    extra_env = {
-        **_dual_apple_cards(tmp_path, ((1, "A", "left"),)),
-        "JASPER_OUTPUT_TOPOLOGY_PATH": str(
-            _dual_apple_topology(tmp_path, active=True)
-        ),
-        **_active_graph_env(tmp_path, write_topology=False),
-    }
+    """A surviving dongle must not become a stereo DAC while the graph layer
+    still reads the saved composite topology."""
+    extra_env = _active_dual_apple_env(tmp_path, ((1, "A", "left"),))
 
     result = _run_reconcile(
         tmp_path, APPLE_LISTING, "--reason", "test", extra_env=extra_env
@@ -2466,13 +2374,8 @@ def test_reconcile_parks_a_declared_composite_missing_one_child(tmp_path: Path):
 def test_reconcile_saved_single_topology_still_takes_the_single_dongle(
     tmp_path: Path,
 ):
-    """A saved SINGLE topology keeps today's behaviour: stereo is legal.
-
-    The passive **composite** case — `kind == "composite"` with no
-    per-driver DSP, where the park must also stand down — is a
-    record-level decision pinned in
-    ``test_saved_passive_composite_missing_a_child_still_plays``.
-    """
+    """Passive composites have a separate record-level pin:
+    test_saved_passive_composite_missing_a_child_still_plays."""
     topology_path = tmp_path / "output_topology.json"
     topology_path.write_text(
         json.dumps(
@@ -2554,8 +2457,6 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
 
 
 def test_dual_apple_park_names_an_unavailable_active_graph_contract(tmp_path: Path):
-    """The gate answers a reason on every path it declines on, including one an
-    exception raised inside the contract. The park line has to name it."""
     result = _run_reconcile(
         tmp_path,
         DUAL_APPLE_LISTING,
@@ -2588,12 +2489,7 @@ def test_dual_apple_park_names_an_unavailable_active_graph_contract(tmp_path: Pa
     [APPLE_LISTING, DUAL_APPLE_LISTING, INNOMAKER_LISTING, DAC8X_STUDIO_LISTING, ""],
 )
 def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing: str):
-    """One reconcile pass, two publications, one answer.
-
-    JASPER_AUDIO_DAC_ID exists for consumers that can only read env. A
-    reader that took it instead of the record could only answer
-    differently if the two could differ — so they may not.
-    """
+    """Env-only consumers must receive the same DAC identity as record readers."""
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
@@ -2603,10 +2499,8 @@ def test_env_publication_names_the_dac_the_record_names(tmp_path: Path, listing:
 def test_env_publication_agrees_on_a_classify_time_partial_dual_apple_record(
     tmp_path: Path,
 ):
-    """The composite counts as ACTIVE as soon as it is named, parked or not —
-    unlike a single DAC. Pinned for a pair the CLASSIFIER marks ``partial``
-    (one child's USB endpoint is not synchronous), a different park from the
-    bash active-graph gate the other dual tests cover."""
+    """This partial verdict comes from USB endpoint classification, before
+    the active-graph gate exercised by the other composite cases."""
     extra_env = _dual_apple_cards(tmp_path)
     (tmp_path / "proc" / "asound" / "card2" / "stream0").write_text(
         "Playback:\n  Endpoint: 0x01 (ASYNC)\n", encoding="utf-8"
@@ -2800,9 +2694,6 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(tmp_path: Path):
 
 
 def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
-    """A converged Apple steady state where the ONLY moving dimension is the
-    route/fan-in env: restart fan-in via the route runtime path, leave
-    jasper-voice up, and do not RESTART outputd (start-if-recognized only)."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -2834,7 +2725,6 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
 
 
 def test_route_env_change_restarts_fanin_exactly_once(tmp_path: Path):
-    """The route writes five live keys once, then converges."""
     route_env = "JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n"
 
     first = _run_reconcile(
@@ -2901,19 +2791,11 @@ def test_the_render_lib_resolves_the_checkout_sibling_before_the_installed_copy(
 
 
 def test_print_env_arms_a_ready_dual_apple_composite(tmp_path: Path):
-    """--print-env resolves the same composite verdict a full pass does, so
-    install.sh's role variables name the armed pair rather than the park."""
-    topology_path = _dual_apple_topology(tmp_path, active=True)
-
     result = _run_reconcile(
         tmp_path,
         DUAL_APPLE_LISTING,
         "--print-env",
-        extra_env={
-            **_dual_apple_cards(tmp_path),
-            "JASPER_OUTPUT_TOPOLOGY_PATH": str(topology_path),
-            **_active_graph_env(tmp_path, write_topology=False),
-        },
+        extra_env=_active_dual_apple_env(tmp_path),
     )
 
     assert result.returncode == 0, result.stderr
@@ -2970,8 +2852,6 @@ def test_failed_or_empty_render_preserves_the_live_template(
 
 
 def test_render_success_still_writes_template(tmp_path: Path):
-    """Guards against an over-eager fix that makes render_asound_if_needed
-    treat every render as a failure."""
     result = _run_reconcile(
         tmp_path,
         DAC8X_AND_APPLE_LISTING,
@@ -3034,12 +2914,8 @@ def test_failed_asound_conf_render_fails_the_pass_without_restarting(tmp_path: P
 def test_an_unspawnable_asound_renderer_refuses_the_same_way_a_failing_one_does(
     tmp_path: Path,
 ) -> None:
-    """A renderer that cannot be SPAWNED is the shell's 127 — the same refusal.
-
-    Uncaught, the OSError escaped main() (which handles only _Abort and
-    SystemExit), so the mixer pin this pass's own changed record earned never
-    ran and the render template was left behind in /etc/jasper.
-    """
+    """A spawn failure must still honor the changed record's mixer restart
+    and clean up the staged template."""
     live_conf = tmp_path / "asound.conf"
     live_conf.write_bytes(b"GOOD LIVE ASOUND.CONF\n")
 
@@ -3092,9 +2968,6 @@ _FLOOR_PLAN_PROBE_FAILS = {
 def test_reconcile_emits_the_declared_latency_floor(
     tmp_path: Path, listing: str, dac_id: str
 ):
-    """The declared floor reaches the wizard-owned outputd.env verbatim,
-    through the same bash plumbing for every profile; the retired
-    content-buffer key and the ring-owned Camilla pair are never emitted."""
     from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
 
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
@@ -3145,11 +3018,8 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
 def test_reconcile_preserves_the_floor_when_the_plan_probe_cannot_answer(
     tmp_path: Path,
 ):
-    """A floor plan that could not be built leaves the four keys ALONE, the
-    way the DAC-format and content-format probes do. Clearing them would drop
-    a tuned box to outputd's packaged defaults with nothing loud anywhere; the
-    stale floor plus the degraded marker is the loud option, and the marker is
-    what stops the shim stamping a state ``--changed`` could skip against."""
+    """Clearing the floor would restore packaged defaults. The degraded
+    marker keeps --changed from skipping the next pass."""
     stale = {
         "JASPER_CAMILLA_CHUNKSIZE": "512",
         "JASPER_CAMILLA_TARGET_LEVEL": "2048",
@@ -3189,11 +3059,8 @@ def test_reconcile_preserves_the_floor_when_the_plan_probe_cannot_answer(
 def test_reconcile_operator_env_override_survives_reconciler(
     tmp_path: Path, initial_outputd_env: str | None
 ):
-    """jasper.env is loaded FIRST by the unit and outputd.env AFTER, so an
-    empty `KEY=` in outputd.env would override the operator's value with empty
-    and make Rust fall back to its default — silently discarding the tune. The
-    key must be DROPPED from outputd.env entirely. Keys the operator did NOT
-    set still get the profile floor."""
+    """The unit loads outputd.env after jasper.env, so an empty assignment
+    would override an operator value instead of deferring to it."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -3265,13 +3132,8 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
     overrides: dict[str, str],
     detail: str | None,
 ):
-    """A REFUSED reconcile leaves the box running exactly as it was found:
-    outputd.env byte-unchanged, no render, and no unit stopped, because
-    nothing this run did reached a daemon. The refusal also names the
-    ORIGIN as a file that still exists — the validated candidate lives
-    under a `.outputd.env.candidate.XXXXXX` temp name deleted on EXIT, so
-    reporting the path it READ named a file the operator cannot open.
-    """
+    """The reported origin must survive cleanup; the validated candidate
+    is deleted on exit and cannot serve as an operator-visible path."""
     result = _run_reconcile(
         tmp_path,
         listing,
@@ -3309,13 +3171,7 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
 def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
     tmp_path: Path,
 ) -> None:
-    """A pass that exits before the graph proved no graph, and the gate has to
-    see that.
-
-    The unproved stamp is opened at the TOP of the pass, not inside the
-    convergence, precisely so the exits BEFORE the convergence — this one, an
-    i2s apply error, an OOM kill — are not read as "a graph was proved".
-    """
+    """The unproved stamp must precede every early exit, not just convergence."""
 
     graph_env = _apple_active_graph_env(tmp_path)
     result = _run_reconcile(
@@ -3356,13 +3212,8 @@ def test_a_rejected_outputd_candidate_still_leaves_the_topology_unproved(
 def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     tmp_path: Path
 ) -> None:
-    """The waypoint-note seam, pinned from BOTH sides.
-
-    `validate_outputd_env_stage` recognises a coherent-but-transient result by
-    the literal prefix the validator reports on the accepted path. Nothing else
-    couples them, so a reworded report would silently stop the reconciler
-    logging `outputd_env_note`.
-    """
+    """The validator's literal note prefix is the only link to the stage
+    reader's transient-result classification."""
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from tests.test_ring_active_endpoint import (
         _active_topology,
@@ -3684,12 +3535,8 @@ def _cutover_env(tmp_path: Path) -> dict[str, str]:
 def test_reconcile_renders_the_width_matched_cutover_and_is_idempotent(
     tmp_path: Path,
 ):
-    """Write-on-change, and width-matched to the saved topology.
-
-    The reconciler runs on every boot and every sound-card event, so an
-    unconditional write would churn the file's mtime and make "did the graph
-    change?" unanswerable from the filesystem.
-    """
+    """Every boot and sound-card event runs this path; unconditional writes
+    would make the artifact mtime useless as change evidence."""
     extra = _cutover_env(tmp_path)
     (tmp_path / "output_topology.json").write_text(
         json.dumps(_mono_topology_payload()), encoding="utf-8"
@@ -3754,11 +3601,8 @@ def test_reconcile_refuses_to_render_against_a_corrupt_topology(tmp_path: Path):
 
 
 def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
-    """MISSING is not CORRUPT, so rendering can still seed the golden artifact.
-
-    This does not authorize playback: the runtime selector parks a fresh box
-    until the household saves an explicit mono or stereo layout.
-    """
+    """Seeding a golden artifact does not authorize playback; the selector
+    still parks until the household declares a layout."""
     extra = _cutover_env(tmp_path)
     result = _run_reconcile(
         tmp_path, INNOMAKER_LISTING, "--reason", "test", extra_env=extra
@@ -3829,14 +3673,7 @@ def test_reconcile_emits_the_wide_content_format(
 def test_reconcile_no_longer_narrows_for_the_removed_rate_match_bridge(
     tmp_path: Path, spelling: str
 ):
-    """The i16-only `rate_match` content bridge was DELETED, and its S16_LE
-    narrowing went with it.
-
-    The narrowing kept a routine deploy from emitting a wide content lane
-    into a bridge outputd refuses (exit 78 -> parked output owner, silent
-    speaker). With the bridge gone outputd parks on every spelling rather
-    than reading a content format at all.
-    """
+    """outputd refuses every spelling of the retired rate_match bridge."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -3905,14 +3742,8 @@ _PROBE_FAILURES = {
 def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
     monkeypatch, tmp_path: Path, probe: str
 ):
-    """A pass that could not run one of its probes left an owned value
-    unwritten, so its result is NOT a state the shim's ``--changed`` may skip
-    against — an operator following the doctor's remedy must get a real pass.
-
-    The marker is also the doctor's own evidence, so this pins that the path
-    the pass writes and ``output_hardware.degraded_marker_path`` reads are one
-    file under one ``JASPER_OUTPUT_HARDWARE_STATE_PATH``.
-    """
+    """A skipped probe leaves an owned value unwritten, so --changed must
+    rerun even when the physical inputs match the last successful stamp."""
     from jasper.output_hardware import degraded_marker_path
 
     patches, expected_rc = _PROBE_FAILURES[probe]
@@ -3936,8 +3767,6 @@ def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
 def test_a_pass_whose_probes_all_answered_is_not_marked_degraded(
     monkeypatch, tmp_path: Path
 ):
-    """The control for the parametrization above: without it every arm would
-    pass on a marker some unrelated path always writes."""
     from jasper.output_hardware import degraded_marker_path
 
     state_path = tmp_path / "output_hardware.json"
@@ -3981,22 +3810,9 @@ def test_reconcile_leaves_content_format_alone_when_the_policy_probe_is_absent(
 def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absent(
     tmp_path: Path, composite: bool
 ):
-    """A lost probe must not commit an empty edge format.
-
-    Empty is MEANINGFUL on this key — outputd reads it as S16_LE — so
-    writing it would silently narrow this box's declared S24_3LE edge with
-    no error anywhere. Nothing about the hardware changed, so keep the
-    previous value and log the skip. (The explicit-empty write for a DAC
-    with no queryable profile is a different branch, where emptiness IS
-    the answer.) The composite arm shares the helper from a second call
-    site; the seeded S24_3LE is the stale single-dongle format a box
-    carries across a single -> dual upgrade, so the skip contract has to
-    hold independently of whether the stale value is survivable. The
-    outputd sink kind (DacProfile.outputd_sink, ADR-0235 R1) comes from the
-    same probe call and degrades the same way — seeded here to the OTHER
-    shape's sink, so a preserved value is distinguishable from a re-derived
-    one exactly like the format axis.
-    """
+    """Empty means S16_LE to outputd. Preserve the old format and sink when
+    the registry cannot answer, even if a single-to-dual upgrade made them
+    stale; an explicit unrecognized-DAC verdict is a separate path."""
     extra_env: dict[str, str] = {}
     listing = APPLE_LISTING
     expected_dac_id = "apple_usb_c_dongle"
@@ -4004,15 +3820,7 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
     if composite:
         listing = DUAL_APPLE_LISTING
         expected_dac_id = "dual_apple_usb_c_dac_4ch"
-        extra_env.update(
-            {
-                **_dual_apple_cards(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
-                "JASPER_OUTPUT_TOPOLOGY_PATH": str(
-                    _dual_apple_topology(tmp_path, active=True)
-                ),
-                **_active_graph_env(tmp_path, write_topology=False),
-            }
-        )
+        extra_env = _active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED)
 
     result = _run_reconcile(
         tmp_path,
@@ -4074,13 +3882,8 @@ def _assert_kicked_once(tmp_path: Path, result: subprocess.CompletedProcess[str]
 
 
 def test_a_plugged_registered_dac_converges_without_an_operator(tmp_path: Path):
-    """Plug a registered DAC in, and the box arms itself.
-
-    A first pass sets dac_env_changed and render_changed, so the edge
-    fires and the coupling reconciler gets its chance to converge.
-    Without it the box renders a correct asound.conf, bounces outputd,
-    then sits on loopback forever waiting for a human to type the arm.
-    """
+    """The first pass changes DAC and rendered state; that edge must trigger
+    coupling instead of leaving a correct template unarmed."""
     result = _run_reconcile(tmp_path, INNOMAKER_LISTING, "--reason", "udev")
 
     assert result.returncode == 0, result.stderr
@@ -4088,11 +3891,6 @@ def test_a_plugged_registered_dac_converges_without_an_operator(tmp_path: Path):
 
 
 def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path):
-    """THE OTHER HALF: an unproven shape parks loudly and converges nothing.
-
-    There is no output for a coupling to converge onto, so the park is the end
-    state — not something to reconcile out of here.
-    """
     result = _run_reconcile(tmp_path, "", "--reason", "udev")
 
     starts, events = _coupling_kick_lines(tmp_path, result)
@@ -4270,11 +4068,7 @@ _STUB_MODES: dict[str, tuple[dict[str, Any], int, bool, str | None]] = {
 def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
     tmp_path: Path, mode: str, mutate: str | None, expected_rc: int
 ) -> None:
-    """The unit's ExecCondition: exit 0 means run, 1 means skip.
-
-    A skipped call must reconcile nothing, and only an unchanged box that a
-    successful pass already stamped may be skipped.
-    """
+    """ExecCondition uses exit 0 to run the unit and exit 1 to skip it."""
     common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
     code = tmp_path / "reconcile.py"
     build = tmp_path / "build.txt"
@@ -4381,7 +4175,6 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
 def test_changed_check_reruns_while_the_degraded_marker_is_present(
     tmp_path: Path,
 ) -> None:
-    """A degraded marker invalidates an otherwise unchanged successful stamp."""
     common = {**_fake_proc_asound(tmp_path), **_cutover_env(tmp_path)}
     converged = _run_reconcile(
         tmp_path, APPLE_LISTING, "--reason", "converge", extra_env=common
