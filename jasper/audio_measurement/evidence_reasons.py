@@ -45,6 +45,7 @@ REFUSE_NO_BRANCH_DIAGNOSTIC = "rear_pair_branch_diagnostic_missing"
 REFUSE_NO_INCUMBENT = "rear_incumbent_set_unavailable"
 REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
+ROOM_NOT_BANKED = "room_not_banked"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
 
 EVIDENCE_REASONS = MappingProxyType({
@@ -88,5 +89,6 @@ EVIDENCE_REASONS = MappingProxyType({
     REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
     REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
     REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
+    ROOM_NOT_BANKED: "The banked round holds no room view by the name asked; a room view run after the bank is not its evidence.",
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
 })

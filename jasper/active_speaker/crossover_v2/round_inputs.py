@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.json_fields import finite_float, parse_utc_iso
+from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -52,7 +53,8 @@ __all__ = [
     'STATEFILE_FILENAME', 'banked_round_of', 'banked_rounds', 'packet_purposes',
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
-    'round_inputs', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH', 'default_out', 'view_path',
+    'round_inputs', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
+    'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
 ]
 
@@ -339,12 +341,28 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
     return default_out(inputs, banked_round_of(inputs.session_dir) or inputs.session_dir, name, set_id)
 
 
+def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
+    """The ``packet.json`` the round's bank wrote, or ``{}`` for a round banked without one."""
+    round_dir = inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
+    return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
+
+
+def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:
+    """The bank's copy of the room view it wrote as ``name``, or ``{}``."""
+    return next((row for row in rows if isinstance(row, dict) and Path(str(row.get("out"))).name == name), {})
+
+
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
     inputs = round_ if isinstance(round_, RoundInputs) else round_inputs(round_)
     artifact_dir, reason = round_artifact_dir(inputs.session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
-    room = _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {}
+    # A re-run room view is a view: a banked round's contract reads its bank's copy (ADR-0371).
+    banked_rooms = banked_packet(inputs).get("room")
+    room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
+            else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
+    if not room and inputs.banked:
+        room = {"median": {"code": ROOM_NOT_BANKED}}
     return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})
@@ -362,10 +380,9 @@ def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = Non
         resolve_set(inputs, set_id)
     sources = contract_sources(inputs, set_id=set_id)
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
-    round_dir = banked_round_of(inputs.session_dir) or inputs.session_dir
-    packet = _read_json_mapping(round_dir / PACKET_FILENAME) or {}
+    packet = banked_packet(inputs)
     return {**sources,
-            "bass_evidence": (packet if packet.get("round_id") == round_dir.name
+            "bass_evidence": (packet if packet.get("round_id") == inputs.session_dir.parent.parent.name
                               else {"code": BASS_PACKET_ROUND_MISMATCH} if packet else {}),
             "draft": (_read_json_mapping(inputs.design_draft_path) or {}) if inputs.design_draft_path else {},
             "receipt": (_read_json_mapping(artifact_dir / "round_receipt.json") or {}) if artifact_dir else {},

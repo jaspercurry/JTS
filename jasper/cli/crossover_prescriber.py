@@ -9,6 +9,7 @@ import argparse
 import json
 import shlex
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,8 @@ from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescript
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
-    DERIVED_VIEWS, CrossoverEvidencePacketError, build_crossover_evidence_packet, packet_driver_passbands_hz,
-    packet_feature_classifications, packet_region_band_hz,
+    DERIVED_VIEWS, CrossoverEvidencePacketError, build_round_evidence, packet_driver_passbands_hz,
+    packet_feature_classifications, packet_region_band_hz, round_evidence,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
@@ -74,6 +75,8 @@ def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
         document = json.loads(read_source_bytes(str(source))) if isinstance(source, Path) else source
         median = document.get("median", document) if isinstance(document, Mapping) else document
         return read_room_median(median), room_median_sha256(median)
+    except RoomPrescriptionRefused:
+        raise
     except (OSError, ValueError, RecursionError) as exc:
         raise RoomPrescriptionRefused(ROOM_MEDIAN_UNAVAILABLE, str(exc)) from exc
 
@@ -189,33 +192,17 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
     if args.session_dir is None:
         raise CrossoverEvidencePacketError("name a round directory")
     inputs = inputs or round_inputs(Path(args.session_dir))
-    return build_crossover_evidence_packet(
-        inputs.session_dir, round_context=inputs,
-        # No default for the flow state: the web host rewrites it as a round
-        # runs, so a defaulted state would move the packet's fingerprint.
-        state_path=Path(args.state) if args.state else None,
-        driver_draft_path=(
-            Path(args.drivers) if args.drivers else inputs.design_draft_path
-        ),
-        applied_profile_path=(
-            Path(args.applied_profile)
-            if args.applied_profile
-            else inputs.applied_profile_path
-        ),
-        repeat_floor_path=(
-            Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path
-        ),
-        declared_geometry_path=(
-            Path(args.declared_geometry)
-            if args.declared_geometry
-            else inputs.declared_geometry_path
-        ),
-        # No default, same reason as ``state_path``: the CamillaDSP statefile
-        # is live, mutable system state, and a defaulted read would make two
-        # honest rebuilds of the same round disagree on the packet's
-        # fingerprint depending purely on when each ran (#3316).
-        statefile_path=None,
+    if not any((args.state, args.drivers, args.applied_profile, args.repeat_floor, args.declared_geometry)):
+        return round_evidence(inputs)
+    # A status what-if: built from the inputs named, fingerprinted as built.
+    named = replace(
+        inputs,
+        design_draft_path=Path(args.drivers) if args.drivers else inputs.design_draft_path,
+        applied_profile_path=Path(args.applied_profile) if args.applied_profile else inputs.applied_profile_path,
+        repeat_floor_path=Path(args.repeat_floor) if args.repeat_floor else inputs.repeat_floor_path,
+        declared_geometry_path=Path(args.declared_geometry) if args.declared_geometry else inputs.declared_geometry_path,
     )
+    return build_round_evidence(named, state_path=Path(args.state) if args.state else None)
 
 
 

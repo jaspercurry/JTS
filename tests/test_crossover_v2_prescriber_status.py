@@ -42,7 +42,7 @@ from tests.test_round_inputs import _bank_packet
 from tests import nginx_site
 
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
-from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
+from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
@@ -221,13 +221,13 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 ):
     session, _ = _speaker_dirs(tmp_path)
     seen: dict[str, Any] = {}
-    build = cli.build_crossover_evidence_packet
+    build = evidence_packet.build_crossover_evidence_packet
 
     def _spy(session_dir: Path, **kwargs: Any) -> dict[str, Any]:
         seen.update(kwargs, session_dir=session_dir)
         return build(session_dir, **kwargs)
 
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", _spy)
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", _spy)
     _status([str(session)], capsys)  # no --state/--drivers/--applied-profile
 
     assert seen == {
@@ -238,8 +238,6 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
         "applied_profile_path": round_inputs_mod.APPLIED_PROFILE_DEFAULT_PATH,
         "repeat_floor_path": round_inputs_mod.REPEAT_FLOOR_DEFAULT_PATH,
         "declared_geometry_path": round_inputs_mod.DECLARED_GEOMETRY_DEFAULT_PATH,
-        # No default, same reason as ``state_path`` above (#3316).
-        "statefile_path": None,
     }
 
 
@@ -296,7 +294,7 @@ def test_the_packet_discloses_the_trim_the_round_re_solved(tmp_path, capsys):
         json.dumps(applied_profile(corrections={"tweeter": {"gain_db": -1.361}}))
     )
 
-    packet = cli.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
+    packet = evidence_packet.build_crossover_evidence_packet(session, state_path=state_path, applied_profile_path=applied)
     trim = packet["incumbent"]["trim"]["tweeter"]
     assert trim == {
         "applied_db": -1.361,
@@ -372,7 +370,7 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
     session, _ = _speaker_dirs(tmp_path)
     monkeypatch.setattr(
         cli,
-        "build_crossover_evidence_packet",
+        "round_evidence",
         lambda *a, **k: {"session": {"round_id": "from-the-builder"}, "round":
                          {"available": True}},
     )
@@ -680,7 +678,7 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(level))
     _bank_reference(level, -9.0)
     packet_builder = []
-    monkeypatch.setattr(cli, "build_crossover_evidence_packet", lambda *a, **kw: packet_builder.append(kw))
+    monkeypatch.setattr(cli, "round_evidence", lambda *a, **kw: packet_builder.append(kw))
     before = _tree(tmp_path)
 
     code, payload = _status([], capsys)
@@ -871,7 +869,7 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
     _rebank_round_as_no_crossover(session)
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
+    packet = evidence_packet.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
     not_evaluated = {e["field"]: e["reason"] for e in packet["not_evaluated"]}
@@ -977,7 +975,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     )
 
     _, cli_payload = _status([str(session), "--drivers", str(draft)], capsys)
-    packet = cli.build_crossover_evidence_packet(
+    packet = evidence_packet.build_crossover_evidence_packet(
         session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(

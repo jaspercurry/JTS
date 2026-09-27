@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from jasper.audio_measurement.evidence_identity import (
@@ -28,13 +29,14 @@ PACKET_KIND = "jts_crossover_v2_evidence_packet"
 DERIVED_VIEWS = "derived_views"
 
 
+def fingerprinted(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """The part of a packet its ``packet_fingerprint`` covers: all but the derived views (ADR-0346)."""
+    return {key: value for key, value in packet.items() if key not in ("packet_fingerprint", DERIVED_VIEWS)}
+
+
 def _fingerprint(packet: dict[str, Any]) -> str:
-    # See ADR-0346
     try:
-        return json_fingerprint(
-            {key: value for key, value in packet.items() if key not in ("packet_fingerprint", DERIVED_VIEWS)},
-            field_name="evidence_packet",
-        )
+        return json_fingerprint(fingerprinted(packet), field_name="evidence_packet")
     except EvidenceIdentityError as exc:
         raise CrossoverEvidencePacketError(f"packet is not exact JSON data: {exc}") from exc
 
