@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 
 import pytest
 
-from ._async_wait import wait_signalled
+from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 
 from jasper.volume_latch import READBACK_TOLERANCE_DB
 from jasper.volume_owner import (
@@ -533,6 +534,63 @@ async def test_the_registered_owner_is_the_one_that_arbitrates():
 
     await volume_owner().release(claim)
     assert fader.db == pytest.approx(HOUSEHOLD_DB)
+
+
+def test_request_threads_on_their_own_event_loops_share_one_owner():
+    """jasper-web runs each request's ``asyncio.run`` on its own thread.
+
+    A household declaration that lands while another loop's commissioning
+    claim is mid-write must wait its turn: neither request hangs, neither
+    raises, and the ledger ends on the declared level with the claim gone.
+    """
+    fader = _Fader()
+    owner = _owner(fader)
+    asyncio.run(owner.declare_household_level_db(HOUSEHOLD_DB))
+    claim_writing = threading.Event()
+    declaring = threading.Event()
+    set_fader = fader.set
+
+    async def held_write(db):
+        if not claim_writing.is_set():
+            claim_writing.set()
+            while not declaring.is_set():
+                await asyncio.sleep(0.005)
+            # Long enough for the other loop to reach the owner and wait.
+            await asyncio.sleep(0.1)
+        return await set_fader(db)
+
+    fader.set = held_write
+    claims = []
+    errors = []
+
+    async def commission():
+        claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+        claims.append(claim)
+        await owner.release(claim)
+
+    async def declare():
+        declaring.set()
+        assert await owner.declare_household_level_db(-30.0) is True
+
+    def request(handler):
+        try:
+            asyncio.run(handler())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    first = threading.Thread(target=request, args=(commission,), daemon=True)
+    first.start()
+    assert claim_writing.wait(DEFAULT_SIGNAL_TIMEOUT_S)
+    second = threading.Thread(target=request, args=(declare,), daemon=True)
+    second.start()
+    for thread in (first, second):
+        thread.join(DEFAULT_SIGNAL_TIMEOUT_S)
+
+    assert [first.is_alive(), second.is_alive()] == [False, False]
+    assert errors == []
+    assert not owner.holds(claims[0])
+    assert owner.declared_level_db() == -30.0
+    assert fader.db == -30.0
 
 
 # --- relevel ----------------------------------------------------------------
