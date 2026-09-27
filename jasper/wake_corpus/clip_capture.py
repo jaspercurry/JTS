@@ -91,7 +91,7 @@ class RecordingTask:
             # If any leg fails to bind, clean up the ones that succeeded
             # so the user can retry without a "port already in use"
             # cascade on the next start.
-            await self._stack.__aexit__(None, None, None)
+            await self._close_captures()
             raise
 
         self._start_monotonic = time.monotonic()
@@ -109,9 +109,25 @@ class RecordingTask:
                 if is_aec_on:
                     self.current_rms_dbfs = compute_rms_dbfs(frame)
 
-        await asyncio.gather(*[
-            _per_leg(leg, cap) for leg, cap in self._captures.items()
-        ])
+        try:
+            await asyncio.gather(*[
+                _per_leg(leg, cap) for leg, cap in self._captures.items()
+            ])
+        # Not `finally`: a task still pending when its loop closed is
+        # finalized later, when no transport can be closed any more.
+        except (asyncio.CancelledError, Exception):
+            # A capture that stops collecting frees its UDP ports at once: a
+            # safety stop whose publication is given up never calls stop().
+            await self._close_captures()
+            raise
+
+    async def _close_captures(self) -> None:
+        stack, self._stack = self._stack, None
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cleanup raised: %s", e)
 
     def elapsed_sec(self) -> float:
         if self._start_monotonic == 0:
@@ -119,24 +135,18 @@ class RecordingTask:
         return time.monotonic() - self._start_monotonic
 
     def request_stop(self) -> None:
-        """Cancel frame collection without waiting for clip publication.
+        """Stop collecting frames, keeping those buffered so far.
 
-        Called on this task's event loop when a privacy/automatic stop races a
-        lifecycle owner. ``stop()`` later gathers the buffered PCM and closes
-        the capture stack; cancellation here ensures no more audio is retained
-        while that bounded-backoff publication retry is pending.
+        Called on this task's event loop by every safety stop before it tries
+        to publish the clip. The collection closes the capture as it ends, so
+        no more audio is kept while a publication retry is pending, and a clip
+        whose publication is given up holds no port.
         """
         if self._task is not None and not self._task.done():
             self._task.cancel()
 
     async def stop(self) -> dict[str, bytes]:
-        """Cancel the collection task, return PCM bytes per leg.
-
-        Idempotent: calling twice is a no-op on the second call (the
-        task + stack sentinels are cleared after first cleanup, so we
-        skip both double-await and double-exit which AsyncExitStack
-        would error on).
-        """
+        """Stop collecting, close the capture, return PCM bytes per leg."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
@@ -155,12 +165,7 @@ class RecordingTask:
                 pcm = b""
             result[leg] = pcm
 
-        if self._stack is not None:
-            try:
-                await self._stack.__aexit__(None, None, None)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("cleanup raised: %s", e)
-            self._stack = None
+        await self._close_captures()
         self._bridge_stats_stop = read_bridge_stats_snapshot()
         return result
 
