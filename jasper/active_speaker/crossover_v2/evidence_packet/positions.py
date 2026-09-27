@@ -20,7 +20,7 @@ from ..record_index import Measurement
 #: ``{EVIDENCE_ROOT}/artifacts/``. :mod:`.position_cycle` reaches the same
 #: files from the BANKED ROUND root, which is why the accept rule is imported
 #: from there rather than restated here.
-_POSITIONS_SUBDIR = "positions"
+POSITIONS_SUBDIR = "positions"
 
 
 def _ordinal(value: Any) -> int:
@@ -31,7 +31,7 @@ def _ordinal(value: Any) -> int:
         return 0
 
 
-def _banked_takes(
+def banked_takes(
     session_dir: Path,
     rows: Sequence[Measurement],
     phase: str | None,
@@ -81,7 +81,7 @@ def _lateral_poses_block(
     Both survivors and superseded takes are listed, because the speaker keeps
     both on disk deliberately.
     """
-    takes = _banked_takes(
+    takes = banked_takes(
         session_dir, rows, PHASE_LATERAL, position_cycle.read_lateral_take,
     )
     if not takes:
@@ -90,7 +90,7 @@ def _lateral_poses_block(
             "status": "not_evaluated",
             "reason": (
                 f"this round banked no {PHASE_LATERAL} take records under "
-                f"{_POSITIONS_SUBDIR}/ — its walk was refused at take time, its "
+                f"{POSITIONS_SUBDIR}/ — its walk was refused at take time, its "
                 "poses were never accepted, or the round ran no lateral walk "
                 "at all"
             ),
@@ -107,7 +107,7 @@ def _lateral_poses_block(
         # otherwise publish 1 as a degree.
         "angles_deg": _distinct_degrees(takes, "position_deg"),
         "elevations_deg": _distinct_degrees(takes, "vertical_deg"),
-        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
+        "source": f"{POSITIONS_SUBDIR}/<take_id>.json",
         "note": (
             "position_deg is signed whole degrees, negative LEFT of the design "
             "axis. Membership is every ACCEPTED take, a superseded attempt "

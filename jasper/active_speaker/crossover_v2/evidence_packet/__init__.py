@@ -26,6 +26,7 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
+from jasper.json_fields import as_mapping
 
 from ...installation import installation_evidence
 from .. import position_cycle
@@ -62,17 +63,16 @@ from .offline_reads import (
     CLASSIFICATION_ARTIFACT,
     HARMONICS_ARTIFACT,
     RING_SIDECAR_GLOB,
-    _absence,
-    _copy_allowed,
     _derived_views_block,
-    _mapping,
-    _read_json,
+    absence,
+    copy_allowed,
+    read_json,
     round_program_dir,
 )
 from .positions import (
-    _POSITIONS_SUBDIR,
-    _banked_takes,
+    POSITIONS_SUBDIR,
     _lateral_poses_block,
+    banked_takes,
 )
 from .readers import (
     DERIVED_VIEWS,
@@ -166,13 +166,13 @@ def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
     """
 
     if path is None:
-        return _absence("source_absent", False, "declared_geometry")
+        return absence("source_absent", False, "declared_geometry")
     try:
         geometry = load_declared_geometry(path)
     except (OSError, ValueError) as exc:
-        return _absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
+        return absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
     if geometry is None:
-        return _absence("source_absent", False, "declared_geometry")
+        return absence("source_absent", False, "declared_geometry")
     return geometry.to_dict()
 
 #: No banked take names a candidate. A candidate scope refuses a spec without
@@ -192,7 +192,7 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
     if not labelled:
         return {
             "available": False,
-            **_absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id"),
+            **absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id"),
         }
     by_candidate: dict[str, list[Measurement]] = {}
     for row in labelled:
@@ -218,7 +218,7 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
         "available": True,
         "candidates": candidates,
         "source": (
-            f"{_POSITIONS_SUBDIR}/<take_id>.json candidate_id, selected through "
+            f"{POSITIONS_SUBDIR}/<take_id>.json candidate_id, selected through "
             "record_index.bundle_measurements"
         ),
         "note": (
@@ -242,7 +242,7 @@ def _entry_baseline_block(
     A round with no readable take is an ordinary reported absence: retention is
     fail-soft and never costs the household a retake.
     """
-    takes = _banked_takes(
+    takes = banked_takes(
         session_dir, rows, PHASE_ENTRY_BASELINE,
         position_cycle.read_entry_baseline_take,
     )
@@ -252,7 +252,7 @@ def _entry_baseline_block(
             "status": "not_evaluated",
             "reason": (
                 f"this round banked no {PHASE_ENTRY_BASELINE} take record under "
-                f"{_POSITIONS_SUBDIR}/ — it ran no entry baseline, its capture "
+                f"{POSITIONS_SUBDIR}/ — it ran no entry baseline, its capture "
                 "was refused, or evidence retention failed at take time"
             ),
         }
@@ -265,7 +265,7 @@ def _entry_baseline_block(
         **take,
         "n_bins": len(take["freqs_hz"]),
         "n_excluded": sum(1 for flag in take["excluded"] if flag),
-        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
+        "source": f"{POSITIONS_SUBDIR}/<take_id>.json",
         "note": (
             "the summed capture taken at the design-axis mark immediately "
             "before this round's apply. It is the durable copy: the flow state "
@@ -276,7 +276,7 @@ def _entry_baseline_block(
     }
 
 
-def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
+def _drivers_block(draft: Mapping[str, Any], reason: str) -> dict[str, Any]:
     """Each role's own declared band — the bound a per-driver filter sits inside.
 
     Read from the design draft's computed ``driver_safety_profile`` and
@@ -289,9 +289,9 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     of full output over — the bound on a LIFT, narrower than the driver — and
     the whole driver is meant to be correctable.
     """
-    profile = _mapping(design_draft_view(draft).get("driver_safety_profile"))
+    profile = as_mapping(design_draft_view(draft).get("driver_safety_profile"))
     passbands = driver_passbands_from_safety_profile(profile)
-    absent = _absence(reason, bool(passbands), "driver_safety_profile.targets")
+    absent = absence(reason, bool(passbands), "driver_safety_profile.targets")
     if absent:
         return {"available": False, **absent}
     return {
@@ -312,10 +312,10 @@ def _drivers_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
     }
 
 
-def _operator_notes_block(draft: dict[str, Any], reason: str) -> dict[str, Any]:
+def _operator_notes_block(draft: Mapping[str, Any], reason: str) -> dict[str, Any]:
     """The operator's own words, quarantined from every decision in code."""
     artifact = build_operator_notes(draft)
-    absent = _absence(
+    absent = absence(
         reason, bool(artifact["available"]), "design_draft.operator_prose"
     )
     return {**artifact, **absent} if absent else artifact
@@ -451,9 +451,9 @@ def build_crossover_evidence_packet(
     state_raw: Any = None
     state_reason = "no flow state file was supplied"
     if state_path is not None:
-        state_raw, read_reason = _read_json(state_path)
+        state_raw, read_reason = read_json(state_path)
         state_reason = read_reason
-    state = _mapping(state_raw)
+    state = as_mapping(state_raw)
     state_withheld = sorted(key for key in _STATE_WITHHELD if key in state)
     if state and not state_matches_capture(state, round_dir.name):
         state, state_reason = {}, STATE_SESSION_UNKNOWN
@@ -466,9 +466,9 @@ def build_crossover_evidence_packet(
     draft_raw: Any = None
     draft_reason = "no driver design draft was supplied"
     if driver_draft_path is not None:
-        draft_raw, draft_reason = _read_json(driver_draft_path)
-    drivers = _drivers_block(_mapping(draft_raw), draft_reason)
-    operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
+        draft_raw, draft_reason = read_json(driver_draft_path)
+    drivers = _drivers_block(as_mapping(draft_raw), draft_reason)
+    operator_notes = _operator_notes_block(as_mapping(draft_raw), draft_reason)
     take_rows = bundle_measurements(session_dir)
     lateral_poses = _lateral_poses_block(session_dir, take_rows)
     candidates = _candidates_block(take_rows)
@@ -476,8 +476,8 @@ def build_crossover_evidence_packet(
 
     capture_snr = _capture_snr_block(session_dir, take_rows)
 
-    identity, identity_withheld = _copy_allowed(
-        _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
+    identity, identity_withheld = copy_allowed(
+        as_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS
     )
     packet: dict[str, Any] = {
         "artifact_schema_version": PACKET_SCHEMA_VERSION,
@@ -508,9 +508,9 @@ def build_crossover_evidence_packet(
         },
         "identity": {
             **identity,
-            "placement": _mapping(info_raw.get("placement")),
+            "placement": as_mapping(info_raw.get("placement")),
             "redacted_fields": identity_withheld,
-            "calibration": _mapping(_mapping(state.get("evidence")).get("calibration")),
+            "calibration": as_mapping(as_mapping(state.get("evidence")).get("calibration")),
         },
         "incumbent": _incumbent_block(
             applied_profile,
@@ -530,7 +530,7 @@ def build_crossover_evidence_packet(
         "structural_history": _structural_history_block(session_dir),
         "drivers": drivers,
         "operator_notes": operator_notes,
-        "installation": installation_evidence(_mapping(draft_raw)),
+        "installation": installation_evidence(as_mapping(draft_raw)),
         "not_evaluated": _not_evaluated(
             state_reason=state_reason,
             applied_profile_reason=applied_profile_reason,
@@ -539,17 +539,17 @@ def build_crossover_evidence_packet(
             candidates_available=bool(candidates.get("available")),
             capture_snr_reason=str(capture_snr.get("reason") or ""),
         ),
-        "contracts": _contract_digests(inputs, round_dir, _mapping(draft_raw), applied_profile),
+        "contracts": _contract_digests(inputs, round_dir, as_mapping(draft_raw), applied_profile),
         DERIVED_VIEWS: _derived_views_block(round_dir, inputs),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
 
 
-def _contract_digests(inputs: RoundInputs, round_dir: Path, draft: dict[str, Any],
+def _contract_digests(inputs: RoundInputs, round_dir: Path, draft: Mapping[str, Any],
                       applied_profile: dict[str, Any] | None) -> dict[str, str]:
-    receipt, _ = _read_json(round_dir / "round_receipt.json")
-    sources = {**contract_sources(inputs), "draft": draft, "receipt": _mapping(receipt),
+    receipt, _ = read_json(round_dir / "round_receipt.json")
+    sources = {**contract_sources(inputs), "draft": draft, "receipt": as_mapping(receipt),
                "applied_profile": applied_profile or {}}
     return contract_digests(prescription_contracts(programs=contract_programs(sources), **sources))
 
@@ -563,13 +563,13 @@ def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:
     # See ADR-0371
     bank = bank_of(inputs)
     banked = inputs if inputs.banked or bank is None else round_inputs(bank)
-    stored = _mapping(banked_packet(banked).get(EVIDENCE_KEY)).get("contracts")
+    stored = as_mapping(banked_packet(banked).get(EVIDENCE_KEY)).get("contracts")
     round_dir, _ = round_artifact_dir(banked.session_dir)
     if not isinstance(stored, dict) or round_dir is None:
         return None
     try:
-        draft, _ = _read_json(banked.design_draft_path) if banked.design_draft_path else (None, "")
-        now = _contract_digests(banked, round_dir, _mapping(draft), applied_profile_source(banked.applied_profile_path)[0])
+        draft, _ = read_json(banked.design_draft_path) if banked.design_draft_path else (None, "")
+        now = _contract_digests(banked, round_dir, as_mapping(draft), applied_profile_source(banked.applied_profile_path)[0])
     except ROUND_INPUT_ERRORS as exc:
         return {"contract_current": None, "stored": stored, "now": None, "error": str(exc)}
     return {"contract_current": stored == now, "stored": stored, "now": now}
@@ -589,7 +589,7 @@ def build_round_evidence(inputs: RoundInputs, *, state_path: Path | None = None)
 
 
 def _bundle_info(session_dir: Path) -> dict[str, Any]:
-    info_raw, info_reason = _read_json(session_dir / "info.json")
+    info_raw, info_reason = read_json(session_dir / "info.json")
     if not isinstance(info_raw, dict):
         raise CrossoverEvidencePacketError(f"bundle missing a readable info.json ({info_reason}): {session_dir}")
     return info_raw
@@ -608,7 +608,7 @@ def entry_evidence(session_dir: Path, rows: Sequence[Measurement]) -> dict[str, 
     """The packet's ``entry_baseline`` block and the ``session`` and ``identity``
     fields a frequency view reads, from a bundle and its take ``rows``."""
     info_raw = _bundle_info(session_dir)
-    identity, _ = _copy_allowed(_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS)
+    identity, _ = copy_allowed(as_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS)
     return {
         "session": _bundle_session(info_raw),
         "identity": identity,

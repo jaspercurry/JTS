@@ -10,6 +10,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from jasper.json_fields import as_mapping
+
 from ..feature_classification import (
     LAB_ROW_FIELDS,
     LAB_ROW_NOT_AN_UNCERTAINTY,
@@ -42,7 +44,7 @@ LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 
-def _read_json(path: Path) -> tuple[Any, str]:
+def read_json(path: Path) -> tuple[Any, str]:
     """One artifact, or the reason it is absent or unreadable."""
     if not path.exists():
         return None, "source_absent"
@@ -54,11 +56,7 @@ def _read_json(path: Path) -> tuple[Any, str]:
         return None, f"not valid JSON: {exc.msg}"
 
 
-def _mapping(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
-
-
-def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
+def absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     """Which of the two absences this is, said explicitly.
 
     ``source_absent`` when the artifact never arrived, ``field_null`` when it
@@ -72,7 +70,7 @@ def _absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     return {}
 
 
-def _copy_allowed(
+def copy_allowed(
     raw: Any, allowed: tuple[str, ...]
 ) -> tuple[dict[str, Any], list[str]]:
     """Named fields through, and the names of everything held back.
@@ -88,7 +86,7 @@ def _copy_allowed(
     return kept, withheld
 
 
-def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
+def exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     """One copied value as exact JSON, naming any column that was not.
 
     Two inputs legitimately carry ``NaN``: a classification row (the instrument
@@ -121,11 +119,11 @@ def _exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
         return None
     if isinstance(value, dict):
         return {
-            key: _exact_json_value(item, column, non_finite)
+            key: exact_json_value(item, column, non_finite)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_exact_json_value(item, column, non_finite) for item in value]
+        return [exact_json_value(item, column, non_finite) for item in value]
     return value
 
 
@@ -204,7 +202,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
             ),
             "n_roles": 0,
         }
-    captures = _mapping(raw.get("captures"))
+    captures = as_mapping(raw.get("captures"))
     return {
         "available": True,
         "artifact_schema_version": raw.get("artifact_schema_version"),
@@ -216,13 +214,13 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         # round from one where all four passed, and a reader given only the
         # survivors could not tell them apart.
         "captures": captures,
-        "program": _mapping(raw.get("program")),
+        "program": as_mapping(raw.get("program")),
         # Whether a microphone calibration was applied, under which sign
         # convention, and from which banked calibration id. Load-bearing rather
         # than housekeeping: an uncalibrated read carries the microphone's own
         # response inside every ratio, and a file read under the wrong sign
         # moves every magnitude without moving one timing diagnostic.
-        "calibration": _mapping(raw.get("calibration")),
+        "calibration": as_mapping(raw.get("calibration")),
         "source": HARMONICS_ARTIFACT,
         "uncertainty": CONTRACT_COMMAND,
         "note": (
@@ -266,7 +264,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     columns that merely LOOK like uncertainties are not — ``gate_slack`` most
     of all, a dB bar beside a dB reading rather than an error bar on it.
     """
-    absent = _absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
+    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
         return {
             "available": False,
@@ -286,10 +284,10 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     for entry in banked if isinstance(banked, list) else []:
         if not isinstance(entry, dict):
             continue
-        kept, dropped = _copy_allowed(entry, LAB_ROW_FIELDS)
+        kept, dropped = copy_allowed(entry, LAB_ROW_FIELDS)
         withheld.update(dropped)
         lab_rows.append({
-            column: _exact_json_value(value, column, non_finite)
+            column: exact_json_value(value, column, non_finite)
             for column, value in kept.items()
         })
     return {
@@ -346,6 +344,6 @@ def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[st
     reads = {name: derived_view_path(view_path(inputs, name), round_dir, name) for name in LEGACY_EVIDENCE_VIEWS}
     return {
         "legacy_view_files_in_evidence": any(legacy for _, legacy in reads.values()),
-        "feature_classification": _classification_block(*_read_json(reads[CLASSIFICATION_ARTIFACT][0])),
-        "harmonics": _harmonics_block(*_read_json(reads[HARMONICS_ARTIFACT][0])),
+        "feature_classification": _classification_block(*read_json(reads[CLASSIFICATION_ARTIFACT][0])),
+        "harmonics": _harmonics_block(*read_json(reads[HARMONICS_ARTIFACT][0])),
     }
