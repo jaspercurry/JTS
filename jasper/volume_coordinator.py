@@ -95,11 +95,6 @@ logger = logging.getLogger(__name__)
 MEASUREMENT_HOLD_READ_TIMEOUT_S = 0.5
 
 
-async def _camilla_never_locked() -> bool:
-    """VolumeHandoff's lock question: nothing locks Camilla (ADR-0376)."""
-    return False
-
-
 class VolumeCoordinator:
     """Owns canonical volume intent and dispatches its effective level.
 
@@ -189,7 +184,6 @@ class VolumeCoordinator:
                 db, context=context, persist=persist,
             ),
             push_source=lambda source, level: self._set_push_source_for_handoff(source, level),
-            camilla_locked=_camilla_never_locked,
             write_level=lambda level: self._set_camilla(level),
             handoff_settle_sec=handoff_settle_sec,
             push_settle_sec=push_settle_sec,

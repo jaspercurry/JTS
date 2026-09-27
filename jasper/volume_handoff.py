@@ -65,7 +65,6 @@ class VolumeHandoff:
         persisted_carrier: Callable[[], float | None],
         write_guard: GuardWriter,
         push_source: Callable[[Source, int], Awaitable[bool]],
-        camilla_locked: Callable[[], Awaitable[bool | None]],
         write_level: Callable[[int], Awaitable[bool]],
         handoff_settle_sec: float,
         push_settle_sec: float,
@@ -75,7 +74,6 @@ class VolumeHandoff:
         self._persisted_main_volume_db = persisted_carrier
         self._set_camilla_db = write_guard
         self._set_push_source_for_handoff = push_source
-        self._camilla_locked = camilla_locked
         self._set_camilla = write_level
         # Camilla's main-volume ramp is 400 ms; settle before opening the lane.
         self._handoff_settle_sec = max(0.0, float(handoff_settle_sec))
@@ -372,7 +370,6 @@ class VolumeHandoff:
         previous_db: float | None,
         previous_mute: bool | None,
         context: str,
-        reason: str | None = None,
     ) -> None:
         fields: dict[str, Any] = {
             "source": source.value,
@@ -385,8 +382,6 @@ class VolumeHandoff:
             ),
             "context": context,
         }
-        if reason is not None:
-            fields["reason"] = reason
         log_event(
             logger,
             "volume.push_guard_clear_failed",
@@ -418,16 +413,6 @@ class VolumeHandoff:
         effective_previous_db = (
             previous_db if persisted_guard_active else current_db
         )
-        if await self._camilla_locked() is True:
-            self._log_push_guard_clear_failed(
-                source,
-                level,
-                previous_db=effective_previous_db,
-                previous_mute=current_mute,
-                context=context,
-                reason="duck_active",
-            )
-            return False
         cleared = await self._set_camilla_db(
             0.0,
             context=context,
