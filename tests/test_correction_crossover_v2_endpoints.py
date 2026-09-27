@@ -32,17 +32,22 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL, open_bundle
+from jasper.atomic_io import env_lock_path, flock_held
 from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired
@@ -82,6 +87,7 @@ from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossove
 from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
+from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_fields, event_records
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
@@ -4112,6 +4118,127 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         )
 
 
+_APPLY_IN_ANOTHER_PROCESS = """
+import sys
+from jasper.web import correction_crossover_v2_state as v2state
+v2state.set_state_path_for_tests(sys.argv[1])
+print("started", flush=True)
+with v2state.v2_state_locked():
+    v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+"""
+
+
+def _apply_recording_a_new_pointer() -> None:
+    with v2state.v2_state_locked():
+        v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+
+
+def _start_apply(apart: str, state_path: Path) -> Callable[[float], bool]:
+    """Start an apply in another thread or process; answer whether it ended."""
+    if apart == "thread":
+        thread = threading.Thread(target=_apply_recording_a_new_pointer)
+        thread.start()
+
+        def thread_ended(timeout: float) -> bool:
+            thread.join(timeout)
+            return not thread.is_alive()
+        return thread_ended
+    root = Path(__file__).resolve().parents[1]
+    child = subprocess.Popen(
+        [sys.executable, "-c", _APPLY_IN_ANOTHER_PROCESS, str(state_path)],
+        cwd=root, env={**os.environ, "PYTHONPATH": str(root)}, stdout=subprocess.PIPE, text=True,
+    )
+    with child.stdout:
+        assert child.stdout.readline().strip() == "started"
+
+    def child_ended(timeout: float) -> bool:
+        try:
+            return child.wait(timeout) == 0
+        except subprocess.TimeoutExpired:
+            return False
+    return child_ended
+
+
+@pytest.mark.parametrize("apart", ["thread", "process"])
+@pytest.mark.parametrize("rewrite", [
+    pytest.param(lambda: v2state.reset_v2_journey_state(), id="reset"),
+    pytest.param(lambda: v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None), id="persist"),
+])
+def test_an_apply_landing_inside_a_state_rewrite_keeps_its_way_back_pointer(monkeypatch, tmp_path, rewrite, apart):
+    """A rewrite reads the state and writes a successor built from that read.
+    An apply in another thread or web process that records its way-back
+    pointer between the two must not lose it."""
+    v2state.save_v2_state({"session_id": "s1", "applied": True, "previous_candidate_fingerprint": "old"})
+    applies: list[Callable[[float], bool]] = []
+    read = v2state.load_v2_state
+
+    def read_then_start_an_apply():
+        state = read()
+        if not applies:
+            applies.append(_start_apply(apart, tmp_path / "v2_state.json"))
+            applies[0](0.5)  # an apply the rewrite does not hold off lands here
+        return state
+
+    monkeypatch.setattr(v2state, "load_v2_state", read_then_start_an_apply)
+    rewrite()
+
+    [apply_ended] = applies
+    assert apply_ended(10)
+    assert read()["previous_candidate_fingerprint"] == "new"
+
+
+def test_a_state_rewrite_refuses_by_code_while_another_process_holds_the_state(monkeypatch, tmp_path, caplog):
+    v2state.save_v2_state({"session_id": "s1", "applied": True})
+    monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
+
+    with spawn_lock_holder(tmp_path / "v2_state.json", hold_seconds=60):
+        with pytest.raises(v2state.V2StateLockTimeout) as refused:
+            v2state.reset_v2_journey_state()
+
+    assert refused.value.code == "crossover_v2_state_busy"
+    assert v2state.load_v2_state()["session_id"] == "s1"
+    assert event_fields(caplog, "correction.crossover_v2_state_lock")["result"] == "timeout"
+
+
+def test_two_threads_in_one_process_never_hold_the_state_together(tmp_path):
+    lock = Path(env_lock_path(str(tmp_path / "v2_state.json")))
+    a_in, a_go, b_in, b_go = (threading.Event() for _ in range(4))
+
+    def hold(entered, release):
+        with v2state.v2_state_locked():
+            entered.set()
+            release.wait(10)
+
+    first = threading.Thread(target=hold, args=(a_in, a_go))
+    first.start()
+    assert a_in.wait(10)
+    second = threading.Thread(target=hold, args=(b_in, b_go))
+    second.start()
+    assert not b_in.wait(0.3)
+    a_go.set()
+    assert b_in.wait(10)
+    assert flock_held(lock, missing=False) is True  # the second holder's own flock, not the first's
+    b_go.set()
+    first.join(10)
+    second.join(10)
+
+
+@pytest.mark.parametrize("write", [
+    pytest.param(lambda: v2state.persist_terminal_failure(_StubConductor("s1", applied=False), "internal_error"),
+                 id="terminal_failure"),
+    pytest.param(lambda: v2state.persist_execution_result("s1", volume_restore="exact_restored"), id="execution_result"),
+])
+def test_a_post_commit_write_outwaits_a_holder_a_request_gives_up_on(monkeypatch, tmp_path, write):
+    v2state.save_v2_state({"session_id": "s1", "applied": False})
+    before = v2state.load_v2_state()
+    monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
+
+    with spawn_lock_holder(tmp_path / "v2_state.json", hold_seconds=0.5):
+        write()
+
+    assert v2state.load_v2_state() != before
+
+
 def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _run6_measured_candidate(preset)
@@ -4874,7 +5001,6 @@ def test_staging_a_second_plan_preserves_the_first_and_refuses_by_code(monkeypat
 @pytest.mark.parametrize("run_id", [None, "same"])
 def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run_id):
     from concurrent.futures import ThreadPoolExecutor
-    import threading
     from jasper.active_speaker.crossover_v2.position_gate import PositionGate
     from jasper.web import correction_capture as capture, correction_handlers as handlers
     from tests.test_correction_crossover_v2_wired import _fake_handler

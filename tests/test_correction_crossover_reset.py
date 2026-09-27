@@ -82,6 +82,7 @@ def test_reset_measurement_journey_reports_actual_outcome_not_static_intent(
 def test_handle_reset_returns_fresh_envelope_with_honest_reset_summary(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr(v2state, "reset_v2_journey_state", lambda: None)
     monkeypatch.setattr(
         backend,
         "reset_measurement_journey",
