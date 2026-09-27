@@ -33,10 +33,6 @@ CLASSIFICATION_ARTIFACT = "feature_classification.json"
 #: it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
 
-#: The views that filed into a round's own evidence before ADR-0346; a round
-#: banked then may still carry their outputs there.
-LEGACY_EVIDENCE_VIEWS = (CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT)
-
 #: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
 #: ``**/`` also admits older pulled rings with a directory per phase. Both
 #: :func:`~.feature_classifier.load_round_captures` and
@@ -323,27 +319,16 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def derived_view_path(beside: Path, evidence_dir: Path | None, name: str) -> tuple[Path, bool]:
-    """Where a view's artifact is read, and whether that is a legacy copy.
-
-    ``beside`` the round, where the view files it; failing that, for one of
-    :data:`LEGACY_EVIDENCE_VIEWS`, the copy a round banked before ADR-0346
-    filed in its evidence (``evidence_dir``). The packet and ``inventory``
-    both find a round's views through here.
-    """
-    filed = evidence_dir / name if evidence_dir is not None and name in LEGACY_EVIDENCE_VIEWS else None
-    if filed is not None and filed.exists() and not beside.exists():
-        return filed, True
-    return beside, False
-
-
 def _derived_views_block(round_dir: Path | None, inputs: RoundInputs) -> dict[str, Any]:
-    """The classification and H2/H3 views, read where
-    :func:`derived_view_path` finds them. ``legacy_view_files_in_evidence``
-    says one came from a copy inside the round's evidence (``round_dir``)."""
-    reads = {name: derived_view_path(view_path(inputs, name), round_dir, name) for name in LEGACY_EVIDENCE_VIEWS}
+    """The classification and H2/H3 views, read beside the round.
+
+    ``round_dir`` is unused now that the pre-ADR-0346 evidence-copy fallback
+    is gone; kept so its two callers in ``evidence_packet/__init__.py`` need
+    no change.
+    """
     return {
-        "legacy_view_files_in_evidence": any(legacy for _, legacy in reads.values()),
-        "feature_classification": _classification_block(*read_json(reads[CLASSIFICATION_ARTIFACT][0])),
-        "harmonics": _harmonics_block(*read_json(reads[HARMONICS_ARTIFACT][0])),
+        "feature_classification": _classification_block(
+            *read_json(view_path(inputs, CLASSIFICATION_ARTIFACT))
+        ),
+        "harmonics": _harmonics_block(*read_json(view_path(inputs, HARMONICS_ARTIFACT))),
     }
