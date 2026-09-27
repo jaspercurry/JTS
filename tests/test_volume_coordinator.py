@@ -517,6 +517,23 @@ async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
     assert cam.set_calls == before
 
 
+async def test_transition_waits_for_a_held_handoff_lease(tmp_path, pushes):
+    """The observer's transition takes the mux handoff's lease: while a
+    handoff holds it, the transition neither pushes nor writes Camilla."""
+    coord, cam, _ = _coord(tmp_path, active={}, selected="spotify", level=50)
+
+    async with coord.source_handoff_operation():
+        transition = asyncio.create_task(
+            coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY),
+        )
+        await asyncio.sleep(0)
+        assert not transition.done()
+        assert (pushes.calls, cam.set_calls) == ([], [])
+    await transition
+
+    assert pushes.spotify == [50]
+
+
 async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
     """note_voice_session(True) gates apply_active_source_transition."""
     coord, cam, _ = _coord(tmp_path, active={}, selected="spotify")
