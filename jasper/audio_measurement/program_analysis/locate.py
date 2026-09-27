@@ -350,7 +350,7 @@ def _resolve_anchor(
     )
 
 
-def _global_offset(
+def locate_global_offset(
     program: ExcitationProgram, capture: np.ndarray, sample_rate: int
 ) -> tuple[int, ProgramSegment, dict[str, np.ndarray], AnchorEvidence | None]:
     """Locate the anchor stimulus -> integer global offset G. Caches stimuli.
@@ -530,7 +530,7 @@ def _locate_sweep(
     return banded if banded[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR else located
 
 
-def _locate_segments(
+def locate_segments(
     program: ExcitationProgram,
     capture: np.ndarray,
     sample_rate: int,

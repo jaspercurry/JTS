@@ -80,7 +80,7 @@ def test_configured_path_matches_legacy_through_analyzer_and_fitter(
         return np.fft.irfft(plants[role] * response * sign, n=n_fft), 192
 
     monkeypatch.setattr(
-        program_analysis.dispatch, "_deconvolve_window", exact_deconvolution
+        program_analysis.dispatch, "deconvolve_window", exact_deconvolution
     )
     program = build_measure_program(
         {"woofer": -11.0, "tweeter": -13.0}, roles,

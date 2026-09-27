@@ -688,9 +688,9 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
         CAPTURE_BOUND_MARGIN_S,
         MeasurementGeometry,
         MeasurementPriors,
-        _estimate_drift,
-        _global_offset,
-        _locate_segments,
+        estimate_drift,
+        locate_global_offset,
+        locate_segments,
         analysis_diagnostic_summary,
         analyze_program_capture,
     )
@@ -728,9 +728,9 @@ def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
         sample_rate=rate,
         max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S,
     )
-    global_offset, _first, stimuli, _ambiguous = _global_offset(program, bounded, rate)
-    locations = _locate_segments(program, bounded, rate, global_offset, stimuli)
-    epsilon = _estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
+    global_offset, _first, stimuli, _ambiguous = locate_global_offset(program, bounded, rate)
+    locations = locate_segments(program, bounded, rate, global_offset, stimuli)
+    epsilon = estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
 
     readings = []
     for segment in program.stimulus_segments():

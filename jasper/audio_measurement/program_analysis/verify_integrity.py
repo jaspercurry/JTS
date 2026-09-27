@@ -20,7 +20,7 @@ from jasper.audio_measurement.program import (
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment, summed_pass_noise, summed_pass_refusal
 from jasper.audio_measurement.wired_capture import scan_zero_runs
 from jasper.log_event import log_event
-from .drift import _estimate_drift
+from .drift import estimate_drift
 from .model import (
     CaptureIntegrity,
     INTEGRITY_CHECK_CLIPPED_RUN,
@@ -171,7 +171,7 @@ def _verify_capture_integrity(
         if refusal:
             checks.append(IntegrityCheck(refusal, INTEGRITY_FAIL))
         if refusal is None and repeat_confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR:
-            drift = _estimate_drift(program, capture, sample_rate, repeat_locations)
+            drift = estimate_drift(program, capture, sample_rate, repeat_locations)
         if refusal is None:
             repeat_content = {
                 "repeat_epsilon_ppm": drift.epsilon_ppm if drift else None,

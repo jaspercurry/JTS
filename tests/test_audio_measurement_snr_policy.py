@@ -667,7 +667,7 @@ def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
 def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
     """The LIVE magnitude route, which is where the tie-break actually bites.
 
-    ``program_analysis._driver_response`` uses :func:`band_snr_verdicts` with
+    ``program_analysis.driver_response`` uses :func:`band_snr_verdicts` with
     ``decision_class="magnitude"``. A noisy room can put every band in the
     driver's window at the same ``insufficient`` verdict — the exact shape
     ``jasper.web.correction_crossover_backend``'s completion-time correction

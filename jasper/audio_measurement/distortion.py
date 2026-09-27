@@ -488,13 +488,13 @@ def read_segment_distortion(
     drifted capture does not smear the images. The ONLY function here that
     windows a capture; production behaviour is untouched.
     """
-    from .program_analysis import _deconvolve_window
+    from .program_analysis import deconvolve_window
 
     segment = program.segment(segment_id)
     sample_rate = int(program.sample_rate_hz)
     meta = segment_sweep_meta(segment)
     needed = required_pre_guard_s(meta, orders)
-    full_ir, pre_effective = _deconvolve_window(
+    full_ir, pre_effective = deconvolve_window(
         capture,
         segment,
         int(anchor),
@@ -504,7 +504,7 @@ def read_segment_distortion(
         tail_s=tail_s,
     )
     # Compared in SAMPLES against the window's own rounding of the same request,
-    # not in seconds: `_deconvolve_window` takes `int(round(...))`, so a
+    # not in seconds: `deconvolve_window` takes `int(round(...))`, so a
     # seconds-domain comparison fails by one sample's worth of float on a window
     # that clamped nothing. Only the head clamp makes these differ, and that is
     # exactly the condition worth refusing -- the images then wrapped.

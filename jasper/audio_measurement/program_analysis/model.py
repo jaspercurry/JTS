@@ -247,7 +247,7 @@ def sweep_band_crest_factor_db(
     f1, f2 = float(sweep_hz[0]), float(sweep_hz[1])
     if not (hi > lo > 0.0 and f2 > f1 > 0.0):
         # No overlap, or a degenerate band — no occupancy term to compute.
-        # `_ambient_rows_in_band` only yields overlapping rows, so this is
+        # `ambient_rows_in_band` only yields overlapping rows, so this is
         # defense against a malformed band, not a live path.
         return SWEEP_PEAK_TO_RMS_DB
     return SWEEP_PEAK_TO_RMS_DB + 10.0 * math.log10(
@@ -988,7 +988,7 @@ class ProgramAnalysis:
     # Any pilot's `PilotObservation.delta_implausible` (#2647) -- set ONLY by
     # `_analyze_check`, a second, independent signal alongside
     # `anchor_ambiguous` that this capture's timeline is not trustworthy. Never
-    # written by `_global_offset`/`_resolve_anchor`, so this field has exactly
+    # written by `locate_global_offset`/`_resolve_anchor`, so this field has exactly
     # one writer. ``False`` default: implausible by construction otherwise.
     delta_implausible: bool = False
     # Passthrough of MeasurementPriors.mic_calibrated, set at the same site

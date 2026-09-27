@@ -146,7 +146,7 @@ def _locate_discontinuity(
     return fit.step_samples, ordered[fit.cut_index - 1].segment_id, fit
 
 
-def _estimate_drift(
+def estimate_drift(
     program: ExcitationProgram,
     capture: np.ndarray,
     sample_rate: int,
