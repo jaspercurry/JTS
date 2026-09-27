@@ -21,7 +21,7 @@ from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.audio_measurement.repeated_sweep import sweep_ambient_id
 
 from .crossover_v2.record_index import measurement_documents, record_path
-from .measurement_analysis import AnalyzedMeasurement, analyzed_measurements
+from .measurement_analysis import AnalyzedMeasurement, decoded_measurements
 
 BASS_VIEW_SCHEMA = "jts_bass_view/1"
 
@@ -129,7 +129,7 @@ def bass_view(
     bundle_dir: Path, *, take_ids: tuple[str, ...], calibration_root: Path | None = None,
 ) -> dict[str, Any]:
     paths = (record_path(row) for row, record in measurement_documents(bundle_dir) if record.get("take_id") in take_ids)
-    takes = [bass_take(take) for take in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=paths)]
+    takes = [bass_take(take) for take in decoded_measurements(bundle_dir, calibration_root=calibration_root, paths=paths)]
     if not takes:
         raise ValueError("measurement_captures_missing")
     return {

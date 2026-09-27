@@ -13,12 +13,14 @@ from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
 from jasper.active_speaker.round_copy import coverage_lines
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
+from jasper.active_speaker.crossover_v2.spatial import analysis_curve_records
 from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 
 import asyncio
 import io
+import json
 import logging
 import threading
 from dataclasses import replace
@@ -34,7 +36,7 @@ from jasper.active_speaker import arm_walk
 from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
-from jasper.active_speaker.run_manifest import RunManifest
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
@@ -50,7 +52,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_e
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
-from jasper.audio_measurement.program import build_measure_program
+from jasper.audio_measurement.program import ExcitationProgram, build_measure_program
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
@@ -78,7 +80,8 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
-    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _pilot_obs, _verify_pilot, plan_context,
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _pilot_obs, _verify_analysis, _verify_pilot,
+    plan_context,
 )
 from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
@@ -1255,12 +1258,19 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert len(raw) == record["wav_bytes"]
     assert decode_wav_to_mono(raw)[0].size == 32
     if analysis_error is not None:
-        assert "capture_calibration" not in record
+        assert "capture_calibration" not in record and "curves" not in record
         assert record["analysis_error"] == {
             "code": refusal_copy.REASON_INTERNAL_ERROR, "error_type": type(analysis_error).__name__,
         }
         return
     assert "analysis_error" not in record
+    program = ExcitationProgram.from_dict(record["program"])
+    curves = analysis_curve_records(_verify_analysis(program), program)
+    # Only a room take banks its curves (ADR-0373); every take's reach its run-manifest row.
+    assert record.get("curves") == (curves if pose.get("kind") == "seat" else None)
+    manifest, = (tmp_path / "sessions").rglob(RUN_MANIFEST_FILENAME)
+    assert [take["curve"] for group in json.loads(manifest.read_text())["sets"]
+            for take in group["takes"]] == curves != []
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)

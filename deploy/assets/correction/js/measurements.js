@@ -73,10 +73,9 @@ function runColor(run) {
 }
 
 function seriesDash(series, index, allSeries) {
-  if (series.kind === 'average') return [];
   if (series.kind === 'entry_baseline') return [10, 4];
   const detailIndex = allSeries.slice(0, index)
-    .filter((candidate) => !['average', 'entry_baseline'].includes(candidate.kind)).length;
+    .filter((candidate) => candidate.kind !== 'entry_baseline').length;
   return POSITION_DASHES[detailIndex % POSITION_DASHES.length];
 }
 
@@ -93,6 +92,13 @@ function seriesSwatch(run, series, index) {
   }));
 }
 
+function curvesNotice(runs) {
+  return runs
+    .filter((run) => (run.metadata || {}).curves)
+    .map((run) => `${run.label}: no curves were banked with its takes (${run.metadata.curves.reason}).`)
+    .join(' ');
+}
+
 function draw() {
   if (!currentView) return;
   const chartSeries = [];
@@ -101,8 +107,8 @@ function draw() {
       chartSeries.push({
         curve: series,
         color: runColor(run),
-        lineWidth: series.kind === 'average' ? 2.5 : 1.25,
-        alpha: series.kind === 'average' ? 1 : 0.55,
+        lineWidth: 1.25,
+        alpha: 0.55,
         dash: seriesDash(series, index, run.series),
         draw: visibleSeries.has(seriesKey(run, series)),
       });
@@ -123,11 +129,13 @@ function draw() {
       excluded: cssColor(els.canvas, '--crossover-chart-excluded', '#888'),
     },
   });
-  els.status.textContent = !drew
-    ? 'No visible response data in this frequency range. Select a curve or widen the range.'
-    : `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
+  const notice = curvesNotice(currentView.runs);
+  const summary = drew
+    ? `${visibleCount} of ${chartSeries.length} curves shown · relative to the stored reference frame${
       untrusted ? ' · shaded areas are untrusted' : ''
-    }`;
+    }`
+    : (chartSeries.length || !notice) && 'No visible response data in this frequency range. Select a curve or widen the range.';
+  els.status.textContent = [summary, notice].filter(Boolean).join(' · ');
 }
 
 function renderSeriesControls() {
@@ -163,7 +171,6 @@ function renderSeriesControls() {
 
 function detailRows(run) {
   const metadata = run.metadata || {};
-  const smoothing = metadata.smoothing || {};
   const angles = (metadata.angles_deg || []).map(angleLabel).join(', ') || 'Not recorded';
   const result = (metadata.adoption && metadata.adoption.outcome)
     || (metadata.verification && metadata.verification.spec)
@@ -172,9 +179,6 @@ function detailRows(run) {
   const floor = Number(storedFloor);
   const graph = metadata.applied_graph_fingerprint || metadata.entry_graph_fingerprint
     || (metadata.graph_fingerprints || [])[0];
-  const smoothingText = smoothing.average_fractional_octave
-    ? `Average 1/${smoothing.average_fractional_octave} · positions 1/${smoothing.positions_fractional_octave || '?'}`
-    : 'Stored with each curve';
   const phases = (metadata.phases || []).map((phase) => String(phase).replaceAll('_', ' ')).join(', ');
   return [
     ['Captured', formatDate(run.started_at)],
@@ -183,7 +187,7 @@ function detailRows(run) {
     ['Positions', String(metadata.position_count || 0)],
     ['Angles', angles],
     ['Phases', phases || 'Not recorded'],
-    ['Smoothing', smoothingText],
+    ['Smoothing', 'Stored with each curve'],
     ['Trusted range', storedFloor != null && Number.isFinite(floor) ? `${Math.round(floor)} Hz–20 kHz` : 'Not recorded'],
     ['Graph', graph ? String(graph).slice(0, 12) : 'Not recorded'],
     ['Mic calibration', metadata.mic_calibration_id || 'Not recorded'],

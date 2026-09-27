@@ -270,6 +270,8 @@ def reference_gated_measurement(
     magnitude = np.interp(grid, response.freqs_hz[keep], smoothed)
     fragment = response.gating or {}
     return {"freqs_hz": tuple(grid), "magnitude_db": tuple(magnitude), "window": "gated",
+            "calibration": {"applied": calibration is not None,
+                            "calibration_id": calibration.calibration_id if calibration is not None else None},
             "gate_window_ms": fragment.get("window_ms"),
             "validity_floor_hz": response.validity_floor_hz,
             "trusted_floor_hz": fragment.get("f_trusted_hz"),

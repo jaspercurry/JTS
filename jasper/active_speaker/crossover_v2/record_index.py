@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -35,8 +37,10 @@ __all__ = [
     "Measurement",
     "MeasurementCaptureIdentityError",
     "bundle_measurements",
+    "has_banked_take",
     "measurement_documents",
     "reopen_measurement_capture",
+    "reopen_measurement_record",
 ]
 
 
@@ -71,6 +75,15 @@ def reopen_measurement_capture(
     bundle_dir: Path, record_path: str | Path,
 ) -> tuple[dict[str, Any], bytes | None]:
     """Verify a banked take and its WAV; incomplete takes have no capture bytes."""
+    record, capture = reopen_measurement_record(bundle_dir, record_path)
+    return record, capture() if capture is not None else None
+
+
+def reopen_measurement_record(
+    bundle_dir: Path, record_path: str | Path,
+) -> tuple[dict[str, Any], Callable[[], bytes] | None]:
+    """Verify a banked take and its WAV's identity, and hand back a reader for
+    the WAV rather than its bytes; an incomplete take has no reader."""
     info = json.loads((bundle_dir / "info.json").read_text())
     store = CommissioningEvidenceStore.open(bundle_dir, expected_session_id=info["session_id"])
     artifacts = {row["path"]: row for row in read_artifact_manifest(bundle_dir)["artifacts"]}
@@ -92,7 +105,7 @@ def reopen_measurement_capture(
         or wav_identity.relative_path not in artifacts[record_identity.relative_path].get("dependencies", [])
     ):
         raise MeasurementCaptureIdentityError("measurement_capture_identity_mismatch")
-    return record, store.reopen_artifact(wav_identity)
+    return record, partial(store.reopen_artifact, wav_identity)
 
 
 def _text(value: Any) -> str:
@@ -159,6 +172,12 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
 def _load(take: Path) -> Mapping[str, Any]:
     """One banked file's JSON, or empty when it is not readable."""
     return read_json_mapping(take) or {}
+
+
+def has_banked_take(bundle_dir: Path) -> bool:
+    """Whether the bundle banked a take, by its file alone: only a take record
+    lands under :data:`BANKED_TAKE_GLOB`."""
+    return next((Path(bundle_dir) / EVIDENCE_ROOT / "artifacts").glob(BANKED_TAKE_GLOB), None) is not None
 
 
 def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:

@@ -18,7 +18,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, stubbed_capabilities
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
-from jasper.active_speaker.measurement_analysis import analyzed_measurements
+from jasper.active_speaker.measurement_analysis import decoded_measurements
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measurement_programs import (
@@ -93,8 +93,8 @@ def _replay(bass, raw, tmp_path, monkeypatch):
     wav = tmp_path / "capture.wav"
     wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))
     record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_capture", lambda *_: (record, wav.read_bytes()))
-    return next(analyzed_measurements(tmp_path, paths=["capture"]))
+    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_record", lambda *_: (record, wav.read_bytes))
+    return next(decoded_measurements(tmp_path, paths=["capture"]))
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
