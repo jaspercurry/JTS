@@ -1,7 +1,7 @@
 """The declarations that say WHERE this speaker may be crossed (#1894).
 
-Hardware-free throughout, in two parts: the declared diameter's route from the
-draft to the conductor (#1675), and the single owner of corner admissibility —
+Hardware-free throughout, in two parts: each declared driver fact resolved by
+measurement target (ADR-0384), and the single owner of corner admissibility —
 ``_fc_rejection``, "is this corner within both drivers' declared hard
 excitation bands".
 
@@ -24,7 +24,8 @@ from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_BELOW_DECLARED_FLOOR,
     _fc_rejection,
 )
-from jasper.speaker_layout import declared_radiating_diameters_mm
+from jasper.active_speaker.design_inputs import declared_by_target
+from tests.test_rear_output_foundation import _rear_pair
 
 # The JTS3 declaration, so the numbers below are the ones the owner's speaker
 # actually produces rather than a synthetic shape.
@@ -124,40 +125,28 @@ def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
     }
 
 
-# --- the declared diameter reaches the conductor (#1675's four edits) ---------
+# --- declared driver facts resolve by measurement target (ADR-0384) ----------
+
+_MONO, _STEREO = (_rear_pair(layout)[1].to_dict() for layout in ("mono", "stereo"))
 
 
-def test_the_declared_diameter_resolves_off_the_draft_like_driver_class():
-    from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
+@pytest.mark.parametrize("topology,manual,research,key,expected", [
+    (_MONO, {"mono:woofer": JTS3_DIAMETER_MM, "mono:woofer:rear": 100.0}, {}, "radiating_diameter_mm",
+     {"woofer": JTS3_DIAMETER_MM, "woofer:rear": 100.0}),
+    (_MONO, {"mono:woofer": JTS3_DIAMETER_MM}, {}, "radiating_diameter_mm",
+     {"woofer": JTS3_DIAMETER_MM, "woofer:rear": JTS3_DIAMETER_MM}),
+    (_MONO, {"mono:woofer": 120.0}, {"mono:woofer": JTS3_DIAMETER_MM, "mono:tweeter": 25.0}, "radiating_diameter_mm",
+     {"woofer": 120.0, "woofer:rear": 120.0, "tweeter": 25.0}),
+    (_STEREO, {"left:woofer": JTS3_DIAMETER_MM, "right:woofer": 165.0, "left:tweeter": 25.0}, {"right:tweeter": 25.0},
+     "radiating_diameter_mm", {"tweeter": 25.0}),
+    (_MONO, {"mono:tweeter": "compression_horn"}, {"mono:tweeter": "soft_dome", "mono:woofer": "unknown"},
+     "driver_class", {"tweeter": "compression_horn", "woofer": "unknown", "woofer:rear": "unknown"}),
+    (None, {"mono:woofer": JTS3_DIAMETER_MM}, {}, "radiating_diameter_mm", {}),
+], ids=["rear_declares_its_own", "rear_takes_the_front", "manual_over_research", "disagreeing_outputs_declare_none",
+        "driver_class", "no_topology"])
+def test_a_declared_driver_fact_resolves_by_measurement_target(topology, manual, research, key, expected):
+    def rows(values):
+        return {"drivers": [{"target_id": target, key: value} for target, value in values.items()]}
 
-    draft = {"manual_settings": {"drivers": [
-        {"role": "woofer", "driver_class": "unknown",
-         "radiating_diameter_mm": JTS3_DIAMETER_MM},
-        {"role": "tweeter", "driver_class": "compression_horn"},
-    ]}}
-    assert declared_radiating_diameters_mm(draft) == {"woofer": JTS3_DIAMETER_MM}
-    # Same draft path, same role keying as the field it mirrors.
-    assert set(_resolve_driver_class_by_role(draft)) >= {"tweeter"}
-
-
-@pytest.mark.parametrize("drivers", [
-    [{"role": "woofer", "radiating_diameter_mm": 114.0},
-     {"role": "woofer", "radiating_diameter_mm": 165.0}],   # disagreeing
-    [{"role": "woofer", "radiating_diameter_mm": 0.0}],     # non-physical
-    [{"role": "woofer", "radiating_diameter_mm": -114.0}],
-    [{"role": "woofer", "radiating_diameter_mm": "114"}],   # not a number
-    [{"role": "woofer", "radiating_diameter_mm": True}],    # bool is not a size
-    [{"role": "", "radiating_diameter_mm": 114.0}],         # no role
-])
-def test_a_malformed_diameter_costs_that_role_its_prior_not_the_session(drivers):
-    """Fail-soft, exactly like the class resolver it mirrors: a beaming prior is
-    guidance, so a bad declaration must never abort a measurement."""
-    assert declared_radiating_diameters_mm({"manual_settings": {"drivers": drivers}}) == {}
-
-
-@pytest.mark.parametrize("draft", [
-    {}, {"manual_settings": None}, {"manual_settings": {"drivers": None}},
-    {"manual_settings": {"drivers": ["not-a-mapping"]}},
-])
-def test_a_draft_without_declarations_yields_no_priors(draft):
-    assert declared_radiating_diameters_mm(draft) == {}
+    draft = {"topology": topology, "manual_settings": rows(manual), "driver_research": rows(research)}
+    assert declared_by_target(draft, key) == expected

@@ -139,7 +139,6 @@ DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = AUDIO_BAND_TOP_HZ
 # The in-room fit needs the whole audible band (Bank AES-134).
-# This belongs to the per-speaker profile; see #4990.
 SUMMED_SWEEP_BAND_HZ = (ROOM_FLOOR_HZ, VERIFY_F_HI_HZ)
 
 # Leading VERIFY pilot's OWN band:

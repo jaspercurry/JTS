@@ -80,7 +80,6 @@ def _manual_settings() -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
             },
@@ -99,7 +98,6 @@ def _manual_settings() -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 25,
                 },
             },
         ],
@@ -133,7 +131,6 @@ def _research_result(request: dict) -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
             }
@@ -150,7 +147,6 @@ def _research_result(request: dict) -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 25,
                 },
             }
         safety_fields = (
@@ -1166,21 +1162,28 @@ def test_driver_style_changes_computed_policy_not_measurement_identity() -> None
     assert recomputed["targets"][1]["driver_style"] == "ribbon_tweeter"
 
 
-def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
+@pytest.mark.parametrize("drop,research_mm,capability", [
+    (lambda woofer: None, None, "sealed_single_radiator_supported"),
+    (lambda woofer: woofer.pop("radiating_diameter_mm"), 132.0, "sealed_single_radiator_supported"),
+    (lambda woofer: woofer.pop("radiating_diameter_mm"), None, "refused_geometry_incomplete"),
+    (lambda woofer: woofer["cabinet"].pop("baffle_width_mm"), None, "refused_geometry_incomplete"),
+], ids=["complete", "diameter_only_in_research", "no_driver_diameter", "no_baffle_width"])
+def test_a_sealed_cabinet_reads_its_drivers_own_diameter(drop, research_mm, capability) -> None:
+    topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
-    manual["drivers"][0]["cabinet"].pop("baffle_width_mm")
-    manual = normalise_manual_settings(manual)
-    assert manual is not None
+    manual["drivers"][0]["radiating_diameter_mm"] = 132.0
+    drop(manual["drivers"][0])
+    research = None
+    if research_mm is not None:
+        research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+        research["drivers"][0]["radiating_diameter_mm"] = research_mm
+        research = normalise_driver_research(research)
 
     profile = compute_driver_safety_profile(
-        mono_output_topology(card_id=None),
-        manual_settings=manual,
-        driver_research=None,
+        topology, manual_settings=normalise_manual_settings(manual), driver_research=research,
     )
 
-    assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == (
-        "refused_geometry_incomplete"
-    )
+    assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == capability
 
 
 def test_operator_override_drops_research_provenance_for_changed_field() -> None:
@@ -1893,7 +1896,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
             "cabinet": {
                 "enclosure_kind": "sealed",
                 "radiator_count": 1,
-                "effective_radiating_diameter_mm": 120,
                 "baffle_width_mm": 200,
             },
         }
@@ -1917,7 +1919,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
         "cabinet": {
             "enclosure_kind": "sealed",
             "radiator_count": 1,
-            "effective_radiating_diameter_mm": 25,
         },
     }
 

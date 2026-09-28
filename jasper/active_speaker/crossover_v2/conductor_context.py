@@ -31,8 +31,9 @@ from .refusal_copy import (
     driver_sensitivity_undeclared_message,
 )
 from jasper.output_topology import topology_is_subless_passive_mains
-from jasper.speaker_layout import declared_radiating_diameters_mm, measurement_target_id
-from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED, DRIVER_CLASSES
+from jasper.speaker_layout import measurement_target_id
+from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
+from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.audio_measurement.program import RoleBand
 
@@ -95,12 +96,10 @@ class V2ConductorContext(Generic[_Level]):
     #: Per-target permitted excitation band, from the resolver the caps come
     #: from; keyed like :attr:`role_targets`, so a rear woofer has its own.
     driver_bands: dict[str, Any] = field(default_factory=dict)
-    driver_class_by_role: dict[str, str] = field(default_factory=dict)
-    # Per-role declared effective radiating diameter in mm, the ka/beaming
-    # prior, which is DISCLOSURE and never a bound. It reaches the conductor by
-    # the SAME draft path ``driver_class_by_role`` takes. A role absent here
-    # gets no beaming prior, disclosed as such rather than an assumed diameter.
-    radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
+    # Per-target declared radiating diameter in mm, the ka/beaming prior:
+    # disclosure, never a bound. A target absent here gets no beaming prior,
+    # disclosed as such rather than an assumed diameter.
+    radiating_diameter_mm_by_target: dict[str, float] = field(default_factory=dict)
     # Per-role confirmed ``measurement_band_hz`` in Hz — the contract-derived
     # echo/null analysis band the cloud-group pipeline reads in place of
     # DEFAULT_ECHO_BAND_HZ's flat constant. A role missing here degrades to
@@ -140,41 +139,6 @@ def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None
             code=_BOX_NOT_READY,
         )
     return preview
-
-
-def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
-    """Per-role declared driver technology class (#1665 component entry).
-
-    Read by role off ``manual_settings.drivers``, like its pair
-    :func:`jasper.speaker_layout.declared_radiating_diameters_mm`: a role with
-    disagreeing declarations drops entirely, and anything malformed is skipped
-    rather than raised. This resolver runs inside conductor-context resolution:
-    an unexpected value should fall back to
-    :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`'s own
-    conservative "unknown" default for that one role, never abort the whole
-    session.
-    """
-
-    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
-    if not isinstance(manual, Mapping):
-        return {}
-    drivers = manual.get("drivers")
-    out: dict[str, str] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("driver_class")
-        if not role or not isinstance(value, str) or value not in DRIVER_CLASSES:
-            continue
-        if role in out and out[role] != value:
-            conflicted.add(role)
-            continue
-        out[role] = value
-    for role in conflicted:
-        out.pop(role, None)
-    return out
 
 
 def _cap_refused(target_id: str, exc: ValueError) -> CrossoverV2Refused:
@@ -314,9 +278,6 @@ def resolve_conductor_context(
             REASON_REGISTRY[REASON_MEASUREMENT_TARGETS_MISSING].message,
             code=REASON_MEASUREMENT_TARGETS_MISSING,
         )
-    driver_class_by_role = _resolve_driver_class_by_role(draft)
-    # #1675: the ka/beaming prior, off the SAME draft path, as disclosure.
-    radiating_diameter_mm_by_role = declared_radiating_diameters_mm(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     bands = {}
@@ -390,7 +351,6 @@ def resolve_conductor_context(
         playback_device=playback_device,
         role_channels=measurement_role_channels(preset),
         sound_design_revision=int(draft.get("revision", 0)),
-        driver_class_by_role=driver_class_by_role,
-        radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
+        radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
         measurement_band_hz_by_role=measurement_bands,
     )

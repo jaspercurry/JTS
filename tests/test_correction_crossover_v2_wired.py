@@ -1117,7 +1117,7 @@ def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, 
         device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
         production=SimpleNamespace(graph=None), conductor=_conductor(FlowSeams(), index_phase_map={1: "verify"}),
         refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
-        context=SimpleNamespace(radiating_diameter_mm_by_role={"woofer": 114.0, "tweeter": 25.0}),
+        context=SimpleNamespace(radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": 114.0, "tweeter": 25.0}),
     )
 
     record = records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,

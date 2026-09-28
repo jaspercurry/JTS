@@ -13,11 +13,11 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.active_speaker.design_draft import design_draft_view
+from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
-from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
@@ -194,7 +194,7 @@ def speaker_fit(
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
     draft = sources.get("draft") or {}
-    classes = _resolve_driver_class_by_role(draft)
+    classes = declared_by_target(draft, "driver_class")
     budgets = fit_budgets_by_role(design_draft_view(draft).get("driver_safety_profile") or {})
     overrides = normalise_fit_budget(budget or {})
     calibration = (record.get("capture_setup") or {}).get("calibration") or {}

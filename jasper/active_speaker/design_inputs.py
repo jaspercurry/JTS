@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasper.output_topology import OutputTopology
+from jasper.speaker_layout import measurement_target_id
 
 
 def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any]:
@@ -74,3 +75,32 @@ def resolve_design_inputs(
 def resolved_draft_inputs(draft: Mapping[str, Any]) -> dict[str, Any]:
     topology = OutputTopology.from_mapping(draft["topology"])
     return resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research"))
+
+
+def declared_by_target(draft: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """Each measurement target's declared ``key``, manual row over research (ADR-0384).
+
+    A target whose outputs disagree declares none, as does a draft whose
+    topology is absent or unreadable; a rear output that declares none takes
+    its front's value.
+    """
+    try:
+        topology = OutputTopology.from_mapping(draft.get("topology"))
+    except ValueError:
+        return {}
+    rows = drivers_by_target(resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research")))
+    values: dict[str, Any] = {}
+    conflicted: set[str] = set()
+    fronts: dict[str, str] = {}
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            target = measurement_target_id(channel.role, channel.output_variant)
+            if channel.output_variant != "primary":
+                fronts[target] = channel.role
+            value = rows.get(channel.target_id(group.id), {}).get(key)
+            if value is not None and values.setdefault(target, value) != value:
+                conflicted.add(target)
+    for target, front in fronts.items():
+        if target not in values and front in values and front not in conflicted:
+            values[target] = values[front]
+    return {target: value for target, value in values.items() if target not in conflicted}

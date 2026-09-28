@@ -277,11 +277,14 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
     return sorted(filters, key=lambda item: str(item["kind"]))
 
 
-def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
+def _normalise_cabinet(value: Any, field_name: str, radiating_diameter_mm: float | None, fix: str) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
+    # A cabinet holds no size: a driver's is its own radiating_diameter_mm (ADR-0384).
+    _reject_unknown_keys(value, field_name, {"enclosure_kind", "radiator_count", "baffle_width_mm",
+                                             "lf_reconstruction_capability"}, fix)
     enclosure = (
         _text(
             value.get("enclosure_kind") or "unknown",
@@ -300,20 +303,11 @@ def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
         minimum=1,
         maximum=16,
     )
-    diameter = _positive_float(
-        value.get("effective_radiating_diameter_mm"),
-        f"{field_name}.effective_radiating_diameter_mm",
-    )
     baffle_width = _positive_float(
         value.get("baffle_width_mm"),
         f"{field_name}.baffle_width_mm",
     )
-    if (
-        enclosure == "sealed"
-        and radiator_count == 1
-        and diameter is not None
-        and baffle_width is not None
-    ):
+    if enclosure == "sealed" and radiator_count == 1 and radiating_diameter_mm is not None and baffle_width is not None:
         reconstruction = "sealed_single_radiator_supported"
     elif enclosure == "unknown":
         reconstruction = "refused_unknown_enclosure"
@@ -329,8 +323,6 @@ def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
     }
     if radiator_count is not None:
         out["radiator_count"] = radiator_count
-    if diameter is not None:
-        out["effective_radiating_diameter_mm"] = diameter
     if baffle_width is not None:
         out["baffle_width_mm"] = baffle_width
     return out
@@ -518,7 +510,11 @@ def normalise_driver_safety_fields(
             out["fit_budget"] = normalise_fit_budget(value["fit_budget"])
         except ValueError as exc:
             raise DriverSafetyProfileError(f"{field_name}.{exc}") from exc
-    cabinet = _normalise_cabinet(value.get("cabinet"), f"{field_name}.cabinet")
+    cabinet = _normalise_cabinet(
+        value.get("cabinet"), f"{field_name}.cabinet",
+        _positive_float(value.get("radiating_diameter_mm"), f"{field_name}.radiating_diameter_mm"),
+        REIMPORT_RESEARCH if include_research_evidence else
+        '; remove them under "Details and custom settings" at /sound/speaker/, then save')
     if cabinet is not None:
         out["cabinet"] = cabinet
     limits = _normalise_level_duration_limits(
@@ -868,8 +864,10 @@ def _normalise_profile_manual_settings(
                 include_research_evidence=False,
             )
         )
-        # Validated where the declaration is saved; the tweeter cap derivation reads them (ADR-0227 §9).
-        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad") if raw.get(key) is not None})
+        # Validated where the declaration is saved; the tweeter cap derivation and the sealed-cabinet
+        # check read them (ADR-0227 §9, ADR-0384).
+        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad", "radiating_diameter_mm")
+                       if raw.get(key) is not None})
         drivers.append(driver)
     for index, raw_candidate in enumerate(
         _sequence(
@@ -1108,13 +1106,9 @@ def compute_driver_safety_profile(
                 finite_float(visible.get("sensitivity_db_2v83_1m")), visible.get("pad"),
             ),
             "fit_budget": visible.get("fit_budget"),
-            "cabinet": visible.get(
-                "cabinet",
-                {
-                    "enclosure_kind": "unknown",
-                    "lf_reconstruction_capability": "refused_unknown_enclosure",
-                },
-            ),
+            # Judged on the merged declaration: each value manual over research (ADR-0384).
+            "cabinet": _normalise_cabinet(visible.get("cabinet") or {}, f"{target_id}.cabinet",
+                                          visible.get("radiating_diameter_mm"), REIMPORT_RESEARCH),
             "unknowns": unknowns,
             "field_provenance": provenance,
             "authority": "operator_visible_values",
