@@ -1407,7 +1407,7 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
         return None
 
     monkeypatch.setattr(
-        "jasper.volume_coordinator.volume_context_stamp_boot_ns", bind_stamp,
+        "jasper.assistant_volume.volume_context_stamp_boot_ns", bind_stamp,
     )
     cam.read_hook = verify_stamp_precedes_probe
 
