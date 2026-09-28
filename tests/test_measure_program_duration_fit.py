@@ -47,6 +47,7 @@ from jasper.audio_measurement.sweep import (
     phase_closing_duration_s,
     synchronized_sweep_metadata,
 )
+from tests._log_events import event_records
 from tests.active_speaker_fixtures import mono_output_topology
 
 #: Tonight's jts3 shape: the woofer runs 150-4000 Hz (the band whose 4 s
@@ -507,7 +508,7 @@ def test_the_compose_path_discloses_only_when_the_fit_shortened_the_request(capl
     gains = {"woofer": -6.0, "tweeter": -46.0}
     with caplog.at_level(logging.INFO, logger="jasper.audio_measurement.program"):
         _compose(gains, -20.0, {"woofer": 12.0, "tweeter": 12.0})
-    assert "measure_program.sweep_fitted" not in caplog.text
+    assert event_records(caplog, "measure_program.sweep_fitted") == []
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="jasper.audio_measurement.program"):
