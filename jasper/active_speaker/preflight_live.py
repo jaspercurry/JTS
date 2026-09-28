@@ -30,6 +30,7 @@ from .crossover_v2.conductor_context import resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
+from .excitation_safety_plan import published_driver_caps
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
 from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
@@ -131,4 +132,6 @@ def read_preflight_facts(
                                   or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
+        driver_caps=(published_driver_caps(getattr(context, "safety_profile", {}), context.role_targets)
+                     if context is not None else {}),
     )

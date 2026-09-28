@@ -52,6 +52,7 @@ from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -336,6 +337,17 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
         "angles_deg": [-20, 0, 20],
         "elevations_deg": [],
         "reason": None,
+    }
+
+
+def test_status_publishes_each_drivers_cap_and_its_source(monkeypatch):
+    _topology, safety, _targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+    monkeypatch.setattr(cli, "load_design_draft", lambda: {"driver_safety_profile": safety})
+
+    assert cli.status_document(None, "", session_dir=None)["declared"]["caps"] == {
+        "mono:woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "mono:tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
     }
 
 

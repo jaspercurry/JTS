@@ -191,7 +191,7 @@ def test_driver_caps_still_bind_over_a_measured_reference(tmp_path):
     ("woofer_peak", "expected_woofer_cap", "expected_tweeter_cap", "anchor"),
     [
         (-20.0, -20.0, -30.8, "declared"),
-        (None, 0.0, -10.8, "undeclared"),
+        (None, 0.0, -10.8, "class_default"),
     ],
     ids=["woofer-declares-a-limit", "woofer-declares-none"],
 )

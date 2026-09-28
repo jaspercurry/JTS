@@ -35,6 +35,7 @@ from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_pair
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
@@ -79,6 +80,24 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
+    _topology, safety, targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+    monkeypatch.setattr(control_client, "get", Mock(return_value=control_client.ControlResponse(
+        200, b'{"muted": false, "percent": 35}')))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    ready = ready_facts(plan)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets=targets, safety_profile=safety,
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    assert preflight(plan, replace(ready, driver_caps=facts.driver_caps)).to_dict()["driver_caps"] == {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
+    }
 
 
 @pytest.mark.parametrize("layout,name,preset,poses", [

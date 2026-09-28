@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.priors import configured_crossover_trans
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
-    ExcitationSafetyPlanError, ExcitationSafetyPlanRefusal, resolve_driver_excitation_ceilings,
+    ExcitationSafetyPlanError, ExcitationSafetyPlanRefusal, published_driver_caps, resolve_driver_excitation_ceilings,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_DRIVER_SENSITIVITY_UNDECLARED, CrossoverV2Refused
 from jasper.active_speaker.preflight import PreflightIssue
@@ -1116,6 +1116,24 @@ def test_a_tweeter_that_cannot_derive_its_cap_refuses_naming_what_to_fix(figures
         {"undeclared_roles": undeclared, "disagreeing_roles": disagreeing},
     )
     assert resolve_driver_excitation_ceilings(safety, tweeter)[1] == pytest.approx(-65.0)
+
+
+@pytest.mark.parametrize("shape, caps", [
+    (dict(woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2}), {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"}}),
+    (dict(woofer_peak=-8.0, tweeter_peak=-50.0), {
+        "woofer": {"cap_dbfs": -8.0, "cap_source": "declared"},
+        "tweeter": {"cap_dbfs": -50.0, "cap_source": "declared"}}),
+    (dict(tweeter_peak=None), {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "declared"},
+        "tweeter": {"cap_dbfs": None, "cap_source": None, "reason": "active_excitation_sensitivity_undeclared"}}),
+    (dict(passive=True, woofer_peak=None, woofer_floor=30, woofer_highpass=30), {
+        "full_range": {"cap_dbfs": -65.0, "cap_source": "class_default"}}),
+], ids=["derived", "declared", "refused", "full-range"])
+def test_each_driver_publishes_its_cap_and_where_it_came_from(shape, caps):
+    _topology, safety, targets = _profile_and_targets(**shape)
+    assert published_driver_caps(safety, targets) == caps
 
 
 def test_a_tweeter_without_a_declared_sensitivity_refuses_by_name_before_it_plays(monkeypatch):
