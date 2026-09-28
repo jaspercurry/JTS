@@ -59,12 +59,11 @@ document, which goes through the same judge → compose → apply gates as any o
        --dsp $D/live.yml --png $D/live.png --xmax-mm 14.7
    ```
 
-5. **Check the model.** Measure each woofer alone, gated, 0.5 m in front of the front baffle and
-   0.5 m behind the back panel, both on the polar's axis (the origin in the case's
-   `observations.json`). On the speaker, check the plan silently with `--dry-run`, then run it.
-   Pull its view as in step 2, to `$D/farfield_view.json`. The check prints measured − model per
-   woofer and side over [the gate's 1/T, 600 Hz], with 2.5/T beside it and `anchor_offset_db`, the
-   absolute level miss. The model passes within 1 dB on each front row.
+5. **Check the model.** Take each woofer alone, gated, 0.5 m from the front baffle and 0.5 m from
+   the back panel, on the polar's axis (the origin in the case's `observations.json`). On the
+   speaker, check the plan silently with `--dry-run`, run it, and pull its view as in step 2. The
+   check prints measured − model per woofer and side from the gate's 1/T (2.5/T beside it) to
+   600 Hz, and `anchor_offset_db`, the absolute level miss. It passes within 1 dB on each front row.
 
    ```bash
    poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "bearing", "distance_m": 0.5, "driver": "woofer"},

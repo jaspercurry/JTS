@@ -53,11 +53,13 @@ def cabinet(tmp_path, monkeypatch):
              far_front=np.exp(1j * k * (10.0 - along)) / 10.0, far_rear=np.exp(1j * k * (10.0 + along)) / 10.0,
              mic_m=MIC_M, **{f"mic_{side}_{SOURCE[driver]}": np.exp(1j * k[:, 0] * path) / path
                              for (driver, side), path in MIC_PATH_M.items()})
-    # The near-field view exports a raw curve over its sweep's band only.
-    raw = {"take_ids": ["near"], "freqs_hz": np.geomspace(20, 2000, 2000).tolist(), "level_db": [0.0] * 2000}
-    (tmp_path / "nearfield_view.json").write_text(json.dumps({"drivers": [
-        {"driver": driver, "placements": [{"distance_mm": 15.0, "raw": raw}]} for driver in ("woofer", "woofer:rear")]}))
-    return model, model.Cabinet(tmp_path / "transfer.npz", [tmp_path / "nearfield_view.json"], f)
+    # The near-field view exports a raw curve over its sweep's band only; a re-run replaces the rear woofer's.
+    views = {"nearfield_view.json": ("woofer", "woofer:rear"), "rerun_view.json": ("woofer:rear",)}
+    for name, drivers in views.items():
+        raw = {"take_ids": [name], "freqs_hz": np.geomspace(20, 2000, 2000).tolist(), "level_db": [0.0] * 2000}
+        (tmp_path / name).write_text(json.dumps({"drivers": [
+            {"driver": driver, "placements": [{"distance_mm": 15.0, "raw": raw}]} for driver in drivers]}))
+    return model, model.Cabinet(tmp_path / "transfer.npz", [tmp_path / name for name in views], f)
 
 
 def _farfield_view(window_ms=(), drop=()):
@@ -115,7 +117,8 @@ def test_the_model_is_read_through_the_takes_gate(cabinet):
 def test_the_model_check_reads_each_woofer_alone_in_front_and_behind_on_one_anchor(cabinet, monkeypatch, shift_db, moved):
     """measured - model per woofer and side over [gate floor, 600 Hz], from the raw's own 150 Hz
     under a 20 ms gate. One offset, the front woofer's in front at 400-600 Hz, comes off every row:
-    a bump moves its row alone, and a louder rear woofer keeps its level and misses in front."""
+    a bump moves its row alone, and a louder rear woofer keeps its level and misses in front. A
+    later near-field view replaces an earlier one's curve for the woofer it has."""
     _, cab = cabinet
     view = _farfield_view()
     for (driver, side), db in shift_db.items():
@@ -127,6 +130,7 @@ def test_the_model_check_reads_each_woofer_alone_in_front_and_behind_on_one_anch
 
     rows = {(row["driver"], row["side"]): row for row in check["rows"]}
     expected = {key: {"level_db": 0.0, "max_abs_db": 0.0, **moved.get(key, {})} for key in MIC_PATH_M}
+    assert check["nearfield_take_ids"] == {"woofer": ["nearfield_view.json"], "woofer:rear": ["rerun_view.json"]}
     assert check["anchor_offset_db"] == pytest.approx(OFFSET_DB, abs=0.05)
     assert {key: (row["missing"], row["band_hz"]) for key, row in rows.items()} == dict.fromkeys(
         MIC_PATH_M, (None, [150.0, 600.0]))

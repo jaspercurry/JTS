@@ -23,19 +23,15 @@ FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = piston_step_db(0.015, 0.030, 0.057)
 
 
-def _gated(window_ms):
-    """A sweep's gate as its banked curve states it; ``None`` is a sweep left ungated."""
-    return {"window": "ungated"} if window_ms is None else {
-        "window": "gated", "gate_window_ms": window_ms, "validity_floor_hz": 1000.0 / window_ms,
-        "trusted_floor_hz": 2500.0 / window_ms, "floor_source": "measured_reflection"}
-
-
 def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0),
           stimulus_dbfs=-32.0, kind="close", gate_ms=()):
     rng = np.random.default_rng(seed)
     sweeps = [np.full(FREQS.size, level_db) + rng.normal(0.0, 0.01, FREQS.size) for _ in range(3)]
     sweeps[0] = sweeps[0] + np.where(FREQS < 35.0, first_low_db, 0.0)
-    gates = [_gated(window_ms) for window_ms in gate_ms] or [{}] * 3
+    # Each sweep's gate as its banked curve states it; ``None`` is a sweep left ungated.
+    gates = [{"window": "ungated"} if ms is None else {"window": "gated", "gate_window_ms": ms, "validity_floor_hz": 1000.0 / ms,
+                                                       "trusted_floor_hz": 2500.0 / ms, "floor_source": "measured_reflection"}
+             for ms in gate_ms] or [{}] * 3
     curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz), **gates[0],
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
                                for sweep, gate in zip(sweeps[1:], gates[1:])]}
