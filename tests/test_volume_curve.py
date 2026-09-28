@@ -36,6 +36,10 @@ def test_zero_is_mute_one_is_audible_above_floor():
     assert percent_to_db(100) == 0.0
 
 
+def test_level_one_is_strictly_above_the_mute_floor():
+    assert percent_to_db(1) > percent_to_db(0)
+
+
 @pytest.mark.parametrize("level", range(1, 101))
 def test_main_mute_predicates_agree_for_every_audible_level(level):
     # R-006: a level and its own dB must not disagree on mute, or the
