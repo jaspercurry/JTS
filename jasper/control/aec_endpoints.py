@@ -20,7 +20,6 @@ from ..aec_ready import read_aec_bridge_ready
 from ..audio_profile_state import (
     AEC_MODE_ENV,
     AecIntent,
-    DEFAULT_AEC_MODE_PATH,
     PROFILE_DIRECT_MIC,
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -37,7 +36,7 @@ from ..audio_profile_state import (
 from ..atomic_io import read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
-from ..env_load import env_file_path, read_env_file_state
+from ..env_load import env_file_path, read_env_file_state, DEFAULT_AEC_MODE_PATH
 from ..usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
@@ -50,11 +49,12 @@ from ..chip_aec.policy import (
 from ..wake_models import WAKE_MODEL_FILE, read_wake_threshold
 from .. import env_load, systemd_probe, wake_models
 from ..mics import xvf3800
+from jasper.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
 
 
 AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)
 _WAKE_MODEL_FILE = WAKE_MODEL_FILE
-_XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
+_XVF_FIRMWARE_UPDATE_STATE_FILE = XVF_FIRMWARE_UPDATE_STATE_PATH
 XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 AEC_BRIDGE_SERVICE = "jasper-aec-bridge.service"

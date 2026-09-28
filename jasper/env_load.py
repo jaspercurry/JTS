@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, overload
 
 from jasper.env_file import parse_env_mapping, read_env_file_text
@@ -78,6 +79,9 @@ VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_PROVIDER_ENV_PATH = "/var/lib/jasper/voice_provider.env"
 WAKE_MODEL_ENV_PATH = "/var/lib/jasper/wake_model.env"
 WEATHER_ENV_PATH = "/var/lib/jasper/weather.env"
+DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
+CONVERSATION_HISTORY_ENV_PATH = "/var/lib/jasper/conversation_history.env"
+WAKE_CORPUS_BRIDGE_ENV_PATH = "/var/lib/jasper/wake_corpus_bridge.env"
 
 
 def env_file_path() -> str:
@@ -103,9 +107,9 @@ ENV_FILES = (
     TRANSIT_ENV_PATH,
     HOME_ASSISTANT_ENV_PATH,
     TOOL_STATE_ENV_PATH,
-    "/var/lib/jasper/conversation_history.env",
+    CONVERSATION_HISTORY_ENV_PATH,
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
-    "/var/lib/jasper/aec_mode.env",
+    str(DEFAULT_AEC_MODE_PATH),
     FANIN_ENV_PATH,
     GROUPING_ENV_FILE,
     OUTPUTD_GROUPING_ENV_FILE,
@@ -114,7 +118,7 @@ ENV_FILES = (
     PEERING_ENV_PATH,
     ACCESSORY_MIC_ENV_FILE,
     USB_MIC_ENV_FILE,
-    "/var/lib/jasper/wake_corpus_bridge.env",
+    WAKE_CORPUS_BRIDGE_ENV_PATH,
 )
 
 EnvFileReadStatus = Literal["loaded", "missing", "unreadable"]

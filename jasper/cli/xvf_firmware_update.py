@@ -28,9 +28,10 @@ from ..service_units import (
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
 )
+from jasper.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
 
 
-STATE_PATH = Path("/var/lib/jasper/xvf-firmware-update.json")
+STATE_PATH = Path(XVF_FIRMWARE_UPDATE_STATE_PATH)
 UPDATE_UNITS = (
     JASPER_VOICE_SERVICE,
     AEC_BRIDGE_SERVICE,

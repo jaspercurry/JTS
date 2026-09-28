@@ -16,12 +16,12 @@ from typing import Any
 
 from .atomic_io import write_env_file
 from .env_file import read_env_file
-from .env_load import parse_bool_value, read_env_file_state
+from .env_load import parse_bool_value, read_env_file_state, CONVERSATION_HISTORY_ENV_PATH
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = "/var/lib/jasper/conversation_history.db"
-DEFAULT_SETTINGS_PATH = "/var/lib/jasper/conversation_history.env"
+DEFAULT_SETTINGS_PATH = CONVERSATION_HISTORY_ENV_PATH
 SETTINGS_PATH_ENV = "JASPER_CONVERSATION_HISTORY_FILE"
 DB_PATH_ENV = "JASPER_CONVERSATION_HISTORY_DB"
 CAPTURE_ENABLED_ENV = "JASPER_CONVERSATION_CAPTURE"
