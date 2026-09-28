@@ -446,8 +446,6 @@ def _post_limiter_tail_issues(
     channel: int,
     limiter_name: str,
 ) -> list[dict[str, str]]:
-    """Count the post-split limiter and reject transforms placed behind it."""
-
     names = _post_split_filter_names(payload, channel=channel)
     limiter_count = names.count(limiter_name)
     unsafe: set[str] = set()
@@ -1341,7 +1339,7 @@ def _bass_extension_issues(
     if bass_evidence.valid:
         return []
     return [_issue(
-        "blocker", bass_evidence.reason or "bass_extension_block_invalid",
+        "blocker", bass_evidence.reason,
         "baseline-shaped graph does not match its evaluated bass-extension profile",
     )]
 
@@ -1430,7 +1428,8 @@ def _unmute_scope_issues(
 
 
 def _unmuted_sub_guard_issues(view: GraphView, unmuted_subs: set[int]) -> list[dict[str, str]]:
-    """An UNMUTED sub output MUST be band-limited (LR4 low-pass) and
+    """An UNMUTED sub output MUST be band-limited (a Linkwitz-Riley low-pass at
+    or below SUB_CROSSOVER_HZ_HI whose order, if stated, is >= 2) and
     excursion-limited, because a full-range feed to a powered sub is the
     tampered-statefile hazard this re-proof exists to catch. The commissioning
     sub lane has no gain filter, so only LP + limiter are provable here; a
@@ -1660,9 +1659,7 @@ def _bass_management_issues(
                 + f" ({low_role})",
             ))
         elif not bass_management_corner_matched(
-            view,
-            lowpass_name=_sub_lowpass_name(),
-            highpass_name=_bass_management_hp_name(low_role),
+            view, lowpass_name=_sub_lowpass_name(), highpass_name=bass_highpass_name,
         ):
             # Both halves exist, but at DIFFERENT corners — not two halves
             # of one crossover. A split crossover (e.g. an 80 Hz mains HP
