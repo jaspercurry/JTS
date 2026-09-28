@@ -492,8 +492,8 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     _, base = declared_graph_fixture(topology, draft)
     declaration = measurement_emit.load_tuning_declaration(topology)
     candidate = replace(base, bass_extension={
-        "low_boost_db": 4.0, "reference_level_db": -10.0,
-        "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
+        "linkwitz_transform": {"source_hz": 60.0, "source_q": 0.707, "target_hz": 48.0, "target_q": 0.707},
+        "delta_highpass_hz": 20.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
     } if not regressed else {})
     banked = publish_authored_candidate(candidate, root=tmp_path / "bank")
     paths = _boot_convergence_paths(tmp_path)

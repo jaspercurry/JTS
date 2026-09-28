@@ -41,6 +41,13 @@ from tests.test_crossover_v2_tuning_scope import (
 )
 
 
+def _boost(boost_db, **changes):
+    """BASS_EXTENSION with its transform's DC lift set to ``boost_db``."""
+    shape = BASS_EXTENSION["linkwitz_transform"]
+    return {**BASS_EXTENSION, "linkwitz_transform": {**shape, "target_hz": shape["source_hz"] / 10 ** (boost_db / 40)},
+            **changes}
+
+
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
         candidates={}, mic_present=True, mic_identified=True,
@@ -403,12 +410,12 @@ def test_run_level_keeps_anchor_and_clamps_to_statement_ceiling(level_db):
 
 
 @pytest.mark.parametrize("boost,tolerance,admitted,clamped", [
-    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 82.95, 82.96), (18, 0.5, 84.5, 84.6),
+    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 83.8, 83.81), (18, 0.5, 84.5, 84.6),
 ])
 def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, tolerance, admitted, clamped):
-    applied = {**BASS_EXTENSION, "low_boost_db": 18, "reference_level_db": 0,
-               "delta_highpass_hz": 63, "detector_lowpass_hz": 100}
-    candidate = replace(_room_candidate(tuning_profile), bass_extension={**applied, "low_boost_db": boost} if boost else {})
+    applied = _boost(18, delta_highpass_hz=63, detector_lowpass_hz=100)
+    candidate = replace(_room_candidate(tuning_profile),
+                        bass_extension=_boost(boost, delta_highpass_hz=63, detector_lowpass_hz=100) if boost else {})
     name = candidate.fingerprint
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="bass"),), candidates=(name,))
     facts = ready_facts(plan, candidates={name: candidate}, applied_bass_extension=applied)
@@ -428,8 +435,8 @@ def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, toleranc
         assert row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 85 - (tolerance + row["lift_bound_db"])
         if spl == admitted:
             assert fader == requested
-            assert row["lift_bound_db"] == pytest.approx(1.04676 if boost == 20 else 0, abs=0.001)
-            assert row["margin_bound_db_spl"] == pytest.approx(82.95324 if boost == 20 else 85 - tolerance, abs=0.001)
+            assert row["lift_bound_db"] == pytest.approx(0.19923 if boost == 20 else 0, abs=0.001)
+            assert row["margin_bound_db_spl"] == pytest.approx(83.80077 if boost == 20 else 85 - tolerance, abs=0.001)
 
 
 @pytest.mark.parametrize("tolerance", [None, 0, -1, float("nan")])
@@ -527,11 +534,11 @@ def test_margin_clamp_below_policy_floor_refuses(anchor_spl):
 @pytest.mark.parametrize("applied_boost", [0, 6, 18])
 def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile, applied_boost):
     base = _room_candidate(tuning_profile)
-    descriptors = [{}, *({**BASS_EXTENSION, "low_boost_db": boost} for boost in (6, 18, 20))]
+    descriptors = [{}, *(_boost(boost) for boost in (6, 18, 20))]
     candidates = [replace(base, bass_extension=descriptor) for descriptor in descriptors]
     plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, candidate_id=c.fingerprint) for c in candidates),
                                candidates=tuple(c.fingerprint for c in candidates))
-    applied = {**BASS_EXTENSION, "low_boost_db": applied_boost, "reference_level_db": -10} if applied_boost else {}
+    applied = _boost(applied_boost) if applied_boost else {}
     facts = ready_facts(plan, candidates={c.fingerprint: c for c in candidates}, applied_bass_extension=applied)
     for requested in (-59, -35, -25, -18, -10, -1, 0):
         report = preflight(replace(plan, level=LevelPolicy(level_db=requested)), facts)
@@ -615,7 +622,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
 
 def test_margin_clamp_lands_under_the_bound():
     requested = -17.621
-    candidate = {**BASS_EXTENSION, "low_boost_db": 20}
+    candidate = _boost(20)
     row = predicted_rung_admission(requested, ResolvedLevel(70.8695, -22.0129, "1234"), {"trial": candidate},
                                    applied={}, ceiling_db_spl=85, tolerance_db=3)
     assert row["level_db"] < requested
@@ -658,7 +665,7 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
 
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
 def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
-    candidate = replace(_room_candidate(tuning_profile), bass_extension={**BASS_EXTENSION, "reference_level_db": 0, "low_boost_db": 18})
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=_boost(18))
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     anchor = ready_facts(plan).anchor

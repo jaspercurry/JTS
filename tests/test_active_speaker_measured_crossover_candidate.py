@@ -693,8 +693,8 @@ def test_every_optional_field_is_setdefaulted_in_the_reopen_comparison():
 
 def test_bass_extension_is_fingerprinted_and_reopened():
     bass = {
-        "low_boost_db": 3.0,
-        "reference_level_db": -35.0,
+        "linkwitz_transform": {"source_hz": 60.0, "source_q": 0.707, "target_hz": 48.0, "target_q": 0.707},
+        "delta_highpass_hz": 20.0,
         "detector_lowpass_hz": 80.0,
         "compressor_threshold_dbfs": -12.0,
     }
@@ -707,10 +707,9 @@ def test_bass_extension_is_fingerprinted_and_reopened():
         "compressor_factor": 10.0,
         "compressor_attack_s": 0.01,
         "compressor_release_s": 0.25,
-        "delta_highpass_hz": None,
     }
     tampered = candidate.to_dict()
-    tampered["bass_extension"] = {**reopened.bass_extension, "low_boost_db": 2.0}
+    tampered["bass_extension"] = {**reopened.bass_extension, "compressor_threshold_dbfs": -11.0}
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(tampered)
     assert excinfo.value.code == "candidate_tampered"
@@ -829,9 +828,10 @@ def test_from_mapping_rejects_non_mapping_bass_extension():
 
 def test_invalid_bass_descriptor_keeps_its_field_code():
     with pytest.raises(MeasuredCrossoverCandidateError) as caught:
-        _candidate(bass_extension={"low_boost_db": 0, "reference_level_db": -35,
-                                   "detector_lowpass_hz": 80, "compressor_threshold_dbfs": -12})
-    assert caught.value.code == "bass_low_boost_db_invalid"
+        _candidate(bass_extension={"linkwitz_transform": {"source_hz": 60, "source_q": 0.707, "target_hz": 48,
+                                                          "target_q": 0.707},
+                                   "delta_highpass_hz": 20, "detector_lowpass_hz": 201, "compressor_threshold_dbfs": -12})
+    assert caught.value.code == "bass_detector_lowpass_hz_invalid"
 
 
 def test_exclusion_evidence_tampering_trips_the_tamper_check():

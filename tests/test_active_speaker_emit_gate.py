@@ -295,7 +295,7 @@ def test_native_bass_tamper_is_rejected_at_emit_and_runtime_boundaries(monkeypat
     preset = _preset("stereo", 2)
     descriptor = _dynamic_bass_descriptor()
     text = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM, bass_extension=descriptor)
-    tampered = text.replace("q: 0.7071068\n      gain: 4.0", "q: 0.7071068\n      gain: 5.0")
+    tampered = text.replace("freq_target: 48.0", "freq_target: 45.0")
     assert tampered != text
     proof = classify_bass_extension_graph(
         _active_topology("stereo", "active_2_way"), evidence_source="desired", graph_text=tampered,

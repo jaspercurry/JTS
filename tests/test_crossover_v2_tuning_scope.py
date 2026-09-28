@@ -495,8 +495,8 @@ def test_branch_routing_preserves_every_candidate_filter_and_output_chain(tuning
 
 
 BASS_EXTENSION = {
-    "low_boost_db": 4.0,
-    "reference_level_db": -10.0,
+    "linkwitz_transform": {"source_hz": 60.0, "source_q": 0.707, "target_hz": 48.0, "target_q": 0.707},
+    "delta_highpass_hz": 20.0,
     "detector_lowpass_hz": 120.0,
     "compressor_threshold_dbfs": -15.0,
 }

@@ -62,7 +62,7 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     try:
         descriptor = validate_dynamic_bass_descriptor({key: value for key, value in raw.items()
                                                        if key != "round_id"}
-                                                      if isinstance(raw, Mapping) else raw, new_section=True)
+                                                      if isinstance(raw, Mapping) else raw)
     except DynamicBassDescriptorError as exc:
         refuse(exc.reason, str(exc), field=exc.field)
     bound = _bound(evidence)

@@ -27,8 +27,8 @@ from jasper.cli.round_views._bass_inputs import fit_run
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs, bass_run as bass_run
 
 
-DESCRIPTOR = {"low_boost_db": 8, "reference_level_db": 0,
-              "detector_lowpass_hz": 100, "compressor_threshold_dbfs": -30}
+DESCRIPTOR = {"linkwitz_transform": {"source_hz": 60, "source_q": 0.707, "target_hz": 38, "target_q": 0.707},
+              "delta_highpass_hz": 20, "detector_lowpass_hz": 100, "compressor_threshold_dbfs": -30}
 
 
 @pytest.fixture
@@ -131,7 +131,8 @@ def test_a_take_that_played_the_adr_0352_taper_says_so(pair):
 
 
 def test_live_boost_readings_follow_the_prescribed_shape(pair):
-    descriptor = {**DESCRIPTOR, "low_boost_db": 9.9, "delta_highpass_hz": 25, "detector_lowpass_hz": 125}
+    descriptor = {**DESCRIPTOR, "delta_highpass_hz": 25, "detector_lowpass_hz": 125,
+                  "linkwitz_transform": {"source_hz": 100, "source_q": 0.707, "target_hz": 60, "target_q": 0.707}}
     for take in pair:
         take["record"].update(level_db=-16.5)
     aligned = fit_bass_shape([pair], candidate_id="boost")
@@ -139,9 +140,9 @@ def test_live_boost_readings_follow_the_prescribed_shape(pair):
         aligned["delta"][(aligned["freqs_hz"] >= lo) & (aligned["freqs_hz"] < hi)] = realized
     row = bass_level_evidence(aligned, descriptor=DynamicBassDescriptor(**descriptor))
     bands = [band for band in row["realized_boost_db"] if 50 <= band["band_hz"][0] <= 100]
-    assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.938, 6.167, 4.254, 2.694], abs=.001)
+    assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.696, 6.289, 4.527, 2.938], abs=.001)
     compression = [band["value_db"] for band in row["compression_db"] if band["band_hz"][0] >= 50]
-    assert compression == pytest.approx([-.862, .167, .354, -.106], abs=.001)
+    assert compression == pytest.approx([-1.104, .289, .627, .138], abs=.001)
 
 
 @pytest.mark.parametrize("change,verdict", [(0, "harmonics_flat"), (6, "harmonics_rose"), (None, "unknown")])
