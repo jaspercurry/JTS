@@ -28,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 import pytest
 
 from jasper.accessories import status as accessory_status
+from jasper.measurement_window import MEASUREMENT_FANIN_LABEL
 from jasper.service_units import JASPER_VOICE_SERVICE
 from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from jasper.control import state_aggregate, usb_gadget_forensics
@@ -877,32 +878,74 @@ async def test_state_section_read_past_the_deadline_reports_unavailable(
     assert payload["audio"]["sound"] is None
 
 
-@pytest.mark.parametrize(
-    "overall_status, expected",
-    [("ok", "usbsink"), ("unknown", "idle")],
-)
-async def test_state_active_source_is_the_health_samplers_verdict(
-    monkeypatch, tmp_path, overall_status, expected,
-):
-    """One active_source on the wire (ADR-0233 rule 2).
+def _mux(active_source: str, **playing: bool) -> dict:
+    return {
+        "active_source": active_source,
+        "sources": {name: {"playing": on} for name, on in playing.items()},
+    }
 
-    The audio-health sampler and the aggregate's renderer ladder are two
-    candidate answers in one response, free to name different sources unless
-    one of them defers. A stale sampler keeps its last lane verbatim under
-    `status: unknown`, which must not outrank the ladder's live answer.
-    Retire when the sampler stops publishing a source.
+
+@pytest.mark.parametrize(
+    ("facts", "expected"),
+    [
+        pytest.param({"voice": True, "sampler": "ok", "mux": _mux("spotify")},
+                     "voice", id="voice_session_leads"),
+        pytest.param({"sampler": "ok", "mux": _mux("spotify")},
+                     "usbsink", id="sampler_verdict_outranks_mux"),
+        pytest.param({"sampler": "unknown", "mux": _mux("spotify")},
+                     "spotify", id="stale_sampler_defers_to_mux"),
+        pytest.param({"mux": _mux("spotify"), "airplay": True},
+                     "spotify", id="mux_source_stands"),
+        pytest.param({"mux": _mux("idle"), "spotify": True},
+                     "idle", id="mux_idle_is_idle"),
+        pytest.param({"airplay": True, "spotify": True},
+                     "airplay", id="mux_unreachable_walks_the_order"),
+        pytest.param({"mux": _mux(MEASUREMENT_FANIN_LABEL), "spotify": True},
+                     "spotify", id="lease_label_walks_the_order"),
+        pytest.param({"mux": _mux(MEASUREMENT_FANIN_LABEL, bluetooth=True), "usb": True},
+                     "bluetooth", id="lease_label_reads_mux_bluetooth"),
+        pytest.param({"usb": True}, "usbsink", id="usb_audible_alone"),
+    ],
+)
+async def test_state_active_source_follows_the_one_source_rule(
+    monkeypatch, tmp_path, facts, expected,
+):
+    """One active_source on the wire (ADR-0233 rule 2). A voice session leads,
+    then the audio-health sampler's verdict unless its sample is stale
+    (`status: unknown`). Then the volume path's rule
+    (`renderer.audible_source`): mux's answer when it names a source or idle,
+    else the facts `/state` already holds, in `renderer.PROBE_ORDER`.
     """
     from tests.test_wire_contracts import _state_payload
 
+    write_librespot_state(tmp_path / "spotify.env", playing=bool(facts.get("spotify")))
+    health = (
+        {"overall": {"status": facts["sampler"], "active_source": "usbsink"}}
+        if "sampler" in facts else None
+    )
+    usb_audible = {"inputs": [{"label": "usbsink", "source": "direct", "rms_dbfs": -10.0}]}
+
+    async def voice_status(*_args, **_kwargs):
+        return {"state": "SESSION"} if facts.get("voice") else None
+
+    async def mux_status(*_args, **_kwargs):
+        return facts.get("mux")
+
+    async def daemon_status(path, *_args, **_kwargs):
+        return usb_audible if facts.get("usb") and "jasper-fanin" in path else None
+
     payload = await _state_payload(
         monkeypatch, tmp_path,
-        audio_health_snapshot=lambda: {
-            "overall": {"status": overall_status, "active_source": "usbsink"},
-        },
+        voice_socket_command=voice_status,
+        mux_socket_command=mux_status,
+        local_status_json=daemon_status,
+        airplay_playing_snapshot=lambda: facts.get("airplay"),
+        audio_health_snapshot=lambda: health,
     )
 
     assert payload["active_source"] == expected
-    assert payload["audio_health"]["overall"]["active_source"] == "usbsink"
+    assert payload["source_selection"] == facts.get("mux")
+    assert payload["audio_health"] == health
 
 
 async def test_state_outputd_section_drops_the_chip_ref_write_ring():
@@ -1193,47 +1236,6 @@ def test_state_audio_metrics_publish_every_playback_channel(
     assert body["audio"]["playback_peak_dbfs"] == [-105.81, -1000.0, -105.81, -1000.0]
 
 
-def test_state_prefers_mux_winner_over_raw_renderer_probe(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Mux owns the audible source; /state should not fall back to raw
-    renderer priority when mux reports an auto winner."""
-    import jasper.control.server as srv_mod
-
-    base, _ = server_with_coordinator
-    spotify_state = write_librespot_state(
-        tmp_path / "spotify.env",
-        playing=True, session_active=True, uri="spotify:track:test",
-    )
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-
-    async def fake_mux_status(cmd: str, **kwargs):  # noqa: ARG001
-        assert cmd == "STATUS"
-        return {
-            "mode": "auto",
-            "selected_source": None,
-            "winner": "airplay",
-            "active_source": "airplay",
-            "sources": {
-                "airplay": {"playing": True},
-                "spotify": {"playing": True},
-                "bluetooth": {"playing": False},
-                "usbsink": {"playing": False},
-            },
-        }
-
-    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
-
-    status, body = _get(f"{base}/state")
-
-    assert status == 200
-    assert body["active_source"] == "airplay"
-    assert body["source_selection"]["winner"] == "airplay"
-
-
 async def test_state_audio_volume_policy_surfaces_push_guard(
     monkeypatch, tmp_path,
 ):
@@ -1268,69 +1270,6 @@ async def test_state_audio_volume_policy_surfaces_push_guard(
         "main_volume_db", "persisted_main_volume_db", "push_guard_active", "guard_db",
         "last_handoff",
     }
-
-
-def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """active_source ranks usbsink above idle but below the named
-    renderers — when nothing else is playing and USB is, the field
-    surfaces as 'usbsink' so the dashboard renders correctly."""
-    import jasper.control.server as srv_mod
-
-    base, _ = server_with_coordinator
-
-    async def fake_status(path, **_kwargs):
-        if "jasper-fanin" in path:
-            return {
-                "inputs": [{
-                    "label": "usbsink",
-                    "source": "direct",
-                    "rms_dbfs": -10.0,
-                    "muted": False,
-                }],
-            }
-        return None
-
-    monkeypatch.setattr(srv_mod, "_local_status_json", fake_status)
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["active_source"] == "usbsink"
-
-
-def test_state_combo_active_source_still_driven_by_mux_selection(
-    server_with_coordinator, monkeypatch, tmp_path,
-):
-    """Mux selection remains authoritative when fan-in STATUS is unavailable."""
-    import jasper.control.server as srv_mod
-    base, _ = server_with_coordinator
-
-    async def fake_mux_status(*args, **kwargs):
-        return {
-            "mode": "manual",
-            "selected_source": "usbsink",
-            "winner": "usbsink",
-            "active_source": "usbsink",
-        }
-
-    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
-    monkeypatch.setenv(
-        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"),
-    )
-
-    status, body = _get(f"{base}/state")
-    assert status == 200
-    assert body["active_source"] == "usbsink"
 
 
 def test_state_502_when_aggregator_raises(
@@ -1505,31 +1444,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     assert event_records(
         caplog, "state.aggregate_timeout"
     ), "aggregate timeout must emit a greppable event= line"
-
-
-@pytest.mark.parametrize("playing", [True, False, None])
-async def test_state_airplay_row_and_active_source_come_from_the_injected_reader(
-    playing, monkeypatch, tmp_path,
-):
-    """`/state` derives `active_source` from the AirPlay health sampler's
-    held PlaybackStatus — no second reader."""
-    async def no_status(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"))
-    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.env"))
-
-    body = await state_aggregate.get_state(
-        camilla_host="127.0.0.1",
-        camilla_port=1234,
-        voice_socket_path=str(tmp_path / "voice.sock"),
-        voice_socket_command=no_status,
-        mux_socket_command=no_status,
-        local_status_json=no_status,
-        airplay_playing_snapshot=lambda: playing,
-    )
-
-    assert body["active_source"] == ("airplay" if playing else "idle")
 
 
 def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):

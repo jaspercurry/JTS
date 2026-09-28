@@ -341,9 +341,8 @@ def _spotify_playing() -> bool:
 
 
 def _mux_bluetooth_playing(mux_status: dict | None) -> bool:
-    """Mux's own BlueZ observation, from the STATUS already in hand: the one
-    Bluetooth fact ``/state`` holds, since nothing behind it may probe per
-    request (ADR-0233 rule 2)."""
+    """Mux's held BlueZ observation, from the STATUS already in hand, so no
+    BlueZ probe runs per request (see ADR-0233 rule 2)."""
     sources = as_mapping(as_mapping(mux_status).get("sources"))
     return as_mapping(sources.get(Source.BLUETOOTH.value)).get("playing") is True
 
