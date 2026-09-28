@@ -15,7 +15,7 @@ import logging
 
 from .log_event import log_event
 from .voice import measurement_hold as voice_measurement
-from .volume_owner import VolumeClaimRefused
+from jasper.audio_resources.volume_owner import VolumeClaimRefused
 
 logger = logging.getLogger(__name__)
 

@@ -81,7 +81,7 @@ from ..voice.prompt import build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
-from ..volume_owner import install_volume_owner
+from jasper.audio_resources.volume_owner import install_volume_owner
 from ..volume_persistence import VolumePersistence
 from ..wake import WakeWordDetector
 from ..wake_events import WakeEventStore

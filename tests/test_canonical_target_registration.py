@@ -195,7 +195,8 @@ def test_the_env_registration_installs_the_process_fader_owner() -> None:
     writers that have no coordinator to be injected from. Making it one call is
     what keeps every existing call site correct with no edit of its own.
     """
-    from jasper import camilla, volume_owner
+    from jasper import camilla
+    from jasper.audio_resources import volume_owner
     from jasper.volume_process import install_env_canonical_target_provider
 
     assert volume_owner.volume_owner() is None

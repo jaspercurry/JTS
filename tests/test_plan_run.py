@@ -45,7 +45,7 @@ from jasper.audio_measurement.admission.excitation_admission import FrequencyBan
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
-from jasper.volume_owner import ClaimKind, volume_owner
+from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
 from jasper.web import correction_run_host
 from tests.crossover_v2_fixtures import (
     FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,

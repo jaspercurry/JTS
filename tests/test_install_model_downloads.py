@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.model_downloads import (
+from jasper.audio_resources.model_downloads import (
     DEFAULT_MAX_BYTES,
     ModelDownloadError,
     StageAsset,

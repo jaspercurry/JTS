@@ -57,7 +57,7 @@ from .volume_echo import (
 )
 from .volume_carrier import CamillaCarrier
 from .volume_measurement_gate import MeasurementGate
-from .volume_owner import VolumeOwner
+from jasper.audio_resources.volume_owner import VolumeOwner
 from .volume_scales import native_to_listening_level
 from .volume_curve import (
     canonical_target_db,

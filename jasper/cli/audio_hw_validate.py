@@ -6,7 +6,7 @@
 
 Shells out to `jasper.xvf.xvf_host` for chip parameter readback and
 convergence polling, and sleeps for a bounded observation window before
-building evidence for `jasper.audio_validation_artifacts`.
+building evidence for `jasper.audio_resources.audio_validation_artifacts`.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .. import audio_validation_artifacts as artifacts
+from jasper.audio_resources import audio_validation_artifacts as artifacts
 from ..audio_profile_state import probe_xvf_mic
 from ..audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,

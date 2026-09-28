@@ -425,7 +425,7 @@ layers = [
   "output_hardware",
   "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
   "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs : source_state",
-  "audio_measurement : audio_validation_artifacts : bass_extension : model_downloads : volume_owner",
+  "audio_measurement : audio_resources : bass_extension",
   "identity : net",
   "logging_setup",
   "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",

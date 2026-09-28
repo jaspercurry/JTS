@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from . import audio_validation_artifacts as artifacts
+from jasper.audio_resources import audio_validation_artifacts as artifacts
 from .audio_profile_state import (
     AEC_MODE_FILE_ENV,
     MicProbe,

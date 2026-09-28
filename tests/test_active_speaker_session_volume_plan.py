@@ -533,7 +533,7 @@ def _owner_door(vol):
         MeasurementVolumeClaim,
         OwnerVolumeDoor,
     )
-    from jasper.volume_owner import VolumeOwner
+    from jasper.audio_resources.volume_owner import VolumeOwner
 
     owner = VolumeOwner(set_fader_db=vol.set, get_fader_db=vol.get)
     return OwnerVolumeDoor(

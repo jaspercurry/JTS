@@ -177,7 +177,7 @@ def _live_measurement_session(
         SessionVolumeOpenResult,
         SessionVolumePlan,
     )
-    from jasper.volume_owner import volume_owner
+    from jasper.audio_resources.volume_owner import volume_owner
 
     clock = [1000.0]
     plan = SessionVolumePlan(

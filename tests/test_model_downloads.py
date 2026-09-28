@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import model_downloads
+from jasper.audio_resources import model_downloads
 from tests.download_response_fixtures import FakeResponse
 
 

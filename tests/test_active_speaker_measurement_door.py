@@ -39,7 +39,7 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     live_measurement_session,
 )
-from jasper.volume_owner import VolumeOwner, install_volume_owner, volume_owner
+from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner, volume_owner
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_fixtures import HOUSEHOLD_DB, FakeCam, _preset
 from tests._async_wait import wait_signalled

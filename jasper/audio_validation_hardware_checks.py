@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
-from . import audio_validation_artifacts as artifacts
+from jasper.audio_resources import audio_validation_artifacts as artifacts
 from .service_units import (
     CAMILLA_SERVICE,
     FANIN_SERVICE,

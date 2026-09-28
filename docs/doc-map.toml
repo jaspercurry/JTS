@@ -275,6 +275,7 @@ code = [
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
   "scripts/xvf-interrogate.sh",
+  "jasper/audio_resources/audio_validation_artifacts.py",
 ]
 docs = [
   # Current truth for this subsystem: the reference/transport contract and the
@@ -343,6 +344,7 @@ code = [
   # `active_transport_path` from it, so a change to the probe's shape or its
   # negative-cache behaviour reaches the volume path directly.
   "jasper/bluealsa_probe.py",
+  "jasper/audio_resources/volume_owner.py",
 ]
 docs = [
   "docs/audio-paths.md",

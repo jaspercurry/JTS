@@ -29,7 +29,7 @@ from .volume_latch import (
     duck_release_target_db,
     fader_matches,
 )
-from .volume_owner import volume_owner
+from jasper.audio_resources.volume_owner import volume_owner
 
 if TYPE_CHECKING:
     from camilladsp import CamillaClient

@@ -14,7 +14,7 @@ here.
 from __future__ import annotations
 
 from .volume_carrier import CamillaCarrier
-from .volume_owner import install_volume_owner, volume_owner
+from jasper.audio_resources.volume_owner import install_volume_owner, volume_owner
 from .volume_persistence import VolumePersistence, configured_path as volume_state_path
 
 

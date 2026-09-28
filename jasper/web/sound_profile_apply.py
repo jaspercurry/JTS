@@ -47,7 +47,7 @@ from jasper.sound.settings import (
     output_trim_db as _output_trim,  # aliased so local `output_trim_db` vars don't shadow it
     save_sound_settings,
 )
-from jasper.volume_owner import volume_owner
+from jasper.audio_resources.volume_owner import volume_owner
 
 logger = logging.getLogger(__name__)
 

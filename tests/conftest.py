@@ -285,7 +285,7 @@ def _isolate_process_volume_owner():
     Both sides matter, as above: clearing BEFORE stops a test inheriting an
     owner, restoring AFTER stops it handing one forward.
     """
-    from jasper import volume_owner
+    from jasper.audio_resources import volume_owner
 
     saved = volume_owner.volume_owner()
     volume_owner.install_volume_owner(None)
@@ -332,7 +332,7 @@ def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
     caller's — what a suite drives the owner over is its subject, so only the
     seating is shared.
     """
-    import jasper.volume_owner as volume_owner_module
+    import jasper.audio_resources.volume_owner as volume_owner_module
 
     monkeypatch.setattr(
         volume_owner_module,
@@ -348,7 +348,7 @@ def a_process_with_a_volume_owner(monkeypatch):
     """Stand up the precondition every crossover-v2 session has in production.
 
     After W5-c1 the session claims the fader through
-    :class:`~jasper.volume_owner.VolumeOwner`, and ``bind_v2_engine_seams``
+    :class:`~jasper.audio_resources.volume_owner.VolumeOwner`, and ``bind_v2_engine_seams``
     REFUSES when no owner is installed rather than minting a second authority
     over one fader. ``jasper.web.__main__`` installs one before serving, so a
     process without one is a registration defect — but a test module driving
