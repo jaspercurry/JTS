@@ -66,8 +66,12 @@ from .volume_curve import (
 )
 from .volume_handoff import VolumeHandoff
 from .volume_reconcile import VolumeReconciler, converged
-from .volume_state import FIRST_BOOT_DEFAULT_PCT, VolumeState, OutboundStamp
+from .volume_state import VolumeState, OutboundStamp
 from .volume_persistence import (
+    FIRST_BOOT_DEFAULT_PCT,
+    REGRESS_AFTER_SEC,
+    REGRESS_SAFE_HIGH_PCT,
+    REGRESS_SAFE_LOW_PCT,
     VolumePersistence,
     configured_path as volume_state_path,
     regress_listening_level_if_stale,
@@ -282,9 +286,9 @@ class VolumeCoordinator:
     async def initialize(
         self,
         *,
-        stale_after_sec: float = 1800.0,
-        safe_low_pct: int = 20,
-        safe_high_pct: int = 70,
+        stale_after_sec: float = REGRESS_AFTER_SEC,
+        safe_low_pct: int = REGRESS_SAFE_LOW_PCT,
+        safe_high_pct: int = REGRESS_SAFE_HIGH_PCT,
         first_boot_default_pct: int = FIRST_BOOT_DEFAULT_PCT,
     ) -> tuple[int, str]:
         """Read persistence, compute the boot listening_level (with
