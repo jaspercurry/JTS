@@ -12,15 +12,15 @@ from typing import Any
 
 from jasper import paths
 from jasper.active_speaker.environment import parse_camilla_statefile_config_path
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph_types import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_GUARDED_COMMISSIONING,
     GRAPH_PROGRAM_BAKE_PIPE,
     GraphSafety,
-    classify_bass_extension_graph,
 )
+from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology_strict
