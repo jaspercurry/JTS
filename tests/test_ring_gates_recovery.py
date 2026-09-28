@@ -11,8 +11,7 @@ Two questions a box has to answer before its graph can attach to the ring:
   shape of a bad deploy, not an exotic one);
 * does every declaring end state the SAME wire?
 
-Plus the two heals the reconciler runs on every pass: a shear-prone stale
-``JASPER_FANIN_RING_SLOTS`` and a geometry-mismatched on-disk ring file.
+The reconciler also repairs geometry-mismatched on-disk ring files.
 """
 
 from __future__ import annotations
@@ -185,126 +184,6 @@ def test_caps_gate_refuses_a_wide_wire_with_no_record(monkeypatch, tmp_path):
     ok, detail = ring_wire_caps_ready()
     assert ok is False
     assert "no provenance record" in detail
-
-
-# --- the slot migration declines when the WIRE is sheared -------------------
-
-
-def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
-    """Run the slot migration against ``fanin_text`` on the SHIPPED conf.d.
-
-    Returns (post_migration_text, records) where ``records`` is the log_event
-    result tokens the migration emitted — the migration's only externally
-    visible statement about what it decided.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    path = _write(tmp_path / "fanin.env", fanin_text)
-
-    records: list[str] = []
-    real_log_event = cr.log_event
-
-    def _capture(logger, event, **kw):
-        records.append(str(kw.get("result", "")))
-        return real_log_event(logger, event, **kw)
-
-    monkeypatch.setattr(cr, "log_event", _capture)
-    result, _healed = cr._migrate_stale_fanin_ring_slots(path, "t")
-    return result.text, records
-
-
-def test_slot_migration_writes_the_coherent_value_when_only_slots_are_stale(
-    tmp_path, monkeypatch
-):
-    """POSITIVE CONTROL for the decline below: the migration does fire.
-
-    Without this, a decline test proves only that the function wrote nothing —
-    which a broken migration that never writes would also satisfy.
-    """
-    from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS, RING_SLOTS_ENV_VAR
-
-    text, records = _migrate(
-        tmp_path, monkeypatch, fanin_text=f"{RING_SLOTS_ENV_VAR}=8\n"
-    )
-    assert "stale_ring_slots_overridden" in records
-    assert f"{RING_SLOTS_ENV_VAR}={DEFAULT_FANIN_RING_SLOTS}" in text
-
-
-def test_slot_migration_declines_when_the_wire_format_is_sheared(
-    tmp_path, monkeypatch
-):
-    """It does not converge an axis it does not own, and says so.
-
-    Writing the slot count while fan-in and the conf.d disagree about the WIRE
-    would make the geometry look repaired — the operator reads
-    ``stale_ring_slots_overridden`` as progress — while the arm still cannot
-    succeed. The wire gate is the one that refuses with the reason that actually
-    describes the box, so the migration steps aside and leaves it to say so.
-
-    THE SHEAR IS SPELLED THE OTHER WAY ROUND NOW. The shipped conf.d declares
-    the WIDE wire, so declaring ``S32_LE`` here would AGREE with it and shear
-    nothing. The operator's narrow pin is what disagrees with the shipped file
-    — same two ends, same disagreement, opposite tokens.
-    """
-    from jasper.fanin_coupling import (
-        RING_SLOTS_ENV_VAR,
-        RING_WIRE_FORMAT,
-        RING_WIRE_FORMAT_ENV_VAR,
-    )
-
-    text, records = _migrate(
-        tmp_path,
-        monkeypatch,
-        # Both true at once: a stale slot count the migration WOULD write, and a
-        # wire shear that must stop it.
-        fanin_text=(
-            f"{RING_SLOTS_ENV_VAR}=8\n"
-            f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n"
-        ),
-    )
-    assert "stale_ring_slots_override_declined" in records
-    assert "stale_ring_slots_overridden" not in records
-    assert f"{RING_SLOTS_ENV_VAR}=8" in text, (
-        "the declined migration must leave the stale value alone, not half-write it"
-    )
-
-
-def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatch):
-    """The channels axis declines the write for the same reason the format does."""
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
-    import jasper.ring_assets as ra
-
-    # A conf.d whose Ring-A block declares a channel count fan-in's fixed-stereo
-    # mixer cannot produce.
-    conf = tmp_path / "sheared.conf"
-    conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n"
-        "    channels 4\n}\n"
-        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
-
-    import jasper.fanin.coupling_reconcile as cr
-
-    path = _write(tmp_path / "fanin.env", f"{RING_SLOTS_ENV_VAR}=8\n")
-    records: list[str] = []
-    real_log_event = cr.log_event
-    monkeypatch.setattr(
-        cr,
-        "log_event",
-        lambda logger, event, **kw: (
-            records.append(str(kw.get("result", ""))) or real_log_event(
-                logger, event, **kw
-            )
-        ),
-    )
-    out, healed = cr._migrate_stale_fanin_ring_slots(path, "t")
-    assert "stale_ring_slots_override_declined" in records
-    assert healed is False
-    assert f"{RING_SLOTS_ENV_VAR}=8" in out.text
 
 
 # --- the sample_format axis at BOTH on-disk-header consumers ----------------

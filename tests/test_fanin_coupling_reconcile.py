@@ -966,7 +966,7 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     assert "ADR-0100" in detail
 
 
-# --- defect A: Ring-A slot-count coherence + stale-file guard + migration -----
+# --- Ring-A slot settings and stale-file repair ----------------------------
 
 
 def _ring_conf(
@@ -1078,25 +1078,17 @@ def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
     assert calls == []
 
 
-def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypatch):
-    # Default migration: a stale JASPER_FANIN_RING_SLOTS=8 old-default line that
-    # disagrees with the conf.d's pinned 4 is overridden in fanin.env at arm time
-    # (self-heals to the coherent default) so the arm proceeds instead of being
-    # blocked forever.
-    import jasper.ring_assets as ra
+@pytest.mark.parametrize("slot_source", ["base", "fanin"])
+def test_convergence_preserves_slot_settings(tmp_path, monkeypatch, _ring_assets_present, slot_source):
+    import os
 
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
-    # No on-disk stale ring in this test (macOS has no /dev/shm; the guard no-ops on
-    # an absent file). The migration is the axis under test.
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-
-    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=8\n")
-    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    key = "JASPER_FANIN_RING_SLOTS"
+    base_text = "# base config\n" + (f"{key}=8\n" if slot_source == "base" else "")
+    fanin_text = "# fan-in config\n" + (f"{key}=8\n" if slot_source == "fanin" else "")
+    base_env = _write(tmp_path / "jasper.env", base_text)
+    fanin_env = _write(tmp_path / "fanin.env", fanin_text)
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    monkeypatch.setenv(key, "8")
     calls, ro, rf, rc = _recorder()
 
     result = _reconcile(
@@ -1108,52 +1100,14 @@ def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypa
     )
 
     assert result.ok is True, result.detail
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    # The stale =8 line was overridden in fanin.env (the later systemd env file).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
-
-
-def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, monkeypatch):
-    # Regression for the real systemd env chain: jasper-fanin.service loads
-    # /etc/jasper/jasper.env first and fanin.env last. A stale base-env =8 is
-    # still live when fanin.env has no slot override, so migration must write an
-    # explicit coherent =4 into fanin.env rather than merely relying on defaults.
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-    jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
-    monkeypatch.setattr(
-        "jasper.env_load.BASE_ENV_PATH", str(jasper_env)
-    )
-    monkeypatch.setattr("jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env))
-
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert result.ok is True, result.detail
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
+    assert result.changed is False
+    assert calls == ["camilla:shm_ring"]
+    assert base_env.read_text(encoding="utf-8") == base_text
+    assert fanin_env.read_text(encoding="utf-8") == fanin_text
+    assert os.environ[key] == "8"
 
 
 def test_convergence_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
-    # A JASPER_FANIN_RING_SLOTS that MATCHES the conf.d is a coherent operator
-    # override — the migration must NOT strip it (it only strips shear-prone
-    # residue). conf.d pins 4, env sets 4 → kept, arm proceeds.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
