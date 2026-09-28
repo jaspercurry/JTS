@@ -47,6 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
+from jasper.volume_process import install_env_canonical_target_provider
 
 from ..log_event import log_event
 from ..logging_setup import configure_logging
@@ -730,8 +731,6 @@ def _start(args, tracker) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     from . import _wizard_cli
-    from jasper.volume_process import install_env_canonical_target_provider
-
     # Crossover applies swap the live graph from this process, so their
     # swap duck needs a canonical target to release to.
     install_env_canonical_target_provider()
