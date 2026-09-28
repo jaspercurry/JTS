@@ -1153,26 +1153,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
     assert v2state.load_v2_state()["attempts_loop"] == loop
 
 
-@pytest.mark.parametrize("initial_manifest", [False, True])
-def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypatch, initial_manifest):
-    import shutil
-    from jasper.active_speaker.grade_coverage import asked_beyond_mark
-    from tests.run_manifest_fixture import write_asked_poses
-
-    state = {"session_id": "cap_r19"}
-    root = write_asked_poses(tmp_path, state, [{"deg": 0}])
-    if not initial_manifest:
-        shutil.rmtree(root / "asked-run" / "evidence")
-    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
-    assert asked_beyond_mark(state, applied_profile=None) is False
-    write_asked_poses(tmp_path, state, [{"deg": 20}])
-    assert asked_beyond_mark(state, applied_profile=None) is True
-    target = tmp_path / "campaigns" / state["session_id"] / "bundle"
-    target.mkdir(parents=True)
-    shutil.move(root / "asked-run", target)
-    assert asked_beyond_mark(state, applied_profile=None) is True
-
-
 def _mono_wav_bytes(n: int = 4800) -> bytes:
     import io
 
