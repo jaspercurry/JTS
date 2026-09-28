@@ -14,17 +14,12 @@ from jasper.audio_hardware.dac import by_id as _dac_by_id
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.json_fields import issue as _issue
 from jasper.output_topology import (
-    ACTIVE_PLAYBACK_DEVICE_ENV,
-    EXPLICIT_SOURCE,
-    MISSING_SOURCE,
-    OUTPUTD_ACTIVE_LANE_SOURCE,
     OutputTopology,
     SpeakerGroup,
 )
 
 from ._common import MeasurementGraphRefused
 
-# Re-exported: constants moved to jasper.output_topology; kept importable here.
 __all__ = [
     "ACTIVE_PLAYBACK_DEVICE_ENV",
     "ACTIVE_PLAYBACK_ROUTE_KIND",
@@ -40,6 +35,12 @@ __all__ = [
     "resolve_active_playback_device",
     "resolve_output_layout",
 ]
+
+ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
+OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
+EXPLICIT_SOURCE = "explicit"
+MISSING_SOURCE = "missing"
+
 
 ACTIVE_PLAYBACK_ROUTE_KIND = "jts_active_speaker_playback_route_capability"
 

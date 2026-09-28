@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.playback_route import (
+    EXPLICIT_SOURCE,
     MISSING_SOURCE,
     OUTPUTD_ACTIVE_LANE_SOURCE,
     ActiveLaneCapabilityGap,
@@ -25,7 +26,6 @@ from jasper.audio_hardware.dac import (
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.playback_route import resolve_output_layout
 from jasper.output_topology import (
-    EXPLICIT_SOURCE,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )

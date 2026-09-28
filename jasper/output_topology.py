@@ -26,20 +26,14 @@ from .audio_hardware.dac import (
 from .json_fields import (
     CodedFieldError,
     JsonFields,
-    issue as _issue,
     lenient_json_fingerprint,
 )
-from .output_hardware import (
-    OutputHardwareState,
-    normalize_output_device_id,
-)
+from .output_hardware import normalize_output_device_id
+from .output_topology_evaluation import evaluate_output_topology
 from .speaker_layout import (
     MAIN_GROUP_KINDS,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     PASSIVE_MAIN_MODE,
-    REQUIRED_ROLES_BY_MODE,
-    SUB_CROSSOVER_HZ_HI,
-    SUB_CROSSOVER_HZ_LO,
     SUPPORTED_GROUP_KINDS,
     SUPPORTED_GROUP_MODES,
     SUPPORTED_OUTPUT_VARIANTS,
@@ -51,13 +45,6 @@ SCHEMA_VERSION = 1
 
 OUTPUT_TOPOLOGY_KIND = "jts_output_topology"
 
-# Active-output route resolution. Owned here, not on the IO-free DAC registry,
-# because resolution reads env + the topology's card identity. Re-exported from
-# jasper.active_speaker.playback_route.
-ACTIVE_PLAYBACK_DEVICE_ENV = "JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE"
-OUTPUTD_ACTIVE_LANE_SOURCE = "outputd_active_lane"
-EXPLICIT_SOURCE = "explicit"
-MISSING_SOURCE = "missing"
 
 DUAL_APPLE_ACTIVE_DEVICE_ID = DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 
@@ -71,11 +58,6 @@ OUTPUT_STATES = {"unused", "assigned", "blocked"}
 # unchanged.
 PAIRING_INTENTS = {"solo", "will_be_follower", "has_follower"}
 DEFAULT_PAIRING_INTENT = "solo"
-
-# The stable code for "one speaker's drivers are split across two child DACs of
-# a composite output device". Shared vocabulary: the /sound/ wizard keys its
-# disclosure notice off this exact string. See ``cross_child_group_verdicts``.
-CROSS_CHILD_GROUP_CODE = "speaker_group_spans_child_devices"
 
 
 class OutputTopologyError(CodedFieldError):
@@ -732,225 +714,6 @@ def unknown_output_hardware() -> OutputHardware:
     )
 
 
-def cross_child_group_verdicts(topology: OutputTopology) -> list[dict[str, Any]]:
-    """Return one verdict per speaker group whose drivers span two child DACs.
-
-    A composite output device (``hardware.child_devices``) is two or more
-    physically separate DACs driven from one process. Their clocks are NOT
-    corrected against each other: the composite clock contract is
-    ``measured_sync_required``, and ``PairedCompositeSink`` detects divergence
-    and fails closed rather than resampling it away. A speaker group whose
-    woofer sits on one child and whose tweeter on another puts that uncorrected
-    seam INSIDE a crossover, where inter-driver drift walks the crossover null.
-    The supported shape is one child DAC per speaker.
-
-    This is a FIDELITY verdict, not a hearing-safety one: every lane still
-    drives, nothing is at risk of damage, and the household may have a reason.
-    So it is reported at ``warning`` severity — it never joins ``blockers`` and
-    therefore never refuses the save or moves the topology to ``blocked``.
-
-    ``child_ids`` is sorted so it is comparable regardless of the order the
-    group happens to list its channels in.
-    """
-
-    children = topology.hardware.child_devices
-    if len(children) < 2:
-        return []
-    # Safe as a flat map: OutputHardware.validate() already refuses a physical
-    # output claimed by more than one child.
-    owner_by_index: dict[int, str] = {
-        index: child.child_id
-        for child in children
-        for index in child.physical_output_indexes
-    }
-    verdicts: list[dict[str, Any]] = []
-    for group in topology.speaker_groups:
-        owners: set[str] = set()
-        for channel in group.channels:
-            index = channel.physical_output_index
-            if index is None:
-                continue
-            owner = owner_by_index.get(index)
-            # An index no child claims is a DIFFERENT defect, owned by the
-            # composite's own output-map check.
-            if owner is not None:
-                owners.add(owner)
-        if len(owners) < 2:
-            continue
-        child_ids = sorted(owners)
-        verdicts.append({
-            "severity": "warning",
-            "code": CROSS_CHILD_GROUP_CODE,
-            "message": (
-                f"{group.label} is split across DACs {', '.join(child_ids)}; "
-                "keep every driver of one speaker on one DAC so its crossover "
-                "does not straddle two uncorrected clocks"
-            ),
-            "group_id": group.id,
-            "group_label": group.label,
-            "child_ids": child_ids,
-        })
-    return verdicts
-
-
-def evaluate_output_topology(topology: OutputTopology) -> dict[str, Any]:
-    """Return deterministic safety/validity evidence for a topology."""
-
-    blockers: list[dict[str, str]] = []
-    warnings: list[dict[str, Any]] = []
-    assigned: dict[int, tuple[str, str]] = {}
-
-    if not topology.speaker_groups:
-        warnings.append(
-            _issue("warning", "no_speaker_groups", "no speaker groups are configured")
-        )
-
-    for group in topology.speaker_groups:
-        required_roles = set(REQUIRED_ROLES_BY_MODE[group.mode])
-        actual_roles = [channel.role for channel in group.channels if channel.output_variant == "primary"]
-        actual_role_set = set(actual_roles)
-        slots = [(channel.role, channel.output_variant) for channel in group.channels]
-        if (actual_role_set != required_roles or len(slots) != len(set(slots)) or any(
-            channel.output_variant not in SUPPORTED_OUTPUT_VARIANTS
-            or (channel.output_variant == "rear" and (channel.role != "woofer" or "woofer" not in required_roles))
-            for channel in group.channels
-        )):
-            blockers.append(
-                _issue(
-                    "blocker",
-                    "mode_role_mismatch",
-                    f"{group.label} must have exactly {sorted(required_roles)}",
-                )
-            )
-        if group.kind == "subwoofer" and group.mode != "subwoofer":
-            blockers.append(
-                _issue(
-                    "blocker",
-                    "subwoofer_mode_mismatch",
-                    f"{group.label} is a subwoofer group but mode is {group.mode}",
-                )
-            )
-        if group.kind != "subwoofer" and group.mode == "subwoofer":
-            blockers.append(
-                _issue(
-                    "blocker",
-                    "subwoofer_group_required",
-                    f"{group.label} uses subwoofer mode but is not a subwoofer group",
-                )
-            )
-        for channel in group.channels:
-            if channel.output_variant == "rear" and not channel.startup_muted:
-                blockers.append(_issue("blocker", "rear_must_start_muted", f"{group.label} rear woofer must start muted"))
-            fc = channel.crossover_fc_hz
-            if fc is not None and not (
-                SUB_CROSSOVER_HZ_LO <= fc <= SUB_CROSSOVER_HZ_HI
-            ):
-                # Fail LOUD: an out-of-range bass-management corner would emit
-                # an unsafe (or non-band-limiting) crossover, so it is a
-                # blocker, never a silent clamp.
-                blockers.append(
-                    _issue(
-                        "blocker",
-                        "subwoofer_crossover_out_of_range",
-                        (
-                            f"{group.label} {channel.role} crossover {fc:g} Hz "
-                            f"must be between {SUB_CROSSOVER_HZ_LO:g} and "
-                            f"{SUB_CROSSOVER_HZ_HI:g} Hz"
-                        ),
-                    )
-                )
-        for channel in group.channels:
-            output_index = channel.physical_output_index
-            if output_index is None:
-                blockers.append(
-                    _issue(
-                        "blocker",
-                        "physical_output_unassigned",
-                        f"{group.label} {channel.role} is not assigned to a DAC output",
-                    )
-                )
-                continue
-            previous = assigned.get(output_index)
-            if previous:
-                blockers.append(
-                    _issue(
-                        "blocker",
-                        "duplicate_physical_output",
-                        f"DAC output {output_index + 1} is assigned to both "
-                        f"{previous[0]}/{previous[1]} and {group.id}/{channel.role}",
-                    )
-                )
-            else:
-                assigned[output_index] = (group.id, channel.role)
-            if channel.role == "tweeter":
-                if not channel.startup_muted:
-                    blockers.append(
-                        _issue(
-                            "blocker",
-                            "tweeter_must_start_muted",
-                            f"{group.label} tweeter must start muted",
-                        )
-                    )
-                if not channel.protection_required:
-                    blockers.append(
-                        _issue(
-                            "blocker",
-                            "tweeter_protection_not_required",
-                            f"{group.label} tweeter must require protection",
-                        )
-                    )
-
-    warnings.extend(cross_child_group_verdicts(topology))
-
-    group_ids = {group.id for group in topology.speaker_groups}
-    if topology.routing.main_left_group_id and topology.routing.main_left_group_id not in group_ids:
-        blockers.append(_issue("blocker", "left_group_missing", "left routing group is missing"))
-    if topology.routing.main_right_group_id and topology.routing.main_right_group_id not in group_ids:
-        blockers.append(_issue("blocker", "right_group_missing", "right routing group is missing"))
-    for sub_id in topology.routing.subwoofer_group_ids:
-        group = next((item for item in topology.speaker_groups if item.id == sub_id), None)
-        if group and group.kind != "subwoofer":
-            blockers.append(
-                _issue(
-                    "blocker",
-                    "subwoofer_route_kind_mismatch",
-                    f"routing subwoofer {sub_id} is not a subwoofer group",
-                )
-            )
-
-    status = "blocked" if blockers else "valid"
-    if not topology.speaker_groups:
-        status = "draft"
-    if status == "draft":
-        next_step = "Create speaker groups and assign physical outputs."
-    elif blockers:
-        next_step = "Resolve blockers before any sound test can be prepared."
-    else:
-        next_step = "Topology is saved; sound tests still require a separate safe session."
-
-    return {
-        "status": status,
-        "assigned_output_count": len(assigned),
-        "unused_output_count": max(
-            0,
-            topology.hardware.physical_output_count - len(assigned),
-        ),
-        "blockers": blockers,
-        "warnings": warnings,
-        "safety": {
-            "sound_tests_allowed": False,
-            "requires_tweeter_protection": any(
-                channel.role == "tweeter"
-                for group in topology.speaker_groups
-                for channel in group.channels
-            ),
-            "blockers": blockers,
-            "warnings": warnings,
-            "next_step": next_step,
-        },
-    }
-
-
 def main_speaker_groups(topology: OutputTopology) -> list[SpeakerGroup]:
     """Return the listening (left / right / mono) groups of ``topology``."""
 
@@ -1001,62 +764,3 @@ def topology_is_subless_passive_mains(topology: OutputTopology) -> bool:
     return topology_is_passive_mains(topology) and not subwoofer_speaker_groups(
         topology
     )
-
-
-def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
-    """Convert observed state into an ``OutputHardware`` JSON mapping."""
-
-    outputs = []
-    if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
-        labels = (
-            ("Apple DAC A left", "A-L"),
-            ("Apple DAC A right", "A-R"),
-            ("Apple DAC B left", "B-L"),
-            ("Apple DAC B right", "B-R"),
-        )
-    else:
-        labels = tuple(
-            (f"DAC output {index + 1}", str(index + 1))
-            for index in range(state.physical_output_count)
-        )
-    for index in range(state.physical_output_count):
-        human_label, terminal_label = labels[index]
-        outputs.append({
-            "index": index,
-            "human_label": human_label,
-            "terminal_label": terminal_label,
-        })
-
-    child_devices = []
-    for idx, child in enumerate(state.child_devices):
-        physical = (
-            [idx * 2, idx * 2 + 1]
-            if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-            and idx < 2
-            else list(range(state.physical_output_count))
-        )
-        child_devices.append({
-            "child_id": f"apple_dac_{idx + 1}"
-            if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
-            else child.card_id,
-            "device_id": child.device_id,
-            "device_label": _dac_label_for(child.device_id) or child.label,
-            "physical_output_indexes": physical,
-            **({"serial": child.serial} if child.serial else {}),
-            **({"card_id": child.card_id} if child.card_id else {}),
-            **({"stable_path": child.stable_path} if child.stable_path else {}),
-            **({"usb_path": child.usb_path} if child.usb_path else {}),
-            **({"controller": child.controller} if child.controller else {}),
-        })
-
-    out: dict[str, Any] = {
-        "device_id": state.profile_id,
-        "device_label": state.profile_label,
-        "physical_output_count": state.physical_output_count,
-        "outputs": outputs,
-    }
-    if state.selected_card_id:
-        out["card_id"] = state.selected_card_id
-    if child_devices:
-        out["child_devices"] = child_devices
-    return out

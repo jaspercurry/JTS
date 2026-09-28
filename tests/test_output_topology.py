@@ -9,6 +9,7 @@ from dataclasses import replace
 import pytest
 
 from jasper import output_topology as output_topology_mod
+from jasper import output_topology_evaluation
 from jasper.audio_hardware import dac
 from jasper.output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -23,12 +24,14 @@ from jasper.output_topology import (
     OutputTopologyError,
     SpeakerChannel,
     topology_config_fingerprint,
-    topology_hardware_from_state,
     topology_is_passive_mains,
     topology_is_subless_passive_mains,
     unknown_output_hardware,
 )
-from jasper.output_topology_store import new_topology_draft
+from jasper.output_topology_store import (
+    new_topology_draft,
+    topology_hardware_from_state,
+)
 from tests.output_topology_fixtures import (
     _base_hardware,
     _dual_apple_hardware,
@@ -279,7 +282,7 @@ def test_cross_child_speaker_group_is_named_and_disclosed_not_blocked() -> None:
     evaluation = topology.evaluation()
     verdicts = [
         issue for issue in evaluation["warnings"]
-        if issue["code"] == output_topology_mod.CROSS_CHILD_GROUP_CODE
+        if issue["code"] == output_topology_evaluation.CROSS_CHILD_GROUP_CODE
     ]
 
     assert len(verdicts) == 1
@@ -294,7 +297,7 @@ def test_cross_child_speaker_group_is_named_and_disclosed_not_blocked() -> None:
     assert evaluation["status"] == "valid"
     # The standalone reader returns the same verdicts the evaluation carries,
     # so a later consumer never re-derives the child boundary.
-    assert output_topology_mod.cross_child_group_verdicts(topology) == verdicts
+    assert output_topology_evaluation.cross_child_group_verdicts(topology) == verdicts
 
 
 def test_one_child_dac_per_speaker_has_no_cross_child_verdict() -> None:
@@ -311,8 +314,8 @@ def test_one_child_dac_per_speaker_has_no_cross_child_verdict() -> None:
 
     evaluation = topology.evaluation()
 
-    assert output_topology_mod.cross_child_group_verdicts(topology) == []
-    assert output_topology_mod.CROSS_CHILD_GROUP_CODE not in {
+    assert output_topology_evaluation.cross_child_group_verdicts(topology) == []
+    assert output_topology_evaluation.CROSS_CHILD_GROUP_CODE not in {
         issue["code"] for issue in evaluation["warnings"]
     }
     assert evaluation["status"] == "valid"
@@ -336,8 +339,8 @@ def test_subwoofer_group_inside_one_child_has_no_cross_child_verdict() -> None:
         routing={"main_left_group_id": "left", "subwoofer_group_ids": ["sub"]},
     )
 
-    assert output_topology_mod.cross_child_group_verdicts(topology) == []
-    assert output_topology_mod.CROSS_CHILD_GROUP_CODE not in {
+    assert output_topology_evaluation.cross_child_group_verdicts(topology) == []
+    assert output_topology_evaluation.CROSS_CHILD_GROUP_CODE not in {
         issue["code"] for issue in topology.evaluation()["warnings"]
     }
 
@@ -355,7 +358,7 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
         routing={"mono_group_id": "mono"},
     )
     assert dac8x.hardware.child_devices == ()
-    assert output_topology_mod.cross_child_group_verdicts(dac8x) == []
+    assert output_topology_evaluation.cross_child_group_verdicts(dac8x) == []
     assert dac8x.evaluation()["status"] == "valid"
 
     single_child_hardware = _base_hardware()
@@ -373,7 +376,7 @@ def test_single_child_hardware_never_reports_a_cross_child_verdict() -> None:
         routing={"mono_group_id": "mono"},
     )
     assert len(single_child.hardware.child_devices) == 1
-    assert output_topology_mod.cross_child_group_verdicts(single_child) == []
+    assert output_topology_evaluation.cross_child_group_verdicts(single_child) == []
 
 
 def test_posted_human_output_label_is_rederived_from_hardware() -> None:

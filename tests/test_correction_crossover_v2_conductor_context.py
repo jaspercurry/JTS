@@ -34,8 +34,8 @@ from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.active_speaker.profile import ActiveSpeakerPreset, DRIVER_ROLES_BY_WAY
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.active_speaker.playback_route import ACTIVE_PLAYBACK_DEVICE_ENV
 from jasper.output_topology import (
-    ACTIVE_PLAYBACK_DEVICE_ENV,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )

@@ -14,10 +14,16 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from .audio_hardware.dac import (
+    APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
+    DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
+    label_for as _dac_label_for,
+)
 from .atomic_io import advisory_file_lock, atomic_write_text
 from .log_event import log_event
-from .output_hardware import load_state as load_output_hardware_state
+from .output_hardware import OutputHardwareState, load_state as load_output_hardware_state
 from .output_topology import (
     OutputHardware,
     OutputTopology,
@@ -25,7 +31,6 @@ from .output_topology import (
     TopologyRouting,
     subwoofer_speaker_groups,
     topology_config_fingerprint,
-    topology_hardware_from_state,
     unknown_output_hardware,
 )
 from .paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
@@ -35,6 +40,65 @@ from .transition_log import TransitionLog
 logger = logging.getLogger(__name__)
 
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
+
+
+def topology_hardware_from_state(state: OutputHardwareState) -> dict[str, Any]:
+    """Convert observed state into an ``OutputHardware`` JSON mapping."""
+
+    outputs = []
+    if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID:
+        labels = (
+            ("Apple DAC A left", "A-L"),
+            ("Apple DAC A right", "A-R"),
+            ("Apple DAC B left", "B-L"),
+            ("Apple DAC B right", "B-R"),
+        )
+    else:
+        labels = tuple(  # type: ignore[assignment]
+            (f"DAC output {index + 1}", str(index + 1))
+            for index in range(state.physical_output_count)
+        )
+    for index in range(state.physical_output_count):
+        human_label, terminal_label = labels[index]
+        outputs.append({
+            "index": index,
+            "human_label": human_label,
+            "terminal_label": terminal_label,
+        })
+
+    child_devices = []
+    for idx, child in enumerate(state.child_devices):
+        physical = (
+            [idx * 2, idx * 2 + 1]
+            if state.profile_id == DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+            and idx < 2
+            else list(range(state.physical_output_count))
+        )
+        child_devices.append({
+            "child_id": f"apple_dac_{idx + 1}"
+            if child.device_id == APPLE_USB_C_DONGLE_DEVICE_ID
+            else child.card_id,
+            "device_id": child.device_id,
+            "device_label": _dac_label_for(child.device_id) or child.label,
+            "physical_output_indexes": physical,
+            **({"serial": child.serial} if child.serial else {}),
+            **({"card_id": child.card_id} if child.card_id else {}),
+            **({"stable_path": child.stable_path} if child.stable_path else {}),
+            **({"usb_path": child.usb_path} if child.usb_path else {}),
+            **({"controller": child.controller} if child.controller else {}),
+        })
+
+    out: dict[str, Any] = {
+        "device_id": state.profile_id,
+        "device_label": state.profile_label,
+        "physical_output_count": state.physical_output_count,
+        "outputs": outputs,
+    }
+    if state.selected_card_id:
+        out["card_id"] = state.selected_card_id
+    if child_devices:
+        out["child_devices"] = child_devices
+    return out
 
 
 def new_topology_draft(

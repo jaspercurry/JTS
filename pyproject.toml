@@ -340,7 +340,6 @@ module = [
     "jasper.multiroom.leader_config",
     "jasper.mux",
     "jasper.net.wifi_scan_repair",
-    "jasper.output_topology",
     "jasper.outputd_active_lane",
     "jasper.peering.daemon",
     "jasper.sound.flat_verifier",
@@ -420,6 +419,7 @@ layers = [
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
   "output_topology_store",
   "output_topology",
+  "output_topology_evaluation",
   # Own layer, not usb_mic's, so local_sources can rank above it later without pulling in usb_mic (#4719).
   "output_hardware",
   "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
