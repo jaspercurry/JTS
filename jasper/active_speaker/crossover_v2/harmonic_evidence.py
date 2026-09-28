@@ -7,7 +7,9 @@
 Harmonic images precede the linear IR by L·ln(order), so the distortion
 kernel uses a wider pre-guard than the normal response analysis. Legacy
 captures without stimulus identity retain conditional ratios, with drive
-unknown; timing agreement alone cannot prove the played program's level.
+unknown, wherever their program is recorded or proved by a take that recorded
+its session volume; timing agreement alone cannot prove the played program's
+level.
 """
 
 from __future__ import annotations
@@ -96,7 +98,7 @@ __all__ = [
 #: Bumped when a field changes MEANING, never for an additive widening — the
 #: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps: a reader that
 #: ignores what it does not know is not misled by a new key.
-HARMONICS_SCHEMA_VERSION = 1
+HARMONICS_SCHEMA_VERSION = 2
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -322,11 +324,12 @@ def _measure_program_at(state: Mapping[str, Any], bands: Mapping[str, tuple[floa
 
 
 def rebuild_measure_program(
-    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]], session_volume_db: float | None,
-) -> tuple[ExcitationProgram, bool]:
-    """Return (program, prelude) at a capture's recorded session volume, proved by the banked id.
+    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]], volumes_db: Mapping[str, float],
+) -> tuple[ExcitationProgram, float, bool]:
+    """Return (program, session volume, prelude), proved by the banked id.
 
-    Solve the prelude; use banked sweep durations when present.
+    ``volumes_db`` maps each take to the session volume it recorded; each distinct
+    one is tried with the prelude on and off. Use banked sweep durations when present.
     Refuse an unproved reconstruction: harmonic offsets depend on its sweep L.
     """
 
@@ -357,9 +360,6 @@ def rebuild_measure_program(
                 "program_id": want[:12],
             },
         )
-    if session_volume_db is None:
-        raise HarmonicEvidenceRefused(
-            PROGRAM_NOT_REPRODUCIBLE, {"program_id": want[:12], "missing": "provenance.session_volume_db"})
     # WHETHER the state carries a banking attempt at all, independent of whether
     # that attempt turned out usable: :func:`_banked_sweep_durations_s`
     # collapses "never banked" and "banked something unusable" to the same
@@ -369,10 +369,12 @@ def rebuild_measure_program(
     banked_durations_present = isinstance(raw_banked_durations, Mapping)
     banked_durations = _banked_sweep_durations_s(state, bands)
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
-    for prelude in (shipped, not shipped):
-        program = _measure_program_at(state, bands, session_volume_db, prelude)
-        if program.program_id == want:
-            return program, bool(prelude)
+    for volume_db in dict.fromkeys(volumes_db.values()):
+        for prelude in (shipped, not shipped):
+            program = _measure_program_at(state, bands, volume_db, prelude)
+            if program.program_id == want:
+                return program, volume_db, bool(prelude)
+    tried = ", ".join(f"{take_id} at {volume_db:g} dB" for take_id, volume_db in volumes_db.items())
     if not banked_durations_present:
         duration_cause = (
             "this round's sweeps were FITTED to a declared duration limit "
@@ -396,7 +398,7 @@ def rebuild_measure_program(
             "this round banked its realized sweep durations (#2923) and "
             "this replay composed at exactly them, so a duration fit is a "
             "LESS LIKELY cause here than it is for an unbanked round — "
-            "check (2) and (3) first — but it is not ruled out: a "
+            "check (1), (3), and (4) first — but it is not ruled out: a "
             "hand-edited banked value, or a genuine duration-limit change "
             "replayed against a byte-identical band, could still leave the "
             "banked figure wrong for this program"
@@ -406,7 +408,7 @@ def rebuild_measure_program(
         {
             "program_id": want[:12],
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
-            "session_volume_db": session_volume_db,
+            "session_volumes_tried_db": dict(volumes_db),
             # Two booleans, not one: "was anything banked" and "was what was banked
             # usable" are different facts (#2923). Absent from banking is
             # (False, False); banked-something-unusable is (True, False); banked and
@@ -416,13 +418,16 @@ def rebuild_measure_program(
             "measure_sweep_durations_banked": banked_durations_present,
             "measure_sweep_durations_usable": banked_durations is not None,
             "note": (
-                "the recorded session volume does not reproduce the banked "
-                "program id with the courtesy prelude either on or off. Three "
-                f"causes: (1) {duration_cause}; (2) the driver bands supplied "
-                "are wrong for this round; (3) this state does not describe a "
-                "MEASURE round. Only (2) and (3) are fixable by re-invoking — "
-                "(1) needs the round to bank its sweep durations (#2923) when "
-                "it has not already"
+                "no session volume a MEASURE capture recorded reproduces the "
+                "banked program id with the courtesy prelude either on or off. "
+                "Four causes: (1) no capture recorded the volume the banked "
+                f"program played at (tried: {tried or 'none recorded'}); "
+                f"(2) {duration_cause}; (3) the driver bands supplied are wrong "
+                "for this round; (4) this state does not describe a MEASURE "
+                "round. Only (3) and (4) are fixable by re-invoking — (1) needs "
+                "a take of the banked program that recorded its volume, and (2) "
+                "needs the round to bank its sweep durations (#2923) when it "
+                "has not already"
             ),
         },
     )
@@ -942,25 +947,33 @@ def read_round_harmonics(
             },
         )
 
+    recorded_db = {capture["take_id"]: volume for capture in captures
+                   if capture["sidecar"].get("graph_scope") != "candidate_branches"
+                   and (volume := _session_volume_db(capture["sidecar"])) is not None}
     measure = None
 
     def program_for(sidecar):
+        """(program, session volume, prelude, rendered-WAV key), or None when no take proves it."""
         nonlocal measure
         if sidecar.get("graph_scope") == "candidate_branches":
             program = ExcitationProgram.from_dict(sidecar["program"])
             sweep = program.segment("sweep_w")
             prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
-            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude
+            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude, program.program_id
+        if not recorded_db:
+            return None
         if measure is None:
             round_bands = round_bands_hz(state, bands)
-            recorded = (_session_volume_db(capture["sidecar"]) for capture in captures
-                        if capture["sidecar"].get("graph_scope") != "candidate_branches")
-            first = next((volume for volume in recorded if volume is not None), None)
-            measure = (*rebuild_measure_program(state, round_bands, first), round_bands)
-        proven, prelude, round_bands = measure
+            proven, proven_db, prelude = rebuild_measure_program(state, round_bands, recorded_db)
+            measure = proven, prelude, round_bands, {proven_db: proven}
+        proven, prelude, round_bands, composed = measure
         volume_db = _session_volume_db(sidecar)
-        program = proven if volume_db is None else _measure_program_at(state, round_bands, volume_db, prelude)
-        return program, volume_db, prelude
+        if volume_db is None:
+            return proven, None, prelude, proven.program_id
+        if volume_db not in composed:
+            composed[volume_db] = _measure_program_at(state, round_bands, volume_db, prelude)
+        # The fader never reaches the PCM, so every rebuilt take renders proven's WAV.
+        return composed[volume_db], volume_db, prelude, proven.program_id
 
     program_hashes: dict[str, str] = {}
     calibration, calibration_note = _calibration_for(captures, calibration_text)
@@ -980,17 +993,22 @@ def read_round_harmonics(
             "position_deg": capture["sidecar"].get("position_deg"),
         }
         sidecar = capture["sidecar"]
-        program, volume_db, prelude = program_for(sidecar)
+        read_as = program_for(sidecar)
+        if read_as is None:
+            refused.append({**take, "reason": "session_volume_unrecorded",
+                            "fidelity_fields_compared": 0, "failures": ["session_volume_unrecorded"]})
+            continue
+        program, volume_db, prelude, wav_key = read_as
         provenance = sidecar.get("provenance")
         stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
         if isinstance(stimulus, Mapping) and stimulus.get("wav_sha256"):
-            if program.program_id not in program_hashes:
+            if wav_key not in program_hashes:
                 with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
                     rendered = Path(temporary) / "program.wav"
                     write_program_wav(rendered, program)
-                    program_hashes[program.program_id] = sha256_file(rendered)
+                    program_hashes[wav_key] = sha256_file(rendered)
         proof, reason = _capture_program_identity(
-            sidecar, program, state, program_hashes.get(program.program_id),
+            sidecar, program, state, program_hashes.get(wav_key),
         )
         try:
             if not reason:

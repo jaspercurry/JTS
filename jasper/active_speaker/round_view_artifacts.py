@@ -93,7 +93,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/1"),
+    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/2"),
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
     ),
