@@ -47,7 +47,7 @@ from jasper.audio_measurement.sweep import (
     phase_closing_duration_s,
     synchronized_sweep_metadata,
 )
-from tests._log_events import event_records
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
 
 #: Tonight's jts3 shape: the woofer runs 150-4000 Hz (the band whose 4 s
@@ -513,16 +513,10 @@ def test_the_compose_path_discloses_only_when_the_fit_shortened_the_request(capl
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="jasper.audio_measurement.program"):
         _compose(gains, -20.0, {"woofer": 4.0, "tweeter": 4.0})
-    fitted_lines = [
-        rec.getMessage()
-        for rec in caplog.records
-        if "measure_program.sweep_fitted" in rec.getMessage()
-    ]
     # Once, for the one role the fit bit -- not once per occurrence, and not
     # for the tweeter, whose 3 s nominal already clears 4 s.
-    assert len(fitted_lines) == 1
-    line = fitted_lines[0]
-    assert "role=woofer" in line
-    assert "limit_s=4.0" in line
-    assert "sweep_nominal_s=4.005766" in line
-    assert "sweep_fitted_s=3.983876" in line
+    fields = event_fields(caplog, "measure_program.sweep_fitted")
+    assert fields["role"] == "woofer"
+    assert fields["limit_s"] == "4.0"
+    assert fields["sweep_nominal_s"] == "4.005766"
+    assert fields["sweep_fitted_s"] == "3.983876"
