@@ -45,17 +45,15 @@ from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import env_value, read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
-from jasper.fanin.env_actions import _apply_action, _apply_actions, _write_env_actions
+from jasper.fanin.env_actions import _apply_actions, _write_env_actions
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
-    DEFAULT_FANIN_RING_SLOTS,
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
-    RING_A_CHANNELS,
     RING_SLOTS_ENV_VAR,
     resolve_outputd_ring_path,
 )
@@ -68,10 +66,7 @@ from jasper import (
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
-    EnvSnapshot,
     read_snapshot,
-    resolve_effective_fanin_ring_slots,
-    resolve_effective_fanin_wire_format,
     ring_endpoint_anchor_converged,
 )
 from jasper.logging_setup import configure_logging
@@ -494,9 +489,8 @@ def _converge_ring(
     """Write the ring state, heal its geometry, and converge the daemons in order.
 
     The write comes first (single source of truth for the daemons' next start),
-    then the two GEOMETRY heals — a shear-prone stale ``JASPER_FANIN_RING_SLOTS``
-    and a geometry-mismatched on-disk ring file — then, only if something
-    actually moved, the ordered spine:
+    then the on-disk ring geometry is repaired. Only if something moved does
+    the ordered spine run:
 
     1. ``jasper-audio-hardware-reconcile``, the single writer of
        ``JASPER_OUTPUTD_CONTENT_FORMAT``, so outputd is restarted against the
@@ -576,14 +570,10 @@ def _converge_ring(
 
     _sync_process_env_for_emit(outputd_new_text)
 
-    # GEOMETRY HEALS, every pass — not only when the coupling-flip WRITE moves.
-    # A box already on the ring with a stale slot count or a stale on-disk ring
-    # must still be healed. Both are write-on-change, so a coherent box pays a
-    # few small reads and still takes the no-bounce path below.
-    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(env_path, reason)
+    fanin_snapshot = read_snapshot(env_path)
     files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
 
-    if not (changed or slots_healed or files_cleared):
+    if not (changed or files_cleared):
         # Already coherent: re-confirm camilla only (self-heal a drifted loaded
         # config) — no fan-in bounce on a no-op tick.
         ok, detail = do_reconcile(force=False)
@@ -880,121 +870,6 @@ CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
 CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 
 
-def _migrate_stale_fanin_ring_slots(
-    fanin_env_path: str | Path, reason: str
-) -> tuple[EnvSnapshot, bool]:
-    """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
-
-    ``JASPER_FANIN_RING_SLOTS`` is operator-tunable (range 2..16), so a value
-    that MATCHES the conf.d ``jts_ring_capture`` ``n_slots`` is a coherent
-    override and stays. The key is written into the later-loaded reconciler file
-    ONLY when the shipped conf.d pins the current default but an env layer
-    carries a mismatch. Writing the coherent value rather than deleting the key
-    is deliberate: deleting from fanin.env can expose a stale value in
-    ``/etc/jasper/jasper.env`` on the next systemd start.
-
-    Returns the current snapshot and whether the key moved — the caller converges
-    the daemons on a heal, because fan-in creates Ring A with this value and
-    CamillaDSP's ioplug attaches expecting the conf.d's.
-
-    Fail-safe: an unreadable conf.d, an absent/default env value, a non-default
-    custom conf.d mismatch, or an invalid value is a no-op — fan-in's own attach
-    error is the backstop.
-
-    IT DOES NOT CONVERGE A BOX SHEARED ON AN AXIS IT DOES NOT OWN. If the box
-    also disagrees about the WIRE, converging the slots alone would make the
-    geometry look repaired while the ring still cannot attach, so the wire is
-    read first and a shear there DECLINES the write.
-    """
-    current = read_snapshot(fanin_env_path)
-
-    # The axes this function does NOT own, read before it writes the one it does.
-    conf_format = ring_conf.ring_conf_format(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
-    conf_channels = ring_conf.ring_conf_channels(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
-    fanin_format, fanin_format_source = resolve_effective_fanin_wire_format(
-        current.text
-    )
-    wire_shear = ""
-    if conf_format is not None and conf_format != fanin_format:
-        wire_shear = (
-            f"fan-in declares wire format {fanin_format} (from "
-            f"{fanin_format_source}) but conf.d pcm.{ring_conf.RING_A_CONF_PCM} declares "
-            f"{conf_format}"
-        )
-    elif conf_channels is not None and conf_channels != RING_A_CHANNELS:
-        wire_shear = (
-            f"conf.d pcm.{ring_conf.RING_A_CONF_PCM} declares {conf_channels} channels but "
-            f"fan-in's mixer is fixed at {RING_A_CHANNELS}"
-        )
-    if wire_shear:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="stale_ring_slots_override_declined",
-            reason=reason,
-            key=RING_SLOTS_ENV_VAR,
-            detail=(
-                f"{wire_shear} — converging the slot count alone would report a "
-                "geometry this box does not have"
-            ),
-            level=logging.WARNING,
-        )
-        return current, False
-
-    conf_a = ring_conf.ring_conf_n_slots(ring_conf.RING_A_CONF_PCM, ring_assets.RING_CONF_D)
-    if conf_a is None:
-        return current, False  # indeterminate conf.d → nothing provable to heal.
-    resolution = resolve_effective_fanin_ring_slots(current.text)
-    if resolution.raw is None or (
-        resolution.raw.strip() == "" and resolution.source == "default"
-    ):
-        return current, False  # nothing persisted → default already coherent.
-    if resolution.value is None:
-        return current, False  # invalid → fan-in refuses with a crisp reason.
-    if resolution.value == conf_a:
-        return current, False  # coherent operator override → keep it.
-    if conf_a != DEFAULT_FANIN_RING_SLOTS:
-        return current, False  # custom conf.d mismatch → fan-in must fail loud.
-
-    _, changed = _apply_action(
-        current.text, RuntimeEnvAction("set", RING_SLOTS_ENV_VAR, str(conf_a))
-    )
-    if not changed:
-        return current, False
-    try:
-        new_text, _ = _write_env_actions(
-            current.path,
-            lambda _text: (
-                RuntimeEnvAction("set", RING_SLOTS_ENV_VAR, str(conf_a)),
-            ),
-        )
-    except OSError as e:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="stale_ring_slots_override_failed",
-            reason=reason,
-            key=RING_SLOTS_ENV_VAR,
-            value=resolution.raw,
-            source=resolution.source,
-            error=e,
-            level=logging.WARNING,
-        )
-        return current, False
-    os.environ[RING_SLOTS_ENV_VAR] = str(conf_a)
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="stale_ring_slots_overridden",
-        reason=reason,
-        key=RING_SLOTS_ENV_VAR,
-        stale_value=resolution.raw,
-        stale_source=resolution.source,
-        conf_n_slots=conf_a,
-    )
-    return EnvSnapshot(current.path, new_text), True
-
-
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     """Delete on-disk ring files whose geometry != the expected one. Did any go?
 
@@ -1022,7 +897,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     delete failure is logged, never raised — the writer's own attach error is the
     backstop.
 
-    ``fanin_text`` is the (post-migration) fanin.env text — used ONLY as the
+    ``fanin_text`` is the current fanin.env text — used ONLY as the
     fallback expected Ring-A slot count when the conf.d is unreadable.
     """
     # Expected Ring-A slot count: the conf.d is the attach authority for what the
