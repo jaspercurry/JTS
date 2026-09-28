@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 from .. import flight_recorder, transit
 from ..mic_capture import InputDeviceUnavailable, make_mic_capture
 from ..tts_playout import TtsPlayout
-from ..assistant_loudness import active_voice_identity, ensure_seed_profile
+from jasper.runtime_config.assistant_loudness import active_voice_identity, ensure_seed_profile
 from ..assistant_volume import volume_context_publisher_for_runtime
 from ..camilla import (
     CamillaController,
@@ -69,7 +69,7 @@ from ..usage import (
     load_pricing_overrides,
     pricing_for_model,
 )
-from ..usage_writer import VoiceUsageStore
+from jasper.runtime_config.usage_writer import VoiceUsageStore
 from ..vad import SpeechVAD, SpeechVADSetupError
 from ..voice import control_socket as control_socket_mod
 from ..voice.assistant_output import FanInDucker

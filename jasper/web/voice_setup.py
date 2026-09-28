@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from jasper.control.service_restart import restart_voice_daemon
-from jasper.assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
     ensure_seed_profile,
 )

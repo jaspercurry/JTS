@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import audio_profile_state, wake_conditions
+from jasper.runtime_config import audio_profile_state
+from jasper import wake_conditions
 from jasper.cli import wake_enroll
 from jasper.mic_capture import UdpMicCapture as RealUdpMicCapture
 from jasper.wake_corpus import (

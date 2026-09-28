@@ -29,7 +29,7 @@ from jasper import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 from jasper.config import env_bool
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_FILE_ENV,
     PROFILE_CUSTOM,
     normalize_audio_input_profile,

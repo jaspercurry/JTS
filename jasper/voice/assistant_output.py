@@ -22,7 +22,7 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from ..assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )

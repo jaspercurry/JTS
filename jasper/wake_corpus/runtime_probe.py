@@ -29,7 +29,7 @@ from jasper.aec_sweep import (
     USB_AEC3_CORPUS_LABEL,
     normalize_aec3_sweep_source,
 )
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_ENV,
     AEC_MODE_FILE_ENV,
     AecIntent,

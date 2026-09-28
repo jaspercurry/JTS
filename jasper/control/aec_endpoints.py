@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from ..chip_aec import record as commission_record
 from ..aec.bridge_telemetry import read_bridge_stats
 from ..aec_ready import read_aec_bridge_ready
-from ..audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_ENV,
     AecIntent,
     PROFILE_DIRECT_MIC,

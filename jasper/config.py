@@ -26,7 +26,7 @@ from .location_state import (
 )
 from .mics.xvf3800 import CHIP_AEC_ENABLED_ENV
 from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
-from .assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .identity.speaker_name import runtime_name as _speaker_runtime_name

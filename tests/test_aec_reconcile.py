@@ -22,7 +22,7 @@ from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
 from jasper.aec.reconcile import runtime as reconcile_runtime
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     ALL_PROFILES,
     WAKE_LEG_DEFAULTS,
     normalize_audio_input_profile,
@@ -755,7 +755,7 @@ def test_the_alignment_record_names_the_selection_it_was_written_under(
 ) -> None:
     """Every write site is guarded on a non-custom profile, and stamps it.
 
-    The stamp is what lets the consumer in jasper.audio_profile_state tell a
+    The stamp is what lets the consumer in jasper.runtime_config.audio_profile_state tell a
     live verdict from one the last managed pass left behind.
     """
     env_file = _stage(tmp_path, "Array", profile=selection, channels=6)

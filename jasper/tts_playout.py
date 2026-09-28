@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     AssistantSourceMeter,
     DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
     INPUT_RATE as ASSISTANT_INPUT_RATE,

@@ -18,7 +18,7 @@ from jasper.usage import (
     USAGE_READS, UsageRow, household_usage_reader,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.usage_writer")
 
 
 class VoiceUsageStore(UsageStore):

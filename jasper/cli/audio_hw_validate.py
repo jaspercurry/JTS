@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from ..audio_profile_state import probe_xvf_mic
+from jasper.runtime_config.audio_profile_state import probe_xvf_mic
 from ..audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,

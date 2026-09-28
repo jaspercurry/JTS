@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Mapping
 
-from .assistant_loudness import tts_envelope_lufs_for_level
+from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
 from .env_load import VOICE_GROUPING_ENV_FILE
 from .log_event import log_event
 from .music_sources import Source, VolumeMode, volume_mode

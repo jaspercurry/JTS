@@ -19,7 +19,7 @@ from jasper.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
 )
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     build_audio_profile_status,

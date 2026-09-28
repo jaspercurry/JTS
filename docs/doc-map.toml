@@ -255,7 +255,7 @@ code = [
   "jasper_aec3/**",
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
-  "jasper/audio_profile_state.py",
+  "jasper/runtime_config/audio_profile_state.py",
   "jasper/audio_validation*.py",
   "jasper/cli/audio_hw_validate.py",
   "jasper/audio_input_view.py",

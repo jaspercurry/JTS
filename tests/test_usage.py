@@ -35,7 +35,7 @@ from jasper.usage import (
 )
 
 
-from jasper.usage_writer import VoiceUsageStore
+from jasper.runtime_config.usage_writer import VoiceUsageStore
 
 from tests._log_events import event_fields, event_records
 from tests._wake_loop import wake_loop_for_tests

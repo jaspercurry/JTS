@@ -8,7 +8,7 @@
 this leaf turns that resolution into the single household-facing verdict —
 status, reason, action, selection — that `deploy/bin/jasper-aec-reconcile`
 publishes as the `JASPER_AEC_CHIP_AEC_ALIGNMENT_*` record and
-`jasper.audio_profile_state` reads back into `/state`.
+`jasper.runtime_config.audio_profile_state` reads back into `/state`.
 
 `status` and `action` are matched on: the ladder branches on the status, and
 `action` is decoded against `ACTION_RECOMMISSION` so surfaces gate on a boolean
@@ -161,7 +161,7 @@ class AlignmentHealth:
 
         Both ids are compared as written: `selection` is the caller's already
         normalized profile id, and the stamp is normalized by its writer. The profile
-        vocabulary itself belongs to `jasper.audio_profile_state`, which
+        vocabulary itself belongs to `jasper.runtime_config.audio_profile_state`, which
         consumes this module, so `custom_profile` is passed in rather than
         imported back.
         """
