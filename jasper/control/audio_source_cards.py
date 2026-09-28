@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..fanin.latency_mode import PRESETS, classify_runtime
+from ..fanin.latency_mode import MODE_LABELS, classify_runtime
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
@@ -69,10 +69,9 @@ def usb_timing(
             "floor_frames": latency_runtime.floor_frames,
         })
 
-    if preset_mode is not None:
-        preset = PRESETS[preset_mode]
-        current_frames = latency_runtime.held_frames or preset.floor_frames
-        current_ms = current_frames * 1000 / 48_000
+    if preset_mode is not None and latency_runtime.held_frames is not None:
+        label = MODE_LABELS[preset_mode]
+        current_ms = latency_runtime.held_frames * 1000 / 48_000
         if active and latency_runtime.phase == "fallback":
             status = "warn"
             headline = f"Stable fallback · {current_ms:.1f} ms input buffer"
@@ -84,7 +83,7 @@ def usb_timing(
             )
         elif active and latency_runtime.phase == "clock_adjusting":
             status = "warn"
-            headline = f"{preset.label} latency · clock tracking under strain"
+            headline = f"{label} latency · clock tracking under strain"
             detail = "Playback remains locked while USB host timing stabilizes."
         elif active and latency_runtime.phase == "buffer_adjusting":
             status = "warn"
@@ -93,14 +92,14 @@ def usb_timing(
         elif active and latency_runtime.phase == "buffer_held":
             status = "warn"
             headline = f"Extra buffer in use · {current_ms:.1f} ms input buffer"
-            detail = f"JTS keeps this buffer to prevent audio gaps. {preset.label} remains selected."
+            detail = f"JTS keeps this buffer to prevent audio gaps. {label} remains selected."
         elif active and latency_runtime.phase == "checking":
             status = "idle"
             headline = "Checking USB host timing"
             detail = "Playback is safe while JTS checks USB timing."
         else:
             status = "ok"
-            headline = f"{preset.label} latency · {current_ms:.1f} ms input buffer"
+            headline = f"{label} latency · {current_ms:.1f} ms input buffer"
             detail = (
                 "The larger stable USB buffer is active."
                 if preset_mode == "high"

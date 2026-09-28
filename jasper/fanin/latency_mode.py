@@ -20,32 +20,8 @@ DEFAULT_MODE = "low"
 DEFAULT_STATE_PATH = "/var/lib/jasper/usb_latency.env"
 
 
-@dataclass(frozen=True)
-class LatencyPreset:
-    mode: str
-    label: str
-    floor_frames: int
-    decay_enabled: bool
-
-    @property
-    def settled_ms(self) -> float:
-        return round(self.floor_frames * 1000 / SAMPLE_RATE, 1)
-
-
-#: The household-facing modes, each one settling of the fan-in resampler's
-#: held target. ``floor_frames`` is written verbatim to
-#: ``JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES``, so the numbers are
-#: fan-in's, not this layer's: Low is config.rs's hardware-validated
-#: DEFAULT_CUSHION_DECAY_FLOOR_FRAMES and High is its acquisition ceiling
-#: (decay off, so the value is inert and only names what the lane settles at).
-#: tests/test_fanin_coupling_auto.py pins both against config.rs.
-PRESETS = {
-    "low": LatencyPreset("low", "Low", 576, True),
-    "medium": LatencyPreset("medium", "Medium", 1024, True),
-    "high": LatencyPreset("high", "High", 2560, False),
-}
-
-VALID_MODES = tuple(PRESETS)
+MODE_LABELS = {"low": "Low", "medium": "Medium", "high": "High"}
+VALID_MODES = tuple(MODE_LABELS)
 
 LatencyPhase = Literal[
     "unavailable", "idle", "starting", "checking", "clock_adjusting",
@@ -69,16 +45,12 @@ class LatencyRuntime:
 
 def normalize_mode(raw: str | None) -> str:
     mode = (raw or "").strip().lower()
-    if mode not in PRESETS:
+    if mode not in MODE_LABELS:
         raise ValueError(
             f"unsupported USB latency mode {raw!r}; expected "
             f"{', '.join(VALID_MODES)}"
         )
     return mode
-
-
-def preset_for(raw: str | None) -> LatencyPreset:
-    return PRESETS[normalize_mode(raw)]
 
 
 def read_requested_mode(
@@ -116,15 +88,11 @@ def write_requested_mode(
 
 
 def options() -> list[dict[str, Any]]:
-    return [
-        {
-            "mode": preset.mode,
-            "label": preset.label,
-            "settled_frames": preset.floor_frames,
-            "settled_ms": preset.settled_ms,
-        }
-        for preset in PRESETS.values()
-    ]
+    return [{"mode": mode, "label": label} for mode, label in MODE_LABELS.items()]
+
+
+def _reported_mode(value: Any) -> str | None:
+    return value if isinstance(value, str) and value in MODE_LABELS else None
 
 
 def _integer(value: Any) -> int | None:
@@ -160,51 +128,19 @@ def _usb_session_active(
     return ladder == "probing" and probe.get("waiting_for_lock") is True
 
 
-def applied_mode_from_resampler(resampler: Mapping[str, Any]) -> str | None:
-    decay = as_mapping(resampler.get("decay"))
-    enabled = decay.get("enabled")
-    if enabled is False:
-        return "high"
-    if enabled is not True:
-        return None
-    floor_frames = _integer(decay.get("floor_frames"))
-    if floor_frames is None:
-        return None
-    for mode in ("low", "medium"):
-        if PRESETS[mode].floor_frames == floor_frames:
-            return mode
-    return None
-
-
-def effective_mode_from_buffer(
-    held_frames: int | None,
-    applied_mode: str | None,
-) -> str | None:
-    if held_frames is None:
-        return None
-    for mode, preset in PRESETS.items():
-        if held_frames == preset.floor_frames:
-            return mode
-    applied_preset = PRESETS.get(applied_mode or "")
-    if applied_preset is not None and held_frames <= applied_preset.floor_frames:
-        return applied_preset.mode
-    return None
-
-
 def classify_runtime(
     resampler: Mapping[str, Any],
     host_clock: Mapping[str, Any] | None = None,
 ) -> LatencyRuntime:
     """Classify fan-in facts without adding control or presentation state."""
     clock = host_clock or {}
-    applied = applied_mode_from_resampler(resampler)
+    decay = as_mapping(resampler.get("decay"))
+    applied = _reported_mode(decay.get("mode"))
     held_frames = _integer(resampler.get("held_target_frames"))
-    floor_frames = _integer(as_mapping(resampler.get("decay")).get("floor_frames"))
+    floor_frames = _integer(decay.get("floor_frames"))
     locked = resampler.get("locked") is True
     session_active = _usb_session_active(resampler, clock)
-    effective = (
-        effective_mode_from_buffer(held_frames, applied) if locked else None
-    )
+    effective = _reported_mode(decay.get("effective_mode")) if locked else None
     buffer_above_floor = (
         applied != "high"
         and held_frames is not None
@@ -226,7 +162,7 @@ def classify_runtime(
         phase = "idle"
     elif not locked:
         phase = "starting"
-    elif as_mapping(resampler.get("decay")).get("frozen_reason") == "backoff":
+    elif decay.get("frozen_reason") == "backoff":
         phase = "buffer_held"
     elif buffer_above_floor:
         phase = "buffer_adjusting"
@@ -266,35 +202,35 @@ def read_state(
     applied = runtime.applied_mode
     held_frames = runtime.held_frames
     effective = runtime.effective_mode
-    selected_preset = PRESETS[selected]
+    selected_label = MODE_LABELS[selected]
     state = "unavailable"
     detail = "Waiting for live USB fan-in state."
     applying = applying_mode == selected and applied != selected
     if applying:
         state = "applying"
-        active = PRESETS[effective].label if effective is not None else "current buffer"
+        active = MODE_LABELS[effective] if effective is not None else "current buffer"
         detail = (
-            f"Applying {selected_preset.label}; {active} remains active while "
+            f"Applying {selected_label}; {active} remains active while "
             "fan-in restarts."
         )
     elif applied is not None and applied != selected:
         state = "error"
         error = (
-            f"{selected_preset.label} is preferred, but fan-in is configured for "
-            f"{PRESETS[applied].label}."
+            f"{selected_label} is preferred, but fan-in is configured for "
+            f"{MODE_LABELS[applied]}."
         )
         detail = error
     elif applied is not None and runtime.phase == "idle":
         state = "idle"
         detail = (
-            f"{selected_preset.label} is preferred. It will be used when USB "
+            f"{selected_label} is preferred. It will be used when USB "
             "audio starts."
         )
     elif applied is not None and runtime.phase in {"starting", "checking"}:
         state = "starting"
         if effective is not None and resampler.get("locked") is True:
             state = "applied"
-            detail = f"{PRESETS[effective].label} is active. Checking USB timing in the background."
+            detail = f"{MODE_LABELS[effective]} is active. Checking USB timing in the background."
         elif runtime.phase == "checking" and as_mapping(resampler.get("decay")).get("active") is True:
             state = "recovery"
             detail = "Reducing input delay while checking USB timing."
@@ -302,14 +238,14 @@ def read_state(
             detail = "Checking USB timing." if runtime.phase == "checking" else "USB audio is starting."
     elif applied is not None:
         state = "applied"
-        detail = f"{PRESETS[applied].label} is active."
+        detail = f"{MODE_LABELS[applied]} is active."
         if runtime.phase == "fallback" and held_frames is not None:
             state = "fallback"
             live_ms = held_frames * 1000 / SAMPLE_RATE
             if (resampler.get("decay") or {}).get("refilling") is True:
                 detail = (
                     f"Input buffer is increasing toward High ({live_ms:.1f} ms now). "
-                    f"{selected_preset.label} remains your choice."
+                    f"{selected_label} remains your choice."
                 )
             elif runtime.fallback_reason == "actuator_unavailable":
                 detail = (
@@ -319,33 +255,33 @@ def read_state(
                 )
             elif runtime.fallback_reason == "lost_authority":
                 detail = (
-                    f"{selected_preset.label} is preferred, but host timing "
+                    f"{selected_label} is preferred, but host timing "
                     f"became unstable. This USB session is using High "
-                    f"({live_ms:.1f} ms). {selected_preset.label} will be "
+                    f"({live_ms:.1f} ms). {selected_label} will be "
                     "tried again when the next USB session starts."
                 )
             elif runtime.fallback_reason == "probe_noncompliant":
                 detail = (
-                    f"{selected_preset.label} is preferred, but the host "
+                    f"{selected_label} is preferred, but the host "
                     f"timing check failed. This USB session is using High "
-                    f"({live_ms:.1f} ms). {selected_preset.label} will be "
+                    f"({live_ms:.1f} ms). {selected_label} will be "
                     "tried again when the next USB session starts."
                 )
             else:
                 detail = f"This USB session is using High ({live_ms:.1f} ms)."
         elif runtime.phase == "buffer_held" and held_frames is not None:
             state = "held"
-            detail = f"Keeping {held_frames * 1000 / SAMPLE_RATE:.1f} ms to prevent audio gaps. {selected_preset.label} remains your choice."
+            detail = f"Keeping {held_frames * 1000 / SAMPLE_RATE:.1f} ms to prevent audio gaps. {selected_label} remains your choice."
         elif runtime.buffer_above_floor and held_frames is not None:
             state = "recovery"
             active = (
-                PRESETS[effective].label
+                MODE_LABELS[effective]
                 if effective is not None
                 else f"{held_frames * 1000 / SAMPLE_RATE:.1f} ms"
             )
             detail = (
                 f"{active} is active while timing stabilizes; JTS will "
-                f"reduce toward {selected_preset.label} automatically."
+                f"reduce toward {selected_label} automatically."
             )
     return {
         "selected_mode": selected,
@@ -366,12 +302,11 @@ def read_state(
 __all__ = [
     "DEFAULT_MODE",
     "DEFAULT_STATE_PATH",
-    "PRESETS",
+    "MODE_LABELS",
     "STATE_ENV_KEY",
     "classify_runtime",
     "normalize_mode",
     "options",
-    "preset_for",
     "read_requested_mode",
     "read_state",
     "write_requested_mode",
