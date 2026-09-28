@@ -551,58 +551,67 @@ async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
 
 
 @pytest.mark.parametrize(
-    ("prev", "current", "status", "pushed", "written"),
+    ("seen", "prev", "current", "handoff", "applies"),
     [
-        pytest.param(
-            Source.AIRPLAY, Source.SPOTIFY,
-            {"active_source": "spotify",
-             "last_handoff": {"id": 8, "to": "spotify", "result": "ok"}},
-            [], [], id="mux_handed_it_off",
-        ),
-        pytest.param(
-            Source.SPOTIFY, Source.IDLE,
-            {"active_source": "idle",
-             "last_handoff": {"id": 7, "to": "spotify", "result": "ok"}},
-            [], [percent_to_db(50)], id="to_idle_without_a_handoff",
-        ),
-        pytest.param(
-            Source.AIRPLAY, Source.SPOTIFY, OSError("mux down"),
-            [50], [0.0], id="mux_status_unreadable",
-        ),
+        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY, (8, "spotify", "ok"),
+                     False, id="mux_handed_it_off"),
+        pytest.param(7, Source.SPOTIFY, Source.IDLE, (7, "spotify", "ok"),
+                     True, id="to_idle_without_a_handoff"),
+        pytest.param(7, Source.IDLE, Source.SPOTIFY, (7, "spotify", "ok"),
+                     True, id="back_to_spotify_without_a_handoff"),
+        pytest.param(7, Source.SPOTIFY, Source.IDLE, (8, "airplay", "ok"),
+                     True, id="its_newest_handoff_went_elsewhere"),
+        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY,
+                     (8, "spotify", "degraded_safe"),
+                     True, id="a_degraded_handoff_is_retried"),
+        pytest.param(None, Source.AIRPLAY, Source.SPOTIFY, (8, "spotify", "ok"),
+                     True, id="first_transition_after_start"),
+        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY, None,
+                     True, id="mux_status_unreadable"),
     ],
 )
 async def test_the_observer_carries_only_transitions_mux_did_not_hand_off(
-    tmp_path, monkeypatch, pushes, prev, current, status, pushed, written,
+    tmp_path, monkeypatch, pushes, seen, prev, current, handoff, applies,
 ):
     """Mux performs each source handoff (ADR-0150). The observer sees the
-    same switch about 1 s later and must not push or write it again, but it
-    still carries a switch mux made with no handoff, or cannot tell it about."""
-    answers = [{
-        "active_source": prev.value,
-        "last_handoff": {"id": 7, "to": prev.value, "result": "ok"},
-    }]
+    same switch about 1 s later and must not push or write it again. Every
+    other switch it applies as before: one mux made with no newer handoff,
+    one whose handoff did not deliver it, or one mux cannot say about."""
+    status: dict | None = None
 
     async def mux_status(_command, *, timeout):
-        if isinstance(answers[-1], Exception):
-            raise answers[-1]
-        return answers[-1]
+        if status is None:
+            raise OSError("mux down")
+        return status
 
     monkeypatch.setattr(renderer, "mux_socket_command", mux_status)
     backend = renderer.RendererClient(librespot_state_path=str(tmp_path / "none"))
     backend.active_renderers = AsyncMock(return_value={"spotactive": True})
+    # The fader starts where the previous source's carrier holds it.
+    fader_db = 0.0 if prev is Source.SPOTIFY else percent_to_db(50)
     coord, cam, persistence = _coord(
-        tmp_path, backend=backend, db=percent_to_db(50), level=50,
+        tmp_path, backend=backend, db=fader_db, level=50,
     )
-    persistence.save_now(percent_to_db(50))
-    # The observer's previous transition, which read mux's handoff 7.
-    await coord.apply_active_source_transition(Source.IDLE, prev)
-    answers.append(status)
+    persistence.save_now(fader_db)
+    if seen is not None:
+        # Any earlier transition reads mux's handoff; idle → airplay writes nothing.
+        status = {"active_source": "airplay", "last_handoff": {
+            "id": seen, "to": "spotify", "result": "ok"}}
+        await coord.apply_active_source_transition(Source.IDLE, Source.AIRPLAY)
+    status = None if handoff is None else {
+        "active_source": current.value,
+        "last_handoff": dict(zip(("id", "to", "result"), handoff)),
+    }
     pushes_before, writes_before = len(pushes.spotify), len(cam.set_calls)
 
     await coord.apply_active_source_transition(prev, current)
 
+    pushed, written = {
+        Source.SPOTIFY: ([50], [0.0]),
+        Source.IDLE: ([], [percent_to_db(50)]),
+    }[current] if applies else ([], [])
     assert pushes.spotify[pushes_before:] == pushed
-    assert cam.set_calls[writes_before:] == [pytest.approx(db) for db in written]
+    assert cam.set_calls[writes_before:] == pytest.approx(written)
 
 
 @pytest.mark.parametrize(
