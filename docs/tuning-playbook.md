@@ -477,7 +477,7 @@ the composed-document seats. Counts come from `measurement_plans.json`'s
 `layouts.speaker_mark` and `layouts.seat_express`, loaded by `measurement_programs._PROGRAMS`.
 Each candidate plays at each seat before the mic moves: candidates per seat,
 **candidates × seats** sweeps per trial; repeats add sweeps, not placements.
-The hand rear trial is `rear/seat`, with `co_purposes: ["room"]`; the banker
+The hand rear trial is `rear/seat`, with `purposes: ["rear", "room"]`; the banker
 runs rear and room views on the same takes. The arm uses `rear_express`.
 
 Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat

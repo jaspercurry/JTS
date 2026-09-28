@@ -54,7 +54,7 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []
     order = dict.fromkeys((
-        *(name for name, _, _ in bookkeeping_views(program, has_room=bool(room_sets(manifest)), co_purposes=purposes[1:])),
+        *(name for name, _, _ in bookkeeping_views(purposes, has_room=bool(room_sets(manifest)))),
         *(name for name, spec in ARTIFACT_BY_VIEW.items()
           if not spec.per_take and (not spec.purposes or set(purposes).intersection(spec.purposes))),
     ))

@@ -125,12 +125,12 @@ def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures
 
 
 @pytest.mark.parametrize("preset_id", mp.available_presets())
-def test_shipped_run_purposes(preset_id):
+def test_a_preset_names_its_purposes_program_first_at_every_layout(preset_id):
+    """The seat trial serves rear and room from one set of takes (ADR-0336, ADR-0383)."""
     row = mp.preset(preset_id)
     expected = ("rear", "room") if preset_id == "rear/seat" else (row.purpose,)
-    assert mp.run_purposes(preset_id) == expected
-    assert mp.run_purpose(preset_id) == expected[0]
-    assert row.co_purposes == expected[1:]
+    assert (mp.run_purposes(preset_id), mp.run_purpose(preset_id)) == (expected, expected[0])
+    assert {mp.run_preset(preset_id, layout).purposes for layout in row.layouts} == {expected}
 
 
 @pytest.mark.parametrize("name", ["rear", "reference", ""])
@@ -140,42 +140,33 @@ def test_run_purposes_preserves_primary_identity_without_a_registry_row(name):
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
 def test_summed_bookkeeping_includes_one_frequency_image(purpose):
-    assert ("frequency", False, False) in bookkeeping_views(purpose)
+    assert ("frequency", False, False) in bookkeeping_views((purpose,))
 
 
 def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
-    assert bookkeeping_views("speaker", has_room=True) == tuple(
-        row for row in bookkeeping_views("room") if row[0] != "frequency")
+    assert bookkeeping_views(("speaker",), has_room=True) == tuple(
+        row for row in bookkeeping_views(("room",)) if row[0] != "frequency")
 
 
-@pytest.mark.parametrize(("purpose", "has_room", "expected"), [
-    ("speaker", False, (("inventory", True, False),)),
-    ("speaker", True, (("room", True, False), ("room-grade", True, True), ("inventory", True, False))),
-    ("room", False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
-                     ("inventory", True, False))),
-    ("bass", False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
-    ("reference", False, ()),
-    ("rear", False, (("rear", False, False), ("frequency", False, False),
-                     ("inventory", True, False))),
+@pytest.mark.parametrize(("purposes", "has_room", "expected"), [
+    (("speaker",), False, (("inventory", True, False),)),
+    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("inventory", True, False))),
+    (("room",), False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
+                        ("inventory", True, False))),
+    (("bass",), False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
+    (("reference",), False, ()),
+    (("rear",), False, (("rear", False, False), ("frequency", False, False),
+                        ("inventory", True, False))),
+    (("rear", "room"), False, (("room", True, False), ("room-grade", True, True), ("rear", False, False),
+                               ("frequency", False, False), ("inventory", True, False))),
 ])
-def test_the_view_table_answers_every_automatic_view(purpose, has_room, expected):
-    assert bookkeeping_views(purpose, has_room=has_room) == expected
+def test_the_view_table_answers_every_automatic_view(purposes, has_room, expected):
+    assert bookkeeping_views(purposes, has_room=has_room) == expected
     assert {name for name, row in ARTIFACT_BY_VIEW.items() if row.builder} == set(BOOKKEEPING_ORDER)
     for view, _, _ in expected:
         row = ARTIFACT_BY_VIEW[view]
         module, _, builder = row.builder.rpartition(".")
         assert callable(getattr(import_module(f".{module}", "jasper.active_speaker"), builder))
-
-
-def test_rear_co_purpose_banks_the_room_views_in_order():
-    assert bookkeeping_views("rear", co_purposes=("room",)) == tuple(
-        (name, row.per_set, row.grades_against_base) for name in BOOKKEEPING_ORDER
-        if {"room", "rear"}.intersection((row := ARTIFACT_BY_VIEW[name]).bookkeeping))
-
-
-@pytest.mark.parametrize("preset,expected", [("rear/seat", ("room",)), ("room/seat", ()), ("bass/axis", ())])
-def test_a_seat_layout_carries_its_presets_co_purposes(preset, expected):
-    assert mp.run_preset(preset, "seat_express").co_purposes == expected
 
 
 @pytest.mark.parametrize("preset,pair", [("branches/express", "drivers"), ("front_rear/express", "front_rear")])
@@ -196,8 +187,7 @@ def test_a_branch_preset_is_a_speaker_run_that_keeps_its_pair(preset, pair):
 def test_a_layout_runs_under_its_preset_with_its_own_mover(preset, layout, mover):
     row, default = mp.run_preset(preset, layout), mp.run_preset(preset)
     assert (row.preset, row.layout, row.mover) == (preset, layout, mover)
-    assert (row.purpose, row.regime, row.branch_pair, row.co_purposes) == (
-        default.purpose, default.regime, default.branch_pair, default.co_purposes)
+    assert (row.purposes, row.regime, row.branch_pair) == (default.purposes, default.regime, default.branch_pair)
 
 
 @pytest.mark.parametrize("preset,layout", [("speaker", "seat_cloud"), ("rear/express", "speaker_mark"), ("room", "bass_axis")])
@@ -477,7 +467,7 @@ def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, support
 
 def _program_with(purpose, regime, kind, distance_m, driver):
     return mp.Preset("t/t", (mp.ProgramPose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
-                                 purpose=purpose, regime=regime)
+                                 purposes=(purpose,), regime=regime)
 
 
 def _stop_with(purpose, regime, kind, distance_m, driver):
@@ -632,18 +622,19 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("broken", ["empty", "repeats", "purpose", "regime", "mode", "layout_key",
+@pytest.mark.parametrize("broken", ["empty", "repeats", "regime", "mode", "layout_key",
                                     "mover", "room_sweep", "room_sweep_mode", "offers_unknown", "offers_without_default",
-                                    "branch_pair", "branch_pair_regime", "co_unknown", "co_primary",
-                                    "co_regime", "co_not_list", "co_duplicate", "co_not_text", "levels"])
+                                    "branch_pair", "branch_pair_regime", "purposes_unknown", "purposes_none",
+                                    "purposes_regime", "purposes_not_list", "purposes_duplicate", "purposes_not_text",
+                                    "levels"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
-    if broken.startswith("co_"):
-        config["presets"][0].update(purpose="rear", regime="summed", room_sweep=False, co_purposes={
-            "co_unknown": ["unknown"], "co_primary": ["rear"], "co_regime": ["room"],
-            "co_not_list": "room", "co_duplicate": ["room", "room"], "co_not_text": [None],
+    if broken.startswith("purposes_"):
+        config["presets"][0].update(regime="summed", room_sweep=False, purposes={
+            "purposes_unknown": ["other"], "purposes_none": [], "purposes_regime": ["rear", "room"],
+            "purposes_not_list": "rear", "purposes_duplicate": ["rear", "rear"], "purposes_not_text": [None],
         }[broken])
-        if broken == "co_regime":
+        if broken == "purposes_regime":
             config["presets"][0]["regime"] = "branches"
     elif broken == "levels":
         config["presets"][0]["levels"] = "-28,-18"
@@ -666,13 +657,11 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     elif broken == "room_sweep":
         config["presets"][0]["room_sweep"] = "yes"
     elif broken == "room_sweep_mode":
-        config["presets"][0].update(purpose="room", regime="summed", room_sweep=True)
-    elif broken == "purpose":
-        config["presets"][0]["purpose"] = "other"  # type: ignore[index]
+        config["presets"][0].update(purposes=["room"], regime="summed", room_sweep=True)
     elif broken == "regime":
         config["presets"][0]["regime"] = "other"  # type: ignore[index]
     else:
-        config["presets"][0].update({"purpose": "room", "regime": "per_driver"})  # type: ignore[index]
+        config["presets"][0].update({"purposes": ["room"], "regime": "per_driver"})  # type: ignore[index]
 
     with pytest.raises(ValueError):
         mp.load_presets(_write_config(tmp_path, config))
