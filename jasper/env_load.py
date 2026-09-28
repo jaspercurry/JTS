@@ -55,6 +55,9 @@ AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 GOOGLE_CREDENTIALS_ENV_PATH = "/var/lib/jasper-secrets/google_credentials.env"
+GOOGLE_ROUTES_ENV_PATH = "/var/lib/jasper-secrets/google_routes.env"
+HOME_ASSISTANT_ENV_PATH = "/var/lib/jasper-intsecrets/home_assistant.env"
+VOICE_KEYS_ENV_PATH = "/var/lib/jasper-secrets/voice_keys.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 #: PERSISTENT (never /run) so a bonded speaker boots with the content lane
@@ -92,13 +95,13 @@ ENV_FILES = (
     SPOTIFY_CREDENTIALS_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
     # Compartment non-members load no values on EACCES; root doctor can read them.
-    "/var/lib/jasper-secrets/voice_keys.env",
+    VOICE_KEYS_ENV_PATH,
     GOOGLE_CREDENTIALS_ENV_PATH,
-    "/var/lib/jasper-secrets/google_routes.env",
+    GOOGLE_ROUTES_ENV_PATH,
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
     TRANSIT_ENV_PATH,
-    "/var/lib/jasper-intsecrets/home_assistant.env",
+    HOME_ASSISTANT_ENV_PATH,
     TOOL_STATE_ENV_PATH,
     "/var/lib/jasper/conversation_history.env",
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):

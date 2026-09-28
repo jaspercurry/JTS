@@ -57,7 +57,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from jasper.env_load import parse_bool_value, read_env_file_state
+from jasper.env_load import parse_bool_value, read_env_file_state, HOME_ASSISTANT_ENV_PATH
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ ENV_RECENT_URLS = "JASPER_HA_RECENT_URLS"
 
 # State-file path the wizard writes and the daemons source via systemd
 # EnvironmentFile=. Used directly by read_ha_env_file() + the wizard.
-HA_ENV_FILE = "/var/lib/jasper-intsecrets/home_assistant.env"
+HA_ENV_FILE = HOME_ASSISTANT_ENV_PATH
 
 # Endpoint paths. Joined with the configured base URL.
 CONVERSATION_PATH = "/api/conversation/process"
