@@ -71,6 +71,7 @@ __all__ = [
     "VolumeClaimHandle",
     "VolumeClaimRefused",
     "VolumeOwner",
+    "holding",
     "install_volume_owner",
     "volume_owner",
 ]
@@ -142,7 +143,7 @@ def _fmt_db(value: float | None) -> str:
 
 
 @asynccontextmanager
-async def _holding(lock: threading.Lock) -> AsyncIterator[None]:
+async def holding(lock: threading.Lock) -> AsyncIterator[None]:
     """Hold ``lock`` from any thread's event loop.
 
     Polls instead of parking a worker thread on ``acquire``: a task cancelled
@@ -224,7 +225,7 @@ class VolumeOwner:
                 "the household level is declared, not acquired"
             )
         target = _finite(level_db, "level_db")
-        async with _holding(self._lock):
+        async with holding(self._lock):
             if any(claim.kind is kind for claim in self._claims.values()):
                 raise VolumeClaimConflict(
                     f"a {kind.value} level claim is already held"
@@ -264,7 +265,7 @@ class VolumeOwner:
         it again.
         """
         target = _finite(level_db, "level_db")
-        async with _holding(self._lock):
+        async with holding(self._lock):
             previous = self.declared_level_db()
             for token, claim in list(self._claims.items()):
                 if claim.kind is ClaimKind.HOUSEHOLD:
@@ -301,7 +302,7 @@ class VolumeOwner:
         physical level may have moved before confirmation failed.
         """
         target = _finite(level_db, "level_db")
-        async with _holding(self._lock):
+        async with holding(self._lock):
             if self._claims.get(handle.token) != handle:
                 raise VolumeClaimRefused("that claim is no longer held")
             del self._claims[handle.token]
@@ -388,7 +389,7 @@ class VolumeOwner:
         contract ``session_seams.VolumeClaim.release`` states.
         """
         waited_from = time.monotonic()
-        async with _holding(self._lock):
+        async with holding(self._lock):
             waited_s = time.monotonic() - waited_from
             if waited_s > RELEASE_WAIT_DISCLOSE_S:
                 log_event(
@@ -434,7 +435,7 @@ class VolumeOwner:
         Under the owner's lock for the whole body, so no claim change lands
         between the reading and the verdict.
         """
-        async with _holding(self._lock):
+        async with holding(self._lock):
             expected = handle.level_db
             observed = await self._read()
             if self._claims.get(handle.token) != handle:

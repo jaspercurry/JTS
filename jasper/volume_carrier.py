@@ -5,7 +5,7 @@
 """CamillaDSP's main fader and ``main_mute``, as the volume coordinator drives them.
 
 The one module that builds a :class:`~jasper.volume_owner.VolumeOwner`, and the
-coordinator's one caller of ``set_main_mute``.
+one caller of ``set_main_mute``.
 """
 from __future__ import annotations
 
@@ -20,6 +20,23 @@ if TYPE_CHECKING:
     from .camilla import CamillaController
 
 logger = logging.getLogger(__name__)
+
+
+async def write_main_mute(
+    camilla: "CamillaController", muted: bool, *, context: str,
+) -> bool:
+    """Set ``main_mute`` best-effort and log the outcome; ``False`` when refused."""
+    target = bool(muted)
+    ok = await camilla.set_main_mute(target, best_effort=True)
+    log_event(
+        logger,
+        "volume.main_mute",
+        muted=str(target).lower(),
+        context=context,
+        result="accepted" if ok else "failed",
+        level=logging.DEBUG if ok else logging.WARNING,
+    )
+    return ok
 
 
 class CamillaCarrier:
@@ -67,27 +84,7 @@ class CamillaCarrier:
     async def write_main_mute(
         self, muted: bool, *, context: str,
     ) -> bool:
-        target = bool(muted)
-        ok = await self._camilla.set_main_mute(target, best_effort=True)
-        if ok:
-            log_event(
-                logger,
-                "volume.main_mute",
-                muted=str(target).lower(),
-                context=context,
-                result="accepted",
-                level=logging.DEBUG,
-            )
-            return True
-        log_event(
-            logger,
-            "volume.main_mute",
-            muted=str(target).lower(),
-            context=context,
-            result="failed",
-            level=logging.WARNING,
-        )
-        return False
+        return await write_main_mute(self._camilla, muted, context=context)
 
     async def write_db_with_mute(
         self, db: float, *, context: str,
