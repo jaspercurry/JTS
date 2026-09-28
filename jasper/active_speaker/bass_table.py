@@ -19,7 +19,7 @@ from .crossover_v2.measurement_context import compare_capture_basis
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 
 LEVEL_FIELD = "level_db"
-PROGRAM_FIELD = "program_id"
+PROGRAM_FIELD = "stimulus_id"
 LEVEL_FIELDS = (LEVEL_FIELD, PROGRAM_FIELD)
 
 
@@ -70,7 +70,7 @@ def fit_bass_table(
         ladder.append(aligned["groups"])
         levels.append({"level_key": dict(zip(LEVEL_FIELDS, key)), **bass_level_evidence(aligned, descriptor=settings)})
     bass_ladder_evidence(levels, ladder)
-    return {"schema": "jts_bass_table/1", "candidate_id": candidate_id,
+    return {"schema": "jts_bass_table/2", "candidate_id": candidate_id,
             "reference_band_hz": list(reference_band_hz), "smoothing_fraction": 3,
             "tested_volume_range_db": [min(key[0] for key in groups), max(key[0] for key in groups)],
             "stimulus_dbfs": first["stimulus_dbfs"], "capture_context": contexts, "levels": levels,

@@ -102,7 +102,7 @@ async def play_program(
             "active_speaker.program_playback",
             level=logging.WARNING,
             result="refused",
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             phase=program.phase,
             refusals=",".join(reason.value for reason in fresh.refusals),
         )
@@ -113,7 +113,7 @@ async def play_program(
             logger,
             "active_speaker.program_playback",
             action="start",
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             phase=program.phase,
             session_volume_db=f"{session_volume_plan.measurement_volume_db}",
         )
@@ -123,7 +123,7 @@ async def play_program(
             "active_speaker.program_playback",
             action="end",
             result="completed",
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             phase=program.phase,
         )
         return ProgramPlaybackResult(playback=playback, admission=fresh)

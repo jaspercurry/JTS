@@ -159,7 +159,7 @@ class ChannelFacts:
 class ProgramAdmission:
     """Aggregated admission for one excitation program (N segments + M channels)."""
 
-    program_id: str
+    stimulus_id: str
     phase: str
     session_volume_db: float
     segments: tuple[SegmentAdmission, ...]
@@ -172,9 +172,9 @@ class ProgramAdmission:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_program_admission",
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "phase": self.phase,
             "session_volume_db": self.session_volume_db,
             "segments": [segment.to_dict() for segment in self.segments],
@@ -211,7 +211,7 @@ def _requested_segment_plan(
     *,
     target_fingerprint: str,
     session_volume_db: float,
-    program_id: str,
+    stimulus_id: str,
 ) -> RequestedDriverExcitationPlan:
     assert segment.f1_hz is not None and segment.f2_hz is not None
     # The band this segment ACTUALLY emits, gate included. `f1_hz`/`f2_hz` are
@@ -223,9 +223,9 @@ def _requested_segment_plan(
     duration_s = segment.n_samples / PROGRAM_SAMPLE_RATE_HZ
     context = json_fingerprint(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "jts_active_program_segment_context",
-            "program_id": program_id,
+            "stimulus_id": stimulus_id,
             "segment_id": segment.segment_id,
             "session_volume_db": session_volume_db,
         }
@@ -436,7 +436,7 @@ def _evaluate_program(
             segment,
             target_fingerprint=target_fingerprint,
             session_volume_db=session_volume_db,
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
         )
         try:
             # program_admission=True: a CHECK/MEASURE program's channel routing
@@ -482,7 +482,7 @@ def _evaluate_program(
                 "active_speaker.program_admission",
                 level=logging.ERROR,
                 action="gate_not_applied",
-                program_id=program.program_id,
+                stimulus_id=program.stimulus_id,
                 segments=",".join(leaked),
             )
             refusals.append(ProgramAdmissionRefusal.GATE_NOT_APPLIED)
@@ -518,7 +518,7 @@ def _evaluate_program(
     unique_refusals = tuple(seen)
 
     admission = ProgramAdmission(
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         phase=program.phase,
         session_volume_db=float(session_volume_db),
         segments=tuple(segments),
@@ -534,7 +534,7 @@ def _log_program_refusal(admission: ProgramAdmission) -> None:
         return
     log_event(
         logger, "active_speaker.program_admission", level=logging.WARNING,
-        result="refused", program_id=admission.program_id, phase=admission.phase,
+        result="refused", stimulus_id=admission.stimulus_id, phase=admission.phase,
         refusals=",".join(reason.value for reason in admission.refusals),
         segment_refusals=",".join(dict.fromkeys(
             code for segment in admission.segments for code in segment.refusals)),
@@ -633,11 +633,11 @@ def _refused_program(
 ) -> ProgramAdmission:
     log_event(
         logger, "active_speaker.program_admission", level=logging.WARNING,
-        result="refused", program_id=program.program_id, phase=program.phase,
+        result="refused", stimulus_id=program.stimulus_id, phase=program.phase,
         refusals=reason.value,
     )
     return ProgramAdmission(
-        program.program_id, program.phase, session_volume_db, (), (), (reason,),
+        program.stimulus_id, program.phase, session_volume_db, (), (), (reason,),
     )
 
 
@@ -712,7 +712,7 @@ def readmit_summed_program_from_wav(
     )
     if not desired_graph_approved(graph):
         log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
-                  program_id=program.program_id, classification=graph.classification,
+                  stimulus_id=program.stimulus_id, classification=graph.classification,
                   issues=graph.issues)
         return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
     payload = yaml.safe_load(graph_yaml)
@@ -774,7 +774,7 @@ def readmit_summed_program_from_wav(
                                        mute_gain_db=STARTUP_MUTE_GAIN_DB)
                for name in _terminal_mute_names(output)):
             log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
-                      program_id=program.program_id, role=target_id, output_index=output,
+                      stimulus_id=program.stimulus_id, role=target_id, output_index=output,
                       result="excited_output_muted")
             return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         # The bass boost plays in full at every volume (ADR-0359); reserve its lift.
@@ -786,7 +786,7 @@ def readmit_summed_program_from_wav(
                 view, output_index=output, allowed_channels=same_role_outputs, requirement=requirement,
             ):
                 log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
-                          program_id=program.program_id, role=target_id, output_index=output,
+                          stimulus_id=program.stimulus_id, role=target_id, output_index=output,
                           required_protection=requirement)
                 return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
         for segment in program.stimulus_segments():
@@ -824,7 +824,7 @@ def readmit_summed_program_from_wav(
         channel_facts.append(facts)
         refusals.extend(channel_refusals)
     admission = ProgramAdmission(
-        program.program_id, program.phase, session_volume_db,
+        program.stimulus_id, program.phase, session_volume_db,
         tuple(segments), tuple(channel_facts), tuple(dict.fromkeys(refusals)),
     )
     _log_program_refusal(admission)

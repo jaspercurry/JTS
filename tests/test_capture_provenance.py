@@ -224,7 +224,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
     assert block["graph"]["config"]["pipeline"] == [{"type": "Mixer", "name": "program_routing"}]
     assert cam.reads.count("active_raw") == 1
-    assert block["stimulus"]["program_id"] == program.program_id
+    assert block["stimulus"]["stimulus_id"] == program.stimulus_id
     assert block["stimulus"]["phase"] == PHASE_CHECK
     assert block["stimulus"]["wav_sha256"] == "a" * 64
     # The composer's own declared digital peak for the loudest stimulus

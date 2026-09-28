@@ -55,7 +55,7 @@ def output_volume_unknown(monkeypatch):
 
 def _analysis(**changes):
     return replace(ProgramAnalysis(
-        phase="measure", program_id="take", locations=(_loc("sweep_w"),),
+        phase="measure", stimulus_id="take", locations=(_loc("sweep_w"),),
         pilot_snr_ok=True, linearity_ok=True, channel_map_ok=True,
         anchor=AnchorEvidence(presence=0.5, confidence=0.9, corroborated=True),
         mic_meter_status="usable", alignment=_alignment(),

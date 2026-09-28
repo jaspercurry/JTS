@@ -88,7 +88,7 @@ def _log_frame_ledger(program: ExcitationProgram, ledger: FrameLedger) -> None:
         "program_analysis.frame_ledger",
         level=logging.WARNING if lost else logging.INFO,
         phase=program.phase,
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         received_frames=ledger.received_frames,
         declared_frames=ledger.declared_frames,
         encoded_frames=ledger.encoded_frames,
@@ -217,7 +217,7 @@ def _verify_capture_integrity(
             "program_analysis.capture_integrity",
             level=logging.WARNING,
             phase=program.phase,
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             failed=",".join(integrity.failed),
             not_evaluated=",".join(integrity.not_evaluated),
             locate_confidence_min=(

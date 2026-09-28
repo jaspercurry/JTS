@@ -1241,7 +1241,7 @@ def test_summed_segment_refusal_codes_and_fields(tmp_path, caplog, failed):
     if failed:
         field = fields[0]
         assert field["result"] == "refused"
-        assert field["program_id"] == program.program_id
+        assert field["stimulus_id"] == program.stimulus_id
         assert field["phase"] == program.phase
         assert field["refusals"].split(",") == [reason.value for reason in admission.refusals]
         assert float(field["session_volume_db"]) == -20
@@ -1467,7 +1467,7 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
         else:
             assert not event_records(caplog, "active_speaker.scope_level")
         if phase == "measure":
-            assert reference.program_id == played.program.program_id
+            assert reference.stimulus_id == played.program.stimulus_id
         for before, after in zip(reference.stimulus_segments(), played.program.stimulus_segments()):
             backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
             assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(max(0, backoff))

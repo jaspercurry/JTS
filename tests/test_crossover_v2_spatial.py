@@ -137,7 +137,7 @@ def _pose_record(**overrides):
 def _entry_record(**overrides):
     """One retained entry-baseline take, with only the field under test named."""
     fields = {
-        "index": 9, "attempt": 1, "session_id": "sess", "program_id": "prog",
+        "index": 9, "attempt": 1, "session_id": "sess", "stimulus_id": "prog",
         "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
@@ -785,9 +785,9 @@ def test_the_three_comparability_facts_ride_the_entry_record():
     and they are the whole reason this is a separate builder rather than a
     keyword on the position one.
     """
-    record = _entry_record(program_id="prog-42", graph_fingerprint="fp-entry")
+    record = _entry_record(stimulus_id="prog-42", graph_fingerprint="fp-entry")
 
-    assert record["program_id"] == "prog-42"
+    assert record["stimulus_id"] == "prog-42"
     assert record["reference_mark"] == REFERENCE_MARK_DESIGN_AXIS
     assert record["graph_fingerprint"] == "fp-entry"
 

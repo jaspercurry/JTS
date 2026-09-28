@@ -169,7 +169,7 @@ def _artifact(n_roles: int = 1) -> dict[str, Any]:
         "round_dir": "cap_TESTONLY",
         "orders": list(ORDERS),
         "program": {
-            "program_id": "b542773d8a8d",
+            "stimulus_id": "b542773d8a8d",
             "crossover_fc_hz": 1648.7,
             "state_capture_session_id": "wired-TESTONLY",
         },
@@ -464,7 +464,7 @@ def test_a_program_that_cannot_prove_itself_is_refused_not_read():
         he.rebuild_measure_program(_state(), he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["program_ids"] == ["not-a-real-i"]
+    assert excinfo.value.evidence["stimulus_ids"] == ["not-a-real-i"]
 
 
 def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_path):
@@ -499,11 +499,11 @@ def _program_at(downstream_db: float):
 @pytest.mark.parametrize("volume", [-20.0, -24.7, -43.0, -59.9])
 def test_a_program_at_any_fader_is_proved_by_the_id_its_takes_recorded(volume):
     """The id leaves the fader out (#5012), so the proof needs no recorded volume."""
-    recorded = _program_at(volume).program_id
+    recorded = _program_at(volume).stimulus_id
 
     program, prelude = he.rebuild_measure_program(_state(), he_bands(), {recorded})
 
-    assert program.program_id == recorded
+    assert program.stimulus_id == recorded
     assert prelude is False
 
 
@@ -566,9 +566,9 @@ def test_a_banked_duration_fit_reproduces_without_a_search():
 
     state = _state(measure_sweep_durations_s=durations)
 
-    rebuilt, prelude = he.rebuild_measure_program(state, he_bands(), {program.program_id})
+    rebuilt, prelude = he.rebuild_measure_program(state, he_bands(), {program.stimulus_id})
 
-    assert rebuilt.program_id == program.program_id
+    assert rebuilt.stimulus_id == program.stimulus_id
     assert prelude is False
 
 
@@ -581,7 +581,7 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     program = _fitted_program_at(-20.0)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(), he_bands(), {program.program_id})
+        he.rebuild_measure_program(_state(), he_bands(), {program.stimulus_id})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
@@ -725,15 +725,15 @@ def test_a_datasheet_wide_declared_band_reproduces_a_fitted_round():
     assert accepted is not None
     assert accepted == pytest.approx(durations)
 
-    rebuilt, prelude = he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {program.program_id})
+    rebuilt, prelude = he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {program.stimulus_id})
 
-    assert rebuilt.program_id == program.program_id
+    assert rebuilt.stimulus_id == program.stimulus_id
     assert prelude is False
 
 
 def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
     """Even when the round refuses for an UNRELATED reason (here: a
-    ``program_id`` that simply does not match anything, standing in for a
+    ``stimulus_id`` that simply does not match anything, standing in for a
     wrong gain plan or wrong bands), a usable ≥24 kHz bank must still read
     as banked AND usable in the evidence — not as "did not bank" merely
     because its band happens to need the composer's clamp.
@@ -958,7 +958,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     """Both directions, because a derivation that answered ``full_range`` for
     every round would break every 2-way one — and the 1-way arm is then driven
     all the way through the rebuild, which proves itself against the banked
-    ``program_id`` and so could only refuse a two-role composition."""
+    ``stimulus_id`` and so could only refuse a two-role composition."""
     from jasper.audio_measurement.program import (
         FrequencyBand,
         RoleBand,
@@ -1008,8 +1008,8 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     bands = he.round_bands_hz(state, overrides)
 
     assert bands == {"full_range": band}
-    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.program_id})
-    assert rebuilt.program_id == program.program_id
+    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.stimulus_id})
+    assert rebuilt.stimulus_id == program.stimulus_id
 
     # A 1-way round measured on a non-default band gets an operator remedy,
     # same as the pair's --woofer-band / --tweeter-band.
@@ -1150,7 +1150,7 @@ def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="ta
         "wav_sha256": sha256_file(wav), "diagnostic": diagnostic,
         "jts_session_identity": {"session_id": "c2a1812b849e",
                                  "aliases": {"capture_session_id": state["session_id"]}},
-        "provenance": {"stimulus": {"program_id": program.program_id,
+        "provenance": {"stimulus": {"stimulus_id": program.stimulus_id,
                                     "wav_sha256": sha256_file(stimulus)}},
     }
     if volume_db is not None:
@@ -1255,7 +1255,7 @@ def test_harmonic_drive_requires_this_takes_program_and_source(harmonic_capture,
     read, compose, sidecar, wav, document = harmonic_capture
     original = read()
     assert original["captures"]["n_read"] == 1
-    assert original["captures"]["read"][0]["identity"]["program_id_status"] == "matched"
+    assert original["captures"]["read"][0]["identity"]["stimulus_id_status"] == "matched"
     assert original["captures"]["read"][0]["fidelity_fields_compared"] == 5
     changed_program, state = compose(-12.0 if fault == "program" else -16.0)
     if fault == "program":
@@ -1299,12 +1299,6 @@ def test_harmonics_keeps_good_takes_and_names_lost_or_changed_wavs(harmonic_capt
     omitted = artifact["captures"]["refused"][0]
     assert (omitted["take_id"], omitted["position_deg"], omitted["reason"]) == ("take-b", 15, reason)
     assert all(block["rows"] for block in artifact["roles"])
-
-
-def _recorded_sibling(sidecar, document):
-    """A second take of the same program whose WAV is gone: refused, but its
-    recorded stimulus id still proves the rebuild."""
-    sidecar.with_name("0_measure_sibling.json").write_text(json.dumps({**document, "take_id": "take-sibling"}))
 
 
 def test_each_take_reads_its_drive_at_its_own_recorded_session_volume(harmonic_capture, tmp_path):
@@ -1363,7 +1357,7 @@ def test_a_round_whose_takes_banked_a_superseded_program_schema_names_it(harmoni
     read, compose, sidecar, _, document = harmonic_capture
     program, _ = compose(-16.0)
     document["program"] = {**program.to_dict(), "schema_version": 1}
-    document["provenance"]["stimulus"]["program_id"] = "0" * 64
+    document["provenance"]["stimulus"]["stimulus_id"] = "0" * 64
     sidecar.write_text(json.dumps(document))
 
     with pytest.raises(he.HarmonicEvidenceRefused) as refused:
@@ -1384,6 +1378,42 @@ def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmo
 
     assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
     assert [take["reason"] for take in refused.value.evidence["refused"]] == ["stimulus_id_unrecorded"]
+
+
+@pytest.mark.parametrize("old,new_key_takes,readable", [
+    ("measure", (), []),
+    ("measure", ("take-b", "take-c"), ["take-b", "take-c"]),
+    ("branch", (), ["take-a"]),
+])
+def test_a_take_banked_under_the_old_key_is_refused_as_superseded(
+        harmonic_capture, tmp_path, old, new_key_takes, readable):
+    """Whatever the other takes recorded: the old key has no alias (#2902)."""
+    read, compose, sidecar, _, document = harmonic_capture
+    ring = sidecar.parent.parent
+    program, state = compose(-16.0)
+    for index, take_id in enumerate(new_key_takes):
+        _write_harmonic_capture(ring, tmp_path, f"2_measure_{index}", program, state,
+                                take_id=take_id, scale=0.09 - 0.01 * index)
+    if old == "branch":
+        branch, branch_state = compose(-14.0, "front_rear")
+        sidecar, _, document = _write_harmonic_capture(ring, tmp_path, "3_branch", branch, branch_state,
+                                                       take_id="take-branch")
+        document["program"]["program_id"] = document["program"].pop("stimulus_id")
+    stimulus = document["provenance"]["stimulus"]
+    stimulus["program_id"] = stimulus.pop("stimulus_id")
+    document["program"] = {**document.get("program", {}), "schema_version": 2}
+    sidecar.write_text(json.dumps(document))
+
+    if readable:
+        captures = read()["captures"]
+        refused = captures["refused"]
+        assert sorted(take["take_id"] for take in captures["read"]) == readable
+    else:
+        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+            read()
+        refused = excinfo.value.evidence["refused"]
+    assert [(take["take_id"], take["reason"]) for take in refused] == [
+        (document["take_id"], "program_schema_superseded")]
 
 
 def test_a_stray_stimulus_id_is_refused_on_its_own_take(harmonic_capture, tmp_path):
@@ -1429,10 +1459,11 @@ def test_an_all_legacy_ring_still_reads_its_branch_takes(harmonic_capture, tmp_p
         ("take-a", "stimulus_id_unrecorded")]
 
 
-def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic_capture):
+@pytest.mark.parametrize("harmonic_capture", ["front_rear"], indirect=True)
+def test_a_branch_take_without_provenance_keeps_ratios_without_claiming_its_drive(harmonic_capture):
+    """A branch take records its own program, so its ratios survive a missing provenance."""
     read, _, sidecar, _, document = harmonic_capture
     bound = read()
-    _recorded_sibling(sidecar, document)
     document.pop("provenance")
     document["jts_session_identity"].pop("aliases")
     sidecar.write_text(json.dumps(document))

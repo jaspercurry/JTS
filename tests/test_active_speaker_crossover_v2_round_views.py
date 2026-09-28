@@ -254,7 +254,7 @@ def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
-    assert payload["schema"] == "jts_frequency_view/1"
+    assert payload["schema"] == "jts_frequency_view/2"
     assert payload["runs"][0]["series"][0]["kind"] == "entry_baseline"
 
 
@@ -444,7 +444,7 @@ def _bank_entry_baseline_take(
         "attempt": 1,
         "position_deg": 0,
         "role": "onax",
-        "program_id": "prog-entry",
+        "stimulus_id": "prog-entry",
         "reference_mark": "design_axis",
         "graph_fingerprint": graph_fingerprint,
         "captured_at": "2026-08-30T00:00:00Z",
@@ -484,7 +484,7 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     assert len(grade.report.bands) == len(flat_spec.SPEC_BANDS)
     assert grade.report.trusted_floor_hz is None
     assert grade.report.trusted_ceiling_hz is None
-    assert grade.program_id == "prog-entry"
+    assert grade.stimulus_id == "prog-entry"
 
 
 def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
@@ -617,7 +617,7 @@ def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
     grade = entry_state_grade(banked)
 
     assert grade.graph_fingerprint == "fresh0000beef"
-    assert grade.program_id == "prog-entry"
+    assert grade.stimulus_id == "prog-entry"
     assert grade.reference_mark == "design_axis"
     assert grade.artifact_ref == ENTRY_TAKE_ID
     assert grade.to_dict()["graph_fingerprint"] == "fresh0000beef"

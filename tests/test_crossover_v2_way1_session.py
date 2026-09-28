@@ -294,7 +294,7 @@ def _way1_candidate(conductor, analysis):
     ).fits["full_range"]
     charge_db = branch_headroom_db([f.to_dict() for f in fit.filters])
     return MeasuredCrossoverCandidate(
-        program_id=analysis.program_id,
+        program_id=analysis.stimulus_id,
         analysis=analysis_json(analysis),
         source_preset=conductor.source_preset,
         role_attenuations_db={"full_range": 0.0},

@@ -178,7 +178,7 @@ def test_comparison_uses_only_common_frequency_support():
 
 @pytest.mark.parametrize("level,program,disclosed,fields", [
     (-24.0, "program", "mismatched_fields", {"level_db"}),
-    (None, None, "unknown_fields", {"level_db", "program_id"}),
+    (None, None, "unknown_fields", {"level_db", "stimulus_id"}),
 ])
 def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclosed, fields):
     document = _comparison_document(graph="candidate")
@@ -186,7 +186,7 @@ def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclo
         **document,
         "median_db": [value + 6.0 for value in document["median_db"]],
         "evidence": {**document["evidence"], "basis": {
-            **document["evidence"]["basis"], "level_db": level, "program_id": program,
+            **document["evidence"]["basis"], "level_db": level, "stimulus_id": program,
         }},
     }
 
@@ -217,7 +217,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "side": side,
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
-            "program_id": "program",
+            "stimulus_id": "program",
             "stimulus_dbfs": -12.0,
             "stimulus_wav_sha256": "program",
             "stimulus_peak_dbfs": -12.0,
@@ -269,7 +269,7 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
 
 @pytest.mark.parametrize(("field", "value", "incompatible"), [
     ("level_db", -24.0, []),
-    ("program_id", "another-stimulus", ["program_id"]),
+    ("stimulus_id", "another-stimulus", ["stimulus_id"]),
 ])
 def test_medians_compare_across_levels_but_not_across_stimuli(field, value, incompatible):
     """Level alignment removes a pure level offset (ADR-0359); the stimulus id leaves the fader out (#5012)."""

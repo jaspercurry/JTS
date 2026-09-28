@@ -47,7 +47,7 @@ from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S
 
 # The bands and gains the owner's 2-way speaker actually measured with, taken
 # from the banked series-2 rounds (`series2-state-r1b-preapply.json`'s
-# `gain_plan_db`, and the sweep bands whose program_id reproduces that round's
+# `gain_plan_db`, and the sweep bands whose stimulus_id reproduces that round's
 # banked id). Real numbers rather than round ones, so the fixtures exercise the
 # `L` values the corpus has.
 WOOFER_BAND_HZ = (150.0, 4000.0)

@@ -159,7 +159,7 @@ def _estimate_alignment(
             "program_analysis.alignment_edge",
             level=logging.WARNING,
             phase=program.phase,
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             woofer_segment_id=seg_w.segment_id,
             tweeter_segment_id=seg_t.segment_id,
             lag_samples=round(lag_samples, 3),

@@ -126,15 +126,15 @@ def _outcome(speaker, selected, candidates, mover=None):
                                          branch_channels=branches or None)
                 )
             stage = 'render'
-            if program.program_id not in speaker.rendered:
-                wav = speaker.directory / f'{program.program_id}.wav'
+            if program.stimulus_id not in speaker.rendered:
+                wav = speaker.directory / f'{program.stimulus_id}.wav'
                 write_program_wav(wav, program)
-                speaker.rendered[program.program_id] = wav
+                speaker.rendered[program.stimulus_id] = wav
             stage = 'admit'
             kwargs = dict(topology=speaker.topology, safety_profile=speaker.safety_profile,
                           role_targets=speaker.role_targets, session_volume_db=LEVEL_DB,
                           declared_sensitivities=SENSITIVITIES)
-            wav = speaker.rendered[program.program_id]
+            wav = speaker.rendered[program.stimulus_id]
             admission = (readmit_program_from_wav(program, wav, **kwargs) if spec.graph_scope == 'drivers' else
                          readmit_summed_program_from_wav(program, wav, graph_yaml=speaker.graphs[key],
                              graph_evidence=measurement_graph_evidence(scope=spec.graph_scope, candidate=speaker.candidate),

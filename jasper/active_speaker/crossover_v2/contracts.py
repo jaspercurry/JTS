@@ -314,7 +314,7 @@ ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
 #: WHERE the two sides of #2291's before→after comparison were measured — the
 #: one spot CHECK asks the household to stand the microphone on, where both the
-#: entry baseline and the post-apply VERIFY are taken. ``program_id`` equality
+#: entry baseline and the post-apply VERIFY are taken. ``stimulus_id`` equality
 #: cannot see position (a capture a metre away replays the identical program),
 #: so a capture carries this second identity.
 #:

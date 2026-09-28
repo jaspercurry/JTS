@@ -8,16 +8,16 @@ Level policy and program composition live in
 :mod:`jasper.active_speaker.crossover_v2.programs`.  Three kinds of pin, in the
 order a reviewer should read them:
 
-1. **Regression pins.** The composed programs' current ``program_id``s and
+1. **Regression pins.** The composed programs' current ``stimulus_id``s and
    segment gains, written as literals rather than recomputed, because a pin
    that derives its expectation from the code under test pins nothing.  A
-   ``program_id`` hashes the schedule and every segment's gain but not the
+   ``stimulus_id`` hashes the schedule and every segment's gain but not the
    session fader (#5012); a change that moves one recomputes it by composing
    this fixture and says why.
 2. **The identity invariant** — the COMPARED pair (VERIFY and the entry
    baseline) gets the *same object*, not an equal one, and each position group
    gets one object of its own.  #2291's before→after comparison is keyed by
-   ``program_id`` equality; a copy that merely compared equal today would break
+   ``stimulus_id`` equality; a copy that merely compared equal today would break
    that key the moment composition picked up any per-call state.
 3. **The courtesy-prelude rule** (#1677, trimmed 2026-08-18) — the prelude
    announces a SESSION, not a capture, so it rides the phases that open one and
@@ -104,8 +104,8 @@ GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 #: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program` puts the
 #: prelude back and asserts THIS literal returns.
 GOLDEN_DEEP_CAP = {
-    "measure": "94abc2a297ef6a4cd48daba6acdbffdfb65670c946ba3d68d5f10bf9947f6968",
-    "verify": "ef7a906a131c7417da95eec25f1634af3f3ab27b31b11d35a2e3aae0a889d592",
+    "measure": "f46c38df6d18b72dff4e628019086475eae182675bd36b498120f4814cc244e6",
+    "verify": "eafd6bd16424baed64f5b0a613e226509e4fd9a45e8de9978c91f4f7d73e7d25",
 }
 
 #: What the phases the courtesy prelude no longer announces ship TODAY, at the
@@ -114,8 +114,8 @@ GOLDEN_DEEP_CAP = {
 #: literal but the round trip below, which shows each one becomes its
 #: ``GOLDEN_DEEP_CAP`` twin the moment the prelude is put back.
 GOLDEN_UNANNOUNCED = {
-    "measure": "5be76cb30c427fb65512b3a79a3a2b1e381414884230a54d79c769f4d4ea051f",
-    "cloud": "0412078f86d175d214e945d90bd1da39091a4519657832dc920bc5bdc382ae79",
+    "measure": "f3f924538a85f2d191c085f36600ed4bacb3c427f3ab786e13ff4bfc65c68808",
+    "cloud": "7bbc3b2c8062ae850a2b169296b0af03ce28a2dfd3b18405f2c1ff25d5e9d570",
 }
 
 
@@ -152,17 +152,17 @@ def _conductor(caps: dict[str, float]):
 def test_the_verify_program_is_the_one_that_shipped():
     ex = _excitation(CAPS)
 
-    assert ex.verify_program().program_id == GOLDEN_DEEP_CAP["verify"]
+    assert ex.verify_program().stimulus_id == GOLDEN_DEEP_CAP["verify"]
 
 
 @pytest.mark.parametrize("phase,scope,stimulus,expected", [
-    ("check", "drivers", None, "097d28a112ff4a14165728b1df050ed6395872121cc716b81c798b166960c6c4"),
-    ("check", "drivers", -30.0, "097d28a112ff4a14165728b1df050ed6395872121cc716b81c798b166960c6c4"),
-    ("check", "drivers", -60.0, "04b75e36a2f65dcd57e7bce58e3db872d41676c332b71cfff1f3632c02e75cd1"),
+    ("check", "drivers", None, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
+    ("check", "drivers", -30.0, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
+    ("check", "drivers", -60.0, "5910bb4eaab0311a5bbf88b64a24682da01cc6270fe3994b0552748d3a22de8f"),
     ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
     ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
     ("cloud_verify", "timing", None, GOLDEN_UNANNOUNCED["cloud"]),
-    ("verify", "candidate_branches", None, "615445f5d8751bf534b04de137ba19ea7be7bdbfd08991e94beb18714e311aa4"),
+    ("verify", "candidate_branches", None, "1a8a0f18d2748f345a50422466c567431c478a3f73c39580e577a494d6985816"),
 ])
 def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,
@@ -170,7 +170,7 @@ def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, s
                        branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
     program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus,
                                         safety_profile={}, role_targets={})
-    assert program.program_id == expected
+    assert program.stimulus_id == expected
 
 
 @pytest.mark.parametrize("caps", [CAPS, {"woofer": 0.0, "tweeter": 0.0}])
@@ -229,9 +229,9 @@ def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroo
         return programs.program_for_spec(replace(spec, scope_gains_db=gain), excitation, GAIN_PLAN_DB,
                                          safety_profile={}, role_targets={})
     unchanged, lowered = compose({}), compose(gain)
-    assert compose(quieter).program_id == unchanged.program_id
+    assert compose(quieter).stimulus_id == unchanged.stimulus_id
     if phase == "measure":
-        assert lowered.program_id == unchanged.program_id
+        assert lowered.stimulus_id == unchanged.stimulus_id
     for before, after in zip(unchanged.stimulus_segments(), lowered.stimulus_segments()):
         backoff = 0 if phase == "measure" else gain[before.role] if phase == "check" else max(gain.values())
         assert before.effective_peak_dbfs - after.effective_peak_dbfs == pytest.approx(backoff)
@@ -264,14 +264,14 @@ def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
     """
     ex = _excitation(CAPS)
 
-    assert ex.measure_program(GAIN_PLAN_DB).program_id == GOLDEN_UNANNOUNCED["measure"]
+    assert ex.measure_program(GAIN_PLAN_DB).stimulus_id == GOLDEN_UNANNOUNCED["measure"]
 
     monkeypatch.setattr(
         programs, "COURTESY_PRELUDE_PHASES",
         frozenset(COURTESY_PRELUDE_PHASES | {journey.PHASE_MEASURE}),
     )
 
-    assert ex.measure_program(GAIN_PLAN_DB).program_id == GOLDEN_DEEP_CAP["measure"]
+    assert ex.measure_program(GAIN_PLAN_DB).stimulus_id == GOLDEN_DEEP_CAP["measure"]
 
 
 def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off(monkeypatch):
@@ -284,15 +284,15 @@ def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off(monkeypatc
     """
     ex = _excitation(CAPS)
 
-    assert ex.cloud_program().program_id == GOLDEN_UNANNOUNCED["cloud"]
-    assert ex.cloud_program().program_id != ex.verify_program().program_id
+    assert ex.cloud_program().stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
+    assert ex.cloud_program().stimulus_id != ex.verify_program().stimulus_id
 
     monkeypatch.setattr(
         programs, "COURTESY_PRELUDE_PHASES",
         frozenset(COURTESY_PRELUDE_PHASES | GROUP_SUMMED_SWEEP_PHASES),
     )
 
-    assert ex.cloud_program().program_id == GOLDEN_DEEP_CAP["verify"]
+    assert ex.cloud_program().stimulus_id == GOLDEN_DEEP_CAP["verify"]
 
 
 def test_the_conductor_composes_through_the_same_owner():
@@ -305,14 +305,14 @@ def test_the_conductor_composes_through_the_same_owner():
     c = _conductor(CAPS)
     ex = _excitation(CAPS)
 
-    assert c.program_for_phase(journey.PHASE_CHECK).program_id == ex.check_program().program_id
-    assert c.program_for_phase(journey.PHASE_VERIFY).program_id == GOLDEN_DEEP_CAP["verify"]
+    assert c.program_for_phase(journey.PHASE_CHECK).stimulus_id == ex.check_program().stimulus_id
+    assert c.program_for_phase(journey.PHASE_VERIFY).stimulus_id == GOLDEN_DEEP_CAP["verify"]
     assert (
-        c.program_for_phase(journey.PHASE_MEASURE).program_id
+        c.program_for_phase(journey.PHASE_MEASURE).stimulus_id
         == GOLDEN_UNANNOUNCED["measure"]
     )
     assert (
-        c.program_for_phase(journey.PHASE_CLOUD_VERIFY).program_id
+        c.program_for_phase(journey.PHASE_CLOUD_VERIFY).stimulus_id
         == GOLDEN_UNANNOUNCED["cloud"]
     )
 
@@ -383,8 +383,8 @@ def test_the_backoff_is_swallowed_when_the_cap_already_binds():
     ex = _excitation(CAPS)
 
     assert (
-        ex.verify_program(extra_backoff_db=3.0).program_id
-        == ex.verify_program().program_id
+        ex.verify_program(extra_backoff_db=3.0).stimulus_id
+        == ex.verify_program().stimulus_id
     )
 
 
@@ -393,12 +393,12 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
     ex = _excitation({"woofer": 0.0, "tweeter": 0.0})
 
     assert (
-        ex.verify_program(extra_backoff_db=3.0).program_id
-        != ex.verify_program().program_id
+        ex.verify_program(extra_backoff_db=3.0).stimulus_id
+        != ex.verify_program().stimulus_id
     )
     assert (
-        ex.measure_program(GAIN_PLAN_DB, extra_backoff_db=3.0).program_id
-        != ex.measure_program(GAIN_PLAN_DB).program_id
+        ex.measure_program(GAIN_PLAN_DB, extra_backoff_db=3.0).stimulus_id
+        != ex.measure_program(GAIN_PLAN_DB).stimulus_id
     )
 
 
@@ -408,7 +408,7 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
 def test_the_compared_pair_gets_the_same_object():
     """``is``, not ``==``. The whole of #2291's comparability rests on it.
 
-    ``program_id`` equality is what a before→after comparison checks before it
+    ``stimulus_id`` equality is what a before→after comparison checks before it
     will compare a before against an after, and the reason that equality holds
     is that the entry baseline and VERIFY are handed one object. Asserting equal ids instead would keep passing under a
     composer that returned a fresh-but-equal program today and drifted tomorrow.
@@ -514,7 +514,7 @@ def test_a_capture_the_household_began_inside_a_running_session_is_not():
 
 
 def test_the_entry_baseline_is_announced_because_its_twin_is():
-    """Not an opener — held to the rule by ``program_id``, and stated as such.
+    """Not an opener — held to the rule by ``stimulus_id``, and stated as such.
 
     Stage 1's last capture carries the prelude for one reason: its program
     object is stage 2's anchor, and that equality is #2291's before→after

@@ -174,7 +174,7 @@ def speaker_fit(
     program = ExcitationProgram.from_dict(record["program"])
     if program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
-    if program.program_id != selected.capture_basis["program_id"] or record["take_id"] != take_id:
+    if program.stimulus_id != selected.capture_basis["stimulus_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")
     directory, _ = round_artifact_dir(inputs.session_dir)
     assert directory is not None
@@ -184,10 +184,10 @@ def speaker_fit(
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc)) from exc
     analysis = take.get("analysis") or candidate["analysis"]
-    if analysis["program_id"] != program.program_id:
+    if analysis["stimulus_id"] != program.stimulus_id:
         raise RoundViewsError("banked analysis does not match the selected program")
     matching_takes = {take["take_id"] for group in manifest["sets"]
-                      if group["capture_basis"].get("program_id") == program.program_id
+                      if group["capture_basis"].get("stimulus_id") == program.stimulus_id
                       for take in group["takes"] if take["selected"]}
     if not take.get("analysis") and matching_takes != {take_id}:
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")

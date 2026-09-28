@@ -455,12 +455,12 @@ def test_the_production_composer_admits_the_shape_it_actually_plays():
 def test_the_fit_is_byte_inert_when_the_limits_leave_room(limits):
     """Byte equality, not "close enough": every round banked before #2921 and
     every box whose declaration leaves room must compose the SAME program, or
-    a program_id comparison that anchors a before/after verdict moves under it.
+    a stimulus_id comparison that anchors a before/after verdict moves under it.
     """
     gains = {"woofer": -6.0, "tweeter": -46.0}
-    assert _compose(gains, -20.0, limits).program_id == _compose(
+    assert _compose(gains, -20.0, limits).stimulus_id == _compose(
         gains, -20.0, None,
-    ).program_id
+    ).stimulus_id
 
 
 def test_a_role_absent_from_the_limits_keeps_its_nominal_sweep():

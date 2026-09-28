@@ -397,7 +397,7 @@ def test_program_manifest_json_round_trip():
     blob = json.dumps(prog.to_dict())
     restored = ExcitationProgram.from_dict(json.loads(blob))
     assert restored == prog
-    assert restored.program_id == prog.program_id
+    assert restored.stimulus_id == prog.stimulus_id
     # And a measure program too (different phase / channel routing).
     measure = build_measure_program(_gain_plan(), _roles())
     assert ExcitationProgram.from_dict(
@@ -405,12 +405,12 @@ def test_program_manifest_json_round_trip():
     ) == measure
 
 
-def test_program_id_is_content_addressed():
+def test_stimulus_id_is_content_addressed():
     a = build_measure_program(_gain_plan(), _roles())
     b = build_measure_program(_gain_plan(), _roles())
-    assert a.program_id == b.program_id  # deterministic
+    assert a.stimulus_id == b.stimulus_id  # deterministic
     c = build_measure_program({"woofer": -12.0, "tweeter": -13.0}, _roles())
-    assert c.program_id != a.program_id  # a gain change is a new identity
+    assert c.stimulus_id != a.stimulus_id  # a gain change is a new identity
 
 
 @pytest.mark.parametrize("compose", [
@@ -421,7 +421,7 @@ def test_program_id_is_content_addressed():
 def test_programs_that_differ_only_in_fader_share_one_id(compose):
     quiet, loud = compose(-30.0), compose(-10.0)
     assert quiet != loud
-    assert quiet.program_id == loud.program_id
+    assert quiet.stimulus_id == loud.stimulus_id
 
 
 def test_a_version_1_program_refuses_to_load():
@@ -480,13 +480,13 @@ def test_segment_validation_accepts_courtesy_tone_kind():
 
 def test_courtesy_prelude_defaults_off_byte_identical_to_pre_1677():
     """Era/back-compat: omitting ``courtesy_prelude`` is IDENTICAL (same
-    program_id, same segments) to passing it explicitly ``False``, and both
+    stimulus_id, same segments) to passing it explicitly ``False``, and both
     match the pre-#1677 shape every other test in this file already pins."""
     check_default = build_check_program(_roles(), ambient_s=1.0, pilot_duration_s=0.5)
     check_explicit = build_check_program(
         _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=False,
     )
-    assert check_default.program_id == check_explicit.program_id
+    assert check_default.stimulus_id == check_explicit.stimulus_id
     assert check_default.segments == check_explicit.segments
     assert check_default.segments[0].segment_id == "ambient"
 
@@ -494,12 +494,12 @@ def test_courtesy_prelude_defaults_off_byte_identical_to_pre_1677():
     measure_explicit = build_measure_program(
         _gain_plan(), _roles(), courtesy_prelude=False,
     )
-    assert measure_default.program_id == measure_explicit.program_id
+    assert measure_default.stimulus_id == measure_explicit.stimulus_id
     assert measure_default.segments[0].segment_id == "guard"
 
     verify_default = build_verify_program(1600.0, sweep_s=1.0)
     verify_explicit = build_verify_program(1600.0, sweep_s=1.0, courtesy_prelude=False)
-    assert verify_default.program_id == verify_explicit.program_id
+    assert verify_default.stimulus_id == verify_explicit.stimulus_id
     assert verify_default.segments[0].segment_id == "guard"
 
 
@@ -882,12 +882,12 @@ def test_render_pcm_places_courtesy_tone_per_channel_only():
     assert np.max(np.abs(gap_window)) == 0.0
 
 
-def test_courtesy_prelude_program_id_differs_from_legacy():
+def test_courtesy_prelude_stimulus_id_differs_from_legacy():
     legacy = build_check_program(_roles(), ambient_s=1.0, pilot_duration_s=0.5)
     prelude = build_check_program(
         _roles(), ambient_s=1.0, pilot_duration_s=0.5, courtesy_prelude=True,
     )
-    assert legacy.program_id != prelude.program_id
+    assert legacy.stimulus_id != prelude.stimulus_id
 
 
 def test_program_manifest_json_round_trip_with_courtesy_prelude():
@@ -895,7 +895,7 @@ def test_program_manifest_json_round_trip_with_courtesy_prelude():
     blob = json.dumps(prog.to_dict())
     restored = ExcitationProgram.from_dict(json.loads(blob))
     assert restored == prog
-    assert restored.program_id == prog.program_id
+    assert restored.stimulus_id == prog.stimulus_id
     assert restored.segment("courtesy_tone_ch0").kind == KIND_COURTESY_TONE
 
 
@@ -1016,12 +1016,12 @@ def test_program_and_journey_phase_values_stay_identical():
     tidiness pin: the obvious way to "finish" ticket 2.9 is to make the string
     values differ too, and that would break banked data on BOTH sides.
 
-    * **Stimulus side.** ``phase`` is hashed into ``program_id``
-      (:func:`~jasper.audio_measurement.program._program_id`) and serialized by
+    * **Stimulus side.** ``phase`` is hashed into ``stimulus_id``
+      (:func:`~jasper.audio_measurement.program._stimulus_id`) and serialized by
       :meth:`~jasper.audio_measurement.program.ExcitationProgram.to_dict`;
       ``from_dict`` / ``__post_init__`` refuse a phase outside
       ``PROGRAM_PHASES``. A new value would re-fingerprint every program — and
-      ``program_id`` equality IS #2291's before→after benefit check — and would
+      ``stimulus_id`` equality IS #2291's before→after benefit check — and would
       stop every banked program JSON from loading.
     * **Journey side.** The values land in ``session_phases`` /
       ``accepted_phases`` in the on-disk flow state
@@ -1039,9 +1039,9 @@ def test_program_and_journey_phase_values_stay_identical():
     assert program.PROGRAM_PHASE_VERIFY == journey.PHASE_VERIFY
 
 
-def test_an_ungated_program_keeps_its_program_id():
+def test_an_ungated_program_keeps_its_stimulus_id():
     """The gate fields are omitted from an ungated segment's dict, so every
-    program composed before they existed hashes to the same ``program_id``."""
+    program composed before they existed hashes to the same ``stimulus_id``."""
     program = build_measure_program(
         {"woofer": -6.0, "tweeter": -46.0}, _roles(), downstream_gain_db=-10.0,
     )

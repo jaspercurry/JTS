@@ -555,7 +555,7 @@ def test_timing_baseline_banks_only_the_design_axis_and_played_fingerprint(monke
     record = {"position_deg": pose[0], "vertical_deg": pose[1], "graph_scope": scope,
               "take_id": "sum", "graph_fingerprint": "submitted",
               "provenance": {"graph": {"fingerprint": "played"}}}
-    baseline = banked_entry_baseline(record, SimpleNamespace(program_id="sum",
+    baseline = banked_entry_baseline(record, SimpleNamespace(stimulus_id="sum",
         summed_response=SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz))))
     assert (baseline is not None) == (scope == "timing" and pose == (0, 0))
     assert events == ([] if scope == "timing" else [("active_speaker.summed_reference_unreadable",

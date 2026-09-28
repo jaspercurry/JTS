@@ -211,7 +211,7 @@ def _check_analysis(
 ) -> ProgramAnalysis:
     return ProgramAnalysis(
         phase="check",
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=(
             _loc("pilot_woofer_hi", "pilot", confidence=locate_confidence),
         ),
@@ -255,7 +255,7 @@ def _measure_analysis(
     )
     return ProgramAnalysis(
         phase="measure",
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=locations,
         drift=DriftEstimate(
             epsilon_ppm=30.0,
@@ -313,7 +313,7 @@ def _verify_analysis(
         )
     return ProgramAnalysis(
         phase="verify",
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=locations,
         capture_integrity=integrity,
         glitch_detected=bool(integrity is not None and integrity.glitched),
@@ -554,7 +554,7 @@ def _pilot_obs(
 def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
     """A CHECK analysis whose gain plan carries #1825 per-role solves."""
     return ProgramAnalysis(
-        phase="check", program_id=program.program_id,
+        phase="check", stimulus_id=program.stimulus_id,
         locations=(_loc("pilot_woofer_hi", "pilot"),),
         ambient_report={"bands": [{"level_dbfs": -70.0}]},
         pilots=(_pilot_obs("woofer"), _pilot_obs("tweeter")),
@@ -645,7 +645,7 @@ def _way1_measure_analysis(program) -> ProgramAnalysis:
     solo = _linearizable_response("full_range", magnitude_db, n_repeats=2)
     return ProgramAnalysis(
         phase="measure",
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=(_loc("sweep_w"), _loc("sweep_w_rep")),
         drift=DriftEstimate(
             epsilon_ppm=5.0, max_residual_samples=0.1, glitch_detected=False,
@@ -1026,7 +1026,7 @@ _COMMANDED_DELTA_DB = [
     0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.0, 2.2, 2.4, 2.5, 2.5, 2.5, 2.5,
 ]
 
-_ENTRY_BASELINE_PROGRAM_ID = "prog-entry-baseline-stage-1"
+_ENTRY_BASELINE_STIMULUS_ID = "prog-entry-baseline-stage-1"
 
 _ENTRY_BASELINE_GRAPH = "fp-entry-graph"
 
@@ -1046,7 +1046,7 @@ def _entry_baseline_record() -> dict[str, Any]:
 
     return {
         "kind": ENTRY_BASELINE_KIND,
-        "program_id": _ENTRY_BASELINE_PROGRAM_ID,
+        "stimulus_id": _ENTRY_BASELINE_STIMULUS_ID,
         "reference_mark": contracts.REFERENCE_MARK_DESIGN_AXIS,
         "freqs_hz": list(_ENTRY_BASELINE_FREQS_HZ),
         "magnitude_db": list(_ENTRY_BASELINE_DB),

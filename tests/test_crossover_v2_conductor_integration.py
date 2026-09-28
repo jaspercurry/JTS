@@ -37,7 +37,7 @@ def test_analysis_json_round_trips_trim_band_average_db():
         trim_band_average_db={"woofer": 0.0, "tweeter": -9.4754},
     )
     analysis = ProgramAnalysis(
-        phase="measure", program_id="p1", locations=(),
+        phase="measure", stimulus_id="p1", locations=(),
         drift=DriftEstimate(
             epsilon_ppm=1.0, max_residual_samples=0.0,
             glitch_detected=False,

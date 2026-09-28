@@ -83,7 +83,7 @@ PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
-LEVEL_FIELDS = ("level_db", "program_id", "calibration_applied", "calibration_reference")
+LEVEL_FIELDS = ("level_db", "stimulus_id", "calibration_applied", "calibration_reference")
 
 
 def _shared(values: Sequence[Any]) -> Any:
