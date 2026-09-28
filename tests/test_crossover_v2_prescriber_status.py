@@ -345,7 +345,7 @@ def test_status_publishes_each_drivers_cap_and_its_source(monkeypatch):
         woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
     monkeypatch.setattr(cli, "load_design_draft", lambda: {"driver_safety_profile": safety})
 
-    assert cli.status_document(None, "", session_dir=None)["declared"]["caps"] == {
+    assert cli.status_document(None, "", session_dir=None)["driver_caps_live"] == {
         "mono:woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
         "mono:tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
     }
@@ -843,6 +843,7 @@ _STATUS_DOCUMENT_KEYS = {
     "banked",
     "applied",
     "seat_level_reference_volume_db",
+    "driver_caps_live",
     "reading_order",
     "next",
     "next_commands",

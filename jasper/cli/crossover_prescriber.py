@@ -303,8 +303,9 @@ def _declared_section(
 
 
 
-def _declared_caps() -> dict[str, Any]:
-    """Each driver's program-path cap and its source, from the live declaration (ADR-0382)."""
+def _live_driver_caps() -> dict[str, Any]:
+    """Each driver's program-path cap and its source from today's declaration, whichever
+    round is named (ADR-0382)."""
     try:
         profile = load_design_draft().get("driver_safety_profile") or {}
     except ValueError:  # a retired declaration shape, refused where /sound/speaker/ names its fix
@@ -485,7 +486,6 @@ def status_document(
 ) -> dict[str, Any]:
     """Read retained evidence and candidate status."""
     sections = _status_sections(packet, packet_error)
-    sections["declared"]["caps"] = _declared_caps()
     context: dict[str, Any] = {
         "latest_agent_note": None, "context_error": None,
     }
@@ -541,6 +541,7 @@ def status_document(
         **sections,
         **context,
         "seat_level_reference_volume_db": seat_level_db,
+        "driver_caps_live": _live_driver_caps(),
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
         "last_banked": {name: {key: banked[name][key] for key in ("round_id", "round_dir", "banked_at", "status", "stale")}
