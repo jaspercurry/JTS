@@ -13,6 +13,7 @@ from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
 from jasper.active_speaker.round_copy import coverage_lines
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
+from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.spatial import analysis_curve_records
 from jasper.web.correction_run_host import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
@@ -977,16 +978,14 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
     records = SimpleNamespace(enrich=None, after_bank=None)
     correction_run_host.bind_plan_analysis(conductor, records,
         manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
-    hz = np.linspace(1200, 5000, 100)
+    program = conductor.program_for_phase("entry_baseline")
     anchor = None
     for index, readable in enumerate(responses):
-        analysis = SimpleNamespace(stimulus_id="sum", summed_response=(
-            SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz), gating=None, validity_floor_hz=None)
-            if readable else None))
+        analysis = _verify_analysis(program)
+        analysis = analysis if readable else replace(analysis, summed_response=None)
         conductor._seams = replace(conductor._seams, analyze=lambda *a, **kw: analysis)
         record = {"take_id": f"sum-{index}", "index": 1, "program_phase": "entry_baseline", "graph_scope": "timing",
-                  "position_deg": 0, "vertical_deg": 0, "graph_fingerprint": "played",
-                  "program": conductor.program_for_phase("entry_baseline").to_dict()}
+                  "position_deg": 0, "vertical_deg": 0, "graph_fingerprint": "played", "program": program.to_dict()}
         enriched = records.enrich(None, record)
         records.after_bank(enriched, record["take_id"] + ".json")
         anchor = anchor or (record["take_id"] if readable else None)
@@ -1265,12 +1264,12 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
         return
     assert "analysis_error" not in record
     program = ExcitationProgram.from_dict(record["program"])
-    curves = analysis_curve_records(_verify_analysis(program), program)
-    # Only a room take banks its curves (ADR-0373); every take's reach its run-manifest row.
-    assert record.get("curves") == (curves if pose.get("kind") == "seat" else None)
+    analysis = _verify_analysis(program)
+    # Every take banks its curves and analysis; its run-manifest rows copy them (ADR-0383).
+    assert (record["curves"], record["analysis"]) == (analysis_curve_records(analysis, program), analysis_json(analysis))
     manifest, = (tmp_path / "sessions").rglob(RUN_MANIFEST_FILENAME)
-    assert [take["curve"] for group in json.loads(manifest.read_text())["sets"]
-            for take in group["takes"]] == curves != []
+    assert [(take["curve"], take["analysis"]) for group in json.loads(manifest.read_text())["sets"]
+            for take in group["takes"]] == [(curve, record["analysis"]) for curve in record["curves"]] != []
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)

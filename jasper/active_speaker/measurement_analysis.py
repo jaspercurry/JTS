@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The analysis of summed room and bass takes: banked on the take, or decoded from its recording."""
+"""The analysis of summed takes: banked on the take, or decoded from its recording for the bass view."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.calibration import CalibrationRecord
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
@@ -25,7 +26,6 @@ from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.audio_measurement.repeated_sweep import average_summed_capture
 from jasper.json_fields import finite_float
 
-from .crossover_v2.capture_provenance import banks_curves
 from .crossover_v2.record_index import (
     MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_record,
 )
@@ -65,7 +65,7 @@ class AnalyzedMeasurement:
 
 @dataclass(frozen=True)
 class BankedMeasurement:
-    """A take whose record banked its analysed curves (ADR-0373), read without its recording."""
+    """A take whose record banked its analysed curves (ADR-0383), read without its recording."""
 
     record: dict[str, Any]
     record_path: str
@@ -122,14 +122,15 @@ def decoded_measurements(
         yield _decoded(path, record, program, capture(), calibration_root)
 
 
-def analyzed_measurements(
-    bundle_dir: Path, *, calibration_root: Path | None = None, paths: Iterable[str] | None = None,
-) -> Iterator[AnalyzedMeasurement | BankedMeasurement]:
-    """Each take's analysis: the curves a room, bass or rear take banked
-    (ADR-0373), else a decode of its recording."""
-    for path, record, program, capture in _reopened(bundle_dir, paths):
-        yield (BankedMeasurement(record, path) if "curves" in record and banks_curves(record)
-               else _decoded(path, record, program, capture(), calibration_root))
+def analyzed_measurements(bundle_dir: Path, *, paths: Iterable[str] | None = None) -> Iterator[BankedMeasurement]:
+    """Each take's banked analysis (ADR-0383). A take whose analysis failed has
+    none and is passed over."""
+    for path, record, _program, _capture in _reopened(bundle_dir, paths):
+        if "analysis_error" in record:
+            continue
+        if "curves" not in record:
+            raise MeasurementAnalysisRefused(TAKE_CURVES_NOT_BANKED)
+        yield BankedMeasurement(record, path)
 
 
 def analyze_measurement_bundle(
@@ -139,7 +140,7 @@ def analyze_measurement_bundle(
     if run_reference_db is not None and finite_float(run_reference_db) is None:
         raise MeasurementAnalysisRefused("measurement_reference_invalid")
     info = json.loads((bundle_dir / "info.json").read_text())
-    documents = [take.document() for take in analyzed_measurements(bundle_dir, calibration_root=calibration_root)]
+    documents = [take.document() for take in analyzed_measurements(bundle_dir)]
     if not documents:
         raise MeasurementAnalysisRefused("measurement_captures_missing")
     return frequency_run_from_documents(

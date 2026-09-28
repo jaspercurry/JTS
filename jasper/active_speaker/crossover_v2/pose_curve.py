@@ -141,6 +141,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # repeat_curves, validity_floor_hz, trusted_floor_hz.
         "validity_floor_hz": curve.validity_floor_hz,
         "trusted_floor_hz": curve.trusted_floor_hz,
+        "window": "ungated" if curve.gate_window_ms is None else "gated",
         "gate_window_ms": curve.gate_window_ms,
         "floor_source": curve.floor_source,
         "late_energy": curve.late_energy,

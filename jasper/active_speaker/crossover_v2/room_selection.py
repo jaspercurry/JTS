@@ -106,11 +106,11 @@ def analyzed_purpose_takes(
     purposes: tuple[str, ...] | None = None,
     take_ids: tuple[str, ...] | None = None, calibration_root: Path | None = None,
 ) -> list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]:
-    """A missing WAV yields a ``None`` take for the caller to disclose."""
+    """A missing WAV or a failed analysis yields a ``None`` take for the caller to disclose."""
     documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
                  if take_ids is None or record.get("take_id") in take_ids}
     analyzed: set[str] = set()
-    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=documents):
+    for measurement in analyzed_measurements(bundle_dir, paths=documents):
         row, _ = documents[measurement.record_path]
         analyzed.add(measurement.record_path)
         documents[measurement.record_path] = row, measurement.document()

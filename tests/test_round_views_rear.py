@@ -296,7 +296,7 @@ def test_pair_takes_clamp_the_window_and_skip_incomplete_solos():
 
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
-               swept_hz: Sequence[float] = SEAT_BAND_HZ, sidecar_curves: bool = True,
+               swept_hz: Sequence[float] = SEAT_BAND_HZ,
                off_axis_gap_ms: float | None = None,
                behind_gap_ms: float | None = None) -> Path:
     """One banked ``rear/pair`` round: the composed candidate at every pose,
@@ -304,12 +304,11 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
 
     Every take carries the shape the runner really banks — a two-channel
     ``candidate_branches`` program, which the summed analyzer refuses outright.
-    The manifest carries the THREE role-scoped sets. ``missing`` drops the solo
+    The manifest carries the THREE role-scoped sets, each row with its take's
+    curve for that role, as the run manifest writes them. ``missing`` drops the solo
     segments at named bearings; ``diagnostic`` false banks takes that analyzed
     no branches, the shape jts3 produced before #5361; ``swept_hz`` narrows the
-    curves' own band so the band figures run out of bands to read;
-    ``sidecar_curves`` false leaves the sidecar's ``curves`` empty and the role
-    curves only on the manifest's own set rows, as a real round banks them.
+    curves' own band so the band figures run out of bands to read.
     ``off_axis_gap_ms`` gives every off-axis bearing its own measured gap,
     distinct from on-axis, so a document-level pooling figure can be told apart
     from a single shared gap. ``behind_gap_ms`` additionally banks one pose
@@ -333,7 +332,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(gap_ms)} if diagnostic else {}),
-                        "curves": curves if sidecar_curves else []})
+                        "curves": curves})
     if behind_gap_ms is not None:
         take_id = f"{_COMPOSED}-behind-1"
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
@@ -345,18 +344,16 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(behind_gap_ms)}
                            if diagnostic else {}),
-                        "curves": _pair_curves(swept_hz) if sidecar_curves else []})
+                        "curves": _pair_curves(swept_hz)})
     banked = _banked(store, records)
-    by_role = {str(curve["role"]): curve for curve in _pair_curves(swept_hz)}
     groups = []
     # Role order as the runner banks it, the SUM first — so a reader that kept
     # whichever set iterated last would name a solo woofer's instead.
     for role in sorted(rear_views.PAIR_ROLES):
         group = manifest_set(banked, set_id=f"{_COMPOSED}-{role}")
         group["capture_basis"].update(role=role, candidate_id=_COMPOSED)
-        if not sidecar_curves:
-            for take in group["takes"]:
-                take["curve"] = by_role[role]
+        for take, (_, record) in zip(group["takes"], banked):
+            take["curve"] = next((curve for curve in record["curves"] if curve["role"] == role), None)
         groups.append(group)
     write_manifest(root, program="rear/pair", groups=groups)
     _round_environment(root, applied=_SECTIONS[applied])
@@ -807,10 +804,11 @@ def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates
     """A branch take's program is two-channel and ``candidate_branches``-scoped,
     which the summed analyzer refuses outright — so the pair path must not ask
     it. Read with the REAL analyzer restored, which is what the round hits on
-    the box, and with the role curves only on the manifest's own set rows."""
+    the box, over takes that bank their role curves, as every take does
+    (ADR-0383)."""
     monkeypatch.setattr(room_selection, "analyzed_measurements",
                         measurement_analysis.analyzed_measurements)
-    root = pair_round(tmp_path, sidecar_curves=False)
+    root = pair_round(tmp_path)
     inputs = round_inputs(root)
 
     packet, views = packet_of(root)

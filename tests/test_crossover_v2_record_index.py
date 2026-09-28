@@ -13,6 +13,7 @@ the-files claim is now structural — the files are the only thing read.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
@@ -22,7 +23,7 @@ import pytest
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
-from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
+from jasper.active_speaker.crossover_v2.candidate_ladder import CandidateLadderRefused, candidate_ladder
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     POSITION_EVIDENCE_KIND,
@@ -41,12 +42,17 @@ from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_views import room_ceiling
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.program import RoleBand, build_measure_program
+from jasper.audio_measurement.room_boundary import CEILING_SOURCE_ROUND_GATE
 from tests.crossover_v2_banked_round import (
     _DESIGN_AXIS_GEOMETRY,
     LateralPose,
     TakeClaim,
+    bank_executor_take,
     lateral_pose_record,
 )
+from tests.crossover_v2_fixtures import _measure_analysis
 from tests.run_manifest_fixture import write_bundle_manifest
 from tests.test_crossover_v2_record_store import (
     CAPTURE,
@@ -289,7 +295,7 @@ _SCANNERS = {
         PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_REAR, "take_0002", "take_0003"),
     "pose_bank": _Scanner(
         lambda root: sorted({curve.pose_id for curve in load_round_pose_curves(_session(root))}),
-        PHASE_LATERAL, PHASE_MEASURE, PURPOSE_ROOM, ["take_0001", "take_0002"],
+        PHASE_LATERAL, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, ["take_0001", "take_0002"],
         ["take_0001", "take_0002", "take_0003"]),
     "candidate_ladder": _Scanner(
         lambda root: candidate_ladder(root, round_inputs(root))["summary"]["candidates"],
@@ -329,3 +335,35 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
     )
 
     assert spec.answer(tmp_path) == (spec.three if intruder == "kept" else spec.two)
+
+
+def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatch):
+    """Every take banks its curves (ADR-0383), so the scanners read speaker
+    takes: a gated MEASURE take gives the room ceiling its round gate, the
+    delay pair both drivers and the pose bank its pose, and a lateral
+    candidate take names its candidate on the ladder."""
+    def bundle_of(root: Path) -> Path:
+        bundle, = {path.parent for path in (root / "sessions").glob("*/info.json")}
+        return bundle
+
+    program = build_measure_program({"woofer": -20.0, "tweeter": -24.0}, [
+        RoleBand("woofer", 0, FrequencyBand(150, 4000)), RoleBand("tweeter", 1, FrequencyBand(1600, 20000))])
+    gated = tuple(replace(response, gating={**response.gating, "f_trusted_hz": 450.0})
+                  for response in _measure_analysis(program).driver_responses)
+    measure = bank_executor_take(tmp_path / "measure", monkeypatch, program=program,
+                                 analysis_fields={"driver_responses": gated})
+    bundle = bundle_of(tmp_path / "measure")
+    assert {curve["window"] for curve in measure["curves"]} == {"gated"}
+    ceiling = room_ceiling(bundle)
+    assert (ceiling.source, ceiling.trusted_floor_hz, ceiling.source_take_id) == (
+        CEILING_SOURCE_ROUND_GATE, 450.0, measure["take_id"])
+    pair = select_pose_curve_pair(bundle, phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
+                                  roles=("woofer", "tweeter"))
+    assert pair is not None and pair.document["take_id"] == measure["take_id"]
+    assert sorted(curve.role for curve in load_round_pose_curves(bundle)) == ["tweeter", "woofer"]
+
+    lateral = bank_executor_take(tmp_path / "lateral", monkeypatch, raw_record={"program_phase": PHASE_LATERAL})
+    bundle = bundle_of(tmp_path / "lateral")
+    with pytest.raises(CandidateLadderRefused) as refused:
+        candidate_ladder(bundle, round_inputs(bundle))
+    assert refused.value.detail["candidates_named"] == [lateral["candidate_id"]]
