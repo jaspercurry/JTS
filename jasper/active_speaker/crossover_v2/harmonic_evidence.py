@@ -102,7 +102,7 @@ __all__ = [
 #: Bumped when a field changes MEANING, never for an additive widening — the
 #: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps: a reader that
 #: ignores what it does not know is not misled by a new key.
-HARMONICS_SCHEMA_VERSION = 2
+HARMONICS_SCHEMA_VERSION = 3
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -115,7 +115,7 @@ HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
 
 #: The shipped MEASURE driver bands for a PAIR. A default, not a constant: a
-#: wrong pair fails the ``program_id`` proof rather than misreading the round.
+#: wrong pair fails the ``stimulus_id`` proof rather than misreading the round.
 DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
     "woofer": (150.0, 4000.0),
     "tweeter": (1600.0, 20000.0),
@@ -351,7 +351,7 @@ def rebuild_measure_program(
                 "missing": "a gain plan naming one shape's roles, and a band each",
                 "gain_plan_roles": sorted(gains),
                 "bands_supplied": sorted(bands),
-                "program_ids": prefixes,
+                "stimulus_ids": prefixes,
             },
         )
     # WHETHER the state carries a banking attempt at all, independent of whether
@@ -365,7 +365,7 @@ def rebuild_measure_program(
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     for prelude in (shipped, not shipped):
         program = _measure_program_at(state, bands, 0.0, prelude)
-        if program.program_id in stimulus_ids:
+        if program.stimulus_id in stimulus_ids:
             return program, bool(prelude)
     recorded = sorted(set(recorded_schema_versions))
     superseded = [version for version in recorded if version < PROGRAM_SCHEMA_VERSION]
@@ -405,7 +405,7 @@ def rebuild_measure_program(
     raise HarmonicEvidenceRefused(
         PROGRAM_NOT_REPRODUCIBLE,
         {
-            "program_ids": prefixes,
+            "stimulus_ids": prefixes,
             "causes": causes,
             "recorded_program_schema_versions": recorded,
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
@@ -871,6 +871,13 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     }
 
 
+def _banked_program_schema(sidecar: Mapping[str, Any]) -> int | None:
+    """The schema version of the program a capture banked, or ``None``."""
+    recorded = sidecar.get("program")
+    version = recorded.get("schema_version") if isinstance(recorded, Mapping) else None
+    return version if type(version) is int else None
+
+
 def _recorded_stimulus(sidecar: Mapping[str, Any]) -> Mapping[str, Any]:
     """The stimulus a capture's provenance recorded, or an empty mapping."""
     provenance = sidecar.get("provenance")
@@ -880,7 +887,7 @@ def _recorded_stimulus(sidecar: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _recorded_stimulus_id(sidecar: Mapping[str, Any]) -> str | None:
     """The stimulus id a capture recorded, when it is a non-empty string."""
-    stimulus_id = _recorded_stimulus(sidecar).get("program_id")
+    stimulus_id = _recorded_stimulus(sidecar).get("stimulus_id")
     return stimulus_id if isinstance(stimulus_id, str) and stimulus_id else None
 
 
@@ -897,15 +904,15 @@ def _capture_program_identity(
     recorded_sha = _recorded_stimulus(sidecar).get("wav_sha256")
     state_session = _state_capture_session_id(state)
     proof = {
-        "program_id": recorded_program,
-        "program_id_status": "matched" if recorded_program == program.program_id else "unknown",
+        "stimulus_id": recorded_program,
+        "stimulus_id_status": "matched" if recorded_program == program.stimulus_id else "unknown",
         "stimulus_wav_status": "matched" if recorded_sha and recorded_sha == program_sha256 else "unknown",
         "capture_session_id": recorded_session,
         "state_capture_session_id": state_session,
     }
     if recorded_session and state_session and recorded_session != state_session:
         return proof, "capture_session_mismatch"
-    if recorded_program and recorded_program != program.program_id:
+    if recorded_program and recorded_program != program.stimulus_id:
         return proof, "stimulus_program_mismatch"
     if recorded_sha and recorded_sha != program_sha256:
         return proof, "stimulus_wav_mismatch"
@@ -974,8 +981,7 @@ def read_round_harmonics(
 
     schema_versions = {version for capture in captures
                        if capture["sidecar"].get("graph_scope") != "candidate_branches"
-                       and isinstance(recorded := capture["sidecar"].get("program"), Mapping)
-                       and type(version := recorded.get("schema_version")) is int}
+                       and (version := _banked_program_schema(capture["sidecar"])) is not None}
     stimulus_ids = {stimulus_id for capture in captures
                     if capture["sidecar"].get("graph_scope") != "candidate_branches"
                     and (stimulus_id := _recorded_stimulus_id(capture["sidecar"]))}
@@ -988,7 +994,7 @@ def read_round_harmonics(
             program = ExcitationProgram.from_dict(sidecar["program"])
             sweep = program.segment("sweep_w")
             prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
-            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude, program.program_id
+            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude, program.stimulus_id
         if measure is None:
             round_bands = round_bands_hz(state, bands)
             proven, prelude = rebuild_measure_program(state, round_bands, stimulus_ids, schema_versions)
@@ -996,11 +1002,11 @@ def read_round_harmonics(
         proven, prelude, round_bands, composed = measure
         volume_db = _session_volume_db(sidecar)
         if volume_db is None:
-            return proven, None, prelude, proven.program_id
+            return proven, None, prelude, proven.stimulus_id
         if volume_db not in composed:
             composed[volume_db] = _measure_program_at(state, round_bands, volume_db, prelude)
         # The fader never reaches the PCM, so every rebuilt take renders proven's WAV.
-        return composed[volume_db], volume_db, prelude, proven.program_id
+        return composed[volume_db], volume_db, prelude, proven.stimulus_id
 
     program_hashes: dict[str, str] = {}
     calibration, calibration_note = _calibration_for(captures, calibration_text)
@@ -1022,8 +1028,11 @@ def read_round_harmonics(
         sidecar = capture["sidecar"]
         stimulus = _recorded_stimulus(sidecar)
         if not stimulus_ids and sidecar.get("graph_scope") != "candidate_branches":
-            refused.append({**take, "reason": "stimulus_id_unrecorded",
-                            "fidelity_fields_compared": 0, "failures": ["stimulus_id_unrecorded"]})
+            # A take banked under an older schema recorded its id under the key it had then.
+            version = _banked_program_schema(sidecar)
+            refusal = ("program_schema_superseded" if version is not None and version < PROGRAM_SCHEMA_VERSION
+                       else "stimulus_id_unrecorded")
+            refused.append({**take, "reason": refusal, "fidelity_fields_compared": 0, "failures": [refusal]})
             continue
         program, volume_db, prelude, wav_key = program_for(sidecar)
         if stimulus.get("wav_sha256"):
@@ -1069,9 +1078,9 @@ def read_round_harmonics(
         seen[actual] = capture["take_id"]
         read.append({**take, "identity": proof, "fidelity_fields_compared": compared,
                      "program": {
-                         "program_id": program.program_id,
+                         "stimulus_id": program.stimulus_id,
                          "session_volume_db": (
-                             volume_db if proof["program_id_status"] == "matched" else None
+                             volume_db if proof["stimulus_id_status"] == "matched" else None
                          ),
                          "solved_courtesy_prelude": prelude,
                      }})
@@ -1084,7 +1093,7 @@ def read_round_harmonics(
             block = _role_block(role, role_readings, sha12, orders)
             drive = block["drive"]
             drive["identity"] = proof
-            if proof["program_id_status"] != "matched":
+            if proof["stimulus_id_status"] != "matched":
                 drive.update(stimulus_peak_dbfs=None, effective_peak_dbfs=None, status="unknown",
                              reason="stimulus_program_identity_missing")
             elif sidecar.get("graph_scope") == "candidate_branches":

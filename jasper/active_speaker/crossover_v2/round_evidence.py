@@ -68,7 +68,7 @@ ENTRY_BASELINE_KIND = "jts_crossover_v2_entry_baseline"
 class MeasuredResponse:
     """One summed at-the-mark capture, reduced to what a comparison needs."""
 
-    program_id: str
+    stimulus_id: str
     reference_mark: str
     curve: ResponseCurve
     excluded: tuple[bool, ...]
@@ -92,8 +92,8 @@ def measured_response_from_analysis(
     if analysis is None:
         return None
     summed = getattr(analysis, "summed_response", None)
-    program_id = str(getattr(analysis, "program_id", "") or "")
-    if summed is None or not program_id:
+    stimulus_id = str(getattr(analysis, "stimulus_id", "") or "")
+    if summed is None or not stimulus_id:
         return None
 
     try:
@@ -110,7 +110,7 @@ def measured_response_from_analysis(
         # crash to propagate into a household decision.
         return None
     return MeasuredResponse(
-        program_id=program_id,
+        stimulus_id=stimulus_id,
         reference_mark=_text(reference_mark, field_name="reference_mark"),
         curve=curve,
         excluded=_validity_clamp(grid, getattr(summed, "validity_floor_hz", None)),
@@ -157,7 +157,7 @@ class EntryBaseline:
     :class:`MeasuredResponse`; neither is derived from the other.
     """
 
-    program_id: str
+    stimulus_id: str
     reference_mark: str
     curve: ResponseCurve
     excluded: tuple[bool, ...]
@@ -175,7 +175,7 @@ class EntryBaseline:
         artifact_ref: str = "",
     ) -> "EntryBaseline":
         return cls(
-            program_id=measured.program_id,
+            stimulus_id=measured.stimulus_id,
             reference_mark=measured.reference_mark,
             curve=measured.curve,
             excluded=measured.excluded,
@@ -189,7 +189,7 @@ class EntryBaseline:
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": ENTRY_BASELINE_KIND,
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "reference_mark": self.reference_mark,
             "freqs_hz": list(self.curve.hz),
             "magnitude_db": list(self.curve.db),
@@ -222,8 +222,8 @@ class EntryBaseline:
         try:
             curve = ResponseCurve(freqs, levels)
             return cls(
-                program_id=_text(
-                    record.get("program_id"), field_name="program_id"
+                stimulus_id=_text(
+                    record.get("stimulus_id"), field_name="stimulus_id"
                 ),
                 reference_mark=_text(
                     record.get("reference_mark"), field_name="reference_mark"

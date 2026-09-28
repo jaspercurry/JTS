@@ -26,7 +26,7 @@ from .record_index import Measurement, bundle_measurements
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
 POSITION_CYCLE_KIND = "jts_crossover_v2_position_cycle"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: The file a round banks it as, inside the round directory.
 POSITION_CYCLE_FILENAME = "position_cycle.json"
@@ -72,7 +72,7 @@ _ENTRY_CURVE_FIELDS = ("freqs_hz", "magnitude_db", "excluded")
 #: take's own id is returned as ``artifact_ref``, which is the name that record
 #: gives the artifact it came from.
 _ENTRY_BASELINE_FIELDS = (
-    "program_id", "reference_mark", "graph_fingerprint", "captured_at",
+    "stimulus_id", "reference_mark", "graph_fingerprint", "captured_at",
     *_ENTRY_CURVE_FIELDS,
 )
 

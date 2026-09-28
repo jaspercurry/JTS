@@ -261,7 +261,7 @@ def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ) -> list[dict]:
 
 def _branch_program(summed: Mapping[str, Any]) -> dict:
     """The two-channel branch program a pair take plays, through the PRODUCTION
-    composer so the schedule's own ``program_id`` stays valid — the shape the
+    composer so the schedule's own ``stimulus_id`` stays valid — the shape the
     summed analyzer refuses (``channels == 2``)."""
     front, rear, _summed = rear_views.PAIR_ROLES
     return build_branch_program(

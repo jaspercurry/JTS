@@ -23,7 +23,8 @@ from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import (
-    AnchorFacts, ResolvedLevel, predicted_rung_admission, resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
+    SCHEMA_VERSION as SEAT_LEVEL_SCHEMA_VERSION, AnchorFacts, ResolvedLevel, predicted_rung_admission,
+    resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
@@ -42,13 +43,13 @@ from tests.test_crossover_v2_tuning_scope import (
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
         candidates={}, mic_present=True, mic_identified=True,
-        anchor=AnchorFacts({"artifact_schema_version": 2, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
+        anchor=AnchorFacts({"artifact_schema_version": SEAT_LEVEL_SCHEMA_VERSION, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
                             "target": {"target_db_spl": 75.0, "tolerance_db": 1.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
-                            "stimulus": {"program_id": "fixture-sweep"},
+                            "stimulus": {"stimulus_id": "fixture-sweep"},
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
-        program_ids_for=lambda _plan: ("fixture-sweep",),
+        stimulus_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
 
 
@@ -119,11 +120,11 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
     blocked = bool(missing or invalid_pairs)
 
-    def program_ids(_plan):
+    def stimulus_ids(_plan):
         assert not blocked
         return ("fixture-sweep",)
 
-    report = preflight_levels(plan, replace(facts, program_ids_for=program_ids))
+    report = preflight_levels(plan, replace(facts, stimulus_ids_for=stimulus_ids))
     assert report.blocking is blocked
     if blocked:
         issue, = report.issues
@@ -208,9 +209,9 @@ def test_preflight_per_driver_layout(layout):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
     plan = request_for_preset(preset("speaker/mark"), mover="human")
-    program_ids = Mock(return_value=("fixture-sweep",))
+    stimulus_ids = Mock(return_value=("fixture-sweep",))
     report = preflight(plan, ready_facts(
-        plan, program_ids_for=program_ids,
+        plan, stimulus_ids_for=stimulus_ids,
         declared_target_ids=tuple(measurement_target_id(t["role"], t.get("output_variant", "primary")) for t in targets),
         roles_bands=tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
                           if t.get("output_variant", "primary") == "primary"),
@@ -223,7 +224,7 @@ def test_preflight_per_driver_layout(layout):
         assert report.schedule == () and report.price == {}
         assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
         assert REASON_REGISTRY[issue.code].retry_budget == 0
-        program_ids.assert_not_called()
+        stimulus_ids.assert_not_called()
     else:
         assert report.issues == ()
 
@@ -622,9 +623,9 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
         roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), role_targets={"woofer": "fp-woofer"}, fc_hz=None,
         driver_caps_dbfs={"woofer": -8}, session_volume_db=-22.23, driver_sweep_duration_limits_s={})
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    ids = facts.program_ids_for(plan)
+    ids = facts.stimulus_ids_for(plan)
     assert ids and len(set(ids)) == 1
-    record["stimulus"] = {"program_id": ids[0] if same else "different"}
+    record["stimulus"] = {"stimulus_id": ids[0] if same else "different"}
     report = preflight(plan, facts)
     assert not report.blocking
     assert report.plan.level.predicted_db_spl == pytest.approx(84 if same else 74.23)
@@ -655,7 +656,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
-    report = preflight(plan, replace(facts, program_ids_for=lambda _: ("fixture-sweep",)))
+    report = preflight(plan, replace(facts, stimulus_ids_for=lambda _: ("fixture-sweep",)))
     assert not report.blocking
     row = report.rung_admission
     assert report.plan.level.volume_db < 0

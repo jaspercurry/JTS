@@ -309,7 +309,7 @@ def _entry_take(tmp_path: Path, **overrides) -> Path:
     """One banked entry-baseline sidecar, from the shared take-record builder."""
     fields = {
         "index": 9, "attempt": 1, "session_id": "sess-1",
-        "program_id": "prog-entry", "reference_mark": "design_axis",
+        "stimulus_id": "prog-entry", "reference_mark": "design_axis",
         "graph_fingerprint": "fp-entry", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
         "excluded": (True, False),
@@ -336,7 +336,7 @@ def test_the_before_reads_back_in_the_shape_its_record_type_rehydrates_from(
     take = read_entry_baseline_take(_entry_take(tmp_path))
 
     assert take == {
-        "program_id": "prog-entry",
+        "stimulus_id": "prog-entry",
         "reference_mark": "design_axis",
         "graph_fingerprint": "fp-entry",
         "captured_at": "2026-08-11T00:00:00Z",

@@ -373,7 +373,7 @@ def program_for_phase(
     """Which composed program this phase plays — **by identity, not by value**.
 
     The compared pair gets the same ``verify`` object (shared
-    ``program_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
+    ``stimulus_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
     the same ``cloud`` object.
 
     ``measure`` is ``None`` until the CHECK gain solve produces a plan;

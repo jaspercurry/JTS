@@ -426,7 +426,7 @@ def test_analysis_owns_mic_grades(monkeypatch, levels, grades, status):
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.dispatch._analyze_check",
         lambda *args: ProgramAnalysis(
-            program.phase, program.program_id, (),
+            program.phase, program.stimulus_id, (),
             pilots=tuple(_pilot_obs(str(index), peak_hi_dbfs=level, mic_meter_status=None)
                          for index, level in enumerate(levels)),
         ),

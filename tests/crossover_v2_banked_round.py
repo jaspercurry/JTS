@@ -641,7 +641,7 @@ def entry_baseline_record(
     index: int,
     attempt: int,
     session_id: str,
-    program_id: str,
+    stimulus_id: str,
     reference_mark: str,
     graph_fingerprint: str,
     captured_at: str,
@@ -663,7 +663,7 @@ def entry_baseline_record(
 
     Three fields a cloud position has no use for make THIS capture comparable to
     the post-apply one, and are why it is a separate builder: WHAT was played
-    (``program_id``), WHERE from (``reference_mark``), and WHICH graph it went
+    (``stimulus_id``), WHERE from (``reference_mark``), and WHICH graph it went
     through (``graph_fingerprint``).
 
     The reduced curve rides here, which is what makes this the DURABLE copy:
@@ -693,7 +693,7 @@ def entry_baseline_record(
         # No prompted spot of its own, so the position id IS the take id.
         "position_id": identity["take_id"],
         **identity,
-        "program_id": program_id,
+        "stimulus_id": stimulus_id,
         "reference_mark": reference_mark,
         "prompt": prompt,
         "position_deg": DESIGN_AXIS_DEG,
@@ -794,7 +794,7 @@ def bank_measure_round(
         *poses,
         entry_baseline_record(
             index=3 + len(poses), attempt=1,
-            program_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            stimulus_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
             freqs_hz=ENTRY_GRID_HZ, magnitude_db=magnitude_db, excluded=excluded,
             # Capture SCALARS the record carries and every reader in these
             # suites drops (read_entry_baseline_take narrows to the identity

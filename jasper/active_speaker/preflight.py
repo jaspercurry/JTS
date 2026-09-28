@@ -86,7 +86,7 @@ class PreflightFacts:
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     #: ``None`` when an applied profile's room layer could not be read.
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
-    program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
+    stimulus_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -298,12 +298,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                                      margin_db=margin, quantity="max_window_db_spl", ceiling_db_spl=stop)
                 else:
                     try:
-                        program_ids = facts.program_ids_for(plan) if facts.program_ids_for else ()
+                        stimulus_ids = facts.stimulus_ids_for(plan) if facts.stimulus_ids_for else ()
                     except (ValueError, KeyError):
-                        program_ids = ()
-                    anchor_program_id = (facts.anchor.record.get("stimulus") or {}).get("program_id")
-                    same_stimulus = bool(program_ids) and all(stimulus_mismatch(anchor_program_id, pid) is False for pid in program_ids)
-                    admission.update(anchor_program_id=anchor_program_id, run_program_ids=program_ids,
+                        stimulus_ids = ()
+                    anchor_stimulus_id = (facts.anchor.record.get("stimulus") or {}).get("stimulus_id")
+                    same_stimulus = bool(stimulus_ids) and all(stimulus_mismatch(anchor_stimulus_id, pid) is False for pid in stimulus_ids)
+                    admission.update(anchor_stimulus_id=anchor_stimulus_id, run_stimulus_ids=stimulus_ids,
                                      stimulus_mismatch=not same_stimulus)
                     if not same_stimulus:
                         admission.update(basis="unmeasured_stimulus_opener", bound_db_spl=anchor.anchor_db_spl)

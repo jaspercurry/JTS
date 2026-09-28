@@ -46,7 +46,7 @@ from .room_boundary import AUDIO_BAND_TOP_HZ, ROOM_FLOOR_HZ
 
 logger = logging.getLogger(__name__)
 
-PROGRAM_SCHEMA_VERSION = 2
+PROGRAM_SCHEMA_VERSION = 3
 PROGRAM_KIND = "jts_excitation_program"
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
@@ -300,11 +300,11 @@ class ProgramSegment:
 class ExcitationProgram:
     """A pure-data schedule of stimuli the session plays as one stream.
 
-    ``program_id`` hashes the schedule but not ``effective_peak_dbfs``: the
+    ``stimulus_id`` hashes the schedule but not ``effective_peak_dbfs``: the
     fader is not the stimulus (#5012).
     """
 
-    program_id: str
+    stimulus_id: str
     phase: str
     sample_rate_hz: int
     channels: int
@@ -330,12 +330,12 @@ class ExcitationProgram:
                 raise ValueError(
                     f"segment {seg.segment_id!r} overruns total_samples"
                 )
-        expected = _program_id(
+        expected = _stimulus_id(
             self.phase, self.sample_rate_hz, self.channels,
             self.segments, self.total_samples,
         )
-        if self.program_id != expected:
-            raise ValueError("program_id does not match the schedule content")
+        if self.stimulus_id != expected:
+            raise ValueError("stimulus_id does not match the schedule content")
 
     def segment(self, segment_id: str) -> ProgramSegment:
         for seg in self.segments:
@@ -354,7 +354,7 @@ class ExcitationProgram:
         return {
             "schema_version": PROGRAM_SCHEMA_VERSION,
             "kind": PROGRAM_KIND,
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "phase": self.phase,
             "sample_rate_hz": self.sample_rate_hz,
             "channels": self.channels,
@@ -365,7 +365,7 @@ class ExcitationProgram:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ExcitationProgram":
         required = {
-            "schema_version", "kind", "program_id", "phase", "sample_rate_hz",
+            "schema_version", "kind", "stimulus_id", "phase", "sample_rate_hz",
             "channels", "segments", "total_samples",
         }
         if not isinstance(value, Mapping) or set(value) != required:
@@ -378,7 +378,7 @@ class ExcitationProgram:
             ProgramSegment.from_dict(s) for s in value["segments"]
         )
         program = cls(
-            program_id=str(value["program_id"]),
+            stimulus_id=str(value["stimulus_id"]),
             phase=str(value["phase"]),
             sample_rate_hz=int(value["sample_rate_hz"]),
             channels=int(value["channels"]),
@@ -399,7 +399,7 @@ def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:
     return {key: value for key, value in seg.to_dict().items() if key != "effective_peak_dbfs"}
 
 
-def _program_id(
+def _stimulus_id(
     phase: str,
     sample_rate_hz: int,
     channels: int,
@@ -422,11 +422,11 @@ def _finalize(
     phase: str, channels: int, segments: Sequence[ProgramSegment], total: int
 ) -> ExcitationProgram:
     seg_tuple = tuple(segments)
-    program_id = _program_id(
+    stimulus_id = _stimulus_id(
         phase, PROGRAM_SAMPLE_RATE_HZ, channels, seg_tuple, total
     )
     return ExcitationProgram(
-        program_id=program_id,
+        stimulus_id=stimulus_id,
         phase=phase,
         sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ,
         channels=channels,

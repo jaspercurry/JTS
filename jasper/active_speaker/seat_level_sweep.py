@@ -80,7 +80,7 @@ class SweepLevelReader:
         peak = stimulus_peak_dbfs(program)
         assert peak is not None
         self.provenance = StimulusProvenance(
-            program_id=program.program_id, phase=phase, wav_sha256=artifact.sha256,
+            stimulus_id=program.stimulus_id, phase=phase, wav_sha256=artifact.sha256,
             peak_dbfs=peak, bundle_id=self.bundle_id,
         )
 

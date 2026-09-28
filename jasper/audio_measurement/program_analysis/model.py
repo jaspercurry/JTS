@@ -918,7 +918,7 @@ class ProgramAnalysis:
     """The deterministic result of one ``(program, capture)`` pair."""
 
     phase: str
-    program_id: str
+    stimulus_id: str
     locations: tuple[SegmentLocation, ...]
     drift: DriftEstimate | None = None
     driver_responses: tuple[DriverResponse, ...] = ()

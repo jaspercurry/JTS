@@ -52,7 +52,7 @@ class EntryStateGrade:
 
     available: bool
     reason: str
-    program_id: str
+    stimulus_id: str
     reference_mark: str
     graph_fingerprint: str
     captured_at: str
@@ -70,7 +70,7 @@ class EntryStateGrade:
         round_ordinal_epoch: int | None = None,
     ) -> "EntryStateGrade":
         return cls(
-            available=False, reason=reason, program_id="", reference_mark="",
+            available=False, reason=reason, stimulus_id="", reference_mark="",
             graph_fingerprint="", captured_at="", artifact_ref="", report=None,
             round_ordinal=round_ordinal, round_ordinal_epoch=round_ordinal_epoch,
         )
@@ -79,7 +79,7 @@ class EntryStateGrade:
         return {
             "available": self.available,
             "reason": self.reason,
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "reference_mark": self.reference_mark,
             # WHICH entry state was graded: a first round's entry graph is the
             # declarations-derived config a fresh box wears, a later round's is
@@ -157,7 +157,7 @@ def entry_state_grade(banked: BankedRound) -> EntryStateGrade:
     return EntryStateGrade(
         available=True,
         reason="",
-        program_id=baseline.program_id,
+        stimulus_id=baseline.stimulus_id,
         reference_mark=baseline.reference_mark,
         graph_fingerprint=baseline.graph_fingerprint,
         captured_at=baseline.captured_at,

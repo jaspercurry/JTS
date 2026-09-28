@@ -45,7 +45,7 @@ def _program():
 
 def _admission(program, *, allowed=True):
     return ProgramAdmission(
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         phase=program.phase,
         session_volume_db=-65.0,
         segments=(),

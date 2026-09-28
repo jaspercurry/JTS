@@ -19,7 +19,7 @@ from ..round_inputs import CrossoverEvidencePacketError
 #: this one — never merely because the document grew. The
 #: EVIDENCE document's version only: a prescription answering this packet
 #: carries its own :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`.
-PACKET_SCHEMA_VERSION = 2
+PACKET_SCHEMA_VERSION = 3
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
 

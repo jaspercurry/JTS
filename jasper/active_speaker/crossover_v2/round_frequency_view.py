@@ -96,7 +96,7 @@ def frequency_run(packet: Mapping[str, Any]) -> FrequencyRun:
             role="summed",
             position={"axis": "horizontal", "deg": 0},
             captured_at=entry.get("captured_at"),
-            program_id=entry.get("program_id"),
+            stimulus_id=entry.get("stimulus_id"),
             reference_mark=entry.get("reference_mark"),
             graph_fingerprint=entry.get("graph_fingerprint"),
             excluded=entry.get("excluded") or [],

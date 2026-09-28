@@ -50,7 +50,7 @@ def manifest_set(records, *, set_id=None, selected=None, refused=()) -> dict:
                       "pose": {"kind": record.get("pose_kind", "bearing"),
                       "deg": record.get("position_deg"), "elevation_deg": record.get("vertical_deg"),
                       "distance_m": record.get("mark_distance_m"), "seat_offset_m": record.get("seat_offset_m")},
-                      "level": {key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "program_id")},
+                      "level": {key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")},
                       "quality": {"status": "refused" if take_id in refused else "measured"},
                       "artifacts": {"record_id": path, "wav_path": record.get("wav_path"), "wav_sha256": record.get("wav_sha256")},
                       "selected": take_id not in refused and (selected is None or take_id in selected)})

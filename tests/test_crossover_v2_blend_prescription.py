@@ -475,7 +475,7 @@ def _bank_entry_baseline(session: Path, *, attempt: int = 1) -> dict[str, Any]:
     positions = round_dir / "positions"
     positions.mkdir(exist_ok=True)
     record = entry_baseline_record(
-        index=9, attempt=attempt, session_id="capture-1", program_id="prog-entry",
+        index=9, attempt=attempt, session_id="capture-1", stimulus_id="prog-entry",
         reference_mark="design_axis", graph_fingerprint="fp-entry",
         captured_at="2026-08-11T00:00:00Z",
         freqs_hz=(200.0, 400.0, 800.0), magnitude_db=(-1.5, 0.0, 1.5),
@@ -513,7 +513,7 @@ def test_the_packet_carries_the_curve_the_round_was_graded_against(tmp_path):
     assert block["n_excluded"] == 1
     # The three comparability facts, so a reader can tell whether an after is
     # even comparable to this before.
-    assert block["program_id"] == "prog-entry"
+    assert block["stimulus_id"] == "prog-entry"
     assert block["reference_mark"] == "design_axis"
     assert block["graph_fingerprint"] == "fp-entry"
     assert block["artifact_ref"] == banked["take_id"]

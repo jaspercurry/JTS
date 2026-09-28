@@ -50,7 +50,7 @@ from jasper.web.correction_runtime import refusal_envelope
 
 def _admission(*refusals: ProgramAdmissionRefusal) -> ProgramAdmission:
     return ProgramAdmission(
-        program_id="prog-1",
+        stimulus_id="prog-1",
         phase="check",
         session_volume_db=-20.0,
         segments=(),

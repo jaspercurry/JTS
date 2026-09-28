@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SEAT_LEVEL_REFERENCE_KIND = "jts_active_speaker_seat_level_reference"
 DEFAULT_STATE_PATH = Path("/var/lib/jasper/active_speaker_seat_level_reference.json")
 STATE_PATH_ENV = "JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE"
@@ -135,15 +135,15 @@ def measured_rung_admission(
             "bound_by": "measured_window_crest" if admitted < fader_db else None}
 
 
-def stimulus_mismatch(anchor_program_id: str | None, program_id: str | None) -> bool | None:
-    return anchor_program_id != program_id if anchor_program_id and program_id else None
+def stimulus_mismatch(anchor_stimulus_id: str | None, stimulus_id: str | None) -> bool | None:
+    return anchor_stimulus_id != stimulus_id if anchor_stimulus_id and stimulus_id else None
 
 
 @dataclass(frozen=True)
 class StimulusProvenance:
     """The summed program and the statistic used for the session gain."""
 
-    program_id: str
+    stimulus_id: str
     phase: str
     wav_sha256: str
     peak_dbfs: float
@@ -151,7 +151,7 @@ class StimulusProvenance:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "phase": self.phase,
             "wav_sha256": self.wav_sha256,
             "peak_dbfs": round(float(self.peak_dbfs), 2),

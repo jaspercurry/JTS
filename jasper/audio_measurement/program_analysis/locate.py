@@ -320,7 +320,7 @@ def _resolve_anchor(
         "program_analysis.anchor",
         level=logging.WARNING if (corrected or ambiguous) else logging.INFO,
         phase=program.phase,
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         anchor=best_seg.segment_id,
         witness=witness.segment_id,
         witnesses_tried=witnesses_tried,
@@ -468,7 +468,7 @@ def _resolve_sweep_anchor(
     )
     log_event(
         logger, "program_analysis.anchor", level=logging.INFO if corroborated else logging.WARNING,
-        phase=program.phase, program_id=program.program_id, anchor=evidence.anchor,
+        phase=program.phase, stimulus_id=program.stimulus_id, anchor=evidence.anchor,
         witness=evidence.witness, shift_ms=evidence.shift_ms,
         witness_residual_ms=residual_ms, presence=presence, confidence=confidence,
         corroborated=corroborated, ambiguous=evidence.ambiguous,

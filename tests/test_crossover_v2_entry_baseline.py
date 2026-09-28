@@ -15,7 +15,7 @@ What this module pins, in the order the evidence has to survive:
 
 1. **the plan** — exactly one entry, and it is LAST;
 2. **comparability** — the capture replays the VERIFY program *object*, so the
-   two sides share a ``program_id`` and the benefit evaluator's own
+   two sides share a ``stimulus_id`` and the benefit evaluator's own
    comparability check can pass;
 3. **the accept rule** — an unusable capture records nothing, a usable one
    records a baseline stamped with the shared mark;
@@ -133,7 +133,7 @@ def test_the_entry_baseline_is_a_summed_sweep_and_not_a_position_group():
 
 
 def test_the_entry_baseline_replays_the_verify_program_object_itself():
-    """Identity AND ``program_id``, because either alone is satisfiable falsely.
+    """Identity AND ``stimulus_id``, because either alone is satisfiable falsely.
 
     Object identity alone would pass if both sides resolved to ``None``. Equal
     ids alone would pass for two independently composed programs that happen to
@@ -152,8 +152,8 @@ def test_the_entry_baseline_replays_the_verify_program_object_itself():
 
     assert entry_program is verify_program
     assert entry_program is not None
-    assert entry_program.program_id == verify_program.program_id
-    assert entry_program.program_id
+    assert entry_program.stimulus_id == verify_program.stimulus_id
+    assert entry_program.stimulus_id
 
 
 # 3. the accept rule

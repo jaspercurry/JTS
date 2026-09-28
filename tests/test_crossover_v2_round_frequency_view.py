@@ -65,7 +65,7 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
         "entry_baseline": {
             "available": True,
             "captured_at": "2026-08-29T12:00:00Z",
-            "program_id": "summed_sweep",
+            "stimulus_id": "summed_sweep",
             "reference_mark": "design_axis",
             "graph_fingerprint": "before",
             "freqs_hz": [100.0, 1000.0, 10000.0],
@@ -78,7 +78,7 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
 def test_frequency_view_exposes_the_stored_entry_baseline():
     view = neutral_view(frequency_run(_packet("aaa")))
 
-    assert view["schema"] == "jts_frequency_view/1"
+    assert view["schema"] == "jts_frequency_view/2"
     run = view["runs"][0]
     assert (run["slot"], run["id"], run["measurement_family"]) == (
         "a", "aaa", "entry_baseline",
@@ -741,7 +741,7 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     ])
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
-    assert ExcitationProgram.from_dict(record["program"]).program_id == program.program_id
+    assert ExcitationProgram.from_dict(record["program"]).stimulus_id == program.stimulus_id
     destination = tmp_path / "frequency.json"
     assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
@@ -915,7 +915,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     assert view['candidate_id'] == 'baseline-fp'
     first, repeat = view['takes']
     assert first['distortion'] == repeat['distortion'] == {'available': True}
-    assert first['program_id'] == first['record']['program_id'] == program.program_id
+    assert first['stimulus_id'] == first['record']['stimulus_id'] == program.stimulus_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
     frequencies = np.array(first['freqs_hz'])
@@ -926,8 +926,8 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
         assert not np.array(harmonic['qualified'])[beyond].any()
         assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
-    repeat['record']['program_id'] = 'different-program'
-    assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['program_id']
+    repeat['record']['stimulus_id'] = 'different-program'
+    assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['stimulus_id']
 
 
 @pytest.mark.parametrize("selected_broken", [False, True])
@@ -965,7 +965,7 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
 
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [
-    ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
+    ('candidate', 0, 0, {'stimulus_id': 'changed-gains'}, 'stimulus_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
     ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
     ('candidate', 0, 0, {'position_deg': 20}, 'pose_key'), ('demand', 0, 3, {'position_deg': 20}, 'pose_key'),
 ])
@@ -974,7 +974,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0'},
+                   'position_deg': 0, 'vertical_deg': 0, 'stimulus_id': 'program-0'},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
@@ -984,7 +984,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
              'fundamental_db': [-20 + 1 - stimulus_delta] * 7}
     after['record']['level_db'] += main_delta
     after['record']['stimulus_dbfs'] += stimulus_delta
-    after['record']['program_id'] = f'program-{stimulus_delta}'
+    after['record']['stimulus_id'] = f'program-{stimulus_delta}'
     if change == 'candidate':
         after['record'].update(candidate_id='b', graph_fingerprint='graph-b')
     result = compare_bass_takes(before, after, change=change)
@@ -1010,7 +1010,7 @@ def bass_fit_pairs():
         'record_path': 'off.json',
         'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
-                   'program_id': 'sweep'},
+                   'stimulus_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
         'fundamental_qualified': ((grid < 90) | (grid > 110)).tolist(), 'harmonics': {},
@@ -1047,7 +1047,7 @@ def test_bass_fit_weights_positions_equally_on_shared_coverage(bass_fit_pairs):
 def test_bass_fit_refuses_unusable_evidence_by_code(bass_fit_pairs, fault, code):
     before, after = bass_fit_pairs[0]
     if fault == 'context':
-        after['record']['program_id'] = 'different-sweep'
+        after['record']['stimulus_id'] = 'different-sweep'
     elif fault == 'reference_band':
         before['sweep_band_hz'] = after['sweep_band_hz'] = [20, 200]
     with pytest.raises(CrossoverV2Refused) as caught:
@@ -1098,7 +1098,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 if change_basis:
                     change_basis(row)
                 manifest_groups.append(row)
-                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/1', 'takes': group}))
+                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/2', 'takes': group}))
             manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)))
             manifest['run_id'] = f'run-{volume}'
             path = directory / 'run_manifest.json'
@@ -1159,7 +1159,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
                 take['purpose'] = 'bass'
         verify = copy.deepcopy(manifest['sets'][-1])
         verify['set_id'] = 'd0b471e20e39'
-        verify['capture_basis'].update(program_id='verify', stimulus_dbfs=-30)
+        verify['capture_basis'].update(stimulus_id='verify', stimulus_dbfs=-30)
         verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
         manifest['sets'].insert(0, verify)
         path.write_text(json.dumps(manifest))
@@ -1200,7 +1200,7 @@ def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, m
         original = take["record"]
         take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
             pose=pose, raw_record={key: value for key, value in original.items()
-                if key not in {"stimulus_dbfs", "program_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
+                if key not in {"stimulus_dbfs", "stimulus_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
         if basis == "unknown":
             take["record"]["mark_distance_m"] = None
         assert take["record"]["mark_distance_m"] == distance
@@ -1240,7 +1240,7 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
         takes[1]['diagnostics'] = {'integrity_failed': True}
     elif fault in ('after_level', 'program'):
         index = int(fault.startswith('after'))
-        field = 'level_db' if fault == 'after_level' else 'program_id'
+        field = 'level_db' if fault == 'after_level' else 'stimulus_id'
         del takes[index]['record'][field]
     elif fault == 'pair_level':
         takes[1]['record']['level_db'] -= 1
@@ -1265,14 +1265,14 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
     table, = run['tables']
     assert table['tested_volume_range_db'] == [-30, -10]
     assert [row['level_key'] for row in table['levels']] == [
-        {'level_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
+        {'level_db': level, 'stimulus_id': 'sweep'} for level in (-30, -20, -10)]
     for row, gain in zip(table['levels'], (6, 3, 10)):
         expected = None if fault == 'zero_coverage' and gain == 10 else pytest.approx(gain)
         assert row['realized_boost_db'][-1]['value_db'] == expected
     assert all(band['value_db'] is None for band in table['levels'][-1]['realized_boost_db']) == (fault == 'zero_coverage')
 
 
-@pytest.mark.parametrize('field', ['level_db', 'program_id'])
+@pytest.mark.parametrize('field', ['level_db', 'stimulus_id'])
 def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
     bass_run.write(change_basis=lambda row: row['capture_basis'].pop(field))
     assert round_views_main(bass_run.argv) == 1
@@ -1353,7 +1353,7 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         assert len(tables) == (2 if case == 'two_candidates' else 1)
         assert len(tables[0]['levels']) == (1 if case == 'one_level' else 2 if case == 'partial_levels' else 3)
         if case == 'entry_baseline':
-            assert run['schema'] == 'jts_bass_run_table/1'
+            assert run['schema'] == 'jts_bass_run_table/2'
         if case == 'repeat':
             assert tables[0]['levels'][-1]['take_pair_count'] == 2
             assert tables[0]['levels'][-1]['position_count'] == 1

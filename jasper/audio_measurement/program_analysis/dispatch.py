@@ -157,7 +157,7 @@ def analyze_program_capture(
 
     if probe:
         # A level probe is read for its levels alone (ADR-0365).
-        analysis = ProgramAnalysis(phase=program.phase, program_id=program.program_id, locations=tuple(locations))
+        analysis = ProgramAnalysis(phase=program.phase, stimulus_id=program.stimulus_id, locations=tuple(locations))
     elif is_branch_program(program):
         analysis = analyze_branches(program, capture, sample_rate, global_offset, locations, calibration, priors,
                                     geometry=geometry)
@@ -245,7 +245,7 @@ def _analyze_check(
     gain_plan = _solve_gain_plan(program, pilots, ambient_report, priors)
     return ProgramAnalysis(
         phase=program.phase,
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=tuple(locations),
         ambient_report=ambient_report,
         pilots=tuple(pilots),
@@ -493,7 +493,7 @@ def _analyze_measure(
     )
     return ProgramAnalysis(
         phase=program.phase,
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=tuple(locations),
         drift=drift,
         driver_responses=responses,
@@ -1067,7 +1067,7 @@ def _analyze_verify(
     ambient = _pilot_ambient_samples(program, capture, global_offset)
     return ProgramAnalysis(
         phase=program.phase,
-        program_id=program.program_id,
+        stimulus_id=program.stimulus_id,
         locations=tuple(locations),
         summed_response=summed,
         summed_ripple_db=ripple,

@@ -251,7 +251,7 @@ class RunManifest:
             # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
             return {"loudest_half_second_db_spl": observed, "level_reference_db_spl": None, "same_pose": False}
         basis = capture_basis(record)
-        gain, program = basis.get("level_db"), basis.get("program_id")
+        gain, program = basis.get("level_db"), basis.get("stimulus_id")
         candidate = self._context.get("candidate_id")
         # Offsets change the gain, each program composes its own stimulus level, and
         # each candidate graph has its own sensitivity; only repeats of this program
@@ -260,7 +260,7 @@ class RunManifest:
         accepted = {take["take_id"]: take for take in self.takes
                     if take["take_id"] in chosen
                     and take["level"].get("level_db") == gain
-                    and take["level"].get("program_id") == program
+                    and take["level"].get("stimulus_id") == program
                     and take.get("candidate_id") == candidate
                     and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
@@ -304,7 +304,7 @@ class RunManifest:
                    "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
                    "level": {**{key: basis.get(key) for key in
-                             ("level_db", "stimulus_dbfs", "program_id")},
+                             ("level_db", "stimulus_dbfs", "stimulus_id")},
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
@@ -329,7 +329,7 @@ class RunManifest:
     def to_dict(self) -> dict[str, Any]:
         chosen = set(self._chosen.values())
         return {
-            "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
+            "kind": RUN_MANIFEST_KIND, "schema_version": 2, "run_id": self.run_id,
             "program": self.program, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
             "level": self.level,

@@ -74,7 +74,7 @@ def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one(
     )
     # Comparable by construction, or the benefit verdict is about the fixture
     # rather than about the speaker.
-    assert baseline.program_id == post.program_id
+    assert baseline.stimulus_id == post.stimulus_id
     assert baseline.reference_mark == post.reference_mark
     assert baseline.curve.hz == post.curve.hz
 

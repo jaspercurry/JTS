@@ -51,7 +51,7 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
         program, capture, sample_rate, locations, global_offset=global_offset,
     )
     return ProgramAnalysis(
-        phase=program.phase, program_id=program.program_id, locations=tuple(locations),
+        phase=program.phase, stimulus_id=program.stimulus_id, locations=tuple(locations),
         drift=drift, driver_responses=tuple(responses[:2]), summed_response=responses[2],
         pilots=pilots, linearity_ok=linearity, channel_map_ok=channel_map, pilot_snr_ok=pilot_snr,
         glitch_detected=drift.glitch_detected,

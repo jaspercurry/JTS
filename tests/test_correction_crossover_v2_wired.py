@@ -322,7 +322,7 @@ def test_the_retake_signal_drops_with_the_slot():
 class _StimulusProgram:
     """What the play transaction hands the capture half: a real schedule."""
 
-    program_id = "prog-verify"
+    stimulus_id = "prog-verify"
     phase = "verify"
     sample_rate_hz = RATE
     total_samples = RATE // 10
@@ -475,7 +475,7 @@ async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
 
 
 @pytest.mark.parametrize("source", ["cli", "wizard"])
-@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard", program={"program_id": "played"}), None])
+@pytest.mark.parametrize("answer", [WiredCaptureAnswer(wav=b"heard", program={"stimulus_id": "played"}), None])
 async def test_the_capture_half_records_into_this_sessions_bundle(source, answer):
     store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
     banked = []
@@ -493,8 +493,8 @@ async def test_the_capture_half_records_into_this_sessions_bundle(source, answer
     assert half.device.model_key == "minidsp_umik2"
     assert half.bundle_dir == Path("/var/lib/jasper/bundle")
     records = core_capture.CapturedRecordStore(SimpleNamespace(bank=bank), half)
-    assert await records.bank_answer({"take_id": "first", "program_id": "stale"}, answer) == "record-id"
-    assert banked[0]["program_id"] == ("played" if answer else None)
+    assert await records.bank_answer({"take_id": "first", "stimulus_id": "stale"}, answer) == "record-id"
+    assert banked[0]["stimulus_id"] == ("played" if answer else None)
 
 
 def test_take_answer_is_take_and_clear(tmp_path):
@@ -702,7 +702,7 @@ async def test_a_channel_map_stop_names_its_drivers_on_the_page(monkeypatch, tmp
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(v2state, "persist_conductor_state", persist)
     monkeypatch.setattr(v2state, "persist_terminal_failure", terminal)
-    check = replace(_check_analysis(SimpleNamespace(program_id="check"), channel_map=False),
+    check = replace(_check_analysis(SimpleNamespace(stimulus_id="check"), channel_map=False),
                     pilots=tuple(_pilot_obs(role, channel_map_ok=role not in failed) for role in ("tweeter", "woofer")))
 
     def assess(*_args, **_kwargs):
@@ -980,7 +980,7 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
     hz = np.linspace(1200, 5000, 100)
     anchor = None
     for index, readable in enumerate(responses):
-        analysis = SimpleNamespace(program_id="sum", summed_response=(
+        analysis = SimpleNamespace(stimulus_id="sum", summed_response=(
             SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz), gating=None, validity_floor_hz=None)
             if readable else None))
         conductor._seams = replace(conductor._seams, analyze=lambda *a, **kw: analysis)

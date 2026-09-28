@@ -125,7 +125,7 @@ class _Seams:
 
 
 class _Program:
-    program_id = "prog-1"
+    stimulus_id = "prog-1"
     phase = "measure"
     sample_rate_hz = 48_000
     total_samples = 48_000
@@ -405,7 +405,7 @@ async def test_the_wav_path_is_the_capture_halfs_and_never_the_stimulus():
 
     assert outcome.wav_path == CAPTURE_RELPATH
     assert outcome.incident == ""
-    assert [p.program_id for p in capture.programs] == ["prog-1"], (
+    assert [p.stimulus_id for p in capture.programs] == ["prog-1"], (
         "the capture half sizes its own budget from the program that plays"
     )
 

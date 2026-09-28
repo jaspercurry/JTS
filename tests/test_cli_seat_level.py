@@ -339,7 +339,7 @@ def test_session_banks_only_a_level_and_always_restores(box, outcome, caplog):
         assert 7.5 <= second.total_samples / second.sample_rate_hz <= 10.0
         assert box.watchdog == sweep.watchdog_seconds(-40, 0, first.total_samples / first.sample_rate_hz) + 60
         provenance = box.bank.call_args.kwargs['stimulus'].to_dict()
-        assert provenance == {'program_id': second.program_id, 'phase': second.phase,
+        assert provenance == {'stimulus_id': second.stimulus_id, 'phase': second.phase,
             'wav_sha256': box.artifact.sha256, 'peak_dbfs': round(second.stimulus_segments()[0].gain_db, 2),
             'statistic': 'loudest_half_second_db_spl', 'graph_scope': 'candidate', 'bundle_id': 'level-bundle'}
         record = json.loads(box.reference_path.read_text())

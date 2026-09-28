@@ -32,7 +32,7 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "capture_device": {k: device.get(k) for k in ("card", "usb_id", "model_key", "pcm", "channel_selected")} if device else None,
         "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
         "stimulus_dbfs": record.get("stimulus_dbfs"),
-        "program_id": record.get("program_id", (record.get("program") or {}).get("program_id")),
+        "stimulus_id": record.get("stimulus_id", (record.get("program") or {}).get("stimulus_id")),
         "stimulus_wav_sha256": stimulus.get("wav_sha256"),
         "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
         "gating_applied": record.get("gating_applied"),
@@ -44,7 +44,7 @@ GRAPH_FIELDS = (
 )
 CAPTURE_FIELDS = (
     "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "gating_applied", "program_id",
+    "stimulus_peak_dbfs", "gating_applied", "stimulus_id",
 )
 
 

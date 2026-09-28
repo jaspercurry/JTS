@@ -241,7 +241,7 @@ def estimate_drift(
             "program_analysis.glitch",
             level=logging.WARNING,
             phase=program.phase,
-            program_id=program.program_id,
+            stimulus_id=program.stimulus_id,
             glitch_inputs=",".join(glitch_inputs),
             epsilon_ppm=round(epsilon * 1e6, 2),
             max_residual_samples=round(max_residual, 2),
