@@ -3,7 +3,7 @@
 - **Date:** 2026-09-28
 - **Status:** Accepted. Supersedes (partial)
   [ADR-0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) §1-§3; its §4
-  `take_curves_not_banked` stays for a CHECK-only or failed run. Supersedes (partial)
+  `take_curves_not_banked` stays for a CHECK-only or failed run. From C1a PR A2, supersedes (partial)
   [ADR-0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) §2's rebuild of a
   banked round with no stored packet (a laptop-banked tree, or a round banked before ADR-0371) and
   §3's fingerprint kept for a round banked before it. Amends
@@ -25,9 +25,10 @@
   6. The classifier's pose bank reads MEASURE and lateral speaker takes.
   7. The record's verdict is the take's own. The spec-level "incomplete" override and the abort rows
      stay manifest facts.
-  8. A banked round whose `packet.json` holds no `evidence` refuses by that key; a live session still
-     builds its packet. Under [#2902](https://github.com/jaspercurry/JTS/issues/2902), a round whose
-     packet build failed at bank time stops loading.
+  8. Implemented by C1a PR A2: a banked round whose `packet.json` holds no `evidence` refuses by
+     that key; a live session still builds its packet. Under
+     [#2902](https://github.com/jaspercurry/JTS/issues/2902), a round whose packet build failed at
+     bank time stops loading.
 
   PRs B-D finish the rollout: `purposes` replaces `co_purposes` (PR B), then the `pose`, `level` and
   `verdict` blocks follow, with the assessment moved into the bank path.
@@ -37,5 +38,5 @@
   - A room take whose analysis failed is no longer rescued by a decode of its recording.
   - A two-way MEASURE take banks three occurrences per role, about 42 KB of curves, and the capture
     ring copies the record again.
-  - The laptop bank (`scripts/bank-crossover-round.sh`) stores its tree's packet when it banks, as
-    the Pi's bank does, so nothing rebuilds a laptop-banked tree's packet on read.
+  - From C1a PR A2, the laptop bank (`scripts/bank-crossover-round.sh`) stores its tree's packet when
+    it banks, as the Pi's bank does, so nothing rebuilds a laptop-banked tree's packet on read.
