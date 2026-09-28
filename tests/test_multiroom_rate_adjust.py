@@ -23,7 +23,7 @@ from jasper.cli.doctor import grouping as doctor_grouping
 from jasper.cli.doctor._evidence import evidence
 
 from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
-from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.config import (
     GroupingConfig,
     is_active_member,
@@ -170,7 +170,7 @@ def test_the_leader_bake_emits_rate_adjust_off_unasked():
     """inv-5 at the emitter, with nobody passing the flag: the leader's
     File/pipe sink is what resolves it, so a bonded leader's baked config cannot
     carry a rate-adjuster to fight snapclient's sample-stuffing."""
-    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SimpleEq, SoundProfile
 
@@ -592,7 +592,7 @@ def test_channel_pick_check_names_a_period_the_return_ring_cannot_carry(
 
 
 def test_channel_pick_check_ok_when_wired(monkeypatch, tmp_path):
-    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
 
     cfg = _cfg(enabled=True, role="leader", channel="left", bond_id="b")
     # The reconciler's own pure derive writes the file → the check passes:

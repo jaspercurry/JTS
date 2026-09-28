@@ -40,7 +40,7 @@ _door = threading.local()
 _state_path_override: Path | None = None
 
 #: How long a request waits for the other web process to release the state.
-#: Sized like the DSP writer lock (``jasper.dsp_apply``).
+#: Sized like the DSP writer lock (``jasper.dsp_control.dsp_apply``).
 STATE_LOCK_TIMEOUT_S = 10.0
 #: The wait for a write past a commit point (a graph already live, a session
 #: already over): losing that write costs the way back, and a live holder

@@ -177,7 +177,7 @@ def test_startup_template_cli_reports_missing_validator(
 ):
     preset = _write_preset(tmp_path / "preset.json")
     out = tmp_path / "active.yml"
-    monkeypatch.setattr("jasper.dsp_apply._camilladsp_binary", lambda: None)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply._camilladsp_binary", lambda: None)
 
     code = main([
         "startup-template",

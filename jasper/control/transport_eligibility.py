@@ -233,7 +233,7 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import (  # lazy: test patch boundary (tests/_armed_transport.py)
+    from jasper.dsp_control.fanin_coupling import (  # lazy: test patch boundary (tests/_armed_transport.py)
         dac_content_marker_contradicted,
         ring_active_endpoint_armed,
     )

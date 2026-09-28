@@ -4,9 +4,10 @@
 
 """Ring asset presence and shared ABI agreement."""
 
-from jasper import ring_assets, ring_conf
+from jasper import ring_assets
+from jasper.dsp_control import ring_conf
 from jasper.ring_header import MAX_RING_CHANNELS
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from tests.ring_abi import ring_abi
 
 RING_ABI = ring_abi()

@@ -106,7 +106,7 @@ class LatencyFloor:
     captured as DATA on the profile so a fresh box reproduces it with no
     per-user config. CamillaDSP's own buffering is not here: it crosses the
     ring, whose geometry is a transport constant
-    (:data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`), not the DAC's.
+    (:data:`~jasper.dsp_control.fanin_coupling.RING_CAMILLA_GEOMETRY`), not the DAC's.
     """
 
     outputd_period_frames: int

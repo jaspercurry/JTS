@@ -68,7 +68,7 @@ from jasper.audio_runtime_settings import (
     outputd_env_buffer_pair_error,
     resolve_outputd_period_setting,
 )
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CHUNKSIZE,
     DEFAULT_PLAYBACK_DEVICE,
@@ -87,7 +87,7 @@ from jasper.env_load import (
     read_env_file_state,
 )
 from jasper.fanin.ring_readiness import saved_topology_reader
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
@@ -186,7 +186,7 @@ class EmittedCamillaGeometry:
     A DIFFERENT fact from the plan's ``JASPER_CAMILLA_*`` settings, which answer
     what an emitter's fallback WOULD resolve. The two legitimately differ: any
     graph with a ring end carries
-    :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` instead, whether it
+    :data:`~jasper.dsp_control.fanin_coupling.RING_CAMILLA_GEOMETRY` instead, whether it
     passes it explicitly or resolves it through
     ``resolve_camilla_latency_for_devices``. A surface that reports only the
     settings therefore names a geometry no config on the box need carry.
@@ -375,7 +375,7 @@ def validate_outputd_env(
         active_cap = active_outputd_lane_channels_for(
             str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
         )
-        from jasper.outputd_active_lane import (  # lazy: active-endpoint import cost (ADR-0226)
+        from jasper.dsp_control.outputd_active_lane import (  # lazy: active-endpoint import cost (ADR-0226)
             outputd_active_lane_decision,
         )
 
@@ -1315,7 +1315,7 @@ def apply_capture_precedence(
 
     The coupling is END-TO-END, but only its PLAYBACK half is ever owned by a
     more-specific topology: a member's ``playback_pipe_path`` owns the sink, so
-    that emit takes :func:`~jasper.fanin_coupling.capture_half` only. It must
+    that emit takes :func:`~jasper.dsp_control.fanin_coupling.capture_half` only. It must
     still take THAT — dropping the capture half too re-emits a bonded leader's
     LIVE camilla#1 onto the tap an armed ring took fan-in off, silencing the
     whole bond. Everything else takes both halves. Empty coupling kwargs return

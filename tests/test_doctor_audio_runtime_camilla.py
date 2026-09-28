@@ -285,7 +285,7 @@ def _stage_ring_config(
     capture_device: str | None = None,
     playback_device: str | None = None,
 ) -> None:
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
     capture_device = RING_CAPTURE_DEVICE if capture_device is None else capture_device
     playback_device = RING_PLAYBACK_DEVICE if playback_device is None else playback_device
@@ -308,7 +308,7 @@ def _stage_ring_config(
 
 def test_check_camilla_ring_chunk_fails_over_capacity(monkeypatch, tmp_path):
     """jts4's shape: a chunk the ring cannot open, so the box is silent."""
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, ring_capacity_frames
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, ring_capacity_frames
 
     _stage_ring_config(tmp_path, monkeypatch, ring_capacity_frames(RING_CAPTURE_DEVICE) * 4)
 
@@ -324,7 +324,7 @@ def test_check_camilla_ring_chunk_fails_when_it_fits_ring_a_but_not_ring_b(
     """The blocker case (#4124): Ring A widened past Ring B, so a chunk that
     fits Ring A's own capacity can still be above Ring B's — CamillaDSP still
     cannot open Ring B at that chunk and will restart-loop."""
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_CAPTURE_DEVICE,
         RING_PLAYBACK_DEVICE,
         ring_capacity_frames,
@@ -351,8 +351,8 @@ def test_check_camilla_ring_chunk_ok_at_capacity(
 ):
     """Each named PCM is judged against ITS OWN capacity: a chunk that exactly
     fills Ring A or Ring B (sized independently since #4124) is fine."""
-    from jasper import fanin_coupling
-    from jasper.fanin_coupling import ring_capacity_frames
+    from jasper.dsp_control import fanin_coupling
+    from jasper.dsp_control.fanin_coupling import ring_capacity_frames
 
     device = getattr(fanin_coupling, device_attr)
     capacity = ring_capacity_frames(device)
@@ -392,7 +392,7 @@ def test_check_camilla_ring_chunk_warns_on_a_target_over_the_ring_capacity(
     against a 256-frame Ring B. It clears CamillaDSP's own chunk x
     (queuelimit+4) ceiling, so only the transport bound catches it.
     """
-    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, ring_capacity_frames
+    from jasper.dsp_control.fanin_coupling import RING_PLAYBACK_DEVICE, ring_capacity_frames
 
     capacity = ring_capacity_frames(RING_PLAYBACK_DEVICE)
     _stage_ring_config(
@@ -804,7 +804,7 @@ def test_playback_format_ok_for_the_fixed_wide_ring(
     monkeypatch, tmp_path
 ):
     """The armed ring uses its fixed S32 program format."""
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_PLAYBACK_FORMAT,
         RING_PLAYBACK_DEVICE,
         resolve_ring_wire,
@@ -835,8 +835,8 @@ def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
     # the ALSA lane is S32 — the two constants now genuinely differ, no
     # monkeypatch needed. Without the lane split this would red-line every
     # healthy pipe-sink leader and parked box.
-    from jasper.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+    from jasper.dsp_control.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
+    from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
     assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
     res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
@@ -862,8 +862,8 @@ def test_expected_playback_format_names_one_owner_per_lane(monkeypatch, tmp_path
     The check reports one mismatch reason for all three lanes, so the lane
     split is pinned here, on the resolver whose whole output is that pair.
     """
-    from jasper.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.camilla_config_contract import DEFAULT_PIPE_SINK_FORMAT
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,

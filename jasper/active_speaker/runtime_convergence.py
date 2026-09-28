@@ -12,14 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper import camilla, dsp_apply
+from jasper import camilla
+from jasper.dsp_control import dsp_apply
 from jasper.control import restart_broker
 from jasper.sound import runtime as sound_runtime
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.log_event import log_event
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.graph_selector import (

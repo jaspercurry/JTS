@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
@@ -27,7 +27,7 @@ from jasper.fanin_coupling import (
     resolve_ring_slots,
 )
 from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
-from jasper.ring_conf import RING_CONF_DEFAULT_CHANNELS
+from jasper.dsp_control.ring_conf import RING_CONF_DEFAULT_CHANNELS
 from tests.ring_abi import ring_abi
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -165,8 +165,8 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
     """
     assert RING_A_CHANNELS == RING_CONF_DEFAULT_CHANNELS, (
         "the two Python spellings of the stereo width disagree: "
-        f"jasper.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
-        f"jasper.ring_conf.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
+        f"jasper.dsp_control.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
+        f"jasper.dsp_control.ring_conf.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
     )
     for label, path, pattern in _CHANNEL_DECLARATIONS:
         found = re.findall(pattern, _source_text(path), re.MULTILINE)

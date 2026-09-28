@@ -26,8 +26,8 @@ from jasper.camilla import (
     crossover_controller,
     primary_controller,
 )
-from jasper.camilla_config_contract import VolumeLimitViolation
-from jasper.dsp_apply import (
+from jasper.dsp_control.camilla_config_contract import VolumeLimitViolation
+from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     ValidationStatus,
@@ -433,7 +433,7 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
         sources.append(source)
         yield
 
-    monkeypatch.setattr("jasper.dsp_apply.camilla_graph_mutation", admit)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply.camilla_graph_mutation", admit)
 
     assert await cam.set_config_file_path(str(tmp_path / "candidate.yml"))
     assert await cam.set_active_config_raw(CEILING_GRAPH)

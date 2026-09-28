@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jasper import ring_conf
-from jasper.fanin_coupling import (
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
     RING_CAMILLA_CHUNKSIZE,

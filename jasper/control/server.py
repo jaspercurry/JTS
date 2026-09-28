@@ -44,7 +44,7 @@ from ..logging_setup import configure_logging
 if TYPE_CHECKING:
     from ..volume_state import VolumeState
 
-from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..music_sources import Source

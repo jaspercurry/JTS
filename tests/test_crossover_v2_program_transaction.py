@@ -677,7 +677,7 @@ async def test_shared_composer_mints_each_take_and_proves_graph_inside_play_lock
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.audio_measurement.program import build_verify_program
     from tests.test_active_speaker_program_admission import _measure_program
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     graph = "devices:\n  samplerate: 48000\nfilters: {}\npipeline: []\n"
     live = SimpleNamespace(text=graph, locked=False)

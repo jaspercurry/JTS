@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from .atomic_io import flock_held
-from .camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
     VolumeLimitViolation,
     check_volume_limit,
@@ -203,7 +203,7 @@ class CamillaController:
     """
 
     def __init__(self, host: str, port: int) -> None:
-        from jasper.dsp_apply import CANONICAL_DSP_WRITER_LOCK_PATH
+        from jasper.dsp_control.dsp_apply import CANONICAL_DSP_WRITER_LOCK_PATH
 
         self._host = host
         self._port = port
@@ -696,7 +696,7 @@ class CamillaController:
         """Is a DSP writer holding the graph-mutation lock right now?
 
         Observes the flock every writer already takes
-        (:func:`jasper.dsp_apply.camilla_graph_mutation`); ``None`` means
+        (:func:`jasper.dsp_control.dsp_apply.camilla_graph_mutation`); ``None`` means
         "cannot say". See ADR-0213.
 
         A missing lock file means no writer has ever taken it, hence
@@ -733,7 +733,7 @@ class CamillaController:
         ask for it make that case themselves (:meth:`set_active_config_raw`,
         :meth:`patch_config`).
         """
-        from jasper.dsp_apply import camilla_graph_mutation
+        from jasper.dsp_control.dsp_apply import camilla_graph_mutation
 
         async with camilla_graph_mutation(
             source=source,

@@ -50,7 +50,7 @@ pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 /// dac-content lane takes its `period_frames` from it, the C ioplug's
 /// `JTS_RING_DEFAULT_PERIOD` (`c/jts-ring-ioplug/pcm_jts_ring.c`) is the same
 /// number, and the shipped `deploy/alsa/conf.d` blocks declare it. The Python
-/// declaration `jasper.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
+/// declaration `jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
 /// spelling is pinned against, by the Python contract tests. Making the slot
 /// derivable from a DAC's declared floor is issue #2147.
 pub const RING_SLOT_FRAMES: u32 = 128;
@@ -65,7 +65,7 @@ pub const RATE_HZ: u32 = 48_000;
 ///
 /// A compile-time constant with no env override, the same shape as
 /// [`RING_SLOT_FRAMES`]: outputd reads it for its Ring B reader and
-/// `jasper.ring_conf` renders it into the outputd-read `conf.d` blocks
+/// `jasper.dsp_control.ring_conf` renders it into the outputd-read `conf.d` blocks
 /// (`jts_ring_playback`, `jts_ring_active_playback`), so the ioplug and
 /// outputd cannot declare different depths there today. Ring A
 /// (`jts_ring_capture`) takes its depth from jasper-fanin's own

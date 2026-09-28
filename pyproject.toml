@@ -341,7 +341,7 @@ module = [
     "jasper.multiroom.leader_config",
     "jasper.mux",
     "jasper.net.wifi_scan_repair",
-    "jasper.outputd_active_lane",
+    "jasper.dsp_control.outputd_active_lane",
     "jasper.peering.daemon",
     "jasper.sound.flat_verifier",
     "jasper.spotify_router",
@@ -412,12 +412,7 @@ layers = [
   "aec : runtime_config : config",
   "google_oauth : home_assistant : spotify_oauth : tts_routing : volume_persistence : wake_ports : accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
   "oauth_redirect : audio_runtime_settings",
-  "ring_conf",
-  "output_topology_observation",
-  "outputd_active_lane",
-  "camilla_latency : dsp_apply",
-  "camilla_config_contract",
-  "fanin_coupling",
+  "dsp_control",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
   "source_intent : volume_curve : output_topology_store",
   "output_topology",
@@ -452,4 +447,18 @@ exhaustive_ignores = [
   "usbsink",
   "voice",
   "wake_corpus",
+]
+
+[[tool.importlinter.contracts]]
+name = "DSP control layers"
+type = "layers"
+containers = ["jasper.dsp_control"]
+exhaustive = true
+layers = [
+    "ring_conf",
+    "output_topology_observation",
+    "outputd_active_lane",
+    "camilla_latency : dsp_apply",
+    "camilla_config_contract",
+    "fanin_coupling",
 ]

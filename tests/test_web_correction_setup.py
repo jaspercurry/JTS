@@ -650,7 +650,7 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
     from jasper.active_speaker.camilla_yaml import (
         emit_active_speaker_program_config, protected_neutral_program_origin,
     )
-    from jasper import dsp_apply
+    from jasper.dsp_control import dsp_apply
     from tests.test_active_speaker_program_config import (
         ACTIVE_PCM, ROLE_CHANNELS, _confirmed_protection, _preset,
     )

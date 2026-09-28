@@ -610,7 +610,7 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     apply_route, apply_dsp = Mock(), AsyncMock()
     monkeypatch.setattr("jasper.web.correction_crossover_v2_apply.handle_v2_apply", apply_route)

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ...camilla import CamillaController, CamillaUnavailable, primary_controller
-from ...camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     VolumeLimitViolation,
     check_volume_limit,
@@ -24,7 +24,7 @@ from ...camilla_config_contract import (
 from ...camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
-from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ...service_units import CAMILLA_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -249,7 +249,7 @@ def _expected_playback_format(
     in every reachable config (a ``File`` sink carries no ``device`` key), so
     their order is not load-bearing.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,

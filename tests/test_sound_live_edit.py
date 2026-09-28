@@ -351,7 +351,7 @@ async def test_a_rollback_never_reuses_the_quiet_write(tmp_path, monkeypatch):
     calling the loader twice by hand, so the pin survives a change to how
     rollback is reached.
     """
-    from jasper.dsp_apply import DspApplyError
+    from jasper.dsp_control.dsp_apply import DspApplyError
 
     current = _running_at(tmp_path)
     cam = _RecordingCamilla(

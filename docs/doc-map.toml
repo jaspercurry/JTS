@@ -140,8 +140,8 @@ code = [
   "jasper/renderer.py",
   "jasper/source_[es]*.py",
   "jasper/camilla.py",
-  "jasper/camilla_config_contract.py",
-  "jasper/camilla_latency.py",
+  "jasper/dsp_control/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_latency.py",
   "jasper/output_hardware.py",
   "jasper/output_topology.py",
   "jasper/speaker_layout.py",
@@ -332,13 +332,13 @@ code = [
   "jasper/biquad.py",
   # Shared with audio-routing-and-renderers: it owns the device defaults and
   # the volume_limit door.
-  "jasper/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_config_contract.py",
   # Renders the one devices block; volume_limit is 0.0 by construction.
   "jasper/camilla_emit.py",
-  "jasper/camilla_latency.py",
+  "jasper/dsp_control/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_profile_apply.py",
-  "jasper/dsp_apply.py",
+  "jasper/dsp_control/dsp_apply.py",
   # The BlueALSA probe backs the Bluetooth source's volume carrier:
   # volume_coordinator.py and volume_observers.py both import
   # `active_transport_path` from it, so a change to the probe's shape or its
@@ -498,8 +498,8 @@ code = [
   "jasper/audio_runtime_settings.py",
   "jasper/transport_coherence.py",
   "jasper/mux.py",
-  "jasper/camilla_config_contract.py",
-  "jasper/camilla_latency.py",
+  "jasper/dsp_control/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_latency.py",
   "jasper/sound/camilla_yaml.py",
   "jasper/active_speaker/camilla_yaml/__init__.py",
   "jasper/cli/route_latency_harness.py",

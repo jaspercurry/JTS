@@ -269,7 +269,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, 'WiredStimulusCapture', Capture)
     monkeypatch.setattr('jasper.active_speaker.program_admission.readmit_summed_program_from_wav', readmit)
     monkeypatch.setattr('jasper.active_speaker.program_playback.verified_program_aplay', player)
-    monkeypatch.setattr('jasper.dsp_apply.dsp_writer_lock', writer_lock)
+    monkeypatch.setattr('jasper.dsp_control.dsp_apply.dsp_writer_lock', writer_lock)
     monkeypatch.setattr(composition, 'confirm_graph_is_live', AsyncMock())
     state.bank, state.graph, state.context, state.bundle_dir = bank, graph, context, tmp_path
     return state
@@ -456,7 +456,7 @@ async def test_commissioning_validates_then_verifies_under_lock_before_loading(m
         events.append("loaded")
         return await load(path, **kwargs)
     async def verified():
-        from jasper.dsp_apply import _DSP_LOCK_OWNERSHIP
+        from jasper.dsp_control.dsp_apply import _DSP_LOCK_OWNERSHIP
         assert _DSP_LOCK_OWNERSHIP.get() is not None
         events.append("verified")
     monkeypatch.setattr(apply_host, "validate_camilla_config", checked)
@@ -484,7 +484,7 @@ def test_commissioning_review_compiles_without_writing_the_config(commissioning_
 ])
 async def test_commissioning_uses_current_draft_and_checks_protection_before_cleanup(tmp_path, monkeypatch, commissioning_box, change, code):
     from jasper.active_speaker import baseline_profile
-    from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+    from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, ValidationStatus
     from jasper.web import correction_crossover_v2_apply as apply_host
     from jasper.web import sound_active_speaker as web
 

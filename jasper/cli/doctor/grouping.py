@@ -90,7 +90,7 @@ def _camilla_block_field(text: str, block: str, key: str) -> str | None:
     Block-scoped, but not depth-scoped: use it only for keys unambiguous at
     any depth within their block. Depth-sensitive safety fields such as
     ``devices.volume_limit`` use
-    :func:`jasper.camilla_config_contract.parse_camilla_devices_config`."""
+    :func:`jasper.dsp_control.camilla_config_contract.parse_camilla_devices_config`."""
     in_block = False
     for raw in text.splitlines():
         stripped = raw.strip()
@@ -510,7 +510,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     scope, and deliberately so: it plays the round-tripped stream through
     outputd's ``dac_content`` lane, and its own CamillaDSP stays on the solo
     fallback feed — whose sink is Ring B, so
-    :func:`jasper.camilla_config_contract.resolve_enable_rate_adjust` emits
+    :func:`jasper.dsp_control.camilla_config_contract.resolve_enable_rate_adjust` emits
     ``false`` there too. Its local CamillaDSP never joins the bonded chain, so
     there is no bond apply here to catch.
 
@@ -647,7 +647,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     """
     from ...paths import camilla_statefile
     from ...multiroom.config import is_active_leader
-    from ...camilla_config_contract import playback_is_pipe
+    from jasper.dsp_control.camilla_config_contract import playback_is_pipe
     from ...multiroom.snapfifo import SNAPFIFO
     from .correction import (
         REASON_CAMILLA_CONFIG_MISSING,
@@ -767,7 +767,7 @@ def check_grouping_channel_pick() -> CheckResult:
     from ...env_load import (  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
         OUTPUTD_GROUPING_ENV_FILE,
     )
-    from ...fanin_coupling import dac_content_lane_marker_armed
+    from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.config import is_active_member
     from ...multiroom.dac_content_ring import (
         DAC_CONTENT_RING_PERIOD_FRAMES,

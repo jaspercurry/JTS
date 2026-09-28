@@ -16,8 +16,8 @@ import re
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import devices_playback_is_pipe
-from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
+from jasper.dsp_control.camilla_config_contract import devices_playback_is_pipe
+from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...json_fields import finite_float
 from ...measurement_window import MEASUREMENT_FANIN_LABEL
 from ...music_sources import SOURCE_SPECS, Source
@@ -868,7 +868,7 @@ def check_fanin_coupling() -> CheckResult:
 
     Outputd consumption belongs to :func:`check_content_transport_coherence`.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
         RING_PLAYBACK_DEVICE,

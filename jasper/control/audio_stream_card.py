@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..fanin.latency_mode import MODE_LABELS
-from ..fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
 from ._health_fields import as_int, detail_row, finite_number, mapping

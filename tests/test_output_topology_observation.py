@@ -14,7 +14,7 @@ import pytest
 
 import jasper.cli.output_hardware as output_hardware_cli
 import jasper.output_hardware as output_hardware
-import jasper.output_topology_observation as output_topology_observation
+import jasper.dsp_control.output_topology_observation as output_topology_observation
 from jasper import output_topology_store as output_topology
 from jasper.audio_hardware import dac, output_probe
 from jasper.output_hardware import (
@@ -33,7 +33,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_observation import (
+from jasper.dsp_control.output_topology_observation import (
     CLOCK_DOMAIN_REPORT_KIND,
     clock_domain_report,
     composite_serial_repin_plan,

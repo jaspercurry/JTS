@@ -450,7 +450,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
 ):
     from jasper.active_speaker.measurement_emit import compile_tuning_graph
     from jasper.web import correction_runtime, correction_setup
-    from jasper import dsp_apply
+    from jasper.dsp_control import dsp_apply
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
     branches = tuning_profile.role_channels if scope == "candidate_branches" else None

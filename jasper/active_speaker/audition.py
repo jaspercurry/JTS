@@ -379,7 +379,7 @@ async def start_audition(
         desired_graph_approved,
         prove_desired_graph,
     )
-    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
     from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
 
     _refuse_if_graph_is_claimed()
@@ -510,7 +510,7 @@ async def stop_audition(
     worst possible reading of a corrupt byte.
     """
 
-    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
 
     if not audition_state_path(state_path).exists():
         return {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}

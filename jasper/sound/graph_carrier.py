@@ -490,7 +490,7 @@ def _classify_loaded_config(current_path: str | Path) -> dict | None:
 
 
 def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
-    from jasper.camilla_config_contract import (
+    from jasper.dsp_control.camilla_config_contract import (
         devices_playback_is_pipe,
         read_camilla_devices_config,
     )

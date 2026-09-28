@@ -56,7 +56,7 @@ def test_playback_is_the_snapserver_file_pipe() -> None:
 def test_pipe_is_shaped_like_the_leader_pipe_liveness_check_reads() -> None:
     # The exemption reads the same pipe-shape predicate as the leader-pipe
     # liveness check, so the two cannot disagree.
-    from jasper.camilla_config_contract import playback_is_pipe
+    from jasper.dsp_control.camilla_config_contract import playback_is_pipe
 
     text = emit_active_speaker_program_bake_config(_profile())
     assert playback_is_pipe(text, SNAPFIFO) is True

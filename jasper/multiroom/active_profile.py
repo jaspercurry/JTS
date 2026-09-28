@@ -13,9 +13,9 @@ from jasper.active_speaker import baseline_profile, design_draft
 from jasper.active_speaker.output_contract import ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.atomic_io import atomic_write_text
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_channel_select_mixer
-from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.output_topology import OutputTopology
 
 from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from jasper.atomic_io import atomic_write_json
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
     apply_dsp_config,
@@ -24,7 +24,7 @@ from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
-from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from ._common import gate as _gate
 from .camilla_yaml import COMMISSIONING_FILTER_MODE, COMMISSIONING_HEADROOM_DB
 from .camilla_names import STARTUP_MUTE_GAIN_DB
@@ -407,7 +407,7 @@ def build_driver_commission_load_preflight(
     # this preflight runs inside the long-lived control daemon and the
     # socket-activated wizards, which never `EnvironmentFile=`d it and stay
     # alive across a reconcile.
-    from jasper.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed  # lazy: tests/_armed_transport.py patches ring_active_endpoint_armed
+    from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, ring_active_endpoint_armed  # lazy: tests/_armed_transport.py patches ring_active_endpoint_armed
 
     candidate_playback_device = candidate.get("playback_device")
     transport_is_ring = candidate_playback_device in RING_PCM_DEVICES

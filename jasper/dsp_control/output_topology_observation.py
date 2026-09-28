@@ -11,14 +11,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .audio_hardware.dac import (
+from jasper.audio_hardware.dac import (
     by_id as _dac_profile_by_id,
     clock_domain_contract_for as _dac_clock_domain_contract_for,
     kind_for,
     percent_pinned_control_for,
 )
-from .json_fields import issue as _issue
-from .output_hardware import (
+from jasper.json_fields import issue as _issue
+from jasper.output_hardware import (
     ObservedOutput,
     OutputCardFact,
     OutputHardwareState,
@@ -27,7 +27,7 @@ from .output_hardware import (
     detected_hardware_adoption_precondition,
     normalize_output_device_id,
 )
-from .output_topology import (
+from jasper.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     SCHEMA_VERSION,
@@ -36,7 +36,7 @@ from .output_topology import (
     OutputTopology,
     OutputTopologyError,
 )
-from .output_topology_store import load_output_topology, topology_path
+from jasper.output_topology_store import load_output_topology, topology_path
 
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 
@@ -679,7 +679,7 @@ def _saved_topology_requires_roleful_graph(
     the partly present composite this policy covers.
     """
 
-    from .active_speaker.output_contract import active_topology_requires_roleful_graph  # lazy: import cost only on a composite mismatch
+    from jasper.active_speaker.output_contract import active_topology_requires_roleful_graph  # lazy: import cost only on a composite mismatch
 
     return active_topology_requires_roleful_graph(load_output_topology(path))
 

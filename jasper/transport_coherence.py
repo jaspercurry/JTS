@@ -10,12 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     POST_DSP_PLAYBACK_DEVICES,
 )
 from jasper.fanin.ring_readiness import load_topology_for_wire
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -56,7 +56,7 @@ def transport_topology_for_coupling(
     """Return the concrete transport topology this box's env implies.
 
     The four shapes and what each is: see
-    :data:`jasper.fanin_coupling.TRANSPORT_SHAPES`' constants.
+    :data:`jasper.dsp_control.fanin_coupling.TRANSPORT_SHAPES`' constants.
     They are told apart by the two markers in ``outputd_env`` — see those
     constants for why the observed playback device is not the discriminator.
 

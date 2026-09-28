@@ -23,7 +23,7 @@ from jasper.fanin.ring_readiness import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
 )
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
 )
@@ -68,7 +68,7 @@ def _wide_wire(monkeypatch):
     answers; it stays explicit so these tests state the wire they are about
     rather than inheriting it.
     """
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
         fc,
@@ -454,7 +454,7 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     not-yet-re-emitted box meets, and it must name the file to fix.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
     )
@@ -515,7 +515,7 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     would be refused either way and prove nothing about this axis.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
     )
@@ -585,7 +585,7 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
     B's 2 must be REFUSED.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
         resolve_ring_wire,

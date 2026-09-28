@@ -570,17 +570,17 @@ def test_solo_default_uses_alsa_capture_without_resampler():
 
 
 def test_the_flat_startup_graph_names_both_ring_devices_s32le(monkeypatch):
-    # RENAMED from ..._s16le: jasper.fanin_coupling.resolve_ring_wire()'s
+    # RENAMED from ..._s16le: jasper.dsp_control.fanin_coupling.resolve_ring_wire()'s
     # default flipped WIDE in PR #2601, and the cutover emitter has no way
     # to take an explicit wire — it always resolves through that function
-    # (unlike jasper.ring_conf.render_ring_conf_wire, which takes a RingWire
+    # (unlike jasper.dsp_control.ring_conf.render_ring_conf_wire, which takes a RingWire
     # parameter directly). The resolved wire is PINNED here via monkeypatch
     # rather than left to the ambient default: resolve_ring_wire() reads
     # /etc/jasper/jasper.env and /var/lib/jasper/fanin.env file-fresh, and a
     # real one of either on the host running the suite (a Pi, or a dev laptop
     # that ever ran the installer) would reach this test — the same hazard
     # tests/test_fanin_coupling_reconcile.py's setup fixture documents.
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     monkeypatch.setattr(

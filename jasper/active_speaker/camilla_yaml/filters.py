@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.camilla_stereo_prefix import emit_filter_spec

@@ -34,7 +34,7 @@ from jasper.control.transport_eligibility import (
     PARK_PASSIVE_STEREO_COMPOSITE,
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
-from jasper.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
+from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
 from jasper.output_topology import OutputTopology
 
 from tests.test_active_speaker_runtime_contract import (
@@ -415,7 +415,7 @@ def test_the_grouped_park_reads_the_key_the_ring_module_owns():
     classifier would silently watch a key nothing writes and the park would go
     quiet.
     """
-    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+    from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     assert DAC_CONTENT_LANE_ENV == _LANE_ENV
 
@@ -708,7 +708,7 @@ def test_grouped_active_endpoint_checks_the_complete_route(tmp_path, monkeypatch
     import yaml
 
     from jasper.fanin import ring_readiness
-    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import resolve_ring_wire
     from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _active_topology("stereo", "active_2_way")

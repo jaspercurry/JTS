@@ -10,9 +10,10 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from jasper import ring_conf, ring_header
+from jasper.dsp_control import ring_conf
+from jasper import ring_header
 from jasper.audio_hardware.dac import latency_floor_for
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     RING_SLOT_FRAMES,
     RingWire,
     resolve_ring_wire,

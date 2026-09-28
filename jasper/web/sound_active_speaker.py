@@ -33,7 +33,7 @@ from jasper.active_speaker.safe_playback import stop_safe_playback_session
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.active_speaker.measurement_programs import program_entries
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
@@ -56,7 +56,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_observation import (
+from jasper.dsp_control.output_topology_observation import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,

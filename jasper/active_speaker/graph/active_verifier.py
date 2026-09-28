@@ -11,7 +11,7 @@ from typing import Any, Collection, Mapping
 
 import yaml
 
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.camilla_emit import mono_sum_sources
 from jasper.json_fields import as_float, finite_float, issue as _issue
 from jasper.log_event import log_event

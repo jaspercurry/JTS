@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..output_hardware import load_state as load_output_hardware_state
 from ..platform import wire
 from ..platform.status_socket import (

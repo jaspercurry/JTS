@@ -16,7 +16,7 @@ implementation instead of a copy:
   - the solo-active pre-split section (PR-3, ``jasper.active_speaker``).
 
 **Layering.** This is a neutral leaf module (alongside
-``jasper.camilla_emit`` and ``jasper.camilla_config_contract``). It takes
+``jasper.camilla_emit`` and ``jasper.dsp_control.camilla_config_contract``). It takes
 DATA — already-built preference :class:`FilterSpec` objects and room
 :class:`PeqFilter` objects — never a ``SoundProfile``, so it imports
 nothing from ``jasper.sound`` (and nothing from ``jasper.active_speaker``).

@@ -31,7 +31,7 @@ from jasper.output_topology_store import load_output_topology_strict
 # seam the endpoint width probe reads — it must reject everything outside the
 # set, notably the STEREO ring and the retired snd-aloop lane (ADR-0100).
 #
-# Redeclared rather than imported from jasper.fanin_coupling: this module is the
+# Redeclared rather than imported from jasper.dsp_control.fanin_coupling: this module is the
 # runtime VERIFIER's independent copy of the endpoint vocabulary, and a contract
 # test pins the copies equal.
 OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE = "jts_ring_active_playback"

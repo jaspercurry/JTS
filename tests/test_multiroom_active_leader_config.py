@@ -34,7 +34,7 @@ import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker import graph_selector, graph_types
-import jasper.dsp_apply as dsp_apply_mod
+import jasper.dsp_control.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
 from jasper.multiroom import active_leader_config as alc
@@ -209,7 +209,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
 ) -> None:
     """The bake captures Ring A at the box's resolved wire format — and its sink
     is STILL the snapfifo `File`, never Ring B."""
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
     from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _dual_apple_topology()

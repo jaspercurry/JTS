@@ -10,7 +10,7 @@ coupling's graph profile or renderer width policy. See ADR-0261.
 
 from dataclasses import dataclass
 
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 
 
 @dataclass(frozen=True)

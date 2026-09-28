@@ -33,11 +33,11 @@ def test_ring_stereo_program_channels_agrees_with_the_ring_a_declaration():
     """One number, reached from the topology side and from the wire side.
 
     ``RING_STEREO_PROGRAM_CHANNELS`` (output_contract) and ``RING_A_CHANNELS``
-    (jasper.fanin_coupling) are the same fact — the program upstream of
+    (jasper.dsp_control.fanin_coupling) are the same fact — the program upstream of
     CamillaDSP is stereo — declared where each side needs it. Pin them equal so
     a change to one is a failing test, not a shear on the wire.
     """
-    from jasper.fanin_coupling import RING_A_CHANNELS
+    from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS
 
     assert RING_STEREO_PROGRAM_CHANNELS == RING_A_CHANNELS
 

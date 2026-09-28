@@ -42,7 +42,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.biquad import PeqFilter
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
     capture_kwargs_for_coupling,
@@ -859,7 +859,7 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     # to the Ring A ioplug device and playback to the Ring B ioplug device.
     # No member kwargs — the SOLO shape member_camilla_kwargs() returns — so
     # the rate-adjust answer below is the one a solo box actually emits.
-    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
 
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
@@ -886,8 +886,8 @@ def test_solo_reemit_carries_the_ring_geometry(tmp_path, wire):
     coupling cross on a solo box, so the emitted formats follow the declared
     wire — the narrow rollback pin included — never the emitter's own default.
     """
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
@@ -1343,7 +1343,7 @@ async def test_active_neutral_to_touched_edit_updates_in_place(tmp_path, monkeyp
 
 @pytest.mark.parametrize("failure", ["compile", "carrier_changed"])
 async def test_active_prepare_failure_in_the_lock_is_recorded(tmp_path, monkeypatch, active_sound_box, failure):
-    from jasper.dsp_apply import DspApplyError, last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import DspApplyError, last_dsp_apply_state
     from jasper.sound import graph_carrier
     from jasper.sound.runtime import load_profile_config
 
@@ -1390,7 +1390,7 @@ async def test_active_sound_save_records_the_live_protection(tmp_path, active_so
 @pytest.mark.parametrize("missing", ["source", "recomposition_snapshot"])
 async def test_partial_applied_record_refuses_sound_save(tmp_path, monkeypatch, active_sound_box, missing):
     from jasper.active_speaker import baseline_profile
-    from jasper.dsp_apply import DspApplyError
+    from jasper.dsp_control.dsp_apply import DspApplyError
 
     _, _, cam, config_dir = active_sound_box
     applied = baseline_profile.load_applied_baseline_profile_state()

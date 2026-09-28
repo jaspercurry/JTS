@@ -29,8 +29,9 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_assets, ring_conf
-from jasper.fanin_coupling import RingWire
+from jasper import ring_assets
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import RingWire
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _RING_PLATFORM_SH = _REPO_ROOT / "deploy" / "lib" / "install" / "ring-platform.sh"
@@ -509,7 +510,7 @@ def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
     )
-    monkeypatch.setattr("jasper.fanin_coupling.resolve_ring_wire", _spy)
+    monkeypatch.setattr("jasper.dsp_control.fanin_coupling.resolve_ring_wire", _spy)
     assert audio._resolved_ring_wire() == "RESOLVED-WIRE"
     assert passed == [topology]
 

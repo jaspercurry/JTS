@@ -36,7 +36,7 @@ from jasper.fanin.coupling_reconcile import (
     CARRIER_TRANSIENT_ACTIVE_REFUSAL,
 )
 from jasper.fanin.ring_readiness import ring_endpoint_anchor_converged
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
@@ -46,7 +46,7 @@ from jasper.fanin_coupling import (
 # The ALSA active lane a roleful box plays into BEFORE it is armed — the
 # "incoherent endpoint" fixture below. Resolved from the contract rather than
 # spelled, so a rename moves this test with it.
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from jasper.dsp_control.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from tests._log_events import event_field_maps
 
 # The canonical saved dual-Apple composite: 4 outputs, left woofer/tweeter on

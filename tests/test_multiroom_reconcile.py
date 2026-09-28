@@ -48,11 +48,11 @@ from tests.multiroom_reconcile_fixtures import (
 from jasper import systemd_probe
 from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
-from jasper.fanin_coupling import dac_content_lane_marker_armed
+from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import grouping_env as grouping_env_mod
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PCM, DAC_CONTENT_RING_PERIOD_FRAMES
-from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.grouping_env import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,
@@ -3078,7 +3078,7 @@ def test_the_merged_env_outputd_starts_with_never_pairs_marker_and_bridge(
     `env_str`, whose blank it parks on.
     """
     from jasper.env_load import outputd_reconciled_env
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(

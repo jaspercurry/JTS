@@ -44,7 +44,7 @@ from jasper.active_speaker.staging import running_graph_matches_staged_anchor
 
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety
 # evidence writer from the protected-startup-load tests.
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from tests._armed_transport import arm_ring_transport
 from tests._log_events import event_field_maps, event_fields
 from tests.active_speaker_fixtures import mono_output_topology as _topology

@@ -728,7 +728,7 @@ def _materialise_parked_muted_config(
 
     import tempfile
 
-    from jasper.dsp_apply import validate_camilla_config  # lazy: test_active_speaker_runtime_contract patches dsp_apply.validate_camilla_config
+    from jasper.dsp_control.dsp_apply import validate_camilla_config  # lazy: test_active_speaker_runtime_contract patches dsp_apply.validate_camilla_config
 
     topology = topology or load_output_topology_strict()
     text, graph = build_parked_muted_graph(topology, config_path=config_path)

@@ -46,7 +46,7 @@ def _armed_active_outputd_env(**overrides: str) -> dict[str, str]:
     resolved rather than spelled, so the premise stays coherent by construction
     instead of shearing the moment the shipped ring wire changes.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
@@ -65,7 +65,7 @@ def _armed_active_outputd_env(**overrides: str) -> dict[str, str]:
 
 
 def _armed_active_camilla_devices() -> dict[str, str]:
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
     )
@@ -118,7 +118,7 @@ def test_armed_active_ring_reports_only_broken_capture_routes(
     ring-armed outputd against a plan it had invented. There is no token left to
     substitute, which is what closes the class.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.dsp_control.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
 
     plan = _plan_for(_armed_active_outputd_env())
     assert plan.transport_topology.name == TRANSPORT_SHM_RING_ACTIVE
@@ -349,7 +349,7 @@ def test_transport_state_is_clean_when_the_ring_pair_is_undeclared(monkeypatch) 
     the ordinary healthy shape, not a half-configured one. Reading absence the
     other way put a playing speaker's pair on the parked card.
     """
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
     register_passive_only_dac(monkeypatch)
     state = audio_route_claim._transport_state(

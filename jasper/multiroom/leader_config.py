@@ -42,7 +42,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from ..camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     devices_playback_is_pipe,
     read_camilla_devices_config,
 )
@@ -138,7 +138,7 @@ async def apply_bonded_leader_config(
     /sound), the member policy supplying the pipe sink, and the validated
     ``apply_dsp_config`` engine driving CamillaDSP's glitch-free config swap.
     """
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.dsp_control.dsp_apply import apply_dsp_config
     from jasper.sound.camilla_yaml import BASE_CONFIG_PATH
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.profile import load_profile
@@ -207,7 +207,7 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
     Returns the applied path, or None when there was nothing to do.
     Raises on a failed apply (stash kept — the next reconcile retries).
     """
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.dsp_control.dsp_apply import apply_dsp_config
     from jasper.sound.camilla_yaml import (
         FLAT_GRAPH_WIDTH,
         FlatChannelPlan,

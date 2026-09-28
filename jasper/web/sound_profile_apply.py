@@ -91,7 +91,7 @@ def _state_payload(
     ),
     eq_block: Any = _EQ_CARRIER_NOT_PROBED,
 ) -> dict[str, Any]:
-    from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
     if last_dsp_apply_snapshot is _LAST_DSP_APPLY_SNAPSHOT_UNSET:
         last_dsp_apply = last_dsp_apply_state()
@@ -343,7 +343,7 @@ async def _apply_settings(
             apply_state, out_path, _ = apply_result
             last_dsp_apply_snapshot = apply_state.to_dict()
         else:
-            from jasper.dsp_apply import last_dsp_apply_state
+            from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 
             last_dsp_apply_snapshot = last_dsp_apply_state()
 
@@ -474,8 +474,8 @@ async def _live_draft_profile(
     nothing else from this response (`runLiveDraft` in
     `deploy/assets/sound-profile/js/main.js`).
     """
-    from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
-    from jasper.fanin_coupling import capture_kwargs_for_coupling
+    from jasper.dsp_control.dsp_apply import dsp_write_epoch, dsp_writer_lock
+    from jasper.dsp_control.fanin_coupling import capture_kwargs_for_coupling
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 

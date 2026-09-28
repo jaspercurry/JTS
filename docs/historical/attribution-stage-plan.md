@@ -663,7 +663,7 @@ cancellation, shielded, and is re-proven. That module contributes the
 lifecycle; it does **not** contribute config validation (its proofs are
 bass-block-specific). So it is **composed with `dsp_apply`-grade validation
 before any load**:
-[`jasper/dsp_apply.py`](../../jasper/dsp_apply.py) contributes
+[`jasper/dsp_apply.py`](../../jasper/dsp_control/dsp_apply.py) contributes
 `validate_camilla_config` — including the `devices.volume_limit` ≤ 0 dB
 safety-ceiling refusal — the shared DSP writer lock, and the
 re-hash-immediately-before-load check. Note the honest boundary:

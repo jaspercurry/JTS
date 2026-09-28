@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.platform.uds import daemon_command

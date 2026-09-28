@@ -19,9 +19,9 @@ from jasper.active_speaker.driver_safety import driver_research_targets
 from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_channel_select_mixer, emit_gain_filter
-from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,

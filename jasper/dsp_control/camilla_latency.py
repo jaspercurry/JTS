@@ -4,7 +4,7 @@
 
 """Resolve a CamillaDSP graph's ``chunksize`` / ``target_level`` / ``queuelimit``.
 
-Sits above :mod:`jasper.camilla_config_contract`, which owns the vocabulary and
+Sits above :mod:`jasper.dsp_control.camilla_config_contract`, which owns the vocabulary and
 stays a leaf. Resolution is not vocabulary: it reads the process environment and
 the transport the graph's governing device belongs to. Emitters take the
 constants from the contract and the resolver from here.
@@ -15,16 +15,16 @@ from __future__ import annotations
 import logging
 import os
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
     DEFAULT_QUEUELIMIT,
     DEFAULT_TARGET_LEVEL,
 )
 from jasper.env_load import bounded_env_int
-from jasper.fanin_coupling import RING_CAMILLA_GEOMETRY, RING_PCM_DEVICES
+from jasper.dsp_control.fanin_coupling import RING_CAMILLA_GEOMETRY, RING_PCM_DEVICES
 from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.camilla_latency")
 
 _OPERATOR_KNOBS = ("JASPER_CAMILLA_CHUNKSIZE", "JASPER_CAMILLA_TARGET_LEVEL")
 # A sanity cap on the operator knobs; CamillaDSP itself rejects an unusable
@@ -53,7 +53,7 @@ def resolve_camilla_latency_for_devices(
     N, must be smaller than or equal to device buffer size of 256") and systemd
     restart-loops it, which is silent deafness (AGENTS.md #6) — and the other
     two fields are certified WITH the chunk, never mixed across owners. So a
-    ring end takes :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY` whole,
+    ring end takes :data:`~jasper.dsp_control.fanin_coupling.RING_CAMILLA_GEOMETRY` whole,
     the same values the two end-to-end ring graphs pass explicitly. Everything
     else takes the operator env or the shipped defaults.
 

@@ -19,13 +19,13 @@ from typing import Any, Callable, Sequence
 
 import yaml
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
 )
-from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import issue as _issue
 from jasper.paths import camilla_statefile
 

@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..output_hardware import detected_hardware_adoption_precondition
-from ..output_topology_observation import declared_hardware_mismatch
+from jasper.dsp_control.output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
 from ..music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
@@ -576,7 +576,7 @@ def undeclared_hardware_signal(
     (INNER) says the detected hardware is usable at all — known profile, no
     blocking issue, at least one output — and says nothing about whether the
     household already declared it.
-    :func:`~jasper.output_topology_observation.declared_hardware_mismatch` (OUTER) says
+    :func:`~jasper.dsp_control.output_topology_observation.declared_hardware_mismatch` (OUTER) says
     the DECLARED topology does not already match what is attached; skipping it
     told an already-armed box hitting an ordinary outputd hiccup to "finish
     setup" for a setup that already happened.

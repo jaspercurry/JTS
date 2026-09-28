@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Literal, NamedTuple
 
 from jasper.active_speaker.graph_types import GRAPH_ALL_MUTED_ACTIVE_STARTUP
 from jasper.control.restart_broker import manage_units
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     validate_camilla_config,
 )

@@ -137,7 +137,7 @@ async def precheck_active_leader(
     )
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
-    from jasper.fanin_coupling import capture_half, capture_kwargs_for_coupling
+    from jasper.dsp_control.fanin_coupling import capture_half, capture_kwargs_for_coupling
     from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
     from jasper.sound.profile import load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
@@ -302,7 +302,7 @@ async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
     is up (the pipe's reader exists — a FIFO write-open blocks until a reader
     exists, exactly like the passive leader's apply_bonded_leader_config).
     """
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     cam = camilla_factory()
     async with dsp_writer_lock(

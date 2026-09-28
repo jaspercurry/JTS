@@ -4,7 +4,7 @@
 
 """Snapclient ingress read by the bonded endpoint's CamillaDSP (ADR-0261)."""
 
-from jasper.fanin_coupling import RING_CAMILLA_CHUNKSIZE
+from jasper.dsp_control.fanin_coupling import RING_CAMILLA_CHUNKSIZE
 from jasper.multiroom.aux_ring import AuxRing
 from jasper.ring_assets import RING_SHM_DIR
 

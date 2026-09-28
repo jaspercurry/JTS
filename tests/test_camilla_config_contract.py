@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CHUNKSIZE,
     DEFAULT_QUEUELIMIT,
     DEFAULT_PIPE_SINK_FORMAT,
@@ -17,8 +17,8 @@ from jasper.camilla_config_contract import (
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import PeqFilter, total_positive_boost_db
-from jasper.camilla_latency import resolve_camilla_latency_for_devices
-from jasper.fanin_coupling import (
+from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_CHUNKSIZE,
