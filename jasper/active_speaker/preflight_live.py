@@ -26,7 +26,7 @@ from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
-from .crossover_v2.conductor_context import resolve_conductor_context
+from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
@@ -131,4 +131,5 @@ def read_preflight_facts(
                                   or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
+        driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},
     )

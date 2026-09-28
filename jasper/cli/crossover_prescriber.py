@@ -21,6 +21,8 @@ from jasper.active_speaker.baseline_profile import applied_layer_names, load_app
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
+from jasper.active_speaker.design_draft import ActiveSpeakerDesignDraftError, load_design_draft
+from jasper.active_speaker.crossover_v2.conductor_context import published_driver_caps
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
@@ -301,6 +303,17 @@ def _declared_section(
 
 
 
+def _live_driver_caps() -> dict[str, Any]:
+    """Each driver's program-path cap and its source from today's declaration, whichever
+    round is named, or the code refusing that declaration (ADR-0382)."""
+    try:
+        profile = load_design_draft().get("driver_safety_profile") or {}
+    except ValueError as exc:  # /sound/speaker/ opens a refused declaration and names its fix
+        return {"caps": {}, "reason": getattr(exc, "code", ActiveSpeakerDesignDraftError.code)}
+    targets = {target["target_id"]: target["target_fingerprint"] for target in profile.get("targets", [])}
+    return {"caps": published_driver_caps(profile, targets), "reason": None}
+
+
 def _candidate_records() -> list[dict[str, Any]]:
     """The validated candidate artifacts available for a summed trial."""
     records: list[dict[str, Any]] = []
@@ -528,6 +541,7 @@ def status_document(
         **sections,
         **context,
         "seat_level_reference_volume_db": seat_level_db,
+        "driver_caps_live": _live_driver_caps(),
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
         "last_banked": {name: {key: banked[name][key] for key in ("round_id", "round_dir", "banked_at", "status", "stale")}

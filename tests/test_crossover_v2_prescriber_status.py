@@ -44,6 +44,7 @@ from tests import nginx_site
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.driver_safety import DriverSafetyProfileError
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
@@ -52,6 +53,7 @@ from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -337,6 +339,26 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
         "elevations_deg": [],
         "reason": None,
     }
+
+
+@pytest.mark.parametrize("refusal, expected", [
+    (None, {"reason": None, "caps": {
+        "mono:woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "mono:tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"}}}),
+    (DriverSafetyProfileError("manual_settings.drivers[0] names no output", code="manual_target_missing"),
+     {"reason": "manual_target_missing", "caps": {}}),
+], ids=["published", "declaration-refused"])
+def test_status_publishes_each_drivers_live_cap_or_the_declarations_refusal(monkeypatch, refusal, expected):
+    _topology, safety, _targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+
+    def load():
+        if refusal is not None:
+            raise refusal
+        return {"driver_safety_profile": safety}
+
+    monkeypatch.setattr(cli, "load_design_draft", load)
+    assert cli.status_document(None, "", session_dir=None)["driver_caps_live"] == expected
 
 
 def test_a_raised_walk_publishes_its_elevations():
@@ -831,6 +853,7 @@ _STATUS_DOCUMENT_KEYS = {
     "banked",
     "applied",
     "seat_level_reference_volume_db",
+    "driver_caps_live",
     "reading_order",
     "next",
     "next_commands",

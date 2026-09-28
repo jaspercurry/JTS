@@ -313,7 +313,7 @@ def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
     from jasper.active_speaker.driver_protection import driver_protection_profile
     from jasper.active_speaker.excitation_safety_plan import (
         LEVEL_CEILING_DECLARED,
-        LEVEL_CEILING_UNDECLARED,
+        LEVEL_CEILING_CLASS_DEFAULT,
         declared_level_ceiling_dbfs,
     )
 
@@ -329,7 +329,7 @@ def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
 
     assert declared_level_ceiling_dbfs(_target({})) == (
         -65.0,
-        LEVEL_CEILING_UNDECLARED,
+        LEVEL_CEILING_CLASS_DEFAULT,
     )
     for declared in (-66.0, -65.0, -64.0):
         assert declared_level_ceiling_dbfs(

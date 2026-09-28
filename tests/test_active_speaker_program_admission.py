@@ -1118,6 +1118,24 @@ def test_a_tweeter_that_cannot_derive_its_cap_refuses_naming_what_to_fix(figures
     assert resolve_driver_excitation_ceilings(safety, tweeter)[1] == pytest.approx(-65.0)
 
 
+@pytest.mark.parametrize("shape, caps", [
+    (dict(woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2}), {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"}}),
+    (dict(woofer_peak=-8.0, tweeter_peak=-50.0), {
+        "woofer": {"cap_dbfs": -8.0, "cap_source": "declared"},
+        "tweeter": {"cap_dbfs": -50.0, "cap_source": "declared"}}),
+    (dict(tweeter_peak=None), {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "declared"},
+        "tweeter": {"cap_dbfs": None, "cap_source": None, "reason": REASON_DRIVER_SENSITIVITY_UNDECLARED}}),
+    (dict(passive=True, woofer_peak=None, woofer_floor=30, woofer_highpass=30), {
+        "full_range": {"cap_dbfs": -65.0, "cap_source": "class_default"}}),
+], ids=["derived", "declared", "refused", "full-range"])
+def test_each_driver_publishes_its_cap_and_where_it_came_from(shape, caps):
+    _topology, safety, targets = _profile_and_targets(**shape)
+    assert conductor_context.published_driver_caps(safety, targets) == caps
+
+
 def test_a_tweeter_without_a_declared_sensitivity_refuses_by_name_before_it_plays(monkeypatch):
     """The session door refuses before composing anything, naming the driver to
     declare, and the dry run and the web door both render its registry row."""

@@ -35,6 +35,7 @@ from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_pair
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
@@ -62,7 +63,7 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
     ready = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     caplog.set_level(logging.INFO)
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -79,6 +80,24 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
+    _topology, safety, targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+    monkeypatch.setattr(control_client, "get", Mock(return_value=control_client.ControlResponse(
+        200, b'{"muted": false, "percent": 35}')))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    ready = ready_facts(plan)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets=targets, safety_profile=safety,
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    assert preflight(plan, replace(ready, driver_caps=facts.driver_caps)).to_dict()["driver_caps"] == {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
+    }
 
 
 @pytest.mark.parametrize("layout,name,preset,poses", [
@@ -103,7 +122,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     plan = request_for_preset(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
     ready = ready_facts(plan)
-    context = SimpleNamespace(topology=topology, roles_bands=roles, role_targets=role_targets,
+    context = SimpleNamespace(topology=topology, roles_bands=roles, safety_profile={}, role_targets=role_targets,
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
     monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: context)
@@ -191,7 +210,7 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
     plan = AngleCaptureRequest((AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose="reference",
                                           driver="tweeter"),))
     ready = ready_facts(plan)
-    context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), safety_profile={}, role_targets={},
                               driver_bands={"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(tweeter_floor_hz, 20000)},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
@@ -303,7 +322,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     def context(_status):
         if fault == "box":
             raise CrossoverV2Refused("setup incomplete")
-        return SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+        return SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
             preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
 
     monkeypatch.setattr(preflight_live, "resolve_conductor_context", context)
@@ -588,7 +607,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", unreadable)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_room_peqs == room
@@ -620,7 +639,7 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a, **kw: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
-        roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), role_targets={"woofer": "fp-woofer"}, fc_hz=None,
+        roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), safety_profile={}, role_targets={"woofer": "fp-woofer"}, fc_hz=None,
         driver_caps_dbfs={"woofer": -8}, session_volume_db=-22.23, driver_sweep_duration_limits_s={})
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     ids = facts.stimulus_ids_for(plan)
@@ -650,7 +669,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         driver_caps_dbfs={}, fc_hz=None, driver_sweep_duration_limits_s={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -687,7 +706,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
                         lambda *args, **kwargs: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(
         topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
-        roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),), role_targets={"woofer": "fp-woofer"},
+        roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),), safety_profile={}, role_targets={"woofer": "fp-woofer"},
         fc_hz=fc_hz, driver_caps_dbfs={"woofer": -8}, session_volume_db=record["reference_volume_db"], driver_sweep_duration_limits_s={},
     )
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -749,7 +768,7 @@ def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, a
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(
         plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"),
