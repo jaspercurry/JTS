@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
+from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.atomic_io import read_json_mapping
@@ -17,7 +18,6 @@ from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_N
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
-from jasper.speaker_layout import declared_radiating_diameters_mm
 
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -50,7 +50,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
              for take_id, record in records.items() if (band := record.get("trusted_band"))}
     room = (stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_declared_geometry, inputs.declared_geometry_path)
             if inputs.declared_geometry_path else None)
-    document = nearfield_view(takes, radiating_diameter_mm_by_role=declared_radiating_diameters_mm(draft),
+    document = nearfield_view(takes, radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
                               room=room, played_graphs=graphs, banked_bands=bands)
     if not document["takes"]:
         return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])

@@ -474,6 +474,27 @@ def test_stored_research_the_import_refuses_refuses_on_load(tmp_path: Path, wher
     assert caught.value.code == code
 
 
+@pytest.mark.parametrize("author", ["driver_research", "manual_settings"])
+def test_a_stored_cabinet_key_the_reader_does_not_know_refuses_on_load(tmp_path: Path, author) -> None:
+    """A driver's size is its own radiating_diameter_mm, so a cabinet key the reader
+    does not know refuses by its name, never dropped unseen (ADR-0384, #2902)."""
+    from tests.test_active_speaker_driver_safety import _manual_settings, _operator_inputs, _research_result
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    save_design_draft(topology, driver_research=research, manual_settings=_manual_settings(),
+                      operator_inputs=_operator_inputs(), path=path)
+    stored = json.loads(path.read_text())
+    stored[author]["drivers"][0]["cabinet"]["radiator_diameter_mm"] = 132
+    path.write_text(json.dumps(stored))
+
+    with pytest.raises(CodedFieldError) as caught:
+        load_design_draft(path, topology=topology)
+    assert caught.value.code == "unknown_driver_fields"
+
+
 def test_design_draft_revision_is_informational(
     tmp_path: Path,
 ) -> None:
@@ -844,7 +865,7 @@ def test_extra_manual_keys_are_ignored(tmp_path):
     manual = {
         "typo": True,
         "drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "A", "typo": True,
-                     "cabinet": {"enclosure_kind": "sealed", "typo": True},
+                     "cabinet": {"enclosure_kind": "sealed"},
                      "level_duration_limits": {"max_sweep_duration_s": 4, "typo": True}}],
         "crossover_candidates": [{"between_roles": ["woofer", "tweeter"],
                                   "frequency_hz": 2500, "typo": True}],

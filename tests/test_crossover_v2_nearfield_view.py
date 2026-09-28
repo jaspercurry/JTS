@@ -47,8 +47,8 @@ def _graph(pad_db):
 
 
 @pytest.mark.parametrize("diameters,rear_extra_db,verdicts", [
-    ({"woofer": 114.0}, -0.2, ("pass", "pass")),
-    ({"woofer": 114.0}, -1.0, ("pass", "fail")),
+    ({"woofer": 114.0, "woofer:rear": 114.0}, -0.2, ("pass", "pass")),
+    ({"woofer": 114.0, "woofer:rear": 114.0}, -1.0, ("pass", "fail")),
     ({}, -0.2, ("not_evaluated", "not_evaluated")),
 ])
 def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diameters, rear_extra_db, verdicts):
@@ -61,7 +61,7 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
         _take("r15", "woofer:rear", 15, 84.0, seed=3), _take("r30", "woofer:rear", 30, 84.0 + STEP + rear_extra_db, seed=4),
     ]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_role=diameters)
+    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target=diameters)
 
     assert [row["take_id"] for row in view["takes"]] == ["w15", "w30", "w15again", "r15", "r30"]
     lowest = view["takes"][0]["bands"][0]
@@ -81,13 +81,15 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
     assert reseat["reseat_spread_db"][2] == pytest.approx(0.3, abs=0.05)
 
 
-def test_a_drivers_distance_step_stops_at_its_trusted_band():
+def test_a_drivers_distance_step_stops_at_its_own_trusted_band():
     """A 305 mm cone's ka reaches 1 at 358 Hz, under the step band's 400 Hz top,
-    so a level change between them moves only a smaller cone's step (ADR-0366)."""
-    far = _take("w30", "woofer", 30, 90.0 + STEP, seed=1)
+    so a level change between them moves only a smaller cone's step (ADR-0366),
+    and a rear woofer's band is its own cone's, not its front's (ADR-0384)."""
+    far = _take("r30", "woofer:rear", 30, 90.0 + STEP, seed=1)
     for sweep in (far["curve"], *far["curve"]["repeat_curves"]):
         sweep["magnitude_db"] = [db + 6.0 * (360.0 < hz < 400.0) for hz, db in zip(FREQS, sweep["magnitude_db"])]
-    steps = [nv.nearfield_view([_take("w15", "woofer", 15, 90.0), far], radiating_diameter_mm_by_role={"woofer": mm})
+    steps = [nv.nearfield_view([_take("r15", "woofer:rear", 15, 90.0), far],
+                               radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": mm})
              ["drivers"][0]["steps"][0]["step_db"] for mm in (305.0, 114.0)]
     assert steps[0] == pytest.approx(STEP, abs=0.05) and steps[1] > STEP + 0.3
 
@@ -160,7 +162,7 @@ def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
     takes = [_take("a", "woofer", 15, 60.0, first_low_db=-3.0), _take("b", "woofer", 15, 54.0, seed=1),
              _take("unread", "woofer", 15, 70.0, seed=2), _take("unmodelled", "woofer", 15, 70.0, seed=4), coarse]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_role={}, played_graphs={
+    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target={}, played_graphs={
         "a": _graph(-6.0), "b": _graph(-12.0), "unmodelled": unmodelled, "coarse": _graph(-6.0)})
 
     raw = view["drivers"][0]["placements"][0]["raw"]
@@ -175,7 +177,7 @@ def test_a_take_is_read_only_where_its_sweep_reached():
     takes = [_take("t15", "tweeter", 15, 80.0, band_hz=(700.0, 2000.0)),
              _take("t30", "tweeter", 30, 78.0, seed=1, band_hz=(700.0, 2000.0))]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_role={"tweeter": 25.0})
+    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target={"tweeter": 25.0})
 
     assert [[band["band_hz"] for band in row["bands"]] for row in view["takes"]] == [[[800.0, 2000.0]]] * 2
     assert view["drivers"][0]["steps"] == []

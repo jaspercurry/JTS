@@ -80,7 +80,6 @@ def _profile_and_targets(
             "cabinet": {
                 "enclosure_kind": "sealed",
                 "radiator_count": 1,
-                "effective_radiating_diameter_mm": 132 if role == "woofer" else 25,
                 **({"baffle_width_mm": 210} if role == "woofer" else {}),
             },
         }

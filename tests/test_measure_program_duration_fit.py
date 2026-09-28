@@ -94,7 +94,6 @@ def _profile_and_targets(
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
             },
@@ -116,7 +115,6 @@ def _profile_and_targets(
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 25,
                 },
             },
         ],

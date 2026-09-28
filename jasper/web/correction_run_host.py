@@ -68,7 +68,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                        capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
     roles = tuple(band.role for band in conductor.roles_bands)
-    diameters = context.radiating_diameter_mm_by_role if context is not None else {}
+    diameters = context.radiating_diameter_mm_by_target if context is not None else {}
     index = 0
     phase = ""
     answer: Any = None
@@ -85,7 +85,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             room = load_declared_geometry()
             band = asdict(take_trusted_band(
                 purpose=record.get("measurement_purpose"), kind=kind, distance_m=distance_m,
-                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_role=diameters, room=room))
+                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_target=diameters, room=room))
             return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), band
         except (OSError, ValueError) as exc:
             # The take gates to the default bound and banks no band; its reader states one.
