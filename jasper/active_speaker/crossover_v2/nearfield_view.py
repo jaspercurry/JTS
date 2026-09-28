@@ -2,14 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A round's near-field driver takes read band by band, and their distance
-self-test: a pure view of banked evidence (ADR-0346, ADR-0360).
+"""A round's one-driver takes, near-field or gated far-field, read band by
+band, and their distance self-test: a pure view of banked evidence (ADR-0346,
+ADR-0360).
 
 Each kept take banks its first sweep's curve with the other sweeps nested
-beside it. The first sweep against the others shows an amplifier waking late
-(#5684); the last two sweeps against each other give the band's SNR. Per
-driver, the level step between two distances is held to a rigid piston of the
-declared cone.
+beside it, and states the gate they ran. The first sweep against the others
+shows an amplifier waking late (#5684); the last two sweeps against each other
+give the band's SNR. A driver's placements are its distances per pose kind, so
+a take in front and one behind stay apart; the level step between two
+distances of one kind is held to a rigid piston of the declared cone.
 
 A take's curve already has its sweep's digital gain divided out; its raw
 curve also has the fader and the played graph divided out, so every driver
@@ -67,6 +69,16 @@ def _sweeps(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
     return freqs[swept], np.asarray([row["magnitude_db"] for row in rows], dtype=float)[:, swept]
 
 
+def _gate(curve: Mapping[str, Any]) -> dict[str, Any]:
+    """The gate a take's sweeps ran (ADR-0383 §2): gated only if every sweep
+    was, at the shortest window, whose floors are the highest."""
+    sweeps = [curve, *curve.get("repeat_curves", ())]
+    gated = all(sweep.get("window") == "gated" for sweep in sweeps)
+    shortest = min(sweeps, key=lambda sweep: sweep["gate_window_ms"]) if gated else {}
+    return {"window": "gated" if gated else "ungated", "window_ms": shortest.get("gate_window_ms"),
+            **{key: shortest.get(key) for key in ("validity_floor_hz", "trusted_floor_hz", "floor_source")}}
+
+
 def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
             swept_hz: tuple[float, float]) -> np.ndarray:
     """The sweeps' bins in ``band_hz``; none unless the take swept all of it."""
@@ -107,7 +119,7 @@ def nearfield_view(
     room: DeclaredGeometry | None = None, played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
     banked_bands: Mapping[str, TrustedBand] = MappingProxyType({}),
 ) -> dict[str, Any]:
-    """The kept near-field takes of a round's run manifest, band by band, and
+    """The kept one-driver takes of a round's run manifest, band by band, and
     each driver's placements, raw curves and distance steps. Each placement
     states the trusted band its take banked (``banked_bands``, by take id), or
     else one from its distance, the declared cone and ``room``, the round's
@@ -119,7 +131,7 @@ def nearfield_view(
     reads: list[tuple[np.ndarray, np.ndarray, tuple[float, float]]] = []
     take_bands: list[TrustedBand] = []
     raw_rows: list[tuple[np.ndarray, np.ndarray] | None] = []
-    placed: dict[str, dict[float, list[int]]] = {}
+    placed: dict[str, dict[tuple[float, str], list[int]]] = {}
     for take in takes:
         if not (take.get("selected") and (take.get("pose") or {}).get("driver") and take.get("curve")):
             continue
@@ -137,10 +149,11 @@ def nearfield_view(
         raw_rows.append(None if path_db is None else
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
         row = {"take_id": take["take_id"], "driver": driver, "distance_mm": round(distance_m * 1000.0, 1),
+               "kind": take["pose"].get("kind"), "gate": _gate(take["curve"]),
                "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
                          if (band := _band(freqs, sweeps, edges, swept, trusted)) is not None]}
-        placed.setdefault(row["driver"], {}).setdefault(row["distance_mm"], []).append(len(rows))
+        placed.setdefault(driver, {}).setdefault((row["distance_mm"], row["kind"]), []).append(len(rows))
         rows.append(row)
         reads.append((freqs, sweeps, swept))
         take_bands.append(trusted)
@@ -155,7 +168,7 @@ def nearfield_view(
     for driver, at in sorted(placed.items()):
         diameter = radiating_diameter_mm_by_target.get(driver)
         placements = []
-        for distance_mm, indexes in sorted(at.items()):
+        for (distance_mm, kind), indexes in sorted(at.items()):
             levels = [[band["level_db"] for band in rows[index]["bands"]] for index in indexes]
             spread = (np.ptp(np.asarray(levels), axis=0).round(2).tolist()
                       if len(levels) > 1 and len({len(one) for one in levels}) == 1 else None)
@@ -165,15 +178,17 @@ def nearfield_view(
                    "freqs_hz": unplayed[0][1].round(3).tolist(),
                    "level_db": power_mean_across_db(np.vstack([db for _, _, db in unplayed])).round(3).tolist(),
                    } if unplayed else None
-            placements.append({"distance_mm": distance_mm, "trusted_band": asdict(take_bands[indexes[0]]),
+            placements.append({"distance_mm": distance_mm, "kind": kind, "trusted_band": asdict(take_bands[indexes[0]]),
                                "take_ids": [rows[index]["take_id"] for index in indexes],
                                "reseat_spread_db": spread, "raw": raw})
         steps = []
-        for near_mm, far_mm in combinations(sorted(at), 2):
+        for (near_mm, kind), (far_mm, far_kind) in combinations(sorted(at), 2):
+            if kind != far_kind:
+                continue
+            near_at, far_at = at[near_mm, kind], at[far_mm, kind]
             # With no band left inside both placements' trusted bands, the step is stated, never graded.
-            step_band = _step_band(take_bands[at[near_mm][0]], take_bands[at[far_mm][0]])
-            near, far = ((level_over(at[near_mm], step_band), level_over(at[far_mm], step_band))
-                         if step_band else (None, None))
+            step_band = _step_band(take_bands[near_at[0]], take_bands[far_at[0]])
+            near, far = (level_over(near_at, step_band), level_over(far_at, step_band)) if step_band else (None, None)
             if step_band and (near is None or far is None):
                 continue
             measured = None if near is None or far is None else round(far - near, 2)

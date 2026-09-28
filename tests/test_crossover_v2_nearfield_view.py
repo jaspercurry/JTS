@@ -23,13 +23,22 @@ FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = piston_step_db(0.015, 0.030, 0.057)
 
 
+def _gated(window_ms):
+    """A sweep's gate as its banked curve states it; ``None`` is a sweep left ungated."""
+    return {"window": "ungated"} if window_ms is None else {
+        "window": "gated", "gate_window_ms": window_ms, "validity_floor_hz": 1000.0 / window_ms,
+        "trusted_floor_hz": 2500.0 / window_ms, "floor_source": "measured_reflection"}
+
+
 def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0),
-          stimulus_dbfs=-32.0, kind="close"):
+          stimulus_dbfs=-32.0, kind="close", gate_ms=()):
     rng = np.random.default_rng(seed)
     sweeps = [np.full(FREQS.size, level_db) + rng.normal(0.0, 0.01, FREQS.size) for _ in range(3)]
     sweeps[0] = sweeps[0] + np.where(FREQS < 35.0, first_low_db, 0.0)
-    curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz),
-             "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist()} for sweep in sweeps[1:]]}
+    gates = [_gated(window_ms) for window_ms in gate_ms] or [{}] * 3
+    curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz), **gates[0],
+             "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
+                               for sweep, gate in zip(sweeps[1:], gates[1:])]}
     return {"take_id": take_id, "selected": selected,
             "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
             "quality": {"evidence": {"level_db_spl": 80.0}}, "curve": curve,
@@ -92,6 +101,27 @@ def test_a_drivers_distance_step_stops_at_its_own_trusted_band():
                                radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": mm})
              ["drivers"][0]["steps"][0]["step_db"] for mm in (305.0, 114.0)]
     assert steps[0] == pytest.approx(STEP, abs=0.05) and steps[1] > STEP + 0.3
+
+
+def test_a_driver_in_front_and_behind_reads_apart_and_each_take_states_its_gate():
+    """A driver's takes in front and behind at one distance are two placements,
+    never pooled, and a step pairs two distances of one kind only. Each take
+    states the gate its sweeps ran: gated only if every sweep was, at the
+    shortest window (ADR-0383 §2)."""
+    takes = [_take("front", "woofer", 500, 86.0, kind="bearing", gate_ms=(6.0, 5.0, 6.0)),
+             _take("behind", "woofer", 500, 70.0, seed=1, kind="behind", gate_ms=(6.0, None, 6.0)),
+             _take("behind_far", "woofer", 1000, 64.0, seed=2, kind="behind")]
+
+    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target={"woofer": 114.0})
+
+    ungated = {"window": "ungated", **dict.fromkeys(("window_ms", "validity_floor_hz", "trusted_floor_hz", "floor_source"))}
+    assert [row["gate"] for row in view["takes"]] == [
+        {"window": "gated", "window_ms": 5.0, "validity_floor_hz": 200.0, "trusted_floor_hz": 500.0,
+         "floor_source": "measured_reflection"}, ungated, ungated]
+    driver, = view["drivers"]
+    assert [(placement["distance_mm"], placement["kind"], placement["take_ids"]) for placement in driver["placements"]] == [
+        (500.0, "bearing", ["front"]), (500.0, "behind", ["behind"]), (1000.0, "behind", ["behind_far"])]
+    assert [(step["near_mm"], step["far_mm"]) for step in driver["steps"]] == [(500.0, 1000.0)]
 
 
 def test_placements_past_the_near_field_read_gated_in_the_rounds_room(tmp_path, monkeypatch, capsys):
