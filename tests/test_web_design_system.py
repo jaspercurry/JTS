@@ -222,7 +222,6 @@ OFF_LADDER_HELD: dict[str, set[str]] = {
     },
     "deploy/assets/weather/weather.css": {"0.85rem"},
     "deploy/assets/wifi/wifi.css": {"18px"},
-    "jasper/web/sources_setup.py": {"0.9rem"},
 }
 TYPE_LADDER_PX = {"11px", "12px", "13px", "14px", "16px"}
 

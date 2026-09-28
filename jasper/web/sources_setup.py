@@ -2,54 +2,23 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sources on/off page at /sources/.
+"""Playback sources at /sources/.
 
-Playback-source toggles:
-
-  - AirPlay and Spotify Connect use ordinary systemd lifecycle operations.
-  - Bluetooth uses RF-kill, BlueZ power, and its audio/pairing services.
-  - USB Audio Input preserves the ordered composite-gadget transition that
-    keeps the hardware-conditional USB management network up while
-    adding/removing audio.
-
-The web process owns none of those mechanisms. It records one desired source
-state and kicks ``jasper-source-intent-reconcile``; that fixed root oneshot is
-the sole lifecycle coordinator for all four sources. The state response keeps
-desired intent separate from the observed effective state so a failed service
-start cannot silently flip the user's choice back.
-
-AirPlay, Bluetooth, and Spotify Connect default ON. USB Audio Input
-defaults OFF so it has zero resident RAM cost until explicitly enabled.
-The toggle is the only knob; there's no per-source settings on this page.
-
-State polling: clients GET /state every few seconds to reflect external
-changes (operator ran `systemctl stop shairport-sync` from SSH, etc.).
-When a renderer unit or its hardware is not installed, the page is still
-present and explains what is missing. An unavailable source that is already
-Off cannot be turned On; a stale desired-On source can always be turned Off so
-the safest recovery choice never depends on the missing component.
-
-This page renders with ``canonical_page``; its behaviour ships as the static
-ES module deploy/assets/sources/js/main.js. Availability/enabled derivation
-and enable-time precondition checks live in
-``jasper.local_sources.status``, the single owner both this page and
-jasper-control's mux-status augmenter read.
-
-URL surface (after nginx strips /sources/):
-  GET  /         page render
-  GET  /state    source → {enabled, desired, effective, available, ...}
-  POST /set      {source, enabled} → same shape as /state on success
+Source enablement belongs to the intent reconciler. Manual AirPlay session
+release belongs to mux, shared with source takeover (ADR-0279).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ..platform import systemd
+from ..platform import systemd, wire
+from ..platform.uds import mux_socket_command
 from ..local_sources import status as source_status
 from ..log_event import log_event
-from ..music_sources import MUSIC_SOURCE_SPECS
+from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..source_intent import request_source_intent, source_intent_enabled
 from ._common import (
     JsonBodyError,
@@ -88,30 +57,9 @@ def _apply(source: str, enabled: bool) -> None:
     request_source_intent(target, enabled)
 
 
-# Per-page CSS layered on app.css. Just the source-row layout + notes; the
-# toggle, card, header, and banner are shared primitives in app.css. Status
-# colour is the one knob: the unavailable note reuses --status-warn.
-_PAGE_CSS = """
-.sources { display: flex; flex-direction: column; }
-.source-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; padding: 0.9rem 0;
-  border-bottom: 1px solid var(--border);
-}
-.source-row:last-child { border-bottom: none; }
-.source-text { min-width: 0; }
-.source-name { font-weight: 600; color: var(--text); }
-.source-note { color: var(--muted); font-size: 0.9rem; margin-top: 0.2rem; }
-.source-note.warn { color: var(--status-warn); }
-.source-note code {
-  font-size: 0.95em; padding: 1px 5px;
-  border-radius: var(--radius-sm); background: var(--foreground-005);
-}
-"""
-
-
 def _source_row(
     *, name: str, input_id: str, note_html: str = "", unavailable_html: str = "",
+    actions_html: str = "",
 ) -> str:
     """One source row: name + optional notes on the left, toggle on the
     right. The toggle is disabled at first paint; the ES module's /state
@@ -128,6 +76,7 @@ def _source_row(
         {notes}
       </div>
       {toggle_html(input_id, disabled=True)}
+      {actions_html}
     </div>
     """
 
@@ -153,6 +102,16 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     rows = "".join([
         _source_row(
             name="AirPlay", input_id="t-airplay",
+            actions_html=(
+                '<div class="source-actions">'
+                '<button type="button" class="btn btn--ghost" '
+                'id="airplay-reset" aria-describedby="airplay-reset-hint" disabled>'
+                'Reset AirPlay connection</button>'
+                '<p class="form-hint" id="airplay-reset-hint">Stops AirPlay audio. '
+                'Select this speaker again on your device.</p>'
+                '<p class="source-note" id="airplay-reset-result" '
+                'role="status" aria-live="polite" hidden></p></div>'
+            ),
             unavailable_html=(
                 '<div class="source-note warn" id="airplay-unavailable-note" '
                 'hidden>AirPlay is not installed on this speaker. '
@@ -216,7 +175,8 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
 <script type="module" src="/assets/sources/js/main.js"></script>
 """
     return canonical_page(
-        "Playback sources", body, csrf_token=csrf_token, page_css=_PAGE_CSS,
+        "Playback sources", body, csrf_token=csrf_token,
+        page_css_href="/assets/sources/sources.css",
     )
 
 
@@ -328,13 +288,27 @@ def _post_set(handler: _Handler) -> None:
     send_json_response(handler, state)
 
 
-# do_GET / do_POST dispatch via the _GET_ROUTES / _POST_ROUTES tables
-# (exact path -> handler callable) — module-level (not class attributes)
-# since no per-server state is captured here. ORDERING IS LOAD-BEARING:
-# each method looks up the route first, so an unknown path 404s before
-# the read/CSRF guard runs.
+def _post_reset_airplay(handler: _Handler) -> None:
+    try:
+        result = asyncio.run(mux_socket_command(
+            wire.mux_preempt(Source.AIRPLAY.value), timeout=6.0,
+        ))
+    except (OSError, RuntimeError):
+        logger.exception("AirPlay session reset unavailable")
+        send_json_response(
+            handler, {"error": "Could not reach AirPlay controls. Try again."},
+            status=503,
+        )
+        return
+    cleanup = result.get("airplay_session_cleanup", {})
+    confirmed = cleanup.get("status") == "ok"
+    if not confirmed:
+        result["error"] = "AirPlay reset was not confirmed. Try again."
+    send_json_response(handler, result, status=200 if confirmed else 502)
+
+
 _GET_ROUTES = {"/": _get_index, "/state": _get_state}
-_POST_ROUTES = {"/set": _post_set}
+_POST_ROUTES = {"/set": _post_set, "/airplay/reset": _post_reset_airplay}
 
 
 def _make_handler() -> type[BaseHTTPRequestHandler]:
