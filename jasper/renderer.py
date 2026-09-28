@@ -160,9 +160,12 @@ class RendererClient:
         return await airplay_now_playing()
 
 
+PROBE_ORDER = (Source.AIRPLAY, Source.SPOTIFY, Source.BLUETOOTH, Source.USBSINK)
+
+
 async def audible_source(renderer: RendererClient) -> Source:
-    """The source the speaker plays: mux's committed answer, else the raw
-    probes in one order, airplay > spotify > bluetooth > usbsink.
+    """The source the speaker plays: mux's committed answer, else the first
+    raw probe playing in :data:`PROBE_ORDER`.
 
     Mux decides the winner (ADR-0150), so its answer stands even when the
     probes disagree. The probes answer only when mux cannot: it is
@@ -183,7 +186,7 @@ async def audible_source(renderer: RendererClient) -> Source:
     except Exception as e:  # noqa: BLE001
         logger.debug("active_renderers() failed (%s); treating as idle", e)
         return Source.IDLE
-    for source in (Source.AIRPLAY, Source.SPOTIFY, Source.BLUETOOTH, Source.USBSINK):
+    for source in PROBE_ORDER:
         if active.get(SOURCE_TO_ACTIVE_KEY[source]):
             return source
     return Source.IDLE
