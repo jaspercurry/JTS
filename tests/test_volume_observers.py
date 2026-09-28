@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-from jasper import bluealsa_probe
+from jasper.device_probe import bluealsa_probe
 from jasper import volume_observers as observer_mod
 from jasper.music_sources import Source
 from jasper.volume_observers import VolumeObserver

@@ -441,7 +441,7 @@ install_usb_network_files() {
     _snapshot_unit_install_destination "${pending_path}"
     local plan_output
     if ! plan_output="$(PYTHONPATH="${REPO_DIR}" "${plan_python}" \
-            -m jasper.usb_network converge \
+            -m jasper.device_probe.usb_network converge \
             --plan "${plan_path}" \
             --nm "${nm_path}" \
             --dnsmasq "${dnsmasq_path}" \

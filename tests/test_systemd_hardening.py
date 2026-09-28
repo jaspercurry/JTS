@@ -1043,10 +1043,10 @@ def test_usb_network_plan_unit_allows_netlink_for_if_nameindex():
     """RestrictAddressFamilies must allow AF_NETLINK, or the gate dies with
     errno 97 on real hardware.
 
-    `jasper-usb-network-plan.service` runs `jasper.usb_network promote`,
+    `jasper-usb-network-plan.service` runs `jasper.device_probe.usb_network promote`,
     which calls `observe_ipv4_cidr()` before promoting the plan (to avoid
     clobbering a live legacy USB address mid-session). `observe_ipv4_cidr`
-    calls `socket.if_nameindex()` (jasper/usb_network.py) to check whether
+    calls `socket.if_nameindex()` (jasper/device_probe/usb_network.py) to check whether
     `usb0` exists yet. On Linux/glibc, `if_nameindex()` opens an AF_NETLINK
     socket internally to do that enumeration — invisible at the call site,
     unlike an explicit `socket.socket(AF_NETLINK, ...)`. Without AF_NETLINK

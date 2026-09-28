@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.usbgadget import network_wanted, udc_host_connected
+from jasper.device_probe.usbgadget import network_wanted, udc_host_connected
 
 
 def test_udc_host_connected_reads_any_configured_controller(tmp_path):

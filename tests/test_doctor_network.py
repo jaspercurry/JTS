@@ -25,7 +25,7 @@ import pytest
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import network as doctor_network
 from jasper.cli.doctor import web
-from jasper.usb_network import (
+from jasper.device_probe.usb_network import (
     IPv4Observation,
     IPv4ObservationState,
     UsbNetworkPlanError,

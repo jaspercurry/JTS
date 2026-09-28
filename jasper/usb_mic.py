@@ -32,7 +32,7 @@ from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
 from .service_units import USBGADGET_SERVICE
 from .systemd_probe import unit_active
-from .usbgadget import GADGET_CONFIGFS_PATH
+from jasper.device_probe.usbgadget import GADGET_CONFIGFS_PATH
 
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
 INTENT_KEY = "JASPER_USB_MIC"

@@ -45,7 +45,7 @@ from jasper.output_hardware import current_usb_data_role
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 from jasper.source_intent import source_intent_enabled
 from jasper.service_units import USBGADGET_SERVICE
-from jasper.usbgadget import (
+from jasper.device_probe.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,
     GADGET_CONFIGFS_PATH,
     UAC2_CARD_NAME,

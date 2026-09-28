@@ -636,7 +636,7 @@ oom_unit_is_production() {
 # USB link before SSH. Missing Python/module means "can't determine": callers
 # skip the advisory rather than carrying a driftable fallback copy.
 usb_gadget_management_cidrs() {
-    python3 "${REPO_ROOT}/jasper/usb_network.py" advisory-cidrs \
+    python3 "${REPO_ROOT}/jasper/device_probe/usb_network.py" advisory-cidrs \
         2>/dev/null
 }
 

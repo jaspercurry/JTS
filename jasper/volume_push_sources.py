@@ -16,7 +16,7 @@ from functools import partial
 from typing import TYPE_CHECKING
 
 from . import busctl
-from .bluealsa_probe import active_transport_path
+from jasper.device_probe.bluealsa_probe import active_transport_path
 from .spotify_router import DEVICES_TIMEOUT_SEC
 from .volume_scales import (
     listening_level_to_bt_volume,

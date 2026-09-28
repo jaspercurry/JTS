@@ -423,7 +423,7 @@ layers = [
   "output_topology",
   "output_topology_evaluation",
   "output_hardware",
-  "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
+  "aec_engines : device_probe : mics : xvf",
   "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs : source_state",
   "audio_measurement : audio_resources : bass_extension",
   "identity : net",

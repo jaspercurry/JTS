@@ -33,7 +33,8 @@ from tests.volume_coordinator_fixtures import (
     pushes as pushes,
 )
 
-from jasper import bluealsa_probe, camilla, renderer, volume_process
+from jasper.device_probe import bluealsa_probe
+from jasper import camilla, renderer, volume_process
 from jasper import spotify_router as spotify_router_mod
 from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
@@ -1282,7 +1283,7 @@ async def test_observe_usbsink_clamps_out_of_range(tmp_path):
 #
 # volume_push_sources._bluez_alsa_active_transport_path runs in
 # jasper-control on every BT volume set from the remote/web. It must reuse
-# jasper.bluealsa_probe so a D-Bus permission denial backs off process-wide
+# jasper.device_probe.bluealsa_probe so a D-Bus permission denial backs off process-wide
 # instead of hammering the system bus once per volume set. These tests fail
 # if the helper reverts to its own raw `bluealsa-cli list-pcms` subprocess.
 
