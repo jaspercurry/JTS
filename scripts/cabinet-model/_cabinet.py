@@ -10,11 +10,15 @@ Woofer pair per unit front drive:  P(theta) = A_f(theta) + r(f) * A_r(theta)
   v_i = cone velocity on A's scale (the BEM sources move at 1 m/s), for cone travel
 Seat: a listener in front of the cabinet face at a bearing; the wall behind the cabinet is an
 image source with a reflection factor. Phasors are exp(+i w t): a positive delay has negative phase.
+at_mic: each woofer alone at the far-field microphone points (bem-transfer.py --mic-m), on the FFT
+grid, for the model check against gated far-field takes.
 """
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
@@ -22,11 +26,17 @@ from scipy.optimize import least_squares
 
 from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
+from jasper.audio_measurement.deconv import apply_arrival_window, direct_arrival_window
 from jasper.audio_measurement.excess_phase import minimum_phase
+from jasper.audio_measurement.gating import TAPER_FRACTION, build_gate_window
+from jasper.audio_measurement.program_analysis import IR_POST_MS, IR_PRE_MS
 
 C = 343.0
 FS = 48000
 NFFT = 1 << 17
+#: The model's impulse is rolled this far, so what precedes its arrival, wrapped to the buffer's
+#: end, comes back inside the analysis's 5 ms window before the peak (IR_PRE_MS).
+ROLL_S = 0.010
 
 
 def db(h: np.ndarray) -> np.ndarray:
@@ -58,40 +68,94 @@ def min_phase(freqs: np.ndarray, level_db: np.ndarray, grid: np.ndarray) -> np.n
 
 #: The near-field view's driver id for each woofer the model reads (ADR-0316).
 WOOFERS = {"front": "woofer", "rear": "woofer:rear"}
+#: The pose kind of a far-field take on each side; a behind pose's distance is from the back panel.
+SIDES = {"front": "bearing", "behind": "behind"}
 
 
-def nearfield_raw(view: Path) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """Each woofer's raw curve at its nearest distance, from `jasper-round-views nearfield`."""
-    drivers = {driver["driver"]: driver for driver in json.loads(view.read_text())["drivers"]}
-    curves = {}
+def nearfield_raw(views: Sequence[Path]) -> dict[str, dict[str, Any]]:
+    """Each woofer's raw curve at its nearest distance, from `jasper-round-views nearfield`; a later
+    view's curve replaces an earlier one's for each woofer it has (a re-run after a fix)."""
+    curves: dict[str, Any] = {}
+    for view in views:
+        drivers = {driver["driver"]: driver for driver in json.loads(view.read_text())["drivers"]}
+        for name, driver in WOOFERS.items():
+            raw = next((placement["raw"] for placement in drivers.get(driver, {}).get("placements", ())
+                        if placement["raw"]), None)
+            curves[name] = raw or curves.get(name)
     for name, driver in WOOFERS.items():
-        raw = next((placement["raw"] for placement in drivers.get(driver, {}).get("placements", ())
-                    if placement["raw"]), None)
-        if raw is None:
-            raise SystemExit(f"{view}: no raw near-field curve for the {name} woofer ({driver})")
-        curves[name] = (np.asarray(raw["freqs_hz"], float), np.asarray(raw["level_db"], float))
+        if curves[name] is None:
+            raise SystemExit(f"{', '.join(map(str, views))}: no raw near-field curve for the {name} woofer ({driver})")
     return curves
+
+
+def farfield_takes(view: Mapping[str, Any], mic_m: float) -> dict[tuple[str, str], dict[str, Any]]:
+    """Each woofer's take alone in front and behind, from a `jasper-round-views nearfield` view: the
+    placement nearest mic_m, its raw curve and the shortest gate of the raw's takes, or what is
+    `missing` (no_placement, no_raw, not_gated)."""
+    gates = {take["take_id"]: take.get("gate") or {} for take in view["takes"]}
+    drivers = {driver["driver"]: driver for driver in view["drivers"]}
+    takes: dict[tuple[str, str], dict[str, Any]] = {}
+    for side, kind in SIDES.items():
+        for woofer, driver in WOOFERS.items():
+            placements = [one for one in drivers.get(driver, {}).get("placements", ()) if one.get("kind") == kind]
+            if not placements:
+                takes[woofer, side] = {"missing": "no_placement"}
+                continue
+            placement = min(placements, key=lambda one: abs(one["distance_mm"] / 1000 - mic_m))
+            raw, take = placement["raw"], {"missing": None, "distance_m": placement["distance_mm"] / 1000,
+                                           "take_ids": placement["take_ids"]}
+            raw_gates = [gates.get(take_id, {}) for take_id in (raw or {}).get("take_ids", ())]
+            if raw is None:
+                take["missing"] = "no_raw"
+            elif not all(gate.get("window") == "gated" for gate in raw_gates):
+                take["missing"] = "not_gated"
+            else:
+                take.update(raw=raw, gate=min(raw_gates, key=lambda gate: gate["window_ms"]),
+                            high_hz=placement["trusted_band"].get("high_hz"))
+            takes[woofer, side] = take
+    return takes
+
+
+def gated_db(h: np.ndarray, window_ms: float, freqs: np.ndarray) -> np.ndarray:
+    """dB at freqs of a response on the FFT grid, read as the analysis reads a gated take: its
+    arrival window around the peak, then the gate's window of window_ms."""
+    ir = np.roll(np.fft.irfft(h, NFFT), round(ROLL_S * FS))
+    segment = apply_arrival_window(ir, direct_arrival_window(ir, FS, pre_arrival_ms=IR_PRE_MS, post_arrival_ms=IR_POST_MS))
+    gate = build_gate_window(segment.size, peak_idx=int(np.argmax(np.abs(segment))), span=round(window_ms * FS / 1000),
+                             taper_fraction=TAPER_FRACTION)
+    return db(np.interp(freqs, np.fft.rfftfreq(NFFT, 1 / FS), np.abs(np.fft.rfft(segment * gate, NFFT))))
 
 
 class Cabinet:
     """Measured near-field x BEM transfer for both woofers, with a back-wall seat model."""
 
-    def __init__(self, transfer: Path, nearfield: Path, grid: np.ndarray):
+    def __init__(self, transfer: Path, nearfield: Sequence[Path], grid: np.ndarray):
         t = np.load(transfer)
         nf = nearfield_raw(nearfield)
+        self.nearfield_take_ids = {WOOFERS[w]: raw["take_ids"] for w, raw in nf.items()}
         self.grid, self.angles = grid, t["angles_deg"]
         self.front_z, self.depth, self.radius = float(t["front_z_m"]), float(t["depth_m"]), float(t["radius_m"])
+        self.solved_to_hz = float(t["f"][-1])
+        self.mic_m = float(t["mic_m"]) if "mic_m" in t else None
         k = 2 * np.pi * t["f"] / C
         below = grid < t["f"][0]
-        self.A, self.v = {}, {}
+        fft = np.fft.rfftfreq(NFFT, 1 / FS)[1:]
+        self.A, self.v, self.at_mic = {}, {}, {}
         for w in ("front", "rear"):
+            curve = (np.asarray(nf[w]["freqs_hz"], float), np.asarray(nf[w]["level_db"], float))
             trans = np.conj(t[f"far_{w}"] / t[f"nf_{w}"][:, None]) * np.exp(1j * k * self.radius)[:, None]
-            near = min_phase(*nf[w], grid)
+            near = min_phase(*curve, grid)
             p_nf = interp_complex(t["f"], np.conj(t[f"nf_{w}"]), grid)
             p_nf[below] *= grid[below] / t["f"][0]  # near-field pressure per m/s rises with f below the solve
             self.v[w] = near / p_nf
             self.A[w] = near[:, None] * np.stack([interp_complex(t["f"], trans[:, a], grid)
                                                   for a in range(len(self.angles))], axis=1)
+            if self.mic_m is not None:
+                near_fft = min_phase(*curve, fft)
+                for side in SIDES:
+                    # The delay over mic_m comes off so the phase interpolates between solve frequencies.
+                    at = np.conj(t[f"mic_{side}_{w}"] / t[f"nf_{w}"]) * np.exp(1j * k * self.mic_m)
+                    self.at_mic[w, side] = np.concatenate(([0.0], near_fft * interp_complex(t["f"], at, fft)))
 
     def index(self, deg: float) -> int:
         return int(np.argmin(np.abs(((self.angles - deg) + 180) % 360 - 180)))

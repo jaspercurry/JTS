@@ -41,7 +41,9 @@ document, which goes through the same judge → compose → apply gates as any o
 
 3. **Transfer.** Integrate the solved case to the mic spots on each woofer's axis. Gate 1 (the
    integral reproduces the solver's own probes) must pass. Gate 2 checks the model's level step
-   against each woofer's measured `step_db` from step 2's view.
+   against each woofer's measured `step_db` from step 2's view. It also integrates step 5's two
+   microphone points, `--mic-m` (0.5 m) from the front face and from the back panel on the polar's
+   axis, and prints where they are.
 
    ```bash
    .venv/bin/python scripts/cabinet-model/bem-transfer.py --case "$CAD/build/workbench/boundary_lab_mac/<case>" \
@@ -57,7 +59,25 @@ document, which goes through the same judge → compose → apply gates as any o
        --dsp $D/live.yml --png $D/live.png --xmax-mm 14.7
    ```
 
-5. **Design the rear stage (optional).** Measure the wall gap first; the fit depends on it. The
+5. **Check the model.** Take each woofer alone, gated, 0.5 m from the front baffle and 0.5 m from
+   the back panel, on the polar's axis (the origin in the case's `observations.json`). On the
+   speaker, check the plan silently with `--dry-run`, run it, and pull its view as in step 2. The
+   check prints measured − model per woofer and side from the gate's 1/T (2.5/T beside it) to
+   600 Hz, and `anchor_offset_db`, the absolute level miss. It passes within 1 dB on each front row.
+
+   ```bash
+   poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "bearing", "distance_m": 0.5, "driver": "woofer"},
+     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "bearing", "distance_m": 0.5, "driver": "woofer:rear"},
+     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "bearing", "distance_m": 0.5, "driver": "tweeter"},
+     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.5, "driver": "woofer"},
+     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.5, "driver": "woofer:rear"}]'
+   jasper-round run --program drivers/each --poses "$poses" --dry-run
+   jasper-round run --program drivers/each --poses "$poses" --wait --timeout 3600
+   .venv/bin/python scripts/cabinet-model/predict.py --transfer $D/transfer.npz --nearfield $D/nearfield_view.json \
+       --farfield $D/farfield_view.json
+   ```
+
+6. **Design the rear stage (optional).** Measure the wall gap first; the fit depends on it. The
    document keeps the front chain at 0 dB and writes any branch gain above unity as the same flat
    boost on both rear branches (ADR-0327); the headroom charge pays for it. Then
    judge, compose and apply the document with [the runbook's loop](../../docs/tuning-operator-runbook.md#the-loop),
@@ -100,6 +120,6 @@ Levels are predict.py's: per unit front drive, 0 dB = the front woofer alone, on
   are assumed to have the same latency.
 - The view divides the played one-driver graph out with the repo's graph walker; that graph
   carries no bass boost.
-- The model has not been checked against a gated far-field measurement yet.
+- Step 5 checks the model against gated takes from the gate's 1/T to 600 Hz only.
 
 Related: #5684 (near-field takes in the web flow), #5692 (shaped bass boost).
