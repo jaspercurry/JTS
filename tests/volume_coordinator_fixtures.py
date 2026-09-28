@@ -168,6 +168,12 @@ class _Pushes:
         return pushes
 
 
+@pytest.fixture(autouse=True)
+def pushes(monkeypatch: pytest.MonkeyPatch) -> _Pushes:
+    """Every Spotify/Bluetooth push, delivered unless a test refuses it."""
+    return _Pushes.install(monkeypatch)
+
+
 def _use_real_pushes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Undo the recorder, for a test whose subject is the push functions."""
     monkeypatch.setattr(vps_mod, "push_spotify_volume", _REAL_PUSHES[0])
