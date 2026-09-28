@@ -36,7 +36,7 @@ Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 [Service]
 Type=oneshot
 # Worst-case pass under the entry lock. The tally is NOT duplicated here: it is
-# derived in code as jasper.fanin.coupling_reconcile.COUPLING_AUTO_ENUMERATED_WORST_SEC
+# derived in code as jasper.source_intent_units.COUPLING_AUTO_ENUMERATED_WORST_SEC
 # and this value is COUPLING_AUTO_TIMEOUT_START_SEC, which is that plus a stated
 # headroom. tests/test_fanin_coupling_reconcile.py fails if the two drift; the
 # previous hand-kept tallies here (review #1252, #2175, #2285 P7) drifted twice

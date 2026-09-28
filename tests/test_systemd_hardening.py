@@ -29,7 +29,6 @@ from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
 from jasper.audio_hardware.dac import APPLE_DONGLE_USB_ID
 from jasper.cli.doctor import drift as doctor_drift
-from jasper.fanin import coupling_reconcile
 from jasper.multiroom import reconcile as multiroom_reconcile
 from tests.systemd_unit_helpers import (
     exec_argv_for,
@@ -69,11 +68,11 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     # pinned by tests/test_aec_init.py against the aec_init constants.
     "jasper-aec-reconcile": "120",
     # The arithmetic now lives in code, as
-    # jasper.fanin.coupling_reconcile.COUPLING_AUTO_ENUMERATED_WORST_SEC, and the
+    # jasper.source_intent_units.COUPLING_AUTO_ENUMERATED_WORST_SEC, and the
     # unit ships that plus a stated headroom. The unit's hand-kept tally drifted
     # twice before it was derived; cite the constant, never a second copy.
     "jasper-fanin-coupling-auto": str(
-        int(coupling_reconcile.COUPLING_AUTO_TIMEOUT_START_SEC)
+        int(units.COUPLING_AUTO_TIMEOUT_START_SEC)
     ),
     "jasper-grouping-reconcile": str(
         int(multiroom_reconcile._RECONCILE_SYSTEMD_TIMEOUT_SEC)

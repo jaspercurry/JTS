@@ -17,6 +17,7 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
+from jasper import source_intent_units as units
 from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
@@ -1400,7 +1401,7 @@ def test_camilla_start_requeues_the_hardware_reconciler_by_construction():
     assert reconciler["Type"] == "oneshot"
     assert reconciler.get("RemainAfterExit", "no") == "no"
     assert reconciler["TimeoutStartSec"] == (
-        f"{int(cr._CAMILLA_REQUEUED_RECONCILE_START_SEC)}s"
+        f"{int(units._CAMILLA_REQUEUED_RECONCILE_START_SEC)}s"
     )
 
     # jasper-camilla declares no start override, so its own ceiling is the
@@ -1410,17 +1411,15 @@ def test_camilla_start_requeues_the_hardware_reconciler_by_construction():
 
 def test_camilla_start_bound_matches_its_enumerated_terms():
     """The bound is its terms, not a picked number — and it covers the metal."""
-    import jasper.fanin.coupling_reconcile as cr
-
-    assert cr._CAMILLA_START_TIMEOUT_SEC == (
-        cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
-        + cr._CAMILLA_OWN_START_SEC
-        + cr._DAEMON_OP_CLIENT_MARGIN_SEC
+    assert units._CAMILLA_START_TIMEOUT_SEC == (
+        units._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
+        + units._CAMILLA_OWN_START_SEC
+        + units._DAEMON_OP_CLIENT_MARGIN_SEC
     )
     # The 8 s bound this shipped with was under every sample measured on jts4;
     # the derived bound clears all of them.
     assert max(_MEASURED_CAMILLA_RESTART_SEC) > 8.0
-    assert cr._CAMILLA_START_TIMEOUT_SEC > max(_MEASURED_CAMILLA_RESTART_SEC)
+    assert units._CAMILLA_START_TIMEOUT_SEC > max(_MEASURED_CAMILLA_RESTART_SEC)
 
 
 def test_camilla_dependency_path_follows_the_shipped_ordering_edges():
@@ -1469,17 +1468,17 @@ def test_camilla_dependency_path_follows_the_shipped_ordering_edges():
     assert cr.FANIN_UNIT not in before_of(cr.OUTPUTD_UNIT)
 
     serial = (
-        cr._CAMILLA_REQUEUED_RECONCILE_START_SEC + cr._CAMILLA_NOTIFY_DEP_START_SEC
+        units._CAMILLA_REQUEUED_RECONCILE_START_SEC + units._CAMILLA_NOTIFY_DEP_START_SEC
     )
-    assert cr._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC == max(
-        serial, cr._CAMILLA_NOTIFY_DEP_START_SEC
+    assert units._CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC == max(
+        serial, units._CAMILLA_NOTIFY_DEP_START_SEC
     )
     # Neither notify dependency declares a start override, so both take the
     # manager default plus their restart backoff.
     for unit in (cr.FANIN_UNIT, cr.OUTPUTD_UNIT):
         directives = dict(_unit_directives(unit))
         assert "TimeoutStartSec" not in directives, unit
-        assert directives["RestartSec"] == str(int(cr._NOTIFY_DEP_RESTART_BACKOFF_SEC))
+        assert directives["RestartSec"] == str(int(units._NOTIFY_DEP_RESTART_BACKOFF_SEC))
 
 
 def test_camilla_start_uses_the_derived_bound_through_the_broker(monkeypatch):
@@ -1501,7 +1500,7 @@ def test_camilla_start_uses_the_derived_bound_through_the_broker(monkeypatch):
     assert seen["units"] == (cr.CAMILLA_UNIT,)
     assert seen["verb"] == "start"
     assert seen["no_block"] is False
-    assert seen["timeout"] == cr._CAMILLA_START_TIMEOUT_SEC
+    assert seen["timeout"] == units._CAMILLA_START_TIMEOUT_SEC
 
 
 @pytest.mark.parametrize(
@@ -1579,7 +1578,7 @@ def test_camilla_stop_keeps_its_bound_because_a_stop_pulls_nothing(monkeypatch):
 
     assert seen["verb"] == "stop"
     assert seen["timeout"] == 8.0
-    assert seen["timeout"] < cr._CAMILLA_START_TIMEOUT_SEC
+    assert seen["timeout"] < units._CAMILLA_START_TIMEOUT_SEC
 
 
 def test_coupling_auto_unit_ceiling_matches_the_derived_enumeration():
@@ -1589,31 +1588,27 @@ def test_coupling_auto_unit_ceiling_matches_the_derived_enumeration():
     P7); it now cites this derivation instead, so this test is what keeps the
     two in step.
     """
-    import jasper.fanin.coupling_reconcile as cr
-
-    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC == (
-        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC + cr._COUPLING_AUTO_CEILING_HEADROOM_SEC
+    assert units.COUPLING_AUTO_TIMEOUT_START_SEC == (
+        units.COUPLING_AUTO_ENUMERATED_WORST_SEC + units._COUPLING_AUTO_CEILING_HEADROOM_SEC
     )
-    assert cr._COUPLING_AUTO_CEILING_HEADROOM_SEC > 0
+    assert units._COUPLING_AUTO_CEILING_HEADROOM_SEC > 0
 
     shipped = dict(_unit_directives("jasper-fanin-coupling-auto.service"))
-    assert shipped["TimeoutStartSec"] == str(int(cr.COUPLING_AUTO_TIMEOUT_START_SEC))
+    assert shipped["TimeoutStartSec"] == str(int(units.COUPLING_AUTO_TIMEOUT_START_SEC))
 
 
 def test_coupling_auto_enumeration_carries_the_camilla_resume():
     """The enumerated pass contains the derived resume, not the old 8 s bound."""
-    import jasper.fanin.coupling_reconcile as cr
-
-    assert cr.COUPLING_AUTO_ENUMERATED_WORST_SEC > cr._CAMILLA_START_TIMEOUT_SEC
+    assert units.COUPLING_AUTO_ENUMERATED_WORST_SEC > units._CAMILLA_START_TIMEOUT_SEC
     # Re-deriving the pass with the old bound must land materially lower, which
     # is what makes the resume a load-bearing term rather than noise.
-    saved = cr._CAMILLA_START_TIMEOUT_SEC
+    saved = units._CAMILLA_START_TIMEOUT_SEC
     try:
-        cr._CAMILLA_START_TIMEOUT_SEC = 8.0
-        with_old_bound = cr._coupling_auto_pass_ceiling_sec(broker_dead=False)
+        units._CAMILLA_START_TIMEOUT_SEC = 8.0
+        with_old_bound = units._coupling_auto_pass_ceiling_sec(broker_dead=False)
     finally:
-        cr._CAMILLA_START_TIMEOUT_SEC = saved
-    assert cr.COUPLING_AUTO_ENUMERATED_WORST_SEC - with_old_bound == (
+        units._CAMILLA_START_TIMEOUT_SEC = saved
+    assert units.COUPLING_AUTO_ENUMERATED_WORST_SEC - with_old_bound == (
         saved - 8.0
     )
 
@@ -1626,17 +1621,15 @@ def test_coupling_auto_ceiling_is_sized_for_a_live_broker():
     truth. So the ceiling covers the broker-ALIVE legal worst and the
     broker-dead worst stays a disclosed residual.
     """
-    import jasper.fanin.coupling_reconcile as cr
-
-    assert cr.COUPLING_AUTO_BROKER_DEAD_WORST_SEC > (
-        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC
+    assert units.COUPLING_AUTO_BROKER_DEAD_WORST_SEC > (
+        units.COUPLING_AUTO_ENUMERATED_WORST_SEC
     )
     # Deliberately NOT covered — the gap is the disclosure, and it is real.
-    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC < (
-        cr.COUPLING_AUTO_BROKER_DEAD_WORST_SEC
+    assert units.COUPLING_AUTO_TIMEOUT_START_SEC < (
+        units.COUPLING_AUTO_BROKER_DEAD_WORST_SEC
     )
-    assert cr.COUPLING_AUTO_TIMEOUT_START_SEC > (
-        cr.COUPLING_AUTO_ENUMERATED_WORST_SEC
+    assert units.COUPLING_AUTO_TIMEOUT_START_SEC > (
+        units.COUPLING_AUTO_ENUMERATED_WORST_SEC
     )
 
 

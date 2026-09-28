@@ -83,9 +83,8 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
         ):
             # The blocking start above gave up at its 15s budget, but this
             # reconciler measures 25.5-26s on a Pi Zero 2 W
-            # (restart_broker.py's _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
-            # comment) -- systemd's own job is still running after our
-            # client stopped waiting on it. That is not a failure, just a
+            # (source_intent_units.py Camilla start bound) -- systemd's own job
+            # is still running after our client stopped waiting on it. That is not a failure, just a
             # pass that outlives our patience, so say so distinctly rather
             # than let it read as the needs_attention a real failure would
             # be (#3094).

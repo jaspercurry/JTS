@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper import source_intent_units as units
 from jasper.fanin.coupling_reconcile import ENTRY_LOCK_PATH
 from jasper.local_sources.registry import local_source_audio_refresh_units
 from tests.install_surface import installer_shell_paths
@@ -851,6 +852,64 @@ require_outputd_ready() {{
 _COUPLING_AUTO = "jasper-fanin-coupling-auto.service"
 
 
+def test_coupling_install_waits_use_the_incoming_owner_bound(tmp_path):
+    stale_package = tmp_path / "jasper"
+    stale_package.mkdir()
+    (stale_package / "__init__.py").write_text("raise AssertionError('stale package')\n")
+    script = f"""{_shim_preamble(tmp_path)}
+{_coupling_fence_paths(tmp_path)}
+systemctl() {{ echo "systemctl $*" >> "{tmp_path}/calls.log"; }}
+flock() {{
+    [[ "$1" != -n ]] || return 1
+    echo "flock $*" >> "{tmp_path}/calls.log"
+}}
+_build_sandbox_log() {{ :; }}
+install_run_bounded() {{ echo "bounded $*" >> "{tmp_path}/calls.log"; }}
+fence_fanin_coupling
+# The second consumer must use the same loaded bound.
+JASPER_SYSTEM_PYTHON=false
+resolve_fanin_coupling_default
+release_fanin_coupling_fence
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path, capture_output=True, text=True, timeout=20
+    )
+
+    assert result.returncode == 0, result.stderr
+    bound = units.unit_action_timeout_sec(units.USB_COUPLING_UNIT, "start")
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert [call for call in calls if call.startswith(("flock -w ", "bounded "))] == [
+        f"flock -w {bound:g} 8",
+        f"bounded {bound:g} -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install",
+    ]
+
+
+@pytest.mark.parametrize(
+    "function", ("park_audio_clients_for_core_graph_restart", "resolve_fanin_coupling_default")
+)
+def test_coupling_bound_read_failure_stops_install_before_graph_actions(tmp_path, function):
+    calls = tmp_path / "calls.log"
+    calls.touch()
+    script = f"""{_shim_preamble(tmp_path)}
+{_coupling_fence_paths(tmp_path)}
+JASPER_SYSTEM_PYTHON=false
+systemctl() {{ echo "systemctl $*" >> "{calls}"; }}
+_record_parked_unit() {{ echo "park $*" >> "{calls}"; }}
+install_run_bounded() {{ echo "bounded $*" >> "{calls}"; }}
+remove_stale_jts_ring_data_files() {{ echo "rings unlinked" >> "{calls}"; }}
+{function}
+remove_stale_jts_ring_data_files
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, timeout=20
+    )
+
+    assert result.returncode != 0
+    assert calls.read_text() == ""
+    assert not (tmp_path / "run" / "coupling-fence.conf").exists()
+    assert not (tmp_path / "coupling.lock").exists()
+
+
 @pytest.mark.parametrize("abort", (False, True))
 @pytest.mark.parametrize(
     "function",
@@ -940,6 +999,7 @@ trap install_exit_cleanup EXIT
                     *_PARK_RECORD_CHAIN,
                     "restart_core_camilla_after_dsp_reconcile",
                     "fence_fanin_coupling",
+                    "_load_fanin_coupling_pass_bound",
                     "release_fanin_coupling_fence",
                 ),
                 extra_shims=shims,
