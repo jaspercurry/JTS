@@ -5,7 +5,7 @@
 """The engine skeleton's externally observable behaviour.
 
 Three things can break here and each gets one pin at one altitude: ruling
-S12's surface is complete and loud (ADR-0228);
+S12's surface is complete (ADR-0228);
 the two held lifetimes open once and give back everything they took; and MS-14
 refuses to BANK without ever refusing to play.
 """
@@ -41,13 +41,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REGIME_NEAR_FIELD,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
-    STUB_CODES,
-    VERTICAL_AXIS_NOT_IMPLEMENTED,
     MeasureSpec,
     inverted_roles_for,
-    stubbed_capabilities,
 )
 from jasper.active_speaker.crossover_v2.playback_transaction import (
     PLAYBACK_STAGES,
@@ -232,114 +227,8 @@ def _session(
 
 
 # --------------------------------------------------------------------------- #
-# ruling S12 — the surface is complete, and every hole is named
+# ruling S12 — the surface is complete
 # --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "spec, code, instrument, captured",
-    [
-        (
-            MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
-            NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "R-3", True,
-        ),
-        (
-            MeasureSpec(
-                kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
-            ),
-            DISTORTION_VS_LEVEL_NOT_IMPLEMENTED, "R-4", True,
-        ),
-        (
-            MeasureSpec(
-                kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL,
-            ),
-            VERTICAL_AXIS_NOT_IMPLEMENTED, "R-5a", True,
-        ),
-    ],
-)
-def test_every_unbuilt_mic_only_regime_is_a_named_stub(
-    spec: MeasureSpec, code: str, instrument: str, captured: bool,
-):
-    """S12: the parameter exists today and says exactly what is missing."""
-    stubs = stubbed_capabilities(spec)
-
-    assert [stub.code for stub in stubs] == [code]
-    assert stubs[0].instrument == instrument
-    assert stubs[0].captured is captured
-    assert code in STUB_CODES
-
-
-def test_the_elevation_hole_is_disclosed_by_the_value_not_by_the_axis_word():
-    """R-5a is owed for any spec that banks an elevation, on either axis.
-
-    The two angles are orthogonal, so a HORIZONTAL walk raised off mark height
-    banks exactly the evidence a vertical walk does. Keying the disclosure on
-    the axis word alone would let a compound spec bank an unanalysed elevation
-    and report nothing pending.
-    """
-    compound = MeasureSpec(
-        kind=MEASURE_KIND_BASELINE, positions=(22,), vertical_deg=22,
-    )
-
-    assert [s.code for s in stubbed_capabilities(compound)] == [
-        VERTICAL_AXIS_NOT_IMPLEMENTED
-    ]
-    assert stubbed_capabilities(
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,))
-    ) == ()
-
-
-def test_the_stub_sentence_renders_the_rulings_canonical_example():
-    """The one wording pin, and the only prose assertion in this file.
-
-    Ruling S12 fixes the SHAPE and quotes this sentence as its example; the pin
-    is here so a template regression is caught, not because the words are the
-    contract. See S12 for the shape; every other test asserts on ``code``.
-    """
-    stub = stubbed_capabilities(
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD)
-    )[0]
-
-    assert stub.message == (
-        "near-field splice not implemented; capture banked, splice pending R-3"
-    )
-
-
-def test_a_spec_asking_for_nothing_unbuilt_discloses_nothing():
-    """Anti-vacuity: the stub check must be able to answer "no holes"."""
-    assert stubbed_capabilities(MeasureSpec(kind=MEASURE_KIND_VERIFY)) == ()
-
-
-def test_a_spec_may_trip_more_than_one_stub_at_once():
-    stubs = stubbed_capabilities(MeasureSpec(
-        kind=MEASURE_KIND_BASELINE,
-        regime=REGIME_NEAR_FIELD,
-        polarity=POLARITY_INVERTED,
-        inverted_role=DRIVER_ROLE_TWEETER,
-    ))
-
-    # R-1 is no longer among them: the reverse-null analysis ships, so an
-    # inverted spec discloses only what its REGIME still owes.
-    assert {stub.code for stub in stubs} == {NEAR_FIELD_SPLICE_NOT_IMPLEMENTED}
-
-
-def test_stub_codes_names_every_code_the_engine_can_emit():
-    """Completeness, checked against a spec that trips all four at once.
-
-    Not the same four constants re-listed: this walks what the function
-    actually returns for a maximal spec, so a fifth stub that never joined
-    ``STUB_CODES`` fails here.
-    """
-    every = MeasureSpec(
-        kind=MEASURE_KIND_BASELINE,
-        regime=REGIME_NEAR_FIELD,
-        polarity=POLARITY_INVERTED,
-        inverted_role=DRIVER_ROLE_TWEETER,
-        level_ladder_dbfs=(-12.0,),
-        position_axis=POSITION_AXIS_VERTICAL,
-    )
-
-    assert {stub.code for stub in stubbed_capabilities(every)} == STUB_CODES
 
 
 @pytest.mark.parametrize(
@@ -1217,16 +1106,13 @@ async def test_a_stop_after_play_banks_what_played_and_still_stops(caplog, recor
 
 
 async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
-    """R-5a: a hand-raised pose is measured and recorded, not refused.
+    """A hand-raised pose is measured and recorded.
 
-    This axis used to capture NOTHING — the stub stopped the stimulus. The
-    owner ruled that class of refusal out: the operator raises the microphone
-    by hand, so the take is taken and labelled with where it was taken from.
+    The operator raises the microphone by hand, so the take is taken and
+    labelled with where it was taken from.
 
     ``position_deg`` stays ``None`` because no bearing was commanded, and that
     is what keeps a raised take out of every pooled bearing set downstream.
-    The disclosure survives, saying the honest remaining thing: the capture is
-    banked and no analysis reads it yet.
     """
     records = _Records()
     session, parts = _session(records=records)
@@ -1246,8 +1132,7 @@ async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
     assert banked["position_deg"] is None
 
 
-async def test_a_stub_whose_capture_still_happens_measures_and_banks():
-    """R-3: the near-field capture ships, and the splice is what is owed."""
+async def test_a_near_field_spec_measures_and_banks_its_regime():
     session, parts = _session()
 
     async with session:
@@ -1382,7 +1267,7 @@ def test_the_spec_translates_into_exactly_the_branches_the_graph_must_flip(
 
 
 async def test_an_inverted_capture_plays_and_banks_like_any_other():
-    """R-1's whole point: the verb stopped being a stub that captures nothing."""
+    """An inverted spec plays once and banks one record."""
     session, parts = _session()
 
     async with session:
@@ -1394,8 +1279,6 @@ async def test_an_inverted_capture_plays_and_banks_like_any_other():
 
     assert len(parts["play"].calls) == 1
     assert len(outcome.record_ids) == 1
-    # R-1 ships: an inverted take plays, banks, AND is analysed, so it owes no
-    # disclosure. The stub row it used to carry is gone from the registry.
 
 
 async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
