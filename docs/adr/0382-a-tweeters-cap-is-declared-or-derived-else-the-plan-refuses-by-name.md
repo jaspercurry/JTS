@@ -15,13 +15,14 @@
   [#5928](https://github.com/jaspercurry/JTS/issues/5928) TB12).
 - **Decision:**
   1. On the program path a high-frequency driver's cap is its declared `max_effective_peak_dbfs`,
-     else the sensitivity-delta derivation. When the tweeter, or every low-frequency output,
-     declares no sensitivity, the plan refuses before it plays: `driver_sensitivity_undeclared`,
-     naming the roles, with the next action "Declare this driver's sensitivity". Every other driver
-     keeps its declared cap or its class default; a full-range driver's is −65 dBFS.
+     else the sensitivity-delta derivation. When the tweeter, or every low-frequency role, has no
+     declared sensitivity, the plan refuses before it plays: `driver_sensitivity_undeclared`, naming
+     the roles that declare none apart from those whose outputs disagree, with the next action
+     "Declare this driver's sensitivity". Every other driver keeps its declared cap or its class
+     default; a full-range driver's is −65 dBFS.
   2. A stored value equal to the class default is a declaration.
   3. Anchoring stays per role: an output that declares no sensitivity takes its role's, and a role
-     whose outputs disagree reads as undeclared.
+     whose outputs declare different ones has none until they agree.
   4. No cross-check against the preset's `sensitivity_db`
      ([#2765](https://github.com/jaspercurry/JTS/issues/2765)): a commissioned speaker's preset
      copies it from the same declaration. A swapped pair shows as a tweeter cap near full scale.

@@ -395,11 +395,11 @@ def effective_sweep_duration_limit_s(
     )
 
 
-def _role_sensitivities(targets: list[Any]) -> dict[str, float]:
-    """Each role's declared effective sensitivity, from its outputs' own figures.
+def _role_sensitivities(targets: list[Any]) -> tuple[dict[str, float], set[str]]:
+    """Each role's declared effective sensitivity, from its outputs' own figures,
+    and the roles whose outputs declare different figures, which get none.
 
-    A role whose outputs declare different figures drops out, and an output
-    declaring none takes its role's figure.
+    An output declaring none takes its role's figure.
     """
 
     out: dict[str, float] = {}
@@ -413,7 +413,7 @@ def _role_sensitivities(targets: list[Any]) -> dict[str, float]:
             continue
         if out.setdefault(role, value) != value:
             conflicted.add(role)
-    return {role: value for role, value in out.items() if role not in conflicted}
+    return {role: value for role, value in out.items() if role not in conflicted}, conflicted
 
 
 def _derived_hf_ceiling_dbfs(
@@ -422,9 +422,10 @@ def _derived_hf_ceiling_dbfs(
 ) -> tuple[float, str, float]:
     """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``.
 
-    Refuses ``SENSITIVITY_UNDECLARED``, naming the roles to declare, when
-    ``hf_role`` or every low-frequency role declares no sensitivity (per
-    :func:`_role_sensitivities`; ADR-0382).
+    Refuses ``SENSITIVITY_UNDECLARED`` when ``hf_role`` or every low-frequency
+    role has no sensitivity (per :func:`_role_sensitivities`; ADR-0382). Its
+    detail names the roles that declare none (``undeclared_roles``) apart from
+    those whose outputs declare different ones (``disagreeing_roles``).
 
     Conservative across multiple low-frequency siblings (a 3-way's woofer AND
     mid): takes the MINIMUM derived candidate across every low-frequency
@@ -441,7 +442,7 @@ def _derived_hf_ceiling_dbfs(
     """
 
     targets = [target for target in safety_profile["targets"] if isinstance(target, Mapping)]
-    sensitivities = _role_sensitivities(targets)
+    sensitivities, disagreeing = _role_sensitivities(targets)
     sens_hf = sensitivities.get(hf_role)
     siblings = [target for target in targets if target.get("role") in LOW_FREQUENCY_ROLES]
     candidates: list[tuple[float, str, float]] = []
@@ -460,9 +461,14 @@ def _derived_hf_ceiling_dbfs(
             lf_cap,
         ))
     if not candidates:
-        undeclared = {hf_role} if sens_hf is None else {str(sibling["role"]) for sibling in siblings}
+        lf_roles = {str(sibling["role"]) for sibling in siblings}
+        unusable = {hf_role} if sens_hf is None else set()
+        if not lf_roles & sensitivities.keys():
+            unusable |= lf_roles
         raise ExcitationSafetyPlanError(
-            ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value, detail={"roles": sorted(undeclared)},
+            ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value,
+            detail={"undeclared_roles": sorted(unusable - disagreeing),
+                    "disagreeing_roles": sorted(unusable & disagreeing)},
         )
     # ``min`` on the derived ceiling, with the anchor that PRODUCED it: another
     # sibling's anchor beside the binding number names the wrong cause.

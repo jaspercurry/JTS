@@ -434,23 +434,6 @@ def test_explicit_household_value_is_never_overridden():
     assert ceiling == pytest.approx(-70.0)
 
 
-@pytest.mark.parametrize("sensitivities, roles", [
-    (None, ["tweeter"]), ({"tweeter": 108.5}, ["woofer"]), ({"woofer": 83.3}, ["tweeter"]),
-])
-def test_a_tweeter_that_cannot_derive_its_cap_refuses_by_name_on_the_program_path(sensitivities, roles):
-    """ADR-0382: declared or derived, else refused, naming what to declare. The
-    naked-tone path keeps the class default."""
-    _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=None, sensitivities=sensitivities,
-    )
-    tweeter = targets["tweeter"]["target_fingerprint"]
-    with pytest.raises(ExcitationSafetyPlanError) as refused:
-        resolve_driver_excitation_ceilings(profile, tweeter, program_admission=True)
-    assert (refused.value.code, refused.value.detail) == (
-        ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value, {"roles": roles})
-    assert resolve_driver_excitation_ceilings(profile, tweeter)[1] == pytest.approx(-65.0)
-
-
 def test_three_way_shaped_variant_takes_the_conservative_candidate():
     # A 3-way (woofer/mid/tweeter): the tweeter's derived ceiling must be
     # conservative across every declared low-frequency sibling, not just one.

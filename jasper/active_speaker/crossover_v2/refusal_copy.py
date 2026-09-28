@@ -241,11 +241,17 @@ def channel_map_mismatch_message(failed_roles: Sequence[str]) -> str:
     return f"JTS could not confirm that {fact}. Return to speaker setup and check the wiring before measuring again."
 
 
-def driver_sensitivity_undeclared_message(roles: Sequence[str]) -> str:
-    """``REASON_DRIVER_SENSITIVITY_UNDECLARED``'s sentence naming each driver to declare."""
-    names = " and ".join(f"the {role}" for role in roles)
-    return (f"Declare the sensitivity of {names} in speaker setup, then measure again: JTS sets a "
-            "tweeter's measurement level from the declared driver sensitivities.")
+def driver_sensitivity_undeclared_message(undeclared: Sequence[str], disagreeing: Sequence[str]) -> str:
+    """``REASON_DRIVER_SENSITIVITY_UNDECLARED``'s sentences naming each driver to fix."""
+    def named(roles: Sequence[str]) -> str:
+        return " and ".join(f"the {role}" for role in roles)
+
+    fixes = [f"Declare the sensitivity of {named(undeclared)} in speaker setup."] if undeclared else []
+    if disagreeing:
+        fixes.append(f"The outputs of {named(disagreeing)} declare different sensitivities; "
+                     "make them agree in speaker setup.")
+    return " ".join([*fixes, "Then measure again: JTS sets a tweeter's measurement level from the "
+                              "declared driver sensitivities."])
 
 
 @dataclass(frozen=True)
@@ -669,7 +675,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_DRIVER_SENSITIVITY_UNDECLARED: ReasonSpec(
         REASON_DRIVER_SENSITIVITY_UNDECLARED, TEMPLATE_HARD_STOP, 0, "",
         "JTS sets a tweeter's measurement level from the declared driver sensitivities, and one is "
-        "missing. Declare this driver's sensitivity in speaker setup, then measure again.",
+        "missing or differs between a driver's outputs. Declare one sensitivity for each driver in "
+        "speaker setup, then measure again.",
         next_action={"id": "declare_driver_sensitivity", "label": "Declare this driver's sensitivity",
                      "href": "/sound/speaker/"},
     ),

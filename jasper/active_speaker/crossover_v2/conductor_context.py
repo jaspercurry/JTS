@@ -304,7 +304,9 @@ def resolve_conductor_context(
             if (isinstance(exc, ExcitationSafetyPlanError)
                     and exc.code == ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value):
                 raise CrossoverV2Refused(
-                    driver_sensitivity_undeclared_message(exc.detail["roles"]),
+                    driver_sensitivity_undeclared_message(
+                        exc.detail["undeclared_roles"], exc.detail["disagreeing_roles"],
+                    ),
                     code=REASON_DRIVER_SENSITIVITY_UNDECLARED,
                 ) from exc
             raise CrossoverV2Refused(

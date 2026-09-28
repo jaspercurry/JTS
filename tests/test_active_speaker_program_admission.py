@@ -32,10 +32,10 @@ from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
-from jasper.active_speaker.excitation_safety_plan import ExcitationSafetyPlanError, resolve_driver_excitation_ceilings
-from jasper.active_speaker.crossover_v2.refusal_copy import (
-    REASON_DRIVER_SENSITIVITY_UNDECLARED, CrossoverV2Refused, driver_sensitivity_undeclared_message,
+from jasper.active_speaker.excitation_safety_plan import (
+    ExcitationSafetyPlanError, ExcitationSafetyPlanRefusal, resolve_driver_excitation_ceilings,
 )
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_DRIVER_SENSITIVITY_UNDECLARED, CrossoverV2Refused
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
@@ -1068,12 +1068,9 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     assert admission.channels[0].cap_dbfs == -36
 
 
-@pytest.mark.parametrize("rear_sensitivity, tweeter_cap", [(None, -61.2), (85.0, None)],
-                         ids=["rear-takes-its-role-figure", "outputs-disagree"])
-def test_the_hf_derivation_anchors_on_each_low_frequency_role(rear_sensitivity, tweeter_cap):
+def test_the_hf_derivation_anchors_on_each_low_frequency_role():
     """An output declaring no sensitivity takes its role's figure, and its own
-    lower cap anchors; a role whose outputs disagree reads as undeclared, so
-    the tweeter refuses by name (ADR-0382)."""
+    lower cap anchors."""
     _topology, safety, targets = _profile_and_targets(
         rear=True, woofer_peak=-30, tweeter_peak=None, woofer_floor=40, woofer_highpass=40,
         sensitivities={"woofer": 84.0, "tweeter": 109.2},
@@ -1081,15 +1078,44 @@ def test_the_hf_derivation_anchors_on_each_low_frequency_role(rear_sensitivity, 
     rear = next(target for target in safety["targets"] if target["target_fingerprint"] == targets["woofer:rear"])
     rear["level_duration_limits"]["max_effective_peak_dbfs"] = -36
     del rear["effective_sensitivity_db_2v83_1m"]
-    if rear_sensitivity is not None:
-        rear["effective_sensitivity_db_2v83_1m"] = rear_sensitivity
-    if tweeter_cap is None:
-        with pytest.raises(ExcitationSafetyPlanError) as refused:
-            resolve_driver_excitation_ceilings(safety, targets["tweeter"], program_admission=True)
-        assert refused.value.detail == {"roles": ["woofer"]}
-        return
     _band, cap = resolve_driver_excitation_ceilings(safety, targets["tweeter"], program_admission=True)
-    assert cap == pytest.approx(tweeter_cap)
+    assert cap == pytest.approx(-61.2)
+
+
+_TWEETERS = ("left:tweeter", "right:tweeter")
+_WOOFERS = ("left:woofer", "left:woofer:rear", "right:woofer", "right:woofer:rear")
+
+
+@pytest.mark.parametrize("figures, undeclared, disagreeing", [
+    (dict.fromkeys(_TWEETERS), ["tweeter"], []),
+    (dict.fromkeys(_WOOFERS), ["woofer"], []),
+    (dict.fromkeys(_TWEETERS + _WOOFERS), ["tweeter", "woofer"], []),
+    ({"left:woofer:rear": 85.0}, [], ["woofer"]),
+    ({"right:tweeter": 100.8}, [], ["tweeter"]),
+    ({**dict.fromkeys(_TWEETERS), "left:woofer:rear": 85.0}, ["tweeter"], ["woofer"]),
+], ids=["tweeter-undeclared", "woofer-undeclared", "none-declared", "woofers-disagree", "tweeters-disagree",
+        "tweeter-undeclared-woofers-disagree"])
+def test_a_tweeter_that_cannot_derive_its_cap_refuses_naming_what_to_fix(figures, undeclared, disagreeing):
+    """ADR-0382: declared or derived, else refused. The detail names the roles
+    declaring no sensitivity apart from those whose outputs declare different
+    ones. The naked-tone path keeps the class default."""
+    _topology, safety, _targets = _profile_and_targets(
+        rear=True, layout="stereo", woofer_peak=-30, tweeter_peak=None, woofer_floor=40, woofer_highpass=40,
+        sensitivities={"woofer": 84.0, "tweeter": 109.2},
+    )
+    by_id = {target["target_id"]: target for target in safety["targets"]}
+    for target_id, figure in figures.items():
+        del by_id[target_id]["effective_sensitivity_db_2v83_1m"]
+        if figure is not None:
+            by_id[target_id]["effective_sensitivity_db_2v83_1m"] = figure
+    tweeter = by_id["left:tweeter"]["target_fingerprint"]
+    with pytest.raises(ExcitationSafetyPlanError) as refused:
+        resolve_driver_excitation_ceilings(safety, tweeter, program_admission=True)
+    assert (refused.value.code, refused.value.detail) == (
+        ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value,
+        {"undeclared_roles": undeclared, "disagreeing_roles": disagreeing},
+    )
+    assert resolve_driver_excitation_ceilings(safety, tweeter)[1] == pytest.approx(-65.0)
 
 
 def test_a_tweeter_without_a_declared_sensitivity_refuses_by_name_before_it_plays(monkeypatch):
@@ -1103,7 +1129,7 @@ def test_a_tweeter_without_a_declared_sensitivity_refuses_by_name_before_it_play
             {"active": True, "targets": {"drivers": active_driver_targets(topology)}}, topology=topology)
     issue = PreflightIssue.from_code(refused.value.code, str(refused.value))
     assert (issue.code, issue.next_action["id"]) == (REASON_DRIVER_SENSITIVITY_UNDECLARED, "declare_driver_sensitivity")
-    assert issue.detail == driver_sensitivity_undeclared_message(["tweeter"])
+    assert refused.value.__cause__.detail == {"undeclared_roles": ["tweeter"], "disagreeing_roles": []}
 
 
 def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.0):
