@@ -41,6 +41,7 @@ from jasper.output_topology import (
 )
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
+from tests._log_events import event_fields
 from tests.crossover_v2_fixtures import fake_measurement_mic
 from tests.active_speaker_fixtures import current_research
 from tests.test_active_speaker_crossover_preview import _research as preview_research
@@ -332,8 +333,8 @@ def test_a_stale_baseline_topology_opens_the_session_and_says_so(
         context = v2ctx.resolve_conductor_context(status)
 
     assert context.topology is topo
-    assert "event=correction.crossover_v2_baseline_topology_stale" in caplog.text
-    assert f"code={BASELINE_TOPOLOGY_CHANGED}" in caplog.text
+    fields = event_fields(caplog, "correction.crossover_v2_baseline_topology_stale")
+    assert fields["code"] == BASELINE_TOPOLOGY_CHANGED
 
 
 def test_refuses_when_the_layout_has_no_resolvable_playback_route(monkeypatch):
