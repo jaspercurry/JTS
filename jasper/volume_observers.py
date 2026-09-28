@@ -44,7 +44,7 @@ from functools import partial
 from typing import Optional
 
 from . import busctl, librespot_state
-from .bluealsa_probe import active_transport_path
+from jasper.device_probe.bluealsa_probe import active_transport_path
 from .log_event import log_event
 from .music_sources import Source
 from .volume_coordinator import VolumeCoordinator

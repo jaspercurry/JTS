@@ -56,7 +56,7 @@ from jasper.audio_hardware.reconcile_common import (
 )
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
+from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging

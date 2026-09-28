@@ -15,7 +15,7 @@ from jasper.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
 )
-from jasper.usbgadget import UAC2_CARD_NAME
+from jasper.device_probe.usbgadget import UAC2_CARD_NAME
 
 
 OUTPUTD_PERIOD_KEY = "JASPER_OUTPUTD_PERIOD_FRAMES"

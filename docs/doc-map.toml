@@ -343,7 +343,7 @@ code = [
   # volume_coordinator.py and volume_observers.py both import
   # `active_transport_path` from it, so a change to the probe's shape or its
   # negative-cache behaviour reaches the volume path directly.
-  "jasper/bluealsa_probe.py",
+  "jasper/device_probe/bluealsa_probe.py",
   "jasper/audio_resources/volume_owner.py",
 ]
 docs = [
@@ -474,7 +474,7 @@ code = [
   "deploy/systemd/jasper-usbnet-dhcp.service",
   "deploy/systemd/jasper-usb*.service",
   "deploy/usb-network/**",
-  "jasper/usbgadget.py",
+  "jasper/device_probe/usb*.py",
   "jasper/usb*.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",

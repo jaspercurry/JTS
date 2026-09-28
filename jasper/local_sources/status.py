@@ -39,7 +39,7 @@ from ..music_sources import SOURCE_SPECS, Source
 from ..output_hardware import current_usb_data_role
 from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
 from ..source_intent import read_source_intents
-from ..usbgadget import uac2_card_present
+from jasper.device_probe.usbgadget import uac2_card_present
 from .markers import local_sources_allowed
 from .registry import local_source_lifecycle
 

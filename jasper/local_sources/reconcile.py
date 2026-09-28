@@ -60,7 +60,7 @@ from jasper.source_intent_units import (
     unit_action_timeout_sec,
 )
 from jasper.systemd_probe import unit_query, unit_state
-from jasper.usbgadget import uac2_card_present
+from jasper.device_probe.usbgadget import uac2_card_present
 
 logger = logging.getLogger(__name__)
 

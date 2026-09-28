@@ -5,7 +5,7 @@ Before=NetworkManager.service jasper-usbgadget.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/jasper/.venv/bin/python -m jasper.usb_network promote
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.device_probe.usb_network promote
 RemainAfterExit=yes
 TimeoutStartSec=10s
 ProtectSystem=strict

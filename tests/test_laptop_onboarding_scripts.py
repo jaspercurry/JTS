@@ -258,7 +258,7 @@ exit 0
 # laptop's mDNS happens to answer. Shadow only that stdin script — exit 0
 # with no output, the "address unknown, skip the advisory" path CI takes —
 # and exec the real interpreter for everything else, so _lib.sh's
-# `python3 jasper/usb_network.py advisory-cidrs` keeps working. Mirrors
+# `python3 jasper/device_probe/usb_network.py advisory-cidrs` keeps working. Mirrors
 # test_lib_deploy_direction.py's `_git_shim_dir`: shadow one binary, pass
 # the rest through.
 FAKE_PYTHON3 = r"""#!/usr/bin/env bash

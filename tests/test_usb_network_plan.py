@@ -13,8 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io, usb_network
-from jasper.usb_network import (
+from jasper import atomic_io
+from jasper.device_probe import usb_network
+from jasper.device_probe.usb_network import (
     ALLOCATION_SUPERNET,
     IPv4Observation,
     IPv4ObservationState,
