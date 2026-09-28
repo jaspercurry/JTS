@@ -153,7 +153,7 @@ class Cabinet:
             if self.mic_m is not None:
                 near_fft = min_phase(*curve, fft)
                 for side in SIDES:
-                    # The delay over mic_m comes off, as the polar's over its radius does.
+                    # The delay over mic_m comes off so the phase interpolates between solve frequencies.
                     at = np.conj(t[f"mic_{side}_{w}"] / t[f"nf_{w}"]) * np.exp(1j * k * self.mic_m)
                     self.at_mic[w, side] = np.concatenate(([0.0], near_fft * interp_complex(t["f"], at, fft)))
 
