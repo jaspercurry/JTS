@@ -440,12 +440,12 @@ def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
     return False
 
 
-def _post_limiter_tail_evidence(
+def _post_limiter_tail_issues(
     payload: dict[str, Any],
     *,
     channel: int,
     limiter_name: str,
-) -> tuple[int, tuple[str, ...]]:
+) -> list[dict[str, str]]:
     """Count the post-split limiter and reject transforms placed behind it."""
 
     names = _post_split_filter_names(payload, channel=channel)
@@ -458,16 +458,25 @@ def _post_limiter_tail_evidence(
                 payload, name
             ):
                 unsafe.add(name)
-    return limiter_count, tuple(sorted(unsafe))
+    issues: list[dict[str, str]] = []
+    if limiter_count != 1:
+        issues.append(_issue(
+            "blocker", "active_output_limiter_order_invalid",
+            "active graph must wire exactly one canonical limiter "
+            f"after the active split on DAC output {channel + 1}; "
+            f"found {limiter_count}",
+        ))
+    if unsafe:
+        issues.append(_issue(
+            "blocker", "active_output_post_limiter_filter_unsafe",
+            "active graph has an unapproved filter after the canonical "
+            f"limiter on DAC output {channel + 1}: "
+            + ", ".join(sorted(unsafe)),
+        ))
+    return issues
 
 
-def _post_split_delay_evidence(
-    payload: dict[str, Any],
-    *,
-    channel: int,
-) -> tuple[float, tuple[str, ...]]:
-    """Return cumulative physical delay and malformed lanes for one output."""
-
+def _post_split_delay_issues(payload: dict[str, Any], *, channel: int) -> list[dict[str, str]]:
     total_ms = 0.0
     invalid: set[str] = set()
     for name in _post_split_filter_names(payload, channel=channel):
@@ -483,7 +492,22 @@ def _post_split_delay_evidence(
             invalid.add(name)
             continue
         total_ms += delay_ms
-    return total_ms, tuple(sorted(invalid))
+    issues: list[dict[str, str]] = []
+    if invalid:
+        issues.append(_issue(
+            "blocker", "active_output_delay_invalid",
+            "active graph has a malformed post-split delay on DAC "
+            f"output {channel + 1}: " + ", ".join(sorted(invalid)),
+        ))
+    maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
+    if total_ms > maximum_delay_ms:
+        issues.append(_issue(
+            "blocker", "active_output_delay_ceiling_exceeded",
+            "active graph cumulative post-split delay exceeds the "
+            f"{maximum_delay_ms:g} ms ceiling on DAC output "
+            f"{channel + 1}: {total_ms:g} ms",
+        ))
+    return issues
 
 
 def _crossover_directions(assignment: OutputAssignment) -> tuple[str, ...] | None:
@@ -1293,9 +1317,7 @@ def _commission_mute_issues(
     unwired_mutes = sorted(
         index for index in required_indexes
         if not pipeline_contains_chain(
-            view,
-            channels={index},
-            required_names=(_commission_mute_name(index),),
+            view, channels={index}, required_names=(_commission_mute_name(index),),
         )
     )
     if unwired_mutes and not baseline_like:
@@ -1447,12 +1469,8 @@ def _commissioning_chain_issues(
         assignment = by_output[index]
         role = assignment.role
         crossovers = _commissioning_output_chain(
-            payload,
-            assignment=assignment,
-            channel=index,
-            bass_management_highpass=(
-                contract.subwoofer_present and index in mains_low_outputs
-            ),
+            payload, assignment=assignment, channel=index,
+            bass_management_highpass=contract.subwoofer_present and index in mains_low_outputs,
         )
         if crossovers is None:
             issues.append(_issue(
@@ -1467,15 +1485,11 @@ def _commissioning_chain_issues(
                 "blocker", "active_commissioning_chain_unrecognized",
                 f"active graph uses inconsistent {role} commissioning chains",
             ))
-        role_channels = {
-            output for output, item in by_output.items() if item.role == role
-        }
+        role_channels = {output for output, item in by_output.items() if item.role == role}
         post_split_names = _post_split_filter_names(payload, channel=index)
         role_chain_names = post_split_names[:-(2 if assignment.output_variant == "rear" else 1)]
         if index == min(role_channels) and not _canonical_chain_grouped(
-            payload,
-            expected_channels=role_channels,
-            expected_names=role_chain_names,
+            payload, expected_channels=role_channels, expected_names=role_chain_names,
         ):
             issues.append(_issue(
                 "blocker", "active_commissioning_chain_not_grouped",
@@ -1483,9 +1497,7 @@ def _commissioning_chain_issues(
                 "commissioning chain across its current outputs",
             ))
         if not _canonical_chain_grouped(
-            payload,
-            expected_channels={index},
-            expected_names=(_commission_mute_name(index),),
+            payload, expected_channels={index}, expected_names=(_commission_mute_name(index),),
         ):
             issues.append(_issue(
                 "blocker", "active_commissioning_mute_step_invalid",
@@ -1508,17 +1520,13 @@ def _program_prefix_issues(payload: dict[str, Any], view: GraphView) -> list[dic
     be non-positive."""
     issues: list[dict[str, str]] = []
     if not pipeline_contains_chain(
-        view,
-        channels={0, 1},
-        required_names=(PROGRAM_HEADROOM_FILTER,),
+        view, channels={0, 1}, required_names=(PROGRAM_HEADROOM_FILTER,),
     ):
         issues.append(_issue(
             "blocker", "active_baseline_headroom_unwired",
             "active baseline graph does not wire the shared headroom filter",
         ))
-    headroom = finite_float(
-        _filter_params(payload, PROGRAM_HEADROOM_FILTER).get("gain")
-    )
+    headroom = finite_float(_filter_params(payload, PROGRAM_HEADROOM_FILTER).get("gain"))
     if headroom is None or headroom > 0.0:
         issues.append(_issue(
             "blocker", "active_baseline_headroom_invalid",
@@ -1585,6 +1593,19 @@ def _driver_domain_prefix_issues(
     return issues
 
 
+def _baseline_output_scope_issues(
+    graph_indexes: set[int], known_indexes: set[int],
+) -> list[dict[str, str]]:
+    unknown_baseline_outputs = sorted(graph_indexes - known_indexes)
+    if not unknown_baseline_outputs:
+        return []
+    return [_issue(
+        "blocker", "active_baseline_routes_unknown_outputs",
+        "active baseline routes outputs not assigned by the saved topology: "
+        + ", ".join(str(index + 1) for index in unknown_baseline_outputs),
+    )]
+
+
 def _bass_management_issues(
     payload: dict[str, Any], view: GraphView, *,
     by_output: dict[int, OutputAssignment], sub_outputs: set[int], mains_low_outputs: set[int],
@@ -1597,11 +1618,8 @@ def _bass_management_issues(
     issues: list[dict[str, str]] = []
     for index in sorted(sub_outputs):
         if not sub_guard_present(
-            view,
-            channels={index},
-            lowpass_name=_sub_lowpass_name(),
-            gain_name=_sub_baseline_gain_name(),
-            limiter_name=_sub_baseline_limiter_name(),
+            view, channels={index}, lowpass_name=_sub_lowpass_name(),
+            gain_name=_sub_baseline_gain_name(), limiter_name=_sub_baseline_limiter_name(),
             limiter_clip_ceiling_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
         ):
             issues.append(_issue(
@@ -1623,24 +1641,16 @@ def _bass_management_issues(
         # lowest-driver output set — woofer for active mains, full_range
         # for passive.
         low_role = next(
-            (
-                by_output[index].role
-                for index in sorted(mains_low_outputs)
-                if index in by_output
-            ),
+            (by_output[index].role for index in sorted(mains_low_outputs) if index in by_output),
             "full_range",
         )
         bass_highpass_name = _bass_management_hp_name(low_role)
         if (
             not mains_highpass_present(
-                view,
-                channels=mains_low_outputs,
-                highpass_name=bass_highpass_name,
+                view, channels=mains_low_outputs, highpass_name=bass_highpass_name,
             )
             or not _bass_management_filter_safe(
-                payload,
-                name=bass_highpass_name,
-                direction="highpass",
+                payload, name=bass_highpass_name, direction="highpass",
             )
         ):
             issues.append(_issue(
@@ -1648,9 +1658,7 @@ def _bass_management_issues(
                 "active baseline main lowest-driver outputs are missing "
                 "the complementary bass-management high-pass on DAC "
                 "outputs "
-                + ", ".join(
-                    str(index + 1) for index in sorted(mains_low_outputs)
-                )
+                + ", ".join(str(index + 1) for index in sorted(mains_low_outputs))
                 + f" ({low_role})",
             ))
         elif not bass_management_corner_matched(
@@ -1672,6 +1680,56 @@ def _bass_management_issues(
     return issues
 
 
+def _baseline_driver_filter_issues(
+    payload: dict[str, Any], *, channel: int, role: str, limiter_name: str, tweeter: bool,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    gain_name = _baseline_gain_name(role)
+    names = _pipeline_names_for_channels(payload, channels={channel})
+    if limiter_name not in names or gain_name not in names:
+        issues.append(_issue(
+            "blocker", "active_baseline_driver_chain_missing",
+            "active baseline graph does not wire gain and limiter "
+            f"filters for DAC output {channel + 1} ({role})",
+        ))
+    limiter_params = _filter_params(payload, limiter_name)
+    limiter_clip = finite_float(limiter_params.get("clip_limit"))
+    if (
+        _filter_type(payload, limiter_name) != "Limiter"
+        or limiter_clip is None
+        or limiter_clip > 0.0
+        or not _truthy_bool(limiter_params.get("soft_clip"))
+    ):
+        issues.append(_issue(
+            "blocker", "active_baseline_limiter_invalid",
+            "active baseline limiter is missing or unsafe for "
+            f"DAC output {channel + 1} ({role})",
+        ))
+    gain = finite_float(_filter_params(payload, gain_name).get("gain"))
+    if gain is None or gain > 0.0:
+        issues.append(_issue(
+            "blocker", "active_baseline_gain_positive",
+            "active baseline driver gain is missing or positive for "
+            f"DAC output {channel + 1} ({role})",
+        ))
+    if tweeter:
+        highpass_names = [
+            name for name in names
+            if _filter_type(payload, name) == "BiquadCombo"
+            and str(_filter_params(payload, name).get("type") or "")
+            == "LinkwitzRileyHighpass"
+            and (as_float(_filter_params(payload, name).get("freq")) or 0.0)
+            > 0.0
+        ]
+        if not highpass_names:
+            issues.append(_issue(
+                "blocker", "active_baseline_tweeter_highpass_missing",
+                "active baseline tweeter output is missing a "
+                f"wired high-pass filter on DAC output {channel + 1}",
+            ))
+    return issues
+
+
 def _baseline_driver_chain_issues(
     payload: dict[str, Any], contract: OutputContract, *,
     by_output: dict[int, OutputAssignment], rear_lead: dict[int, int],
@@ -1689,12 +1747,8 @@ def _baseline_driver_chain_issues(
             _sub_baseline_limiter_name() if role == "subwoofer" else _baseline_limiter_name(role)
         )
         crossovers = _baseline_output_chain(
-            payload,
-            assignment=assignment,
-            channel=index,
-            bass_management_highpass=(
-                contract.subwoofer_present and index in mains_low_outputs
-            ),
+            payload, assignment=assignment, channel=index,
+            bass_management_highpass=contract.subwoofer_present and index in mains_low_outputs,
             rear_stage_lead=rear_lead.get(index, 0),
         )
         if crossovers is None:
@@ -1717,93 +1771,23 @@ def _baseline_driver_chain_issues(
             limiter_index = post_split_names.index(limiter_name)
             expected_names = post_split_names[: limiter_index + 1]
             if index == min(role_channels) and not _canonical_chain_grouped(
-                payload,
-                expected_channels=role_channels,
-                expected_names=expected_names,
+                payload, expected_channels=role_channels, expected_names=expected_names,
             ):
                 issues.append(_issue(
                     "blocker", "active_output_driver_chain_not_grouped",
                     f"active graph must wire one exact grouped {role} "
                     "driver chain across its current outputs",
                 ))
-        limiter_count, unsafe_tail = _post_limiter_tail_evidence(
-            payload, channel=index, limiter_name=limiter_name,
-        )
-        if limiter_count != 1:
-            issues.append(_issue(
-                "blocker", "active_output_limiter_order_invalid",
-                "active graph must wire exactly one canonical limiter "
-                f"after the active split on DAC output {index + 1}; "
-                f"found {limiter_count}",
-            ))
-        if unsafe_tail:
-            issues.append(_issue(
-                "blocker", "active_output_post_limiter_filter_unsafe",
-                "active graph has an unapproved filter after the canonical "
-                f"limiter on DAC output {index + 1}: "
-                + ", ".join(unsafe_tail),
-            ))
-        total_delay_ms, invalid_delays = _post_split_delay_evidence(payload, channel=index)
-        if invalid_delays:
-            issues.append(_issue(
-                "blocker", "active_output_delay_invalid",
-                "active graph has a malformed post-split delay on DAC "
-                f"output {index + 1}: " + ", ".join(invalid_delays),
-            ))
-        maximum_delay_ms = MAX_DSP_DELAY_US / 1000.0
-        if total_delay_ms > maximum_delay_ms:
-            issues.append(_issue(
-                "blocker", "active_output_delay_ceiling_exceeded",
-                "active graph cumulative post-split delay exceeds the "
-                f"{maximum_delay_ms:g} ms ceiling on DAC output "
-                f"{index + 1}: {total_delay_ms:g} ms",
-            ))
-        if role == "subwoofer":
-            continue
-        gain_name = _baseline_gain_name(role)
-        names = _pipeline_names_for_channels(payload, channels={index})
-        if limiter_name not in names or gain_name not in names:
-            issues.append(_issue(
-                "blocker", "active_baseline_driver_chain_missing",
-                "active baseline graph does not wire gain and limiter "
-                f"filters for DAC output {index + 1} ({role})",
-            ))
-        limiter_params = _filter_params(payload, limiter_name)
-        limiter_clip = finite_float(limiter_params.get("clip_limit"))
-        if (
-            _filter_type(payload, limiter_name) != "Limiter"
-            or limiter_clip is None
-            or limiter_clip > 0.0
-            or not _truthy_bool(limiter_params.get("soft_clip"))
-        ):
-            issues.append(_issue(
-                "blocker", "active_baseline_limiter_invalid",
-                "active baseline limiter is missing or unsafe for "
-                f"DAC output {index + 1} ({role})",
-            ))
-        gain = finite_float(_filter_params(payload, gain_name).get("gain"))
-        if gain is None or gain > 0.0:
-            issues.append(_issue(
-                "blocker", "active_baseline_gain_positive",
-                "active baseline driver gain is missing or positive for "
-                f"DAC output {index + 1} ({role})",
-            ))
-        if index in tweeter_outputs:
-            highpass_names = [
-                name for name in names
-                if _filter_type(payload, name) == "BiquadCombo"
-                and str(_filter_params(payload, name).get("type") or "")
-                == "LinkwitzRileyHighpass"
-                and (as_float(_filter_params(payload, name).get("freq")) or 0.0)
-                > 0.0
-            ]
-            if not highpass_names:
-                issues.append(_issue(
-                    "blocker", "active_baseline_tweeter_highpass_missing",
-                    "active baseline tweeter output is missing a "
-                    f"wired high-pass filter on DAC output {index + 1}",
-                ))
-    for lower_role, upper_role in _mismatched_crossover_pairs(payload, crossovers_by_role, way_counts):
+        issues += _post_limiter_tail_issues(payload, channel=index, limiter_name=limiter_name)
+        issues += _post_split_delay_issues(payload, channel=index)
+        if role != "subwoofer":
+            issues += _baseline_driver_filter_issues(
+                payload, channel=index, role=role, limiter_name=limiter_name,
+                tweeter=index in tweeter_outputs,
+            )
+    for lower_role, upper_role in _mismatched_crossover_pairs(
+        payload, crossovers_by_role, way_counts,
+    ):
         issues.append(_issue(
             "blocker", "active_output_crossover_pair_mismatch",
             f"active graph {lower_role}/{upper_role} low-pass and "
@@ -1963,13 +1947,7 @@ def _active_graph_evidence(
             _program_prefix_issues(payload, view) if is_baseline
             else _driver_domain_prefix_issues(payload, view, mixer_names)
         )
-        unknown_baseline_outputs = sorted(graph_indexes - known_indexes)
-        if unknown_baseline_outputs:
-            issues.append(_issue(
-                "blocker", "active_baseline_routes_unknown_outputs",
-                "active baseline routes outputs not assigned by the saved topology: "
-                + ", ".join(str(index + 1) for index in unknown_baseline_outputs),
-            ))
+        issues += _baseline_output_scope_issues(graph_indexes, known_indexes)
         if contract.subwoofer_present:
             issues += _bass_management_issues(
                 payload, view, by_output=by_output,
