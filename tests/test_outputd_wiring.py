@@ -807,7 +807,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    runtime_contract = (REPO / "jasper" / "active_speaker" / "runtime_contract.py").read_text()
+    outputd_active_lane = (REPO / "jasper" / "outputd_active_lane.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
@@ -852,7 +852,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "/usr/local/sbin/jasper-audio-hardware-reconcile --reason install" in install_sh
     # The cutover gate is width-aware and shared by the composite + single
     # active paths.
-    assert "active_graph_width_out_of_range" in runtime_contract
+    assert "active_graph_width_out_of_range" in outputd_active_lane
     assert "AUDIO_HARDWARE_RECONCILE_UNIT" in startup_load
 
 

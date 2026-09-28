@@ -49,6 +49,7 @@ from jasper.active_speaker.output_contract import (
     CONTRACT_SUBWOOFER_PRESENT,
     classify_output_contract,
 )
+from jasper.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
 from jasper.active_speaker.runtime_contract import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
@@ -60,7 +61,6 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_UNSAFE,
     FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
     FLAT_PROGRAM_GRAPH_UNCONFIGURED,
-    OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS,
     PARKED_MUTED_STATUS,
     _normalized_graph_fingerprint,
     active_graph_is_parked,

@@ -375,7 +375,7 @@ def validate_outputd_env(
         active_cap = active_outputd_lane_channels_for(
             str(base.values.get("JASPER_AUDIO_DAC_ID") or "")
         )
-        from jasper.active_speaker.runtime_contract import (  # lazy: active-endpoint import cost (ADR-0226)
+        from jasper.outputd_active_lane import (  # lazy: active-endpoint import cost (ADR-0226)
             outputd_active_lane_decision,
         )
 
