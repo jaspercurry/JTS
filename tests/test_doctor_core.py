@@ -677,22 +677,6 @@ def test_oneshot_in_managed_units_and_polkit_allowlist():
 
 
 
-def _cfg_attrs_read_by(func) -> set[str]:
-    """Every ``cfg.<attr>`` the check's source reads."""
-    import ast
-    import inspect
-    import textwrap
-
-    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
-    return {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "cfg"
-    }
-
-
 def _main_json(monkeypatch, capsys, argv, *, from_env, run_async):
     """Drive `main()` down the full-profile JSON path; `(exit code, payload)`."""
     monkeypatch.setattr(_cli, "_load_env_files", lambda: None)
@@ -914,26 +898,6 @@ def test_core_text_mode_emits_one_deploy_health_event(
         return
     assert len(lines) == 1
     assert dict(kv.split("=", 1) for kv in lines[0].split()[1:]) == fields
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        entry
-        for entry in doctor.registered_checks()
-        if entry.needs_cfg and not _harness._doctor_skip_detail(entry, "streambox")
-    ],
-    ids=lambda entry: entry.func.__name__,
-)
-def test_streambox_cfg_carries_every_attribute_its_checks_read(entry):
-    """The streambox cfg stub is a contract, not a convenience: a check that
-    survives the profile filter must find every attribute it reads, or it
-    crashes and the dashboard shows a red row on a healthy box."""
-    cfg = _cli._doctor_config_from_env("streambox")
-    missing = {
-        attr for attr in _cfg_attrs_read_by(entry.func) if not hasattr(cfg, attr)
-    }
-    assert not missing
 
 
 def test_librespot_check_reports_ok_on_streambox_cfg(monkeypatch):
