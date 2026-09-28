@@ -251,6 +251,8 @@ class FakePlay:
     default: PlayScript = _CLEAN
     by_kind: dict[str, PlayScript] = field(default_factory=dict)
     script: list[PlayScript] = field(default_factory=list)
+    #: The capture every answer names, as a wired playback does; ``""`` names none.
+    wav_path: str = ""
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def run(
@@ -275,7 +277,7 @@ class FakePlay:
             stage, incident = self.script[index]
         else:
             stage, incident = self.by_kind.get(spec.kind, self.default)
-        return PlaybackOutcome(stage_reached=stage, incident=incident)
+        return PlaybackOutcome(stage_reached=stage, incident=incident, wav_path=self.wav_path)
 
     @property
     def bearings(self) -> list[int | None]:

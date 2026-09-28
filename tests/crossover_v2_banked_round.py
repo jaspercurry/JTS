@@ -64,7 +64,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
 from jasper.web.correction_run_host import bind_plan_analysis
 from tests.crossover_v2_fixtures import FakeSeams, _check_analysis, _conductor, _measure_analysis, _verify_analysis
-from tests.engine_twin import FakeSeams as TwinSeams, open_session
+from tests.engine_twin import FakePlay, FakeSeams as TwinSeams, open_session
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
@@ -380,7 +380,7 @@ def _take_identity(
     phase: str,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     wav_sha256: str | None,
     graph_fingerprint: str = "",
     claim: TakeClaim = TakeClaim(),
@@ -401,7 +401,7 @@ def _take_identity(
         "index": index,
         "attempt": attempt,
         "take_id": take_id_for(position_id, attempt),
-        "run_id": session_id,
+        "run_id": run_id,
         "wav_sha256": wav_sha256,
         "measure_kind": claim.measure_kind,
         "graph_fingerprint": graph_fingerprint,
@@ -500,7 +500,7 @@ def cloud_position_record(
         "position_id": position_id,
         **_take_identity(
             position_id=position_id, phase=phase, index=index, attempt=attempt,
-            session_id=session_id, wav_sha256=wav_sha256,
+            run_id=session_id, wav_sha256=wav_sha256,
             graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": prompt,
@@ -540,7 +540,7 @@ def lateral_pose_record(
     *,
     geometry: spatial.PositionGeometry,
     lateral_consumer: str,
-    session_id: str,
+    run_id: str,
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
@@ -554,7 +554,7 @@ def lateral_pose_record(
         "pose_id": pose.pose_id,
         **_take_identity(
             position_id=pose.pose_id, phase=PHASE_LATERAL, index=pose.index,
-            attempt=pose.attempt, session_id=session_id, wav_sha256=wav_sha256,
+            attempt=pose.attempt, run_id=run_id, wav_sha256=wav_sha256,
             graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": pose.prompt,
@@ -577,7 +577,7 @@ def phase_capture_record(
     phase: str,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
@@ -612,7 +612,7 @@ def phase_capture_record(
     identity = _take_identity(
         position_id=f"{phase}_{index:02d}",
         phase=phase, index=index, attempt=attempt,
-        session_id=session_id, wav_sha256=wav_sha256,
+        run_id=run_id, wav_sha256=wav_sha256,
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
@@ -633,7 +633,7 @@ def entry_baseline_record(
     *,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     stimulus_id: str,
     reference_mark: str,
     graph_fingerprint: str,
@@ -679,7 +679,7 @@ def entry_baseline_record(
     identity = _take_identity(
         position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
         phase=PHASE_ENTRY_BASELINE, index=index, attempt=attempt,
-        session_id=session_id, wav_sha256=wav_sha256,
+        run_id=run_id, wav_sha256=wav_sha256,
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
@@ -751,7 +751,7 @@ def bank_measure_round(
         if entry_excluded is None else [bool(flag) for flag in entry_excluded]
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-entry-graph",
         "captured_at": "2026-08-31T22:00:00Z",
         "wav_sha256": "a" * 64,
@@ -828,7 +828,7 @@ def bank_verify_round(
         if measured_db is None else np.asarray(measured_db, dtype=float)
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-applied-graph",
         "captured_at": "2026-08-31T23:00:00Z",
         "wav_sha256": "c" * 64,
@@ -903,7 +903,7 @@ def bank_seat_round(
         else [np.asarray(magnitude, dtype=float) for magnitude in magnitudes_db]
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-applied-graph",
         "captured_at": "2026-09-01T00:00:00Z",
         "wav_sha256": "d" * 64,
@@ -1008,7 +1008,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
             session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
         analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
-        engine = TwinSeams(records=SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})))
+        engine = TwinSeams(records=SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})),
+                           play=FakePlay(wav_path=answer.wav_path))
         async def bank():
             async with open_session(engine, session_id=manifest.run_id,
                                     allocate_take_id=manifest.allocate_take_id) as (session, _):

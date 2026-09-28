@@ -43,12 +43,11 @@ def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]
     columns of ``diagnostic``, and the distortion view gates its replay
     against it.
     """
-    branch = getattr(analysis, "branch_diagnostic", None)
     return _finite({
         "curves": analysis_curve_records(analysis, program),
         "analysis": analysis_json(analysis),
         "diagnostic": analysis_diagnostic_summary(analysis),
-        **({"branch_diagnostic": branch} if branch else {}),
+        "branch_diagnostic": getattr(analysis, "branch_diagnostic", None) or None,
     })
 
 

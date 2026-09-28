@@ -71,7 +71,7 @@ def _record(
             POSITION_AXIS_HORIZONTAL, position_deg, MARK_DISTANCE_M, vertical_deg,
         ),
         lateral_consumer="forward_model",
-        session_id="sess-1", graph_fingerprint="fp-applied",
+        run_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",
         wav_sha256=f"sha-{index}-{attempt}",
         claim=TakeClaim(candidate_id=candidate_id),
@@ -308,7 +308,7 @@ def test_takes_from_two_capture_sessions_name_both_sources(tmp_path):
 def _entry_take(tmp_path: Path, **overrides) -> Path:
     """One banked entry-baseline sidecar, from the shared take-record builder."""
     fields = {
-        "index": 9, "attempt": 1, "session_id": "sess-1",
+        "index": 9, "attempt": 1, "run_id": "sess-1",
         "stimulus_id": "prog-entry", "reference_mark": "design_axis",
         "graph_fingerprint": "fp-entry", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),

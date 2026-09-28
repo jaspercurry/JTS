@@ -105,7 +105,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 phase = conductor.phase_of_index(index_of(record))
                 played = ExcitationProgram.from_dict(program)
                 result = analyze_capture(record, played, capture, first_bounce_s)
-                fields = {**evidence.get("capture_provenance", {}).get(phase, {}), "branch_diagnostic": None,
+                fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
                           **analysis_blocks(result, played)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc

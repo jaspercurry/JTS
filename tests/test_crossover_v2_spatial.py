@@ -93,9 +93,9 @@ def test_every_take_builder_states_one_identity_under_one_vocabulary():
     core = {"phase", "index", "attempt", "take_id", "run_id", "wav_sha256"}
     cloud = _cloud_record()
     pose = _pose_record()
-    entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
+    entry = _entry_record(index=3, attempt=7, run_id="sess", wav_sha256="abc")
     unprompted = _phase_record(
-        index=3, attempt=7, session_id="sess", wav_sha256="abc",
+        index=3, attempt=7, run_id="sess", wav_sha256="abc",
     )
 
     for record in (cloud, pose, entry, unprompted):
@@ -117,7 +117,7 @@ def _pose_record(**overrides):
     """One retained lateral pose, with only the field under test named."""
     fields = {
         "lateral_consumer": "fc_selector",
-        "session_id": "sess", "graph_fingerprint": "fp-applied",
+        "run_id": "sess", "graph_fingerprint": "fp-applied",
         "captured_at": "2026-08-26T00:00:00Z", "wav_sha256": "abc",
     }
     geometry = spatial.PositionGeometry(
@@ -137,7 +137,7 @@ def _pose_record(**overrides):
 def _entry_record(**overrides):
     """One retained entry-baseline take, with only the field under test named."""
     fields = {
-        "index": 9, "attempt": 1, "session_id": "sess", "stimulus_id": "prog",
+        "index": 9, "attempt": 1, "run_id": "sess", "stimulus_id": "prog",
         "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
@@ -157,7 +157,7 @@ def _phase_record(**overrides):
     separately is how the shapes drift apart.
     """
     fields = {
-        "phase": PHASE_VERIFY, "index": 3, "attempt": 1, "session_id": "sess",
+        "phase": PHASE_VERIFY, "index": 3, "attempt": 1, "run_id": "sess",
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "wav_sha256": "abc",
     }
@@ -412,7 +412,7 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
         geometry=spatial.PositionGeometry(
             spatial.POSITION_AXIS_HORIZONTAL, -22, spatial.MARK_DISTANCE_M,
         ),
-        lateral_consumer="fc_selector", session_id="sess",
+        lateral_consumer="fc_selector", run_id="sess",
         graph_fingerprint="fp-applied", captured_at="2026-08-26T00:00:00Z",
         wav_sha256="abc",
     )

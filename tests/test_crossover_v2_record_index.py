@@ -144,7 +144,7 @@ async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
         )
         return lateral_pose_record(
             pose, geometry=_DESIGN_AXIS_GEOMETRY, lateral_consumer="forward_model",
-            session_id="sess-1", graph_fingerprint="fp-applied",
+            run_id="sess-1", graph_fingerprint="fp-applied",
             captured_at="2026-08-28T11:22:33Z", wav_sha256=f"sha-{index}",
             claim=TakeClaim(candidate_id=candidate_id),
         )
