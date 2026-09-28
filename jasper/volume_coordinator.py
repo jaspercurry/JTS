@@ -534,170 +534,198 @@ class VolumeCoordinator:
         if level is None:
             logger.debug("observe_source_volume: unknown source %s", source)
             return False
-        active = await self._active_source()
-        if active != source:
-            logger.debug(
-                "observe %s: ignoring %d%% because active source is %s",
-                source.value, level, active.value,
-            )
+        if await self._ignore_inactive_source(source, level):
             return False
         publish_needed = False
         async with self._mutation(refresh=False):
-            # A cross-process operation may have held the lease after the
-            # optimistic check above. Revalidate source ownership at the
-            # ordering point so a queued observation cannot update canonical
-            # state after mux has moved to another lane.
-            active = await self._active_source()
-            if active != source:
-                self._refresh_from_disk()
-                logger.debug(
-                    "observe %s: ignoring queued %d%% because active source "
-                    "became %s",
-                    source.value,
-                    level,
-                    active.value,
-                )
+            if await self._ignore_moved_source(source, level):
                 return False
             if level > 0 and self._measurement.holds_fader():
                 return False
-            # Source observers live in jasper-voice while HTTP/accessory mute
-            # may have landed through jasper-control. Inspect the persisted mute
-            # latch before interpreting an observation, but preserve the prior
-            # cached level until `_is_recent_cross_process_write` has compared
-            # it with disk — refreshing early would erase the evidence that
-            # another process just moved the canonical level.
-            record = self._persistence.load()
-            persisted_pre_mute = (
-                record.pre_mute_level if record is not None else None
-            )
-            persisted_mute_token = (
-                record.mute_token if record is not None else None
-            )
+            persisted_pre_mute, persisted_mute_token = self._persisted_mute_latch()
             push_mode = volume_mode(source) == VolumeMode.PUSH
-            if (
-                initial
-                and persisted_pre_mute is not None
-                and not push_mode
+            if self._defer_initial_while_latched(
+                source, level, persisted_pre_mute,
+                push_mode=push_mode, initial=initial,
             ):
-                # USB's bridge publishes the mixer's current value when it
-                # starts or becomes active. That snapshot predates any proof
-                # of user intent and must not erase a mute asserted elsewhere.
-                self._refresh_from_disk()
-                logger.debug(
-                    "observe %s: deferring initial %d%% while mute is latched",
-                    source.value,
-                    level,
-                )
                 return False
             if persisted_pre_mute is None:
                 self._confirmed_push_mute_tokens.pop(source, None)
-            if (
-                persisted_pre_mute is not None
-                and push_mode
-                and level == 0
-            ):
-                # A push-mode mute writes 0 to the renderer. Its observer will
-                # echo that value from another process, where the in-memory
-                # outbound stamp is unavailable. Treat it as confirmation of
-                # this exact mute transition, not a new 0% edit that destroys
-                # the restore level. This intentionally precedes own-echo
-                # suppression: the first observed zero is the durable barrier
-                # that makes a later nonzero observation trustworthy.
-                assert persisted_mute_token is not None
-                self._confirmed_push_mute_tokens[source] = persisted_mute_token
-                self._refresh_from_disk()
-                _, publish_needed = (
-                    await self._handoff.confirm_push_mode_carrier_with_mutation(
-                        source,
-                        0,
-                        context=f"observe_{source.value}_mute_confirmed",
-                        include_live_guard=True,
-                    )
+            if persisted_pre_mute is not None and push_mode and level == 0:
+                # This intentionally precedes own-echo suppression: the first
+                # observed zero is the durable barrier that makes a later
+                # nonzero observation trustworthy.
+                publish_needed = await self._confirm_push_mute_zero(
+                    source, persisted_mute_token,
                 )
-                accepted_muted_echo = True
             elif (
-                persisted_pre_mute is not None
-                and push_mode
-                and self._confirmed_push_mute_tokens.get(source)
-                != persisted_mute_token
+                persisted_pre_mute is not None and push_mode
+                and self._defer_until_mute_zero(source, level, persisted_mute_token)
             ):
-                # mute() persists intent before the slow Spotify/BT push. Until
-                # this observer has seen zero for the same durable token, a
-                # nonzero renderer reading can only be the pre-push value (or
-                # an ambiguous concurrent edit). Mute intent wins that race.
-                assert persisted_mute_token is not None
-                self._refresh_from_disk()
-                logger.debug(
-                    "observe %s: deferring %d%% until mute token %s reaches "
-                    "renderer zero",
-                    source.value,
-                    level,
-                    persisted_mute_token[:8],
-                )
+                return False
+            elif self._ignore_echo(source, level):
                 return False
             else:
-                accepted_muted_echo = False
-            if not accepted_muted_echo:
-                if self._is_own_echo(source, level):
-                    logger.debug(
-                        "observe %s: %d%% within echo window — "
-                        "ignoring (own write)",
-                        source.value,
-                        level,
-                    )
-                    return False
-                if self._is_recent_cross_process_write(level):
-                    self._refresh_from_disk()
-                    logger.debug(
-                        "observe %s: %d%% within persistence echo window — "
-                        "ignoring (recent external write)",
-                        source.value, level,
-                    )
-                    return False
                 self._refresh_from_disk()
                 if level == self._level and self._pre_mute_level is None:
-                    if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
-                        publish_needed = await self._sync_camilla_observed_level(
-                            source, level,
-                        )
-                    else:
-                        result = (
-                            await self._handoff.confirm_push_mode_carrier_with_mutation(
-                                source,
-                                level,
-                                context=f"observe_{source.value}_push_confirmed",
-                                include_live_guard=True,
-                            )
-                        )
-                        carrier_ok, publish_needed = result
-                        if not carrier_ok:
-                            publish_needed = False
+                    publish_needed = await self._sync_observed_carrier(source, level)
                 else:
-                    logger.info(
-                        "observe %s: user-side change %d%% → %d%%",
-                        source.value, self._level, level,
-                    )
-                    self._level = level
-                    self._pre_mute_level = None
-                    self._mute_token = None
-                    self._persistence.save_mute_state(None, None)
-                    self._confirmed_push_mute_tokens.pop(source, None)
-                    self._persistence.save_listening_level(level)
-                    if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
-                        await self._sync_camilla_observed_level(source, level)
-                    else:
-                        await self._handoff.confirm_push_mode_carrier(
-                            source,
-                            level,
-                            context=f"observe_{source.value}_push_confirmed",
-                            include_live_guard=True,
-                        )
+                    await self._accept_user_side_change(source, level)
                     publish_needed = True
         if publish_needed:
             # Camilla/socket reads and IPC happen after releasing the mutation
             # lock; volume commands must not queue behind observability work.
             await self.publish_volume_context()
         return True
+
+    async def _ignore_inactive_source(self, source: Source, level: int) -> bool:
+        active = await self._active_source()
+        if active != source:
+            logger.debug(
+                "observe %s: ignoring %d%% because active source is %s",
+                source.value, level, active.value,
+            )
+            return True
+        return False
+
+    async def _ignore_moved_source(self, source: Source, level: int) -> bool:
+        """A cross-process operation may have held the lease after the
+        optimistic check. Revalidate source ownership at the ordering point
+        so a queued observation cannot update canonical state after mux has
+        moved to another lane."""
+        active = await self._active_source()
+        if active != source:
+            self._refresh_from_disk()
+            logger.debug(
+                "observe %s: ignoring queued %d%% because active source "
+                "became %s",
+                source.value,
+                level,
+                active.value,
+            )
+            return True
+        return False
+
+    def _persisted_mute_latch(self) -> tuple[int | None, str | None]:
+        """The persisted ``pre_mute_level`` and ``mute_token``, read without
+        refreshing the cache.
+
+        Source observers live in jasper-voice while HTTP/accessory mute may
+        have landed through jasper-control. Inspect the persisted mute latch
+        before interpreting an observation, but preserve the prior cached
+        level until `is_recent_cross_process_write` has compared it with
+        disk — refreshing early would erase the evidence that another process
+        just moved the canonical level.
+        """
+        record = self._persistence.load()
+        if record is None:
+            return None, None
+        return record.pre_mute_level, record.mute_token
+
+    def _defer_initial_while_latched(
+        self, source: Source, level: int, persisted_pre_mute: int | None,
+        *, push_mode: bool, initial: bool,
+    ) -> bool:
+        """USB's bridge publishes the mixer's current value when it starts or
+        becomes active. That snapshot predates any proof of user intent and
+        must not erase a mute asserted elsewhere."""
+        if initial and persisted_pre_mute is not None and not push_mode:
+            self._refresh_from_disk()
+            logger.debug(
+                "observe %s: deferring initial %d%% while mute is latched",
+                source.value,
+                level,
+            )
+            return True
+        return False
+
+    async def _confirm_push_mute_zero(
+        self, source: Source, persisted_mute_token: str | None,
+    ) -> bool:
+        """A push-mode mute writes 0 to the renderer. Its observer will echo
+        that value from another process, where the in-memory outbound stamp
+        is unavailable. Treat it as confirmation of this exact mute
+        transition, not a new 0% edit that destroys the restore level.
+        Returns whether a Camilla write landed."""
+        assert persisted_mute_token is not None
+        self._confirmed_push_mute_tokens[source] = persisted_mute_token
+        self._refresh_from_disk()
+        _, publish_needed = (
+            await self._handoff.confirm_push_mode_carrier_with_mutation(
+                source,
+                0,
+                context=f"observe_{source.value}_mute_confirmed",
+                include_live_guard=True,
+            )
+        )
+        return publish_needed
+
+    def _defer_until_mute_zero(
+        self, source: Source, level: int, persisted_mute_token: str | None,
+    ) -> bool:
+        """mute() persists intent before the slow Spotify/BT push. Until this
+        observer has seen zero for the same durable token, a nonzero renderer
+        reading can only be the pre-push value (or an ambiguous concurrent
+        edit). Mute intent wins that race."""
+        if self._confirmed_push_mute_tokens.get(source) != persisted_mute_token:
+            assert persisted_mute_token is not None
+            self._refresh_from_disk()
+            logger.debug(
+                "observe %s: deferring %d%% until mute token %s reaches "
+                "renderer zero",
+                source.value,
+                level,
+                persisted_mute_token[:8],
+            )
+            return True
+        return False
+
+    def _ignore_echo(self, source: Source, level: int) -> bool:
+        if is_own_echo(self._last_outbound, source, level):
+            logger.debug(
+                "observe %s: %d%% within echo window — "
+                "ignoring (own write)",
+                source.value,
+                level,
+            )
+            return True
+        if is_recent_cross_process_write(self._persistence, self._level, level):
+            self._refresh_from_disk()
+            logger.debug(
+                "observe %s: %d%% within persistence echo window — "
+                "ignoring (recent external write)",
+                source.value, level,
+            )
+            return True
+        return False
+
+    async def _sync_observed_carrier(self, source: Source, level: int) -> bool:
+        """Bring the carrier to an observed level. Returns whether a Camilla
+        write landed."""
+        if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
+            return await self._sync_camilla_observed_level(source, level)
+        carrier_ok, publish_needed = (
+            await self._handoff.confirm_push_mode_carrier_with_mutation(
+                source,
+                level,
+                context=f"observe_{source.value}_push_confirmed",
+                include_live_guard=True,
+            )
+        )
+        return carrier_ok and publish_needed
+
+    async def _accept_user_side_change(self, source: Source, level: int) -> None:
+        logger.info(
+            "observe %s: user-side change %d%% → %d%%",
+            source.value, self._level, level,
+        )
+        self._level = level
+        self._pre_mute_level = None
+        self._mute_token = None
+        self._persistence.save_mute_state(None, None)
+        self._confirmed_push_mute_tokens.pop(source, None)
+        self._persistence.save_listening_level(level)
+        await self._sync_observed_carrier(source, level)
 
     async def _sync_camilla_observed_level(
         self, source: Source, level: int,
@@ -1132,14 +1160,6 @@ class VolumeCoordinator:
 
     def _stamp_outbound(self, source: Source) -> None:
         stamp_outbound(self._last_outbound, source)
-
-    def _is_own_echo(self, source: Source, observed_level: int) -> bool:
-        return is_own_echo(self._last_outbound, source, observed_level)
-
-    def _is_recent_cross_process_write(self, observed_level: int) -> bool:
-        return is_recent_cross_process_write(
-            self._persistence, self._level, observed_level,
-        )
 
     # ------------------------------------------------------------------
     # Source-side dispatchers
