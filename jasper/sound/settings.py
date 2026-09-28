@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -50,6 +49,7 @@ from .profile import (
     load_profile,
     loudness_compensation_db,
 )
+from jasper.paths import resolve_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ class SoundSettings:
 
 
 def resolve_settings_path(path: str | Path | None) -> Path:
-    return Path(path or os.environ.get("JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH))
+    return resolve_state_path(path, "JASPER_SOUND_SETTINGS_PATH", SETTINGS_PATH)
 
 
 def load_sound_settings(path: str | Path | None = None) -> SoundSettings:
