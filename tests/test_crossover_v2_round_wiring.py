@@ -309,17 +309,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
     _conductor, state = _stage_1(monkeypatch)
 
-    assert set(state["verify_priors"]) == {
-        "predicted_sum",
-        "gate_window_ms",
-        "pilot_transfer_reference",
-        "commanded_delta",
-        "declared_transfer",
-        "entry_baseline",
-        "proposal_fingerprint",
-        "verify_measured",
-        "alignment_objective",
-    }
+    assert set(state["verify_priors"]) == {"predicted_sum", "pilot_transfer_reference", "entry_baseline"}
 
 
 def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):

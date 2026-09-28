@@ -88,12 +88,6 @@ def crossover_v2_status_block(
         "candidate": (state or {}).get("candidate"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
         "level": seat_level_reference_status(),
-        # MEASURE's own verdict-time disclosures — today just G1's ripple
-        # reservation (#2087). Copied through unvalidated, exactly like
-        # ``candidate`` beside it: the envelope's own accessor
-        # is the validating reader, so a state file written by another build
-        # cannot 500 this poll path.
-        "measure": (state or {}).get("measure"),
         # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
         "execution": (state or {}).get("execution"),

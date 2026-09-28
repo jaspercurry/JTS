@@ -689,109 +689,6 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     assert "fc_selection" not in (v2state.load_v2_state() or {})
 
 
-_RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
-
-
-def _seeded_session_with_a_reservation(measure: dict) -> None:
-    """A completed measuring session whose accepted MEASURE banked one."""
-    v2state.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "measure": dict(measure),
-        "evidence": {"bundle_session_id": "bundle-stage-1"},
-    })
-
-
-_ABSENT = object()
-
-
-def _dig(payload, path, *, missing=None):
-    """Read ``path`` out of a projection, absence included.
-
-    A step that is missing or out of range reads as ``missing``; a step whose
-    stored value really is ``None`` reads as ``None``. The two collapse together
-    by default, which is what most callers want — but "the key was REMOVED" and
-    "the key was written as None" are different clearings, and a caller that
-    must tell them apart passes ``missing=_ABSENT``.
-    """
-    for step in path:
-        if payload is None:
-            return missing
-        try:
-            payload = payload[step]
-        except (KeyError, IndexError):
-            return missing
-    return payload
-
-
-@pytest.mark.parametrize(
-    ("seed", "state_path", "status_path", "expected"),
-    (
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"ripple_reservation": _RIPPLE_RESERVATION}),
-            ("measure", "ripple_reservation"),
-            ("measure", "ripple_reservation"),
-            _RIPPLE_RESERVATION,
-            id="ripple-reservation",
-        ),
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"calibration_reservation": True}),
-            ("measure", "calibration_reservation"),
-            ("measure", "calibration_reservation"),
-            True,
-            id="mic-calibration-reservation",
-        ),
-    ),
-)
-def test_stage_2_keeps_what_the_measuring_session_disclosed(
-    seed, state_path, status_path, expected,
-):
-    """Walks the real seam: seeded durable state -> the REAL re-arm conductor
-    -> the REAL ``persist_conductor_state`` -> the two surfaces the
-    disclosure has to reach (durable state and ``/state``).
-    """
-    seed()
-    v2state.persist_conductor_state(
-        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-stage-2"},
-    )
-
-    # Surface 1: the durable state — carried across the bundle hop.
-    state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
-    assert _dig(state, state_path) == expected
-
-    # Surface 2: /state's projection.
-    status = v2status.crossover_v2_status_block()
-    assert _dig(status, status_path) == expected
-
-
-def test_a_fresh_measurement_clears_what_the_previous_session_disclosed():
-    """The converse, and the reason the predicate is MEASURE rather than an
-    unconditional carry: a new measuring session owns the answer to "what did
-    this measurement learn", so a clean retake must not replay a caveat about a
-    capture the household already replaced.
-    """
-    _seeded_session_with_a_reservation({"ripple_reservation": _RIPPLE_RESERVATION})
-
-    # A fresh full session: its own session_phases include MEASURE.
-    v2state.persist_conductor_state(
-        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-fresh"},
-    )
-
-    # Still there, holding None: the key is the whole measure block.
-    assert _dig(v2state.load_v2_state(), ("measure",), missing=_ABSENT) is None
-    assert v2status.crossover_v2_status_block()["measure"] is None
-
-
 def test_a_corrupt_session_phases_list_never_reads_as_done():
     """S5: ``session_phases`` filters to the empty tuple on garbage, and a
     zero-length walk falls through to PHASE_DONE — i.e. a garbled state file
@@ -2710,22 +2607,15 @@ class _StubConductor:
 
 def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
     """The carries follow the snapshot's phases; the stub has no ``session_phases`` of its own (#4806)."""
-    v2state.save_v2_state({
-        "session_id": "old", "accepted_sound_revision": 4,
-        "measure": {"calibration_reservation": True},
-    })
+    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
     v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    state = v2state.load_v2_state() or {}
-    assert state["accepted_sound_revision"] == 4
-    assert state["measure"] == {"calibration_reservation": True}
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
 
     v2state.persist_conductor_state(
         _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
         failure_code=None,
     )
-    state = v2state.load_v2_state() or {}
-    assert state["accepted_sound_revision"] is None
-    assert state["measure"] is None
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():

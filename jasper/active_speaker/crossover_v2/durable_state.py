@@ -456,7 +456,6 @@ def build_conductor_state(
             if getattr(conductor, "sound_design_revision", None) is not None
             else prior.get("sound_design_revision")
         ),
-        "measure": None,
         "failure": (
             {
                 "code": failure_code,
@@ -474,13 +473,7 @@ def build_conductor_state(
         ),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
-            "commanded_delta": None,
-            "declared_transfer": None,
-            "verify_measured": None,
-            "alignment_objective": "",
             "entry_baseline": _entry_baseline_prior(conductor),
-            "proposal_fingerprint": "",
-            "gate_window_ms": None,
             "pilot_transfer_reference": None,
         },
         "evidence": dict(evidence) if evidence else None,
@@ -501,8 +494,6 @@ def build_conductor_state(
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
-    if not runs_measure and isinstance(prior.get("measure"), Mapping):
-        state["measure"] = dict(prior["measure"])
     for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
         if key in prior:
             state[key] = prior[key]
