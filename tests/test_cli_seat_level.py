@@ -146,7 +146,7 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setattr(seat_level, "read_pose", lambda **kw: dict(state.pose))
     monkeypatch.setattr(seat_level, "TurntableMover", lambda **kw: SimpleNamespace(offset_deg=lambda: 12.5))
     context = SimpleNamespace(topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
-        role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={}, declared_sensitivities={"tweeter": 94.1},
+        role_targets={"woofer": "w", "tweeter": "t"}, safety_profile={},
         playback_device="fake", roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),
                                              RoleBand("tweeter", 1, FrequencyBand(500, 20000))),
         driver_caps_dbfs={"woofer": -8, "tweeter": -12}, driver_sweep_duration_limits_s={}, fc_hz=1600.)
@@ -221,7 +221,6 @@ def box(tmp_path, monkeypatch):
     def readmit(program, path, **kwargs):
         assert kwargs["graph_yaml"] == "accepted graph"
         assert kwargs["session_volume_db"] == state.gain
-        assert kwargs["declared_sensitivities"] == context.declared_sensitivities
         assert kwargs["graph_evidence"] == {
             "bass_extension": candidate.bass_extension, "rear_calibration": candidate.rear_calibration,
         }

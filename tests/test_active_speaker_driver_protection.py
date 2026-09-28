@@ -133,7 +133,7 @@ def test_shipped_jts3_preset_numbers_derive_the_operative_ceiling() -> None:
     comes from, because it is NOT one artifact: 83.3 is in the preset
     JSON, while the preset declares no tweeter ``sensitivity_db`` at all and
     108.5 rides JTS3's persisted design draft ``manual_settings``, which is the
-    one owner of declared sensitivity (``declared_effective_driver_sensitivities``).
+    one owner of declared sensitivity (each computed target carries it).
 
         108.5 - 83.3 = 25.2 dB delta
         0.0 - 25.2   = -25.2 dBFS

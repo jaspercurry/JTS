@@ -91,7 +91,7 @@ def speaker_round(tmp_path):
     record_path = take_artifact_path(inputs.session_dir, row.path)
     record_path.write_text(json.dumps(record))
     classes = {"woofer": "unknown", "tweeter": "soft_dome"}
-    (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
+    (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
         "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": cls} for role, cls in classes.items()],
     }}))
     region = {"id": "pair", "lower_driver": "woofer", "upper_driver": "tweeter", "fc_hz": 2400, "order": 4}
@@ -263,7 +263,7 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         candidate["source_preset"]["crossover_regions"] = []
     (directory / "candidate.json").write_text(json.dumps(candidate))
     if changes.get("horn_positions"):
-        (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
+        (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
             "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": "compression_horn"}],
         }}))
     response = replace(response_from_banked_curve(record["curves"][1])[0], role=role, repeat_responses=())

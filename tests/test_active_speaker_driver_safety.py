@@ -15,7 +15,6 @@ import pytest
 from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.design_draft import (
     build_design_draft,
-    declared_effective_driver_sensitivities,
     design_draft_view,
     normalise_driver_research,
     load_design_draft,
@@ -2077,7 +2076,7 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert tweeter["code_owned_policy"]["max_auto_level_dbfs"] == -65.0
 
 
-def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
+def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> dict:
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
     draft = build_design_draft(
@@ -2089,7 +2088,7 @@ def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
     )
     profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["issues"] == []
-    return profile, declared_effective_driver_sensitivities(draft)
+    return profile
 
 
 def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
@@ -2120,7 +2119,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     assert "send exactly the ceiling" not in prompt
 
     # Absence delegates, through the real resolver.
-    undeclared, sensitivities = _cx120_profile(tweeter_peak_dbfs=None)
+    undeclared = _cx120_profile(tweeter_peak_dbfs=None)
     tweeter_fp = next(
         t["target_fingerprint"] for t in undeclared["targets"] if t["role"] == "tweeter"
     )
@@ -2128,7 +2127,6 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
         undeclared,
         tweeter_fp,
         program_admission=True,
-        declared_sensitivities=sensitivities,
     )
     assert derived == pytest.approx(-20.7)
     assert derived != policy.max_auto_level_dbfs
@@ -2137,7 +2135,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     # figure. Louder used to be clamped back to it (and refused at save); that
     # was a code figure overruling a declaration, and it is gone.
     for declared in (policy.max_auto_level_dbfs - 1, policy.max_auto_level_dbfs + 1):
-        profile, sens = _cx120_profile(tweeter_peak_dbfs=declared)
+        profile = _cx120_profile(tweeter_peak_dbfs=declared)
         _band, literal = resolve_driver_excitation_ceilings(
             profile,
             next(
@@ -2146,7 +2144,6 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
                 if t["role"] == "tweeter"
             ),
             program_admission=True,
-            declared_sensitivities=sens,
         )
         assert literal == pytest.approx(declared)
 
@@ -2167,10 +2164,11 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
     physics on an ordinary coax.
     """
 
-    profile, sensitivities = _cx120_profile()
+    profile = _cx120_profile()
     # Pad-free declaration, so the effective sensitivities are the datasheet
     # ones the reply reported.
-    assert sensitivities == pytest.approx({"woofer": 88.5, "tweeter": 89.2})
+    assert {target["role"]: target["effective_sensitivity_db_2v83_1m"] for target in profile["targets"]} == (
+        pytest.approx({"woofer": 88.5, "tweeter": 89.2}))
 
     tweeter_fp = next(
         t["target_fingerprint"] for t in profile["targets"] if t["role"] == "tweeter"
@@ -2179,7 +2177,6 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
         profile,
         tweeter_fp,
         program_admission=True,
-        declared_sensitivities=sensitivities,
     )
     # woofer cap -20, sensitivity delta 0.7 dB -> -20.7: the sensitivity
     # arithmetic IS the ceiling. Mutation guard: restore the -35 hedge and this
@@ -2188,20 +2185,17 @@ def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> Non
 
     # Without the proven-high-pass path the declared number stands. Delegation
     # is what the protective high-pass buys; it is not unconditional.
-    _band, naked = resolve_driver_excitation_ceilings(
-        profile, tweeter_fp, declared_sensitivities=sensitivities
-    )
+    _band, naked = resolve_driver_excitation_ceilings(profile, tweeter_fp)
     assert naked == pytest.approx(-65.0)
 
     # One dB quieter is a deliberate choice and is never raised.
-    quieter, quieter_sens = _cx120_profile(tweeter_peak_dbfs=-66)
+    quieter = _cx120_profile(tweeter_peak_dbfs=-66)
     _band, quieter_ceiling = resolve_driver_excitation_ceilings(
         quieter,
         next(
             t["target_fingerprint"] for t in quieter["targets"] if t["role"] == "tweeter"
         ),
         program_admission=True,
-        declared_sensitivities=quieter_sens,
     )
     assert quieter_ceiling == pytest.approx(-66.0)
 
