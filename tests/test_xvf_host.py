@@ -49,7 +49,7 @@ _EXPECTED_XVF_COMMANDS_BY_CALLER = {
     "jasper/cli/aec_commission.py": {
         "AEC_AECCONVERGED", "AUDIO_MGR_OP_L", "AUDIO_MGR_OP_R", "SHF_BYPASS",
     },
-    "jasper/audio_validation.py": {
+    "jasper/audio_validation_hardware_checks.py": {
         "AEC_AECCONVERGED",
         "AEC_ASROUTONOFF",
         "AEC_FIXEDBEAMSGATING",

@@ -316,6 +316,8 @@ module = [
     # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
+    "jasper.audio_validation_readiness",
+    "jasper.audio_validation_hardware_checks",
     "jasper.bluetooth.scan",
     "jasper.camilla",
     "jasper.transit.citibike",
@@ -438,6 +440,9 @@ exhaustive_ignores = [
   "audio_profile_state",
   "audio_runtime_plan",
   "audio_validation",
+  "audio_validation_probes",
+  "audio_validation_readiness",
+  "audio_validation_hardware_checks",
   "bluetooth",
   "camilla",
   "camilla_config_contract",
