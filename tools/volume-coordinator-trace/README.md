@@ -2,7 +2,7 @@
 
 This branch is never merged. It keeps the trace harness that proves each
 `volume_coordinator.py` split PR changes no behaviour. Every later split PR
-(4 to 7, the hearing tier) runs it against main and against its head.
+(4 to 11) runs it against main and against its head.
 
 Run it from a neutral directory against a checkout:
 
@@ -14,9 +14,9 @@ It prints `digest=<sha256>`. A split PR must give the same digest as main.
 Logger names are not in the digest; `--names` lists them so a move can
 state each rename.
 
-Digest at main `45e2b1417` and at the #5895 step 0 head, which dropped the
-duck-lock scenarios:
-`e10c22e58d4f8c7aa5becbaa5cd6e2184c5ff62e221524a2d1a98d12814a3f6a`.
+Digest at main `04664da02` (after #5895 PR 7 cut the tokenless mute latch),
+with every latch seed tokened and one scenario that seeds a tokenless latch:
+`6846affeebe098476d26ffb0f0c9c2a7bef76bde45825e97fa91ccd9c49162a9`.
 It changes when main changes the volume path; re-take it at the new base.
 
 To check that the harness sees a change, plant one bug at a time:

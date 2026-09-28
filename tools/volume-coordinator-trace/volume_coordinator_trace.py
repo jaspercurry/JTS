@@ -573,13 +573,13 @@ async def s_observe() -> None:
         advance(3.0)
         await step(w.coord, "observe:65", lambda: w.coord.observe_source_volume(source, 65))
         await step(w.coord, "observe_initial:65", lambda: w.coord.observe_source_volume(source, 65, initial=True))
-    # 6. Push-mode: a latch without a token is repaired, zero confirms it.
+    # 6. Push-mode: the renderer's zero confirms the latch's token.
     for source, key, zero, nonzero in (
         (Source.SPOTIFY, "spotactive", 0, 65),
         (Source.BLUETOOTH, "btactive", 0, 64),
     ):
         w = World(f"observe:push_latch:{source.value}", active={key: True}, db=0.0, level=60)
-        w.other_writer().save_mute_state(60, None)
+        w.other_writer().save_mute_state(60, "seeded-latch")
         await step(w.coord, "revision", lambda: w.coord.source_observation_revision(source))
         await step(w.coord, "observe:nonzero_before_zero", lambda: w.coord.observe_source_volume(source, nonzero))
         await step(w.coord, "revision", lambda: w.coord.source_observation_revision(source))
@@ -691,6 +691,12 @@ async def s_observe() -> None:
     await step(observer, "observe:65", lambda: observer.observe_source_volume(Source.SPOTIFY, 65))
     await step(observer, "observer_state", lambda: observer.get_volume_state())
     await step(control, "control_state", lambda: control.get_volume_state())
+    # 12. A latch without its token loads unmuted, so a nonzero reading is a
+    # user edit (#5895 PR 7).
+    w = World("observe:tokenless_latch", active={"spotactive": True}, db=0.0, level=60)
+    w.other_writer().save_mute_state(60, None)
+    await step(w.coord, "state", lambda: w.coord.get_volume_state())
+    await step(w.coord, "observe:65", lambda: w.coord.observe_source_volume(Source.SPOTIFY, 65))
 
 
 HANDOFF_PAIRS = [
@@ -767,7 +773,7 @@ async def s_handoff() -> None:
             if variant == "push_fail_offline":
                 FX.offline = True
             if variant == "muted_latch":
-                w.other_writer().save_mute_state(45, None)
+                w.other_writer().save_mute_state(45, "seeded-latch")
             if variant == "remote_twist":
                 w.other_writer().save_listening_level(80)
             await step(w.coord, "transition", lambda: w.coord.apply_active_source_transition(prev, cur))
@@ -805,7 +811,7 @@ async def s_reconcile() -> None:
             muted=muted, level=level, mark_user_change=True,
         )
         if pre_mute is not None:
-            w.other_writer().save_mute_state(pre_mute, None)
+            w.other_writer().save_mute_state(pre_mute, "seeded-latch")
         for i in range(2):
             await step(w.coord, f"tick{i}", lambda: w.coord.maybe_reconcile_camilla())
             await step(w.coord, "deferred?", lambda: w.coord.reconcile_deferred)
@@ -1019,7 +1025,7 @@ async def s_offline() -> None:
     for pre_mute in (None, 59):
         w = World(f"offline:context_unreadable:pre_mute={pre_mute}", active={}, db=-20.0, level=59)
         if pre_mute is not None:
-            w.other_writer().save_mute_state(pre_mute, None)
+            w.other_writer().save_mute_state(pre_mute, "seeded-latch")
         await step(w.coord, "context_readable", lambda: w.coord.effective_volume_context())
         FX.offline = True
         await step(w.coord, "context_unreadable", lambda: w.coord.effective_volume_context())
