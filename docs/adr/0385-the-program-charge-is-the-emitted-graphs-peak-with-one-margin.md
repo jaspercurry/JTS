@@ -36,8 +36,8 @@
   3. **One ε.** `PEAK_EPS_DB` is both the uncharged threshold and the verifier's slack.
   4. **Timing.** The timing take folds its candidate graph's whole charge into its trims, so it never
      plays louder than its candidate.
-  5. **The room-off rise.** It is what the applied room layer adds to the charge
-     (`candidate_parts.room_layer_charge_db`), less the layer's lowest in-band response, floored at 0.
+  5. **The room-off rise.** It is what the applied room layer adds to the played graph's charge
+     (`measurement_emit.room_layer_charge_db`), less the layer's lowest in-band response, floored at 0.
 - **Consequences:**
   - Only the `active_baseline_headroom` value moves in emitted graphs.
     - On the #5909 corpus, 34 of 498 graphs play louder at the same fader, by up to 3.92 dB.

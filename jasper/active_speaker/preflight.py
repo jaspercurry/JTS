@@ -87,7 +87,7 @@ class PreflightFacts:
     #: ``None`` when an applied profile's room layer could not be read.
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
     #: What that layer adds to the applied program charge (ADR-0385); ``None`` when unknown.
-    applied_room_charge_db: float | None = 0.0
+    applied_room_charge_db: float | None = None
     stimulus_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
@@ -155,7 +155,7 @@ def _room_off_rise_db(plan: AngleCaptureRequest, room_peqs: Sequence[PeqFilter] 
              for stop in plan.stops
              if stop.plays_summed
              and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)]
-    if bands and (room_peqs is None or room_charge_db is None):
+    if bands and (room_peqs is None or (room_peqs and room_charge_db is None)):
         raise ValueError("the applied room layer could not be read, so a take clearing it has no known rise")
     return max((rise_without_room_db(room_peqs or (), band, charge_db=room_charge_db or 0.0) for band in bands),
                default=None)

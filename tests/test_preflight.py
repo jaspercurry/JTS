@@ -604,7 +604,7 @@ def test_a_take_clearing_the_room_layer_folds_its_rise_into_the_opener_margin(
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose, candidate_id=candidate_id,
                                           stimulus=stimulus),),
                                candidates=tuple(candidates), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, candidates=candidates, applied_room_peqs=(room,)))
+    report = preflight(plan, ready_facts(plan, candidates=candidates, applied_room_peqs=(room,), applied_room_charge_db=0.0))
     row = report.rung_admission
     assert not report.blocking
     assert row.get("room_off_rise_db") == (None if rise_db is None else pytest.approx(rise_db, abs=0.1))
@@ -612,13 +612,13 @@ def test_a_take_clearing_the_room_layer_folds_its_rise_into_the_opener_margin(
     assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
 
 
-@pytest.mark.parametrize("purpose,blocked", [("bass", True), ("room", False)])
-def test_an_unreadable_applied_room_layer_refuses_a_take_that_clears_it(purpose, blocked):
-    """With the applied room layer unreadable, a room-off take's rise is
-    unknown, so preflight refuses its plan; a take playing the room layer runs
-    as before (ADR-0370)."""
+@pytest.mark.parametrize("purpose,room,blocked", [("bass", None, True), ("bass", (_CUT,), True), ("room", None, False)])
+def test_an_unreadable_applied_room_layer_refuses_a_take_that_clears_it(purpose, room, blocked):
+    """With the applied room layer or its charge unreadable, a room-off take's
+    rise is unknown, so preflight refuses its plan; a take playing the room
+    layer runs as before (ADR-0370, ADR-0385)."""
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose),), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, applied_room_peqs=None))
+    report = preflight(plan, ready_facts(plan, applied_room_peqs=room))
     assert [issue.code for issue in report.issues if issue.blocking] == (["walk_level_policy_invalid"] if blocked else [])
 
 
@@ -640,7 +640,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert (facts.applied_room_peqs, facts.applied_room_charge_db) == (room, None if room is None else 0.0)
+    assert (facts.applied_room_peqs, facts.applied_room_charge_db) == (room, None)
 
 
 def test_margin_clamp_lands_under_the_bound():

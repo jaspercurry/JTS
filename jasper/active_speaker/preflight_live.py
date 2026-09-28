@@ -57,7 +57,7 @@ def read_preflight_facts(
     stop = None
     applied_bass_extension: Mapping[str, Any] = {}
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
-    applied_room_charge_db: float | None = 0.0
+    applied_room_charge_db: float | None = None
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
@@ -73,7 +73,6 @@ def read_preflight_facts(
         except (OSError, RuntimeError, ValueError, LookupError):
             # No applied profile has no room layer; one that cannot be read has an unknown one.
             applied_room_peqs = () if state is not None and state.get("status") != "applied" else None
-            applied_room_charge_db = None if applied_room_peqs is None else 0.0
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         if name == BASE_CANDIDATE:
