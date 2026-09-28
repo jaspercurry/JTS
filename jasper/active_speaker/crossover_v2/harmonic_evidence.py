@@ -5,13 +5,14 @@
 """Read per-take H2/H3 with capture bytes and stimulus identity checked.
 
 Harmonic images precede the linear IR by L·ln(order), so the distortion
-kernel uses a wider pre-guard than the normal response analysis. Legacy
-captures without stimulus identity retain conditional ratios, with drive
-unknown, wherever their program is recorded or proved by the stimulus id
-another take recorded; timing agreement alone cannot prove the played
-program's level. The id leaves the fader out (#5012),
-so a MEASURE take's drive rests on the session volume it recorded, labelled so
-and checked against the fader readback it banked.
+kernel uses a wider pre-guard than the normal response analysis. A branch take
+without stimulus identity retains conditional ratios, with drive unknown,
+because its own program is recorded; timing agreement alone cannot prove the
+played program's level. A MEASURE take is read only under the stimulus id it
+recorded, and one banked under an older program schema is refused as
+superseded (#2902). The id leaves the fader out (#5012), so a MEASURE take's
+drive rests on the session volume it recorded, labelled so and checked against
+the fader readback it banked.
 """
 
 from __future__ import annotations
@@ -1027,7 +1028,7 @@ def read_round_harmonics(
         }
         sidecar = capture["sidecar"]
         stimulus = _recorded_stimulus(sidecar)
-        if not stimulus_ids and sidecar.get("graph_scope") != "candidate_branches":
+        if sidecar.get("graph_scope") != "candidate_branches" and _recorded_stimulus_id(sidecar) is None:
             # A take banked under an older schema recorded its id under the key it had then.
             version = _banked_program_schema(sidecar)
             refusal = ("program_schema_superseded" if version is not None and version < PROGRAM_SCHEMA_VERSION
