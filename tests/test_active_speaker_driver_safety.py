@@ -50,21 +50,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_excitation_safety_plan import _requested
 
 
-def _blocked_codes(
-    topology: OutputTopology,
-    manual: dict,
-    *,
-    driver_research: dict | None = None,
-) -> set[str]:
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=manual,
-        driver_research=driver_research,
-    )
-    assert any(i["severity"] == "blocker" for i in profile["issues"])
-    return {issue["code"] for issue in profile["issues"]}
-
-
 def _operator_inputs() -> dict[str, str]:
     return {
         "woofer": "Example W6",
@@ -875,45 +860,12 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     )
 
 
-def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() -> None:
+def test_stereo_targets_preserve_their_asymmetry() -> None:
     topology = _stereo_topology()
-    legacy = _manual_settings()
-    for driver in legacy["drivers"]:
-        driver.pop("target_id", None)
-        driver.pop("source", None)
-
-    incomplete = compute_driver_safety_profile(
-        topology,
-        manual_settings=legacy,
-        driver_research=None,
-    )
-    assert any(i["severity"] == "blocker" for i in incomplete["issues"])
-    assert [target["target_values_binding"] for target in incomplete["targets"]] == [
-        "missing",
-        "missing",
-        "missing",
-        "missing",
-    ]
-    assert {issue["code"] for issue in incomplete["issues"]}.issuperset(
-        {
-            "left:woofer:target_specific_values_missing",
-            "left:tweeter:target_specific_values_missing",
-            "right:woofer:target_specific_values_missing",
-            "right:tweeter:target_specific_values_missing",
-        }
-    )
-    assert _blocked_codes(topology, legacy).issuperset(
-        {
-            "left:woofer:target_specific_values_missing",
-            "left:tweeter:target_specific_values_missing",
-            "right:woofer:target_specific_values_missing",
-            "right:tweeter:target_specific_values_missing",
-        }
-    )
-
+    manual = _stereo_manual_settings()
     explicit = compute_driver_safety_profile(
         topology,
-        manual_settings=_stereo_manual_settings(),
+        manual_settings=manual,
         driver_research=None,
     )
     assert not any(i["severity"] == "blocker" for i in explicit["issues"])
@@ -923,6 +875,15 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
         "right:woofer": "Right Example W6",
         "right:tweeter": "Right Example T1",
     }
+
+    manual["drivers"] = [driver for driver in manual["drivers"] if driver["target_id"].startswith("left:")]
+    left_only = compute_driver_safety_profile(topology, manual_settings=manual, driver_research=None)
+    assert {target["target_id"]: target["target_values_binding"] for target in left_only["targets"]} == {
+        "left:woofer": "explicit_target", "left:tweeter": "explicit_target",
+        "right:woofer": "missing", "right:tweeter": "missing",
+    }
+    assert {"right:woofer:target_specific_values_missing", "right:tweeter:target_specific_values_missing"} <= {
+        issue["code"] for issue in left_only["issues"] if issue["severity"] == "blocker"}
 
 
 def test_stereo_research_request_uses_exact_target_models() -> None:
@@ -1290,10 +1251,9 @@ def test_operator_override_drops_research_provenance_for_changed_field() -> None
     )
 
 
-def _legacy_duplicate_role(manual: dict) -> None:
+def _role_only_rows(manual: dict) -> None:
     for driver in manual["drivers"]:
         driver.pop("target_id", None)
-    manual["drivers"].append(deepcopy(manual["drivers"][0]))
 
 
 _mono_topology = partial(mono_output_topology, card_id=None)
@@ -1325,10 +1285,10 @@ _mono_topology = partial(mono_output_topology, card_id=None)
             id="legacy_role_row_rebinds_a_bound_target",
         ),
         pytest.param(
-            _legacy_duplicate_role,
+            _role_only_rows,
             _stereo_topology,
-            "manual_duplicate_legacy_role",
-            id="two_legacy_rows_for_one_role",
+            "manual_target_missing",
+            id="role_only_row_fits_several_outputs",
         ),
     ],
 )

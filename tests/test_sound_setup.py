@@ -6604,7 +6604,8 @@ def test_setup_opens_refused_research_where_it_is_fixed(tmp_path, monkeypatch, f
 @pytest.mark.parametrize('stereo,row,code,cards', [
     (False, {'role': 'woofer', 'target_id': 'gone:woofer', 'gain_offset_db': -2}, 'manual_target_unknown', ['mono:woofer']),
     (False, {'role': 'mid', 'gain_offset_db': -2}, 'manual_role_unknown', ['mono:woofer']),
-], ids=['unknown_target', 'role_unknown'])
+    (True, {'role': 'woofer', 'gain_offset_db': -2}, 'manual_target_missing', ['left:woofer', 'right:woofer']),
+], ids=['unknown_target', 'role_unknown', 'role_only_row_for_several_outputs'])
 def test_setup_shows_the_values_of_a_row_it_cannot_place(tmp_path, monkeypatch, stereo, row, code, cards):
     setup, topology, inputs, _research, path = _stored_setup(tmp_path, monkeypatch, stereo=stereo)
     _store(path, rows=[row])
@@ -6624,41 +6625,46 @@ def test_setup_shows_the_values_of_a_row_it_cannot_place(tmp_path, monkeypatch, 
     assert all(saved[target_id][key] == value for target_id in cards for key, value in declared.items())
 
 
-def test_setup_preserves_unambiguous_legacy_trim_when_other_bindings_are_ambiguous(tmp_path, monkeypatch):
+def test_setup_clears_refused_research_and_an_unplaced_row_without_losing_a_value(tmp_path, monkeypatch):
+    from jasper.active_speaker.driver_safety import DriverSafetyProfileError
+
+    setup, topology, inputs, research, path = _stored_setup(tmp_path, monkeypatch, stereo=True)
+    _store(path, rows=[{'role': 'woofer', 'gain_offset_db': -2}], stale_research=True)
+
+    refused = setup.load_setup_view()
+    assert (refused['stage'], [issue['code'] for issue in refused['issues']]) == ('research', ['unknown_driver_fields'])
+    with pytest.raises(DriverSafetyProfileError) as caught:
+        setup.import_research({'text': json.dumps(research)})
+    assert (caught.value.code, caught.value.declared) == ('manual_target_missing', {'gain_offset_db': -2})
+    typed = [{'target_id': target_id, 'role': 'woofer', 'gain_offset_db': -2} for target_id in ('left:woofer', 'right:woofer')]
+    setup.save_details({'operator_inputs': inputs, 'manual_settings': {'drivers': typed}})
+    saved = setup.load_setup_view()
+    assert (saved['stage'], saved['issues'], load_design_draft(topology=topology)['driver_research']) == ('research', [], None)
+    setup.import_research({'text': json.dumps(research)})
+    draft = load_design_draft(topology=topology)
+    assert draft['driver_research'] is not None
+    assert {row['target_id']: row['gain_offset_db'] for row in draft['manual_settings']['drivers']} == {
+        'left:woofer': -2, 'right:woofer': -2}
+
+
+def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
-    from jasper.active_speaker.design_draft import save_design_draft
-    from jasper.active_speaker.design_inputs import resolved_draft_inputs
-    from jasper.active_speaker.layout import build_speaker_layout
     from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _operator_inputs
 
-    topology = build_speaker_layout(mono_output_topology(), {
-        "layout": "mono", "crossover": "active", "channels": 3, "cardioid": True,
-    })
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(tmp_path / "draft.json"))
-    monkeypatch.setattr(setup, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: None)
-    monkeypatch.setattr(setup.commissioning_coordinator, "load_commissioning_view", lambda topology: {
-        "programs": programs_for_topology(topology), "applied_profile": {"stands": False},
-        "driver_values": {"complete": False}, "review": {"issues": []},
-    })
-    inputs = _operator_inputs()
-    save_design_draft(topology, operator_inputs=inputs, manual_settings={"drivers": [
-        {"role": "woofer", "gain_offset_db": -2}, {"role": "tweeter", "gain_offset_db": -20},
-    ]})
-    manual = setup.load_setup_view()["draft"]["manual_settings"]
-    for group in topology.speaker_groups:
-        for channel in group.channels:
-            target = channel.target_id(group.id)
-            if not any(row.get("target_id") == target for row in manual["drivers"]):
-                manual["drivers"].append({"target_id": target, "role": channel.role})
-    setup.save_details({"operator_inputs": inputs, "manual_settings": manual})
-    draft = load_design_draft(topology=topology)
-    drivers = resolved_draft_inputs(draft)["drivers"]
-    assert next(row for row in drivers if row["role"] == "tweeter")["gain_offset_db"] == -20
-    assert any(row.get("target_id") is None and row["role"] == "woofer" and row["gain_offset_db"] == -2
-               for row in draft["manual_settings"]["drivers"])
+    topology = mono_output_topology(mode='full_range_passive', with_subwoofer=True)
+    monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(tmp_path / 'draft.json'))
+    monkeypatch.setattr(setup, 'load_output_topology', lambda: topology)
+    monkeypatch.setattr(baseline_profile, 'load_applied_baseline_profile_state', lambda: None)
+    monkeypatch.setattr(setup.commissioning_coordinator, 'load_commissioning_view', lambda topology: {
+        'programs': programs_for_topology(topology), 'applied_profile': {'stands': False},
+        'driver_values': {'complete': False}, 'review': {'issues': []}})
+    view = setup.load_setup_view()
+    rows = [{'target_id': target['target_id'], 'role': target['role'], 'gain_offset_db': -1}
+            for target in view['draft']['targets']]
+    setup.save_details({'operator_inputs': {'full_range': 'Example F8'}, 'manual_settings': {'drivers': rows}})
+    saved = setup.load_setup_view()['draft']['manual_settings']['drivers']
+    assert [row['target_id'] for row in saved] == [row['target_id'] for row in rows]
 
 
 @pytest.mark.parametrize('style', ['', 'compression_driver'])
