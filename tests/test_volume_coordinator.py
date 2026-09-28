@@ -71,6 +71,7 @@ from jasper.volume_owner import (
 )
 from jasper.volume_persistence import VolumePersistence
 from jasper.volume_curve import percent_to_db
+from jasper.volume_state import FIRST_BOOT_DEFAULT_PCT, VolumeState
 from jasper.web import sound_profile_apply
 
 
@@ -939,6 +940,30 @@ async def test_user_change_bumps_last_used_at(tmp_path):
     assert rec.last_used_at is not None
     age = (datetime.now(timezone.utc) - rec.last_used_at).total_seconds()
     assert 0 <= age < 5
+
+
+@pytest.mark.parametrize(
+    ("fields", "state"),
+    [
+        pytest.param(None, VolumeState(FIRST_BOOT_DEFAULT_PCT), id="no_record"),
+        pytest.param({}, VolumeState(FIRST_BOOT_DEFAULT_PCT), id="level_missing"),
+        pytest.param({"listening_level": 30}, VolumeState(30), id="level_present"),
+        pytest.param(
+            {"listening_level": 30, "pre_mute_level": 30, "mute_token": "m"},
+            VolumeState(30, 30, "m"),
+            id="latch_present",
+        ),
+    ],
+)
+def test_a_record_projects_one_state_for_every_reader(tmp_path, fields, state):
+    """GET /volume and /state read through `from_record`; the coordinator
+    runs the level they report."""
+    coord, _, persistence = _coord(tmp_path, active={})
+    if fields is not None:
+        persistence.path.write_text(json.dumps({"main_volume_db": 0.0, **fields}))
+
+    assert VolumeState.from_record(persistence.load()) == state
+    assert coord.get_volume_state() == state
 
 
 # ---------- AirPlay camilla-master dispatch --------------------------------

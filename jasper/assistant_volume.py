@@ -152,7 +152,7 @@ class VolumeContextPublication:
     Its inputs are the coordinator's own doors; it caches no volume intent.
     ``lock`` is the coordinator's ``_lock``, without the file lease.
     ``cached`` is the coordinator's in-memory ``(level, pre_mute_level)``,
-    which a snapshot falls back to where the record lacks them.
+    which a snapshot falls back to when there is no record.
     """
 
     def __init__(
@@ -175,12 +175,9 @@ class VolumeContextPublication:
         self._push_carrier_target_db = push_carrier_target_db
 
     def _state(self, record: VolumeRecord | None) -> VolumeState:
-        level, pre_mute = self._cached()
         if record is None:
-            return VolumeState(level, pre_mute)
-        if record.listening_level is not None:
-            level = int(record.listening_level)
-        return VolumeState(level, record.pre_mute_level)
+            return VolumeState(*self._cached())
+        return VolumeState.from_record(record)
 
     async def snapshot(self) -> EffectiveVolumeContext:
         """Return the absolute volume facts consumed by fan-in, as one
