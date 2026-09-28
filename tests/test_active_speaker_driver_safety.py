@@ -1277,12 +1277,16 @@ _mono_topology = partial(mono_output_topology, card_id=None)
             id="target_id_not_in_topology",
         ),
         pytest.param(
-            lambda manual: manual["drivers"].append(
-                {**deepcopy(manual["drivers"][1]), "target_id": None}
-            ),
+            lambda manual: manual["drivers"].append(dict(manual["drivers"][0])),
             _mono_topology,
             "manual_target_bound_twice",
-            id="legacy_role_row_rebinds_a_bound_target",
+            id="two_rows_name_one_output",
+        ),
+        pytest.param(
+            _role_only_rows,
+            _mono_topology,
+            "manual_target_missing",
+            id="role_only_row_on_a_one_output_role",
         ),
         pytest.param(
             _role_only_rows,

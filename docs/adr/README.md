@@ -317,7 +317,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0327](0327-rear-weight-is-a-boost-on-both-rear-branches.md) | The rear weight is a boost on both rear branches, never front attenuation | accepted |
 | [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; the only protective band edge is a high-frequency driver's floor | accepted |
 | [0329](0329-cardioid-on-off-is-an-audition-layer.md) | Cardioid on/off for listening is an audition layer: the rear mutes in the running graph only, switched in place, loudness-matched by attenuation only | accepted |
-| [0330](0330-speaker-setup-resolves-inputs-on-the-server.md) | The server resolves speaker setup inputs | accepted |
+| [0330](0330-speaker-setup-resolves-inputs-on-the-server.md) | The server resolves speaker setup inputs | role-only legacy authority superseded by 0379 |
 | [0331](0331-applied-tune-reads-use-the-saved-artifact.md) | Applied tune reads use the saved artifact | EQ status dry-run superseded by 0332 |
 | [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
 | [0333](0333-live-followup-counts-from-audible-playout.md) | Live follow-up counts from audible playout | accepted |
@@ -353,4 +353,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | accepted |
 | [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | accepted |
 | [0377](0377-a-retired-preset-id-refuses-as-an-unknown-preset.md) | A retired preset id is not kept: it refuses as an unknown preset, and a layout no preset offers is deleted | accepted |
+| [0379](0379-a-stored-driver-declaration-in-a-retired-shape-refuses-by-its-field.md) | A stored driver declaration in a retired shape refuses by its field and names its fix; every row names its physical output, and nothing binds by role | accepted |
 | [0380](0380-the-capability-stub-table-is-gone.md) | The capability stub table is gone: every mic-only capture regime plays and banks, and an analysis gap is tracked on the ticket that plans its work | accepted |

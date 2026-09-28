@@ -745,7 +745,7 @@ def _full_range_draft() -> dict[str, Any]:
     from tests.active_speaker_fixtures import mono_output_topology
 
     return build_design_draft(mono_output_topology(mode="full_range_passive"), manual_settings={"drivers": [
-        {"role": "full_range", "measurement_band_hz": [45, 18000],
+        {"role": "full_range", "target_id": "mono:full_range", "measurement_band_hz": [45, 18000],
          "hard_excitation_band_hz": [40, 20000], "required_protection_filters": []},
     ]})
 

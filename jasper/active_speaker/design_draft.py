@@ -551,78 +551,27 @@ def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
     return millimetres / 1000.0
 
 
-def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, float]:
-    """Per-role declared datasheet sensitivities (dB @ 2.83 V/1 m) from the draft.
-
-    The declaration (``manual_settings.drivers``) is the ONE owner of driver
-    sensitivity — a declared physical property, not a safety limit — so it is
-    never duplicated onto the computed safety profile. Consumers wanting the
-    ceiling read the pad-folded
-    :func:`declared_effective_driver_sensitivities` rather than this naked one.
-
-    A role declared more than once with disagreeing values derives nothing for
-    that role (ambiguity fails toward the conservative class-default ceiling).
-    Returns ``{}`` when the draft carries no declaration.
-    """
-
-    if not isinstance(draft, Mapping):
-        return {}
-    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
-    if not isinstance(settings, Mapping):
-        return {}
-    drivers = settings.get("drivers")
-    out: dict[str, float] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("sensitivity_db_2v83_1m")
-        if (
-            not role
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
-            continue
-        number = float(value)
-        if role in out and out[role] != number:
-            conflicted.add(role)
-            continue
-        out[role] = number
-    for role in conflicted:
-        out.pop(role, None)
-    return out
-
-
 def declared_effective_driver_sensitivities(
     draft: Mapping[str, Any] | None,
 ) -> dict[str, float]:
-    """Per-role declared sensitivities with any in-line pad folded in.
+    """Per-role declared sensitivities (dB @ 2.83 V/1 m) with each driver's in-line pad folded in.
 
-    Sibling of :func:`declared_driver_sensitivities` with the same shape, except
-    each row's naked ``sensitivity_db_2v83_1m`` is folded through
-    :func:`jasper.active_speaker.driver_pad.effective_sensitivity_db` using that
-    row's own ``pad``. Excitation-ceiling derivation, session-volume planning and
-    playback admission read THIS one (#1665): they need the number a microphone
-    would measure at the driver terminals, not the naked rating.
-
-    A role is dropped on ANY disagreement between its rows — naked sensitivity,
-    pad, or both — since either makes the effective figure ambiguous. Returns
-    ``{}`` when the draft carries no declaration.
+    The declaration (``manual_settings.drivers``) is the one owner of driver
+    sensitivity, a declared physical property never copied onto the computed
+    safety profile. Excitation-ceiling derivation, session-volume planning and
+    playback admission read this (#1665): the number a microphone would measure
+    at the driver terminals, not the naked rating. Values bind through the
+    draft's topology, one per physical output. A role whose outputs disagree
+    (naked sensitivity, pad, or both) derives nothing, failing toward the
+    class-default ceiling. Returns ``{}`` when the draft has no topology or no
+    declaration.
     """
 
-    if not isinstance(draft, Mapping):
+    if not isinstance(draft, Mapping) or not draft.get("topology"):
         return {}
-    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
-    if not isinstance(settings, Mapping):
-        return {}
-    drivers = settings.get("drivers")
     out: dict[str, float] = {}
     conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
+    for driver in resolved_draft_inputs(draft)["drivers"]:
         role = str(driver.get("role") or "")
         value = driver.get("sensitivity_db_2v83_1m")
         if (
@@ -750,16 +699,7 @@ def _summary(
         role_target_ids.setdefault(role, []).append(target_id)
 
     def resolved_target_ids(drivers: list[dict[str, Any]]) -> set[str]:
-        resolved: set[str] = set()
-        for driver in drivers:
-            explicit = driver.get("target_id")
-            if explicit in target_role:
-                resolved.add(str(explicit))
-                continue
-            matches = role_target_ids.get(str(driver.get("role") or ""), [])
-            if len(matches) == 1:
-                resolved.add(matches[0])
-        return resolved
+        return {str(driver["target_id"]) for driver in drivers if driver.get("target_id") in target_role}
 
     research_roles = []
     if driver_research:

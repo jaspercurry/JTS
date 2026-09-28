@@ -69,14 +69,6 @@ def preview_layout(raw: Mapping[str, Any]) -> dict[str, Any]:
     return layout_view(build_speaker_layout(load_output_topology(), raw))
 
 
-def _page_manual(topology, manual_settings: Any) -> dict[str, Any]:
-    """The manual rows a driver card shows; a refusal lists the values of any other row."""
-    manual = resolve_design_inputs(topology, manual_settings, None)
-    bindings = manual.pop("bindings")
-    manual["drivers"] = [driver for driver in manual["drivers"] if bindings[driver["target_id"]] != "ambiguous"]
-    return manual
-
-
 def _research_refuses(research: Any) -> bool:
     try:
         design_draft.normalise_driver_research(research)
@@ -100,7 +92,7 @@ def load_setup_view() -> SpeakerSetupView:
         refused = [{**issue("blocker", getattr(exc, "code", "invalid_design_draft"), str(exc)),
                     **({"declared": declared} if declared else {})}]
         coordinator = {"applied_profile": {}, "programs": ()}
-    manual = _page_manual(topology, draft.get("manual_settings"))
+    manual = resolve_design_inputs(topology, draft.get("manual_settings"), None)
     resolved = resolve_design_inputs(topology, manual, draft.get("driver_research"))
     preview = {} if refused else build_crossover_preview(draft)
     applied = coordinator["applied_profile"]

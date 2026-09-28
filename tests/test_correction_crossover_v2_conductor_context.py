@@ -42,6 +42,7 @@ from jasper.output_topology import (
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
+from tests.active_speaker_fixtures import current_research
 from tests.test_active_speaker_crossover_preview import _research as preview_research
 from tests.test_active_speaker_profile import _three_way_preset
 from tests.test_rear_output_foundation import _rear_pair
@@ -285,7 +286,7 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
     draft = {"status": "ready_for_review", "topology": topo.to_dict(),
-             "driver_research": preview_research()}
+             "driver_research": current_research(topo, preview_research())[0]}
     draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
     preview = build_crossover_preview(draft)
     monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: preview)
@@ -540,14 +541,13 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             ],
         },
     }
-    # The declaration section as it lives on JTS3's persisted design draft:
-    # sensitivities under manual_settings.drivers (83.3 / 108.5).
     draft = {
+        "topology": topo.to_dict(),
         "driver_safety_profile": profile,
         "manual_settings": {
             "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
+                {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "tweeter", "target_id": "mono:tweeter", "sensitivity_db_2v83_1m": 108.5},
             ],
             "crossover_candidates": [],
         },
@@ -711,12 +711,13 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
         },
     }
     draft = {
+        "topology": topo.to_dict(),
         "driver_safety_profile": profile,
         "manual_settings": {
             "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
+                {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "sensitivity_db_2v83_1m": 108.5,
                     "driver_class": "compression_horn",
                     "pad": {"kind": "direct_db", "attenuation_db": -14.4},
