@@ -70,8 +70,8 @@ def _spotify_account_cache_fingerprint(registry) -> tuple:
 def build_spotify_router_or_none():
     """Build a multi-account Spotify router for accessory-driven volume.
     Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
-    been authorized — _set_spotify in the coordinator treats None as
-    "skip Spotify dispatch", logging a no-op."""
+    been authorized — volume_push_sources.push_spotify_volume treats None
+    as "skip Spotify dispatch", logging a no-op."""
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
     if not client_id:
         return None

@@ -358,15 +358,9 @@ class VolumeCoordinator:
             self._pre_mute_level = None  # any explicit set clears mute state
             self._mute_token = None
             self._persistence.save_mute_state(None, None)
-            source = await self._active_source()
-            await self._publish_user_intent_context(
-                source, target, muted=main_mute_for_level(target),
+            await self._publish_then_dispatch(
+                target, context="set_listening_level_intent",
             )
-            if main_mute_for_level(target):
-                await self._carrier.write_main_mute(
-                    True, context="set_listening_level_intent",
-                )
-            await self._dispatch(target, persist=True, source=source)
         await self.publish_volume_context(phase="converged")
         return target
 
@@ -384,41 +378,49 @@ class VolumeCoordinator:
             self._pre_mute_level = None
             self._mute_token = None
             self._persistence.save_mute_state(None, None)
-            source = await self._active_source()
-            await self._publish_user_intent_context(
-                source, target, muted=main_mute_for_level(target),
+            await self._publish_then_dispatch(
+                target, context="adjust_listening_level_intent",
             )
-            if main_mute_for_level(target):
-                await self._carrier.write_main_mute(
-                    True, context="adjust_listening_level_intent",
-                )
-            await self._dispatch(target, persist=True, source=source)
         await self.publish_volume_context(phase="converged")
         return target
+
+    async def _publish_then_dispatch(
+        self, level: int, *, context: str, restore_level: int | None = None,
+    ) -> None:
+        """The verbs' shared tail: publish intent, assert ``main_mute`` when
+        the intent mutes, then dispatch ``level``. Caller holds ``_mutation``.
+
+        A temporary mute passes its ``restore_level``: it always mutes, fan-in
+        hears that level, muted, and the dispatched level is not persisted.
+        """
+        muted = restore_level is not None or main_mute_for_level(level)
+        source = await self._active_source()
+        # Fan-in is the immediate TTS stop and does not depend on Camilla
+        # being healthy. Publish before touching the final-output backstop.
+        await self._publish_user_intent_context(
+            source,
+            level if restore_level is None else restore_level,
+            muted=muted,
+        )
+        # Final-output mute is local and safety-critical; never wait for a
+        # Spotify/BT cloud or protocol round trip before asserting it.
+        if muted:
+            await self._carrier.write_main_mute(True, context=context)
+        await self._dispatch(level, persist=restore_level is None, source=source)
 
     async def _mute_locked(self) -> int:
         """Apply mute while ``_mutation`` is already held."""
         if self._pre_mute_level is None and self._level > 0:
             self._pre_mute_level = self._level
             self._mute_token = uuid4().hex
-        elif self._pre_mute_level is not None and self._mute_token is None:
-            # Repair a latch whose token was missing or rejected on load.
-            self._mute_token = uuid4().hex
         saved = self._pre_mute_level or 0
         self._persistence.save_mute_state(
             self._pre_mute_level,
             self._mute_token,
         )
-        source = await self._active_source()
-        # Fan-in is the immediate TTS stop and does not depend on Camilla
-        # being healthy. Publish before touching the final-output backstop.
-        await self._publish_user_intent_context(source, saved, muted=True)
-        # Final-output mute is local and safety-critical; never wait for a
-        # Spotify/BT cloud or protocol round trip before asserting it.
-        await self._carrier.write_main_mute(
-            True, context="mute_intent",
+        await self._publish_then_dispatch(
+            0, context="mute_intent", restore_level=saved,
         )
-        await self._dispatch(0, persist=False, source=source)
         return saved
 
     async def mute(self) -> int:
@@ -449,15 +451,7 @@ class VolumeCoordinator:
         self._mute_token = None
         self._persistence.save_mute_state(None, None)
         self._level = target
-        source = await self._active_source()
-        await self._publish_user_intent_context(
-            source, target, muted=main_mute_for_level(target),
-        )
-        if main_mute_for_level(target):
-            await self._carrier.write_main_mute(
-                True, context="unmute_intent",
-            )
-        await self._dispatch(target, persist=True, source=source)
+        await self._publish_then_dispatch(target, context="unmute_intent")
         return target
 
     async def unmute(self, fallback_level: int = 50) -> int:
@@ -597,14 +591,6 @@ class VolumeCoordinator:
                 return False
             if persisted_pre_mute is None:
                 self._confirmed_push_mute_tokens.pop(source, None)
-            elif push_mode and persisted_mute_token is None:
-                # Repair a latch whose token was missing or rejected on load.
-                persisted_mute_token = uuid4().hex
-                self._persistence.save_mute_state(
-                    persisted_pre_mute,
-                    persisted_mute_token,
-                )
-                self._mute_token = persisted_mute_token
             if (
                 persisted_pre_mute is not None
                 and push_mode

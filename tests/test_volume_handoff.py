@@ -79,7 +79,7 @@ async def test_handoff_finalize_honors_mute_landed_after_prepare(carrier):
 
     # jasper-control handling the remote while mux owns this coordinator's
     # source-transition sequence.
-    persistence.save_mute_state(60, None)
+    persistence.save_mute_state(60, "remote-mute")
 
     assert await owner.finalize_source_handoff(handoff) is True
     assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))

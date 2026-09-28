@@ -1314,7 +1314,7 @@ async def test_persisted_mute_intent_outranks_what_camilla_reports(
     coord, cam, persistence = _real_coord(
         tmp_path, active={}, db=percent_to_db(59), level=59,
     )
-    persistence.save_mute_state(59, None)
+    persistence.save_mute_state(59, "remote-mute")
     cam.muted = False
     cam.unavailable = not camilla_readable
 
@@ -1338,7 +1338,7 @@ async def test_unmute_and_push_mode_nonzero_publish_unmuted_context(tmp_path):
         level=59,
         volume_context_publisher=publish,
     )
-    persistence.save_mute_state(59, None)
+    persistence.save_mute_state(59, "remote-mute")
     cam.muted = True
 
     await coord.unmute()
@@ -1636,7 +1636,7 @@ async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
     )
     cam.muted = True
     persistence.save_now(percent_to_db(0))
-    persistence.save_mute_state(59, None)
+    persistence.save_mute_state(59, "remote-mute")
 
     await coord.maybe_reconcile_camilla()
 
@@ -1978,7 +1978,7 @@ async def test_get_camilla_target_db_uses_effective_temporary_mute(tmp_path):
     coord, _, persistence = _real_coord(
         tmp_path, active={}, db=percent_to_db(0), level=70,
     )
-    persistence.save_mute_state(70, None)
+    persistence.save_mute_state(70, "remote-mute")
 
     assert await coord.get_camilla_target_db() == pytest.approx(percent_to_db(0))
 
@@ -2083,7 +2083,7 @@ async def test_transition_uses_effective_level_while_temporarily_muted(
         db=percent_to_db(0),
         level=80,
     )
-    persistence.save_mute_state(80, None)
+    persistence.save_mute_state(80, "remote-mute")
 
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
