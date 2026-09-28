@@ -1029,6 +1029,19 @@ async def test_a_run_banks_its_preset_and_its_layout():
         "program": "tournament/express", "layout": "tournament_full"}
 
 
+@pytest.mark.parametrize("name,layout,banked", [
+    ("speaker/mark", "speaker_mark", {("speaker", ("speaker",)), ("room", ("room",))}),
+    ("rear/seat", "seat_express", {("rear", ("rear", "room"))}),
+])
+async def test_a_take_banks_its_stops_purpose_then_its_presets_others(name, layout, banked):
+    """A room sweep serves room alone; a seat trial's take serves rear and room (ADR-0336, ADR-0383)."""
+    request = ac.request_for_preset(run_preset(name, layout))
+    result, fakes = await _run_gated(request, captures=plan_run.prepare_plan_captures(request),
+                                     assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept"))
+    assert result.status == "complete"
+    assert {(take["measurement_purpose"], tuple(take["purposes"])) for take in fakes.banked} == banked
+
+
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
     request = ac.request_for_preset(run_preset("room", "seat_express"))
     captures = plan_run.prepare_plan_captures(request)

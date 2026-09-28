@@ -24,7 +24,7 @@ from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.record_index import Measurement, measurement_documents, take_purpose
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
-from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity
+from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity, run_purposes
 
 RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -233,6 +233,8 @@ class RunManifest:
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
             "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
             "measurement_purpose": self._context["purpose"],
+            # The stop's purpose leads, not the preset's first: a room sweep serves room alone.
+            "purposes": [self._context["purpose"], *run_purposes(self.program)[1:]],
         }
         context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                                    if key in self._context}
