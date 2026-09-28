@@ -3,11 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """jasper-settings: verb x fixture -> exit code and JSON fields (ADR-0350).
-
-Every case runs the real ``main`` over tmp settings files seeded with two fake
-API keys, and checks that neither key reaches stdout, stderr or the log, that
-the CLI never touches the keys file, and that a write lands in its file at the
-mode the wizard writes it.
 """
 from __future__ import annotations
 
@@ -25,6 +20,7 @@ from jasper.cli import _refusal, settings
 from jasper.env_file import parse_env_mapping
 from jasper.voice import model_discovery, provider_state
 from jasper.web._common import RestartOutcome
+from tests._log_events import leaked_lines
 
 OPENAI_KEY = "sk-test-0123456789abcdef-never-printed"
 GEMINI_KEY = "AIza-test-0123456789abcdef-never-printed"
@@ -184,7 +180,7 @@ def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys, caplog):
     if code:
         assert document["status"] == _refusal.STATUS_BY_CODE[code]
     for key in (OPENAI_KEY, GEMINI_KEY):
-        assert key not in out and key not in err and key not in caplog.text
+        assert key not in out and key not in err and not leaked_lines(caplog, key)
     if case.event:
         emitted = [
             json.loads(record.getMessage()) for record in caplog.records
