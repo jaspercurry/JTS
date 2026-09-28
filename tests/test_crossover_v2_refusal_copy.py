@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from importlib import import_module
 
 import pytest
 
@@ -15,6 +16,7 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
     refusal_copy,
 )
+from jasper.audio_measurement import evidence_reasons
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
     "refusal_copy": (
@@ -117,3 +119,30 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
 def test_upstream_mismatch_reasons_are_retired(layer):
     assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY
+
+
+@pytest.mark.parametrize("module_name, prefixes", [
+    ('jasper.audio_measurement.evidence_reasons', ''),
+    ('jasper.audio_measurement.rear_evidence', 'REASON_'),
+    ('jasper.audio_measurement.interference_nulls', 'REASON_'),
+    ('jasper.audio_measurement.room_limits', 'REASON_'),
+    ('jasper.audio_measurement.timing_verification', 'REASON_'),
+    ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
+    ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
+    ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
+    ('jasper.active_speaker.round_verdicts', 'REASON_'),
+    ('jasper.active_speaker.round_view_artifacts', 'REASON_'),
+    ('jasper.cli.round_views._common', 'REASON_'),
+    ('jasper.cli.round_views.repeat', 'REASON_'),
+    ('jasper.active_speaker.crossover_v2.round_views.directivity', 'REASON_'),
+])
+def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_name, prefixes):
+    constants = {name: value for name, value in vars(evidence_reasons).items()
+                 if name.isupper() and isinstance(value, str)}
+    assert len(constants) == len(set(constants.values()))
+    codes = {value for name, value in vars(import_module(module_name)).items()
+             if name.isupper() and name.startswith(prefixes) and isinstance(value, str)}
+    assert codes and codes <= set(constants.values())
+    for code in codes:
+        spec = refusal_copy.REASON_REGISTRY[code]
+        assert spec.code == code and spec.message and spec.next_action
