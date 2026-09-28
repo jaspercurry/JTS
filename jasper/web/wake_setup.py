@@ -530,7 +530,7 @@ _LAYER_BODY_LIMIT = 4096
 # jasper.control.restart_broker.reset_then_manage: up to two broker round
 # trips (a reset-failed leg, then the verb leg), each waiting its own exec
 # bound plus the broker's client socket margin
-# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s) rather than the bare exec
+# (source_intent_units._CLIENT_SOCKET_MARGIN_SEC, 5 s) rather than the bare exec
 # bound. jasper-control bounds both legs at
 # handlers.aec._ONESHOT_KICK_TIMEOUT_SEC (2 s), so the worst case is
 # 2 * (2 + 5) = 14 s; this proxy timeout must clear that or a merely-slow

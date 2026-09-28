@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Source reconciliation unit names and timeout budgets.
+"""Source and coupling unit names and timeout budgets.
 
 Clients import this near-stdlib leaf without loading root host operations
 from ``jasper.local_sources.reconcile``.
@@ -111,6 +111,183 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
     ][0],
     USBGADGET_SERVICE: sum(_USB_GADGET_START_DEPENDENCY_SEC.values()),
 }
+# `reset-failed` is a bookkeeping call against PID 1 with no unit transition to
+# wait on, so :func:`~jasper.control.restart_broker.reset_then_manage` bounds it
+# independently of the action it precedes.
+_RESET_TIMEOUT_SEC = 5.0
+
+_CLIENT_SOCKET_MARGIN_SEC = 5.0  # client waits this much past the exec bound
+
+
+def operation_ceiling_sec(
+    timeout: float, *, reset_failed: bool, broker_dead: bool = False
+) -> float:
+    """Return seconds for an action at ``timeout``, with an optional default reset.
+
+    Each broker leg pays the socket margin; ``broker_dead`` also budgets the
+    root direct retry. The caller owns whether its unit/action needs a reset.
+    """
+    attempts = 2 if broker_dead else 1
+    preamble = (
+        attempts * _RESET_TIMEOUT_SEC + _CLIENT_SOCKET_MARGIN_SEC
+        if reset_failed
+        else 0.0
+    )
+    return preamble + attempts * timeout + _CLIENT_SOCKET_MARGIN_SEC
+
+
+# How long a blocking START of jasper-camilla may take.
+#
+# jasper-camilla.service is Type=simple, but it declares Wants= AND After=
+# jasper-audio-hardware-reconcile.service, a Type=oneshot whose RemainAfterExit
+# is unset. Wants= is queued and awaited exactly like Requires= here; only the
+# failure propagation differs (#4416 R8), so the bound below is unchanged. That
+# reconciler is therefore inactive between runs and RE-RUNS IN
+# FULL on every camilla start, with PID 1 holding camilla's start job until the
+# oneshot reports terminal. On a Pi Zero 2 W a camilla restart measures ~30 s,
+# of which the re-queued reconciler is ~26 s; on a Pi 5, ~4 s.
+#
+# ALL THREE PULLED DEPENDENCIES ARE TERMS, not just the oneshot: fan-in and
+# outputd can be inactive-or-activating when this start runs. So the dependency
+# term is the CRITICAL PATH through what camilla pulls, not the largest of the
+# three: jasper-audio-hardware-reconcile declares
+# ``Before=jasper-outputd.service``, so those two run in series while fan-in runs
+# alongside them.
+#
+#     hw-reconcile 50 -> outputd 95   = 145   (serialised by that Before=)
+#     fan-in 95                       =  95   (unordered w.r.t. both)
+#     critical path                   = 145
+#
+# Declared ceilings set the value. Pinned to the shipped units — including that
+# ordering edge — by tests/test_fanin_coupling_reconcile.py, so adding an edge
+# that lengthens the path fails rather than silently under-bounding this call.
+_CAMILLA_REQUEUED_RECONCILE_START_SEC = _USB_GADGET_START_DEPENDENCY_SEC[
+    AUDIO_HARDWARE_RECONCILE_UNIT
+]
+# jasper-fanin and jasper-outputd each declare no TimeoutStartSec= override, so
+# each takes the manager default, plus its RestartSec when in restart backoff.
+_NOTIFY_DEP_RESTART_BACKOFF_SEC = _FANIN_RESTART_BACKOFF_SEC
+_CAMILLA_NOTIFY_DEP_START_SEC = (
+    _SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _NOTIFY_DEP_RESTART_BACKOFF_SEC
+)
+_CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC = max(
+    # hw-reconcile -> outputd, serialised by that Before= edge
+    _CAMILLA_REQUEUED_RECONCILE_START_SEC + _CAMILLA_NOTIFY_DEP_START_SEC,
+    _CAMILLA_NOTIFY_DEP_START_SEC,  # fan-in, in parallel with both
+)
+# The manager's DefaultTimeoutStartSec: jasper-camilla.service declares no
+# TimeoutStartSec= override, so this is the ceiling PID 1 applies to its start.
+# A mirror of a MANAGER default cannot be pinned to a unit file, so it drifts
+# silently if DefaultTimeoutStartSec is ever changed — ledgered, not guarded.
+_CAMILLA_OWN_START_SEC = _SYSTEMD_DEFAULT_TIMEOUT_START_SEC
+_DAEMON_OP_CLIENT_MARGIN_SEC = 1.0
+_CAMILLA_START_TIMEOUT_SEC = (
+    _CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
+    + _CAMILLA_OWN_START_SEC
+    + _DAEMON_OP_CLIENT_MARGIN_SEC
+)
+
+# How long a blocking start of the audio-hardware reconciler may take. The two
+# callers have different stakes, so they pass different bounds.
+#
+# The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps 15 s — the
+# same bound the topology save/reset/repin wizard surfaces use
+# (``jasper.output_topology_runtime.trigger_reconcile``) — because a timeout
+# there costs only a delayed marker re-derivation, which the next
+# udev/boot/deploy event converges anyway.
+#
+# The CONTENT-FORMAT converge gets 60 s, roughly four times a full reconciler
+# pass on a Pi Zero 2 W, because a timeout there refuses the whole convergence
+# (see :func:`~jasper.fanin.coupling_reconcile._converge_ring`). Its caller
+# ``deploy/systemd/jasper-fanin-coupling-auto.service`` owns the ceiling, which is
+# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below and carries this converge as an
+# enumerated term.
+_HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
+_KICK_ACCEPT_TIMEOUT_SEC = 5.0  # `--no-block` returns in ms; bounds the accept.
+_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
+
+
+# --- The outer ceiling one `--auto` pass needs -------------------------------
+#
+# ``jasper-fanin-coupling-auto.service`` is the Type=oneshot that runs
+# :func:`~jasper.fanin.coupling_reconcile.reconcile_auto`. Its TimeoutStartSec
+# must outlast the pass's blocking work. Two multipliers apply to every daemon op:
+#
+#   * a start-consuming verb on a crash-budget unit is preceded by a blocking
+#     best-effort ``reset-failed`` (see
+#     :func:`~jasper.fanin.coupling_reconcile._restart_unit`), and
+#   * ``restart_broker.manage_units`` waits ``timeout + 5 s`` on the socket, then
+#     — as root, which this unit is — retries the SAME call through
+#     ``_direct_systemctl`` when the socket raises ``BrokerUnavailable`` (a
+#     socket timeout is converted to exactly that). So one op can legally cost
+#     twice its timeout plus the socket margin.
+#
+# THE CEILING IS SIZED FOR A LIVE BROKER: the doubling fires only on
+# ``BrokerUnavailable``, an independently loud degraded mode, and stretching the
+# ceiling to cover it would hide every real wedge for that length. The
+# broker-dead figure is disclosed as
+# :data:`COUPLING_AUTO_BROKER_DEAD_WORST_SEC` and never used in the arithmetic.
+
+
+# Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
+# the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
+# 10 s), and three :data:`~jasper.atomic_io.ENV_FILE_LOCK_TIMEOUT_SECONDS` waits
+# (10 s each: the combo write and the fanin and outputd writes) — the in-process
+# figures jasper-fanin-coupling-auto.service's own tally carries, which no broker
+# multiplier touches.
+_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 69.0
+
+
+def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
+    """One ``--auto`` pass, enumerated along its worst reachable path.
+
+    The coupling half and the USB-combo half are ADDITIVE, in that order:
+    :func:`~jasper.fanin.coupling_reconcile.reconcile_auto` delegates convergence
+    to ``reconcile_coupling`` and only THEN runs the coordinated restart, so
+    fan-in is restarted TWICE
+    across the worst path — once by the convergence spine, once by the combo
+    coordination.
+    """
+
+    def op(timeout: float, reset_failed: bool) -> float:
+        return operation_ceiling_sec(
+            timeout, reset_failed=reset_failed, broker_dead=broker_dead
+        )
+
+    spine = (
+        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
+        + op(8.0, True)  # outputd restart
+        + op(8.0, True)  # fan-in restart
+    )
+    combo = (
+        op(8.0, False)  # camilla stop: not a start verb, so no reset preamble
+        + op(8.0, True)  # fan-in restart
+        + op(_CAMILLA_START_TIMEOUT_SEC, True)  # the camilla resume
+    )
+    return (
+        _COUPLING_AUTO_NON_DAEMON_WORK_SEC
+        + op(_HARDWARE_RECONCILE_TIMEOUT_SEC, False)  # endpoint-convergence kick
+        + spine
+        + combo
+        + op(_KICK_ACCEPT_TIMEOUT_SEC, False)  # grouping re-bake kick
+    )
+
+
+COUPLING_AUTO_ENUMERATED_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=False)
+# DISCLOSED RESIDUAL, deliberately not an input above: under a dead broker AND
+# maximally slow hardware, a pass can reach this instead and will be killed at
+# the ceiling mid-heal. It retries on the next trigger, and the fail-closed
+# usbsink rollback can recur in that window.
+COUPLING_AUTO_BROKER_DEAD_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=True)
+# THE UNQUANTIFIED TERM: :func:`~jasper.fanin.coupling_reconcile._reconcile_camilla`
+# calls ``asyncio.run(reconcile_current_dsp())`` with NO timeout of its own, so no
+# finite ceiling covers the pass and this headroom is a courtesy.
+# Removal condition: delete once that call carries its own bound.
+_COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
+COUPLING_AUTO_TIMEOUT_START_SEC = (
+    COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
+)
+
 # Owner oneshots are different: a synchronous ``systemctl start`` may join and
 # wait for their full Type=oneshot activation. USB starts coupling once.
 # Bluetooth no longer starts the accessory owner at all — it publishes a
@@ -121,7 +298,9 @@ _SOURCE_UNIT_START_DEPENDENCY_TIMEOUT_SEC: dict[str, float] = {
 # See tests/test_source_intent_systemd.py for the shipped TimeoutStartSec pins.
 _OWNER_UNIT_ACTION_TIMEOUT_SEC = {
     _ACCESSORY_RECONCILE_UNIT: 65.0,  # target TimeoutStartSec=60
-    USB_COUPLING_UNIT: 772.0,  # target TimeoutStartSec=767
+    USB_COUPLING_UNIT: operation_ceiling_sec(
+        COUPLING_AUTO_TIMEOUT_START_SEC, reset_failed=False
+    ),
 }
 
 

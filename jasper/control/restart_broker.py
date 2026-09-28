@@ -89,6 +89,7 @@ import threading
 from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 from typing import Any
 
+from jasper import source_intent_units
 from jasper.log_event import log_event
 from jasper.service_units import (
     AEC_BRIDGE_SERVICE,
@@ -262,32 +263,16 @@ _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # Derive that exception from the already-normalized, validated request on the
 # server; a client-supplied number alone never grants a longer broker thread.
 _EXEC_TIMEOUT_CEILING_SEC = 120.0
-# `reset-failed` is a bookkeeping call against PID 1 with no unit transition to
-# wait on, so :func:`reset_then_manage` bounds it independently of whatever the
-# action it precedes is allowed to take.
-_RESET_TIMEOUT_SEC = 5.0
 _SOURCE_INTENT_RECONCILE_UNIT = SOURCE_INTENT_RECONCILE_UNIT
 _CAMILLA_UNIT = CAMILLA_SERVICE
-# jasper-camilla.service Wants= (and is After=) a Type=oneshot hardware
-# reconciler whose RemainAfterExit is unset, so every camilla START re-queues
-# that oneshot in full. On jts4 (Pi Zero 2 W), the reconciler took
-# 25.5-26.0 s inside 28.675-30.307 s camilla restarts. Its caller derives
-# its bound from the reconciler's declared 50 s
-# ceiling plus camilla's own 90 s plus a margin; clamping that back to the
-# ordinary 120 s here would re-create exactly the false timeout the derived
-# bound exists to remove. Mirrors
-# jasper.fanin.coupling_reconcile._CAMILLA_START_TIMEOUT_SEC and is pinned to it
-# by tests/test_restart_broker.py.
-_CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC = 236.0
 # Blocking single-unit requests whose target can legally outrun the ordinary
 # ceiling, keyed per (unit, verb) so the 120 s backstop still governs every other
 # request — including every other verb against these same units.
 _EXTENDED_EXEC_TIMEOUT_CEILING_SEC: dict[tuple[str, str], float] = {
     (_SOURCE_INTENT_RECONCILE_UNIT, "start"): _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
-    (_CAMILLA_UNIT, "start"): _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC,
+    (_CAMILLA_UNIT, "start"): source_intent_units._CAMILLA_START_TIMEOUT_SEC,
     (USB_COUPLING_UNIT, "start"): unit_action_timeout_sec(USB_COUPLING_UNIT, "start"),
 }
-_CLIENT_SOCKET_MARGIN_SEC = 5.0    # client waits this much past the exec bound
 _MAX_REQUEST_BYTES = 4096
 
 
@@ -738,7 +723,7 @@ def request_restart(
     buf = b""
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout + _CLIENT_SOCKET_MARGIN_SEC)
+            sock.settimeout(timeout + source_intent_units._CLIENT_SOCKET_MARGIN_SEC)
             sock.connect(socket_path)
             # The broker answers its two pre-auth rejections from the peer
             # credentials alone, so it can reply and close before this send
@@ -900,30 +885,13 @@ def manage_units(
     return resp
 
 
-def operation_ceiling_sec(
-    timeout: float, *, reset_failed: bool, broker_dead: bool = False
-) -> float:
-    """Return seconds for an action at ``timeout``, with an optional default reset.
-
-    Each broker leg pays the socket margin; ``broker_dead`` also budgets the
-    root direct retry. The caller owns whether its unit/action needs a reset.
-    """
-    attempts = 2 if broker_dead else 1
-    preamble = (
-        attempts * _RESET_TIMEOUT_SEC + _CLIENT_SOCKET_MARGIN_SEC
-        if reset_failed
-        else 0.0
-    )
-    return preamble + attempts * timeout + _CLIENT_SOCKET_MARGIN_SEC
-
-
 def reset_then_manage(
     *units: str,
     verb: str = "restart",
     reason: str = "",
     no_block: bool = True,
     timeout: float = 5.0,
-    reset_timeout: float = _RESET_TIMEOUT_SEC,
+    reset_timeout: float = source_intent_units._RESET_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     """Clear the units' systemd failure/start-rate state, then run ``verb``.
 

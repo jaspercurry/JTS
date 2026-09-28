@@ -41,7 +41,7 @@ _maintenance_logger = logging.getLogger(aec_endpoints.__name__)
 # POST jasper-web proxies with a `proxy_post` timeout
 # (wake_setup._AEC_BROKER_KICK_PROXY_TIMEOUT_SEC, 15 s) sized to clear two
 # broker legs at this bound plus the broker's client socket margin
-# (restart_broker._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
+# (source_intent_units._CLIENT_SOCKET_MARGIN_SEC, 5 s each) -- 2 * (2 + 5) = 14 s.
 # A `--no-block` systemctl call itself returns in ms regardless of this
 # bound; keep it small so raising the proxy timeout does not have to chase a
 # larger one here.

@@ -62,7 +62,9 @@ from jasper.fanin_coupling import (
 from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
 # spine below starts it before restarting outputd — see :func:`_converge_ring`.
-from jasper import env_load, fanin_coupling, ring_assets, ring_conf, service_units
+from jasper import (
+    env_load, fanin_coupling, ring_assets, ring_conf, service_units, source_intent_units,
+)
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
@@ -198,60 +200,9 @@ def _restart_fanin(reason: str) -> tuple[bool, str]:
     plus a 5 s stop, so this 8 s bound is legally short and a genuinely slow
     restart is misreported. Measured restarts are 0.4-1.0 s. A truncation here
     can leave fan-in activating, which is why
-    :data:`_CAMILLA_START_TIMEOUT_SEC` budgets it as a dependency.
+    :data:`source_intent_units._CAMILLA_START_TIMEOUT_SEC` budgets it as a dependency.
     """
     return _restart_unit(FANIN_UNIT, reason=reason, timeout=8.0)
-
-
-# How long a blocking START of jasper-camilla may take.
-#
-# jasper-camilla.service is Type=simple, but it declares Wants= AND After=
-# jasper-audio-hardware-reconcile.service, a Type=oneshot whose RemainAfterExit
-# is unset. Wants= is queued and awaited exactly like Requires= here; only the
-# failure propagation differs (#4416 R8), so the bound below is unchanged. That
-# reconciler is therefore inactive between runs and RE-RUNS IN
-# FULL on every camilla start, with PID 1 holding camilla's start job until the
-# oneshot reports terminal. On a Pi Zero 2 W a camilla restart measures ~30 s,
-# of which the re-queued reconciler is ~26 s; on a Pi 5, ~4 s.
-#
-# ALL THREE PULLED DEPENDENCIES ARE TERMS, not just the oneshot: fan-in and
-# outputd can be inactive-or-activating when this start runs. So the dependency
-# term is the CRITICAL PATH through what camilla pulls, not the largest of the
-# three: jasper-audio-hardware-reconcile declares
-# ``Before=jasper-outputd.service``, so those two run in series while fan-in runs
-# alongside them.
-#
-#     hw-reconcile 50 -> outputd 95   = 145   (serialised by that Before=)
-#     fan-in 95                       =  95   (unordered w.r.t. both)
-#     critical path                   = 145
-#
-# Declared ceilings set the value. Pinned to the shipped units — including that
-# ordering edge — by tests/test_fanin_coupling_reconcile.py, so adding an edge
-# that lengthens the path fails rather than silently under-bounding this call.
-_CAMILLA_REQUEUED_RECONCILE_START_SEC = 50.0  # its declared TimeoutStartSec
-# jasper-fanin and jasper-outputd each declare no TimeoutStartSec= override, so
-# each takes the manager default, plus its RestartSec when in restart backoff.
-_SYSTEMD_DEFAULT_TIMEOUT_START_SEC = 90.0
-_NOTIFY_DEP_RESTART_BACKOFF_SEC = 5.0
-_CAMILLA_NOTIFY_DEP_START_SEC = (
-    _SYSTEMD_DEFAULT_TIMEOUT_START_SEC + _NOTIFY_DEP_RESTART_BACKOFF_SEC
-)
-_CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC = max(
-    # hw-reconcile -> outputd, serialised by that Before= edge
-    _CAMILLA_REQUEUED_RECONCILE_START_SEC + _CAMILLA_NOTIFY_DEP_START_SEC,
-    _CAMILLA_NOTIFY_DEP_START_SEC,  # fan-in, in parallel with both
-)
-# The manager's DefaultTimeoutStartSec: jasper-camilla.service declares no
-# TimeoutStartSec= override, so this is the ceiling PID 1 applies to its start.
-# A mirror of a MANAGER default cannot be pinned to a unit file, so it drifts
-# silently if DefaultTimeoutStartSec is ever changed — ledgered, not guarded.
-_CAMILLA_OWN_START_SEC = _SYSTEMD_DEFAULT_TIMEOUT_START_SEC
-_DAEMON_OP_CLIENT_MARGIN_SEC = 1.0
-_CAMILLA_START_TIMEOUT_SEC = (
-    _CAMILLA_DEPENDENCY_CRITICAL_PATH_SEC
-    + _CAMILLA_OWN_START_SEC
-    + _DAEMON_OP_CLIENT_MARGIN_SEC
-)
 
 
 def _stop_camilla(reason: str) -> tuple[bool, str]:
@@ -261,8 +212,8 @@ def _stop_camilla(reason: str) -> tuple[bool, str]:
 
     The 8 s bound is deliberately NOT the start bound's derivation: a stop pulls
     none of the start's dependencies, so the critical-path term that dominates
-    :data:`_CAMILLA_START_TIMEOUT_SEC` cannot apply. What is left is camilla's
-    own stop, measured at 23-30 ms.
+    :data:`source_intent_units._CAMILLA_START_TIMEOUT_SEC` cannot apply. What is
+    left is camilla's own stop, measured at 23-30 ms.
 
     RESIDUAL, stated: camilla's legal stop ceiling is the manager default (90 s),
     so a stop that genuinely took longer than 8 s is misreported here.
@@ -277,12 +228,12 @@ def _start_camilla(reason: str) -> tuple[bool, str]:
     ring/pipe writer must be re-attached before CamillaDSP re-opens its capture,
     so this runs AFTER the ``Type=notify`` fan-in restart has returned.
 
-    Bounded by :data:`_CAMILLA_START_TIMEOUT_SEC`, which carries the re-queued
-    hardware-reconciler oneshot camilla ``Wants=``; see that constant.
+    Bounded by :data:`source_intent_units._CAMILLA_START_TIMEOUT_SEC`, which
+    carries the re-queued hardware-reconciler oneshot camilla ``Wants=``.
     """
     return _restart_unit(
         CAMILLA_UNIT, verb="start", reason=reason,
-        timeout=_CAMILLA_START_TIMEOUT_SEC,
+        timeout=source_intent_units._CAMILLA_START_TIMEOUT_SEC,
     )
 
 
@@ -296,108 +247,8 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
     return _restart_unit(OUTPUTD_UNIT, reason=reason, timeout=8.0)
 
 
-# How long a blocking start of the audio-hardware reconciler may take. The two
-# callers have different stakes, so they pass different bounds.
-#
-# The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps 15 s — the
-# same bound the topology save/reset/repin wizard surfaces use
-# (``jasper.output_topology_runtime.trigger_reconcile``) — because a timeout
-# there costs only a delayed marker re-derivation, which the next
-# udev/boot/deploy event converges anyway.
-#
-# The CONTENT-FORMAT converge gets 60 s, roughly four times a full reconciler
-# pass on a Pi Zero 2 W, because a timeout there refuses the whole convergence
-# (see :func:`_converge_ring`). The budget it spends is the caller unit's — the
-# ``deploy/systemd/jasper-fanin-coupling-auto.service`` ceiling, which is
-# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below and carries this converge as an
-# enumerated term.
-_HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
-_KICK_ACCEPT_TIMEOUT_SEC = 5.0  # `--no-block` returns in ms; bounds the accept.
-_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
-
-
-# --- The outer ceiling one `--auto` pass needs -------------------------------
-#
-# ``jasper-fanin-coupling-auto.service`` is the Type=oneshot that runs
-# :func:`reconcile_auto`. Its TimeoutStartSec has to outlast the pass's own
-# blocking work, and two multipliers apply to EVERY daemon op here:
-#
-#   * a start-consuming verb on a crash-budget unit is preceded by a blocking
-#     best-effort ``reset-failed`` (see :func:`_restart_unit`), and
-#   * ``restart_broker.manage_units`` waits ``timeout + 5 s`` on the socket, then
-#     — as root, which this unit is — retries the SAME call through
-#     ``_direct_systemctl`` when the socket raises ``BrokerUnavailable`` (a
-#     socket timeout is converted to exactly that). So one op can legally cost
-#     twice its timeout plus the socket margin.
-#
-# THE CEILING IS SIZED FOR A LIVE BROKER: the doubling fires only on
-# ``BrokerUnavailable``, an independently loud degraded mode, and stretching the
-# ceiling to cover it would hide every real wedge for that length. The
-# broker-dead figure is disclosed as
-# :data:`COUPLING_AUTO_BROKER_DEAD_WORST_SEC` and never used in the arithmetic.
-
-
-# Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
-# the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
-# 10 s), and three :data:`~jasper.atomic_io.ENV_FILE_LOCK_TIMEOUT_SECONDS` waits
-# (10 s each: the combo write and the fanin and outputd writes) — the in-process
-# figures jasper-fanin-coupling-auto.service's own tally carries, which no broker
-# multiplier touches.
-_COUPLING_AUTO_NON_DAEMON_WORK_SEC = 69.0
-
-
-def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
-    """One ``--auto`` pass, enumerated along its worst reachable path.
-
-    The coupling half and the USB-combo half are ADDITIVE, in that order:
-    :func:`reconcile_auto` delegates the convergence to ``reconcile_coupling``
-    and only THEN runs the coordinated restart, so fan-in is restarted TWICE
-    across the worst path — once by the convergence spine, once by the combo
-    coordination.
-    """
-
-    def op(timeout: float, reset_failed: bool) -> float:
-        return restart_broker.operation_ceiling_sec(
-            timeout, reset_failed=reset_failed, broker_dead=broker_dead
-        )
-
-    spine = (
-        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
-        + op(8.0, True)  # outputd restart
-        + op(8.0, True)  # fan-in restart
-    )
-    combo = (
-        op(8.0, False)  # camilla stop: not a start verb, so no reset preamble
-        + op(8.0, True)  # fan-in restart
-        + op(_CAMILLA_START_TIMEOUT_SEC, True)  # the camilla resume
-    )
-    return (
-        _COUPLING_AUTO_NON_DAEMON_WORK_SEC
-        + op(_HARDWARE_RECONCILE_TIMEOUT_SEC, False)  # endpoint-convergence kick
-        + spine
-        + combo
-        + op(_KICK_ACCEPT_TIMEOUT_SEC, False)  # grouping re-bake kick
-    )
-
-
-COUPLING_AUTO_ENUMERATED_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=False)
-# DISCLOSED RESIDUAL, deliberately not an input above: under a dead broker AND
-# maximally slow hardware, a pass can reach this instead and will be killed at
-# the ceiling mid-heal. It retries on the next trigger, and the fail-closed
-# usbsink rollback can recur in that window.
-COUPLING_AUTO_BROKER_DEAD_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=True)
-# THE UNQUANTIFIED TERM: :func:`_reconcile_camilla` calls
-# ``asyncio.run(reconcile_current_dsp())`` with NO timeout of its own, so no
-# finite ceiling covers the pass and this headroom is a courtesy.
-# Removal condition: delete once that call carries its own bound.
-_COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
-COUPLING_AUTO_TIMEOUT_START_SEC = (
-    COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
-)
-
-
 def start_audio_hardware_reconcile(
-    reason: str, *, timeout: float = _HARDWARE_RECONCILE_TIMEOUT_SEC
+    reason: str, *, timeout: float = source_intent_units._HARDWARE_RECONCILE_TIMEOUT_SEC
 ) -> tuple[bool, str]:
     """Start the audio-hardware reconciler oneshot through the broker. (ok, detail).
 
@@ -407,7 +258,7 @@ def start_audio_hardware_reconcile(
     broker-less root shell — the same reach every other daemon op here has.
 
     ``timeout`` is per-caller because the two callers have different stakes; see
-    :data:`_HARDWARE_RECONCILE_TIMEOUT_SEC`.
+    :data:`source_intent_units._HARDWARE_RECONCILE_TIMEOUT_SEC`.
     """
     return _restart_unit(
         AUDIO_HARDWARE_RECONCILE_UNIT, verb="start", reason=reason, timeout=timeout
@@ -619,7 +470,7 @@ def reconcile_coupling(
         # drifted unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
             GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
-            no_block=True, timeout=_KICK_ACCEPT_TIMEOUT_SEC,
+            no_block=True, timeout=source_intent_units._KICK_ACCEPT_TIMEOUT_SEC,
         )
         log_event(
             logger, "fanin.coupling_reconcile", unit=GROUPING_RECONCILE_UNIT,
@@ -666,7 +517,7 @@ def _converge_ring(
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
     do_converge_content_format = kick_hardware_reconcile or (
         lambda: start_audio_hardware_reconcile(
-            reason=reason, timeout=_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC
+            reason=reason, timeout=source_intent_units._CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC
         )
     )
 
