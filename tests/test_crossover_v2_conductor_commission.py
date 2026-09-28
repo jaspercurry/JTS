@@ -151,7 +151,7 @@ def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
     }
     bands = {"woofer": (150.0, 6000.0), "tweeter": (300.0, 20000.0)}
 
-    rebuilt, _prelude = he.rebuild_measure_program(state, bands, program.program_id)
+    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.program_id})
 
     assert rebuilt.program_id == program.program_id
 
