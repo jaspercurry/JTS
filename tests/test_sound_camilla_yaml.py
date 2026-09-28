@@ -187,6 +187,7 @@ def test_extract_room_peqs_from_legacy_right_channel_config_warns(caplog):
 
 def test_extract_room_peqs_ignores_sound_peaking_filters():
     profile = SoundProfile.from_mapping({
+        "simple_eq": SimpleEq().to_dict(),
         "parametric_bands": [
             {"type": "peaking", "freq_hz": 2000, "gain_db": -2, "q": 2},
         ],

@@ -41,6 +41,7 @@ from jasper.active_speaker.state_paths import audition_state_path
 from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.sound.profile import SimpleEq
 
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
@@ -163,6 +164,7 @@ def test_the_household_layers_survive_the_reduction(
         json.dumps({
             "enabled": True,
             "curve_id": "flat",
+            "simple_eq": SimpleEq().to_dict(),
             "parametric_bands": [
                 {"type": "peaking", "freq_hz": 640.0, "gain_db": -2.0, "q": 1.5},
             ],
