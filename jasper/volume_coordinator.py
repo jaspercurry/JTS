@@ -47,14 +47,9 @@ from .assistant_volume import (
 )
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .log_event import log_event
-from .music_sources import (
-    MUSIC_SOURCE_VALUES,
-    SOURCE_TO_ACTIVE_KEY,
-    Source,
-    VolumeMode,
-    volume_mode,
-)
+from .music_sources import Source, VolumeMode, volume_mode
 from . import volume_push_sources
+from .renderer import RendererClient, audible_source
 from .volume_echo import (
     is_own_echo,
     is_recent_cross_process_write,
@@ -81,7 +76,6 @@ from .volume_persistence import (
 if TYPE_CHECKING:
     from .volume_handoff import SourceHandoff
     from .camilla import CamillaController
-    from .renderer import RendererClient
 
 logger = logging.getLogger(__name__)
 
@@ -895,41 +889,8 @@ class VolumeCoordinator:
         return self._reconciler.reconcile_deferred
 
     async def active_source(self) -> Source:
-        """Pick the active source. Multiple-source-active is rare
-        (mux preempts in <1 s) but possible during transitions; pick
-        a stable priority: airplay > spotify > bluetooth > usbsink
-        > idle.
-
-        Manual source selection is an audible fan-in policy override:
-        if mux reports one, prefer it even when raw renderer probes
-        say a different source is active. Fail soft to raw probes when
-        mux is unavailable.
-        """
-        try:
-            selected = await self._backend.selected_source()
-            # A measurement lease returns a fan-in lane label, not a source;
-            # only that case falls through to raw probes. During a handoff,
-            # mux retains its last committed source, including true idle.
-            if selected in MUSIC_SOURCE_VALUES:
-                return Source(selected)
-            if selected == Source.IDLE.value:
-                return Source.IDLE
-        except Exception as e:  # noqa: BLE001
-            logger.debug("selected_source() failed (%s); using probes", e)
-        try:
-            active = await self._backend.active_renderers()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("active_renderers() failed (%s); treating as idle", e)
-            return Source.IDLE
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
-            return Source.AIRPLAY
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]):
-            return Source.SPOTIFY
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.BLUETOOTH]):
-            return Source.BLUETOOTH
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.USBSINK]):
-            return Source.USBSINK
-        return Source.IDLE
+        """The source whose attenuator carries the level: :func:`audible_source`."""
+        return await audible_source(self._backend)
 
     @property
     def volume_owner(self) -> VolumeOwner:

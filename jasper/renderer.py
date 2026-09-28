@@ -29,7 +29,7 @@ from typing import Any
 
 from . import librespot_state
 from .busctl import system_busctl
-from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
 from .platform import wire
 from .platform.uds import mux_socket_command
 from .source_state import (
@@ -120,18 +120,13 @@ class RendererClient:
         effective = payload.get("active_source")
         return effective if isinstance(effective, str) else None
 
-    # ------------------------------------------------------------------
-    # Currentsong — cascades by active source. Returns a dict with at
-    # minimum "title", "album", "artist" keys that consumers
-    # (transport.py, spotify_routing.py) read from. Empty dict on
-    # error / no source.
-    # ------------------------------------------------------------------
-
     async def get_currentsong(self) -> dict[str, Any]:
-        active = await self.active_renderers()
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]):
+        """The :func:`audible_source`'s track: title/album/artist tags, plus
+        the URI for Spotify; ``{}`` for any other source or none."""
+        source = await audible_source(self)
+        if source is Source.SPOTIFY:
             return await self._spot_currentsong()
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
+        if source is Source.AIRPLAY:
             return await self._ap_currentsong()
         # Bluetooth A2DP doesn't expose reliable AVRCP metadata via
         # bluez-alsa, and there's no other source we can introspect.
@@ -156,6 +151,35 @@ class RendererClient:
 
     async def _ap_currentsong(self) -> dict[str, Any]:
         return await airplay_now_playing()
+
+
+async def audible_source(renderer: RendererClient) -> Source:
+    """The source the speaker plays: mux's committed answer, else the raw
+    probes in one order, airplay > spotify > bluetooth > usbsink.
+
+    Mux decides the winner (ADR-0150), so its answer stands even when the
+    probes disagree. The probes answer only when mux cannot: it is
+    unreachable, or a measurement lease reports a fan-in lane label, which
+    is not a source. During a handoff mux keeps its last committed source,
+    so its "idle" is true idle.
+    """
+    try:
+        selected = await renderer.selected_source()
+        if selected in MUSIC_SOURCE_VALUES:
+            return Source(selected)
+        if selected == Source.IDLE.value:
+            return Source.IDLE
+    except Exception as e:  # noqa: BLE001
+        logger.debug("selected_source() failed (%s); using probes", e)
+    try:
+        active = await renderer.active_renderers()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("active_renderers() failed (%s); treating as idle", e)
+        return Source.IDLE
+    for source in (Source.AIRPLAY, Source.SPOTIFY, Source.BLUETOOTH, Source.USBSINK):
+        if active.get(SOURCE_TO_ACTIVE_KEY[source]):
+            return source
+    return Source.IDLE
 
 
 # ----------------------------------------------------------------------
