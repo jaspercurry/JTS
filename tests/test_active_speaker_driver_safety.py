@@ -90,13 +90,8 @@ def _manual_settings() -> dict:
                 "role": "tweeter",
                 "model": "Example T1",
                 "hard_excitation_band_hz": [5000, 22000],
-                "required_protection_filters": [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 5000,
-                        "minimum_slope_db_per_octave": 24,
-                    }
-                ],
+                "recommended_highpass_hz": 5000,
+                "recommended_highpass_slope_db_per_octave": 24,
                 "measurement_band_hz": [5000, 20000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
@@ -146,13 +141,8 @@ def _research_result(request: dict) -> dict:
         else:
             safety = {
                 "hard_excitation_band_hz": [5000, 22000],
-                "required_protection_filters": [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 5000,
-                        "minimum_slope_db_per_octave": 24,
-                    }
-                ],
+                "recommended_highpass_hz": 5000,
+                "recommended_highpass_slope_db_per_octave": 24,
                 "measurement_band_hz": [5000, 20000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
@@ -654,16 +644,15 @@ def test_computed_profile_uses_visible_values_and_never_authorizes_audio() -> No
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
     assert profile["targets"][1]["hard_excitation_band_hz"] == [5000.0, 22000.0]
-    assert profile["targets"][1]["unknowns"] == [
-        "thermal compression limit not published"
-    ]
+    assert "thermal compression limit not published" in profile["targets"][1]["unknowns"]
     assert draft["permissions"]["may_not_emit_audio"] is True
 
 
 def test_missing_floor_and_duration_are_computed_issues() -> None:
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
-    manual["drivers"][1].pop("required_protection_filters")
+    manual["drivers"][1].pop("recommended_highpass_hz")
+    manual["drivers"][1].pop("recommended_highpass_slope_db_per_octave")
 
     saved = compute_driver_safety_profile(
         topology,
@@ -722,10 +711,9 @@ def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None
     tweeter = manual["drivers"][1]
     tweeter["recommended_highpass_hz"] = 5000.0
     # Typed TIGHTER than the declaration on both fields.
-    for entry in tweeter["required_protection_filters"]:
-        if entry.get("kind") == "highpass":
-            entry["cutoff_hz"] = 6500.0
-            entry["minimum_slope_db_per_octave"] = 48.0
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 6500.0, "minimum_slope_db_per_octave": 48.0},
+    ]
 
     profile = compute_driver_safety_profile(
         topology, manual_settings=manual, driver_research=None,
@@ -745,14 +733,13 @@ def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None
 def test_an_untouched_typed_high_pass_discloses_no_replacement() -> None:
     """The control: the disclosure is a signal, not a line on every save.
 
-    A declaration whose typed high-pass already equals its derivation — the
-    ordinary case, including every profile whose low limit was INFERRED from
-    that same filter — must not claim anything was replaced.
+    A declaration whose typed high-pass already equals its derivation must not
+    claim anything was replaced.
     """
 
     topology = mono_output_topology(card_id=None)
     profile = compute_driver_safety_profile(
-        topology, manual_settings=_manual_settings(), driver_research=None,
+        topology, manual_settings=_de250_manual(), driver_research=None,
     )
 
     for target in profile["targets"]:
@@ -810,34 +797,6 @@ def test_a_computed_target_carries_the_declared_pair_beside_its_projections(
     assert highpass["minimum_slope_db_per_octave"] == 24.0
 
 
-def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
-    """Provenance is not laundered by persistence.
-
-    ``_manual_settings``'s tweeter declares a protective high-pass and no owner
-    field, so its limit is INFERRED. ``apply_driver_low_limit`` fills the owner
-    pair on that projection too — storing it would turn "we read this off your
-    filter" into "the manufacturer published this", on the one field whose
-    entire meaning is the second sentence.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-    )
-    tweeter = profile["targets"][1]
-    assert "recommended_highpass_hz" not in tweeter
-    assert "recommended_highpass_slope_db_per_octave" not in tweeter
-    # …and the projection it WAS inferred from is untouched.
-    highpass = next(
-        item
-        for item in tweeter["required_protection_filters"]
-        if item["kind"] == "highpass"
-    )
-    assert highpass["cutoff_hz"] == 5000.0
-
-
 def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
@@ -858,6 +817,17 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     assert woofer["cabinet"]["lf_reconstruction_capability"] == (
         "refused_multi_radiator_contract_missing"
     )
+
+
+def test_a_style_default_low_limit_stores_no_declared_pair() -> None:
+    """Only a declared limit is stored as the owner pair; the style default is a code figure."""
+    manual = _manual_settings()
+    for key in ("recommended_highpass_hz", "recommended_highpass_slope_db_per_octave"):
+        manual["drivers"][1].pop(key)
+    profile = compute_driver_safety_profile(mono_output_topology(card_id=None), manual_settings=manual, driver_research=None)
+    tweeter = profile["targets"][1]
+    assert "recommended_highpass_hz" not in tweeter
+    assert "recommended_highpass_slope_db_per_octave" not in tweeter
 
 
 def test_stereo_targets_preserve_their_asymmetry() -> None:
@@ -982,7 +952,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 1800.0
     tweeter["hard_excitation_band_hz"] = [1800.0, 22000.0]
     tweeter["measurement_band_hz"] = [1800.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 1800.0
     accepted = compute_driver_safety_profile(
         compression,
         manual_settings=below_default,
@@ -1001,7 +970,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
     warned = compute_driver_safety_profile(
         compression,
         manual_settings=unsafe_highpass,
@@ -1074,7 +1042,6 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     tweeter["recommended_highpass_hz"] = 700.0
     tweeter["hard_excitation_band_hz"] = [700.0, 22000.0]
     tweeter["measurement_band_hz"] = [700.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 700.0
     profile = compute_driver_safety_profile(
         topology,
         manual_settings=typed,
@@ -1098,7 +1065,6 @@ def test_an_unknown_driver_type_is_disclosed_on_the_computed_profile() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
 
     profile = compute_driver_safety_profile(
         topology,
@@ -1140,7 +1106,9 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     tweeter["recommended_highpass_hz"] = 1600.0
     tweeter["hard_excitation_band_hz"] = [1500.0, 22000.0]
     tweeter["measurement_band_hz"] = [1700.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000.0
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 2000.0, "minimum_slope_db_per_octave": 24.0},
+    ]
 
     # Undeclared style is no longer a deadlock: the plausibility band for an
     # unknown-style tweeter is [1250, 20000], and a published 1600 sits inside
@@ -1934,11 +1902,8 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
         "hard_excitation_band_hz": [4500, 20000],
         # Estimated from a 25 mm dome with no published Fs. Clears the
         # dome_tweeter code-policy floor of 3000 Hz with room to spare.
-        "required_protection_filters": [{
-            "kind": "highpass",
-            "cutoff_hz": 4500,
-            "minimum_slope_db_per_octave": 24,
-        }],
+        "recommended_highpass_hz": 4500,
+        "recommended_highpass_slope_db_per_octave": 24,
         "measurement_band_hz": [4500, 18000],
         "level_duration_limits": {
             # ``None`` omits the key entirely -- the ordinary reply since the
@@ -2100,8 +2065,9 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert profile["authority"] == "operator_visible_values"
 
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    woofer = next(t for t in profile["targets"] if t["role"] == "woofer")
     # The estimate survived as an estimate: low confidence, derivation stated.
-    filter_provenance = tweeter["field_provenance"]["required_protection_filters"]
+    filter_provenance = woofer["field_provenance"]["required_protection_filters"]
     assert filter_provenance["confidence"] == "low"
     assert filter_provenance["basis"].startswith("estimated:")
     # A published field is still distinguishable from an estimated one.
@@ -2352,9 +2318,7 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
 
     # Nothing was rewritten behind the operator's back: the refused value is
     # still exactly what was entered.
-    tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
-    if field == "required_protection_filters":
-        assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 700.0
+    assert next(t for t in profile["targets"] if t["role"] == "tweeter")[field] == mutation
 
 
 @pytest.mark.parametrize("budget,accepted", [
@@ -2385,7 +2349,8 @@ def test_apply_requires_only_the_floor_but_measurement_requires_its_inputs(missi
     manual = _manual_settings()
     manual["crossover_candidates"] = [{"between_roles": ["woofer", "tweeter"],
         "frequency_hz": 5500, "filter_type": "Linkwitz-Riley", "slope_db_per_octave": 24}]
-    manual["drivers"][1].pop("required_protection_filters")
+    manual["drivers"][1].pop("recommended_highpass_hz")
+    manual["drivers"][1].pop("recommended_highpass_slope_db_per_octave")
     manual["drivers"][1].pop(missing)
     draft = build_design_draft(topology, manual_settings=manual)
     with pytest.raises(MeasurementGraphRefused) as refused:
@@ -2410,10 +2375,12 @@ def test_apply_names_the_mid_target_when_a_required_corner_is_missing(missing):
 
     topology = mono_output_topology(mode="active_3_way", card_id=None)
     manual = _manual_settings()
-    manual["drivers"].append({"target_id": "mono:mid", "role": "mid", "model": "Mid",
-        "required_protection_filters": [{"kind": kind, "cutoff_hz": cutoff,
-            "minimum_slope_db_per_octave": 24}
-            for kind, cutoff in (("highpass", 300), ("lowpass", 5000)) if kind != missing]})
+    mid = {"target_id": "mono:mid", "role": "mid", "model": "Mid"}
+    if missing != "highpass":
+        mid["recommended_highpass_hz"] = 300
+    if missing != "lowpass":
+        mid["required_protection_filters"] = [{"kind": "lowpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}]
+    manual["drivers"].append(mid)
     with pytest.raises(MeasurementGraphRefused) as refused:
         load_tuning_declaration(topology, design_draft=build_design_draft(topology, manual_settings=manual))
     assert refused.value.code == f"mid:required_{missing}_missing"

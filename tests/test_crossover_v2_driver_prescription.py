@@ -105,8 +105,7 @@ def _draft() -> dict[str, Any]:
                                           "minimum_slope_db_per_octave": 24}]},
         {"role": "tweeter", "target_id": "mono:tweeter", "measurement_band_hz": [1000, 20000],
          "hard_excitation_band_hz": [900, 22000],
-         "required_protection_filters": [{"kind": "highpass", "cutoff_hz": 1600,
-                                          "minimum_slope_db_per_octave": 24}]},
+         "recommended_highpass_hz": 1600, "recommended_highpass_slope_db_per_octave": 24},
     ]}))
 
 
@@ -424,7 +423,8 @@ def test_an_undeclared_protection_corner_leaves_the_published_edge_standing():
 
     draft = _draft()
     for driver in draft["manual_settings"]["drivers"]:
-        driver.pop("required_protection_filters", None)
+        for key in ("required_protection_filters", "recommended_highpass_hz", "recommended_highpass_slope_db_per_octave"):
+            driver.pop(key, None)
     profile = design_draft_view(draft)["driver_safety_profile"]
     assert driver_passbands_from_safety_profile(profile) == {
         "woofer": (40.0, 4000.0), "tweeter": (1000.0, 20000.0),
@@ -2060,7 +2060,8 @@ def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
     wide["manual_settings"]["drivers"][1]["hard_excitation_band_hz"] = [
         900.0, 26000.0,
     ]
-    wide["manual_settings"]["drivers"][1]["required_protection_filters"] = []
+    for key in ("recommended_highpass_hz", "recommended_highpass_slope_db_per_octave"):
+        wide["manual_settings"]["drivers"][1].pop(key)
     packet = _speaker(
         tmp_path, draft=wide,
         classification=_boostable([_dip(hz=23800.0, depth_db=20.0)]),

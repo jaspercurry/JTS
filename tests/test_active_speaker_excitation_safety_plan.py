@@ -102,24 +102,8 @@ def _profile_and_targets(
         _driver("woofer", woofer_peak, woofer_required_filters),
     ]
     if mode == "active_3_way":
-        drivers.append(
-            _driver(
-                "mid",
-                mid_peak,
-                [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 500,
-                        "minimum_slope_db_per_octave": 24,
-                    },
-                    {
-                        "kind": "lowpass",
-                        "cutoff_hz": 3000,
-                        "minimum_slope_db_per_octave": 24,
-                    },
-                ],
-            )
-        )
+        mid_filters = [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}]
+        drivers.append({**_driver("mid", mid_peak, mid_filters), "recommended_highpass_hz": 500})
     drivers.append(_driver("tweeter", tweeter_peak, tweeter_filters))
     settings = {"drivers": drivers, "crossover_candidates": []}
     profile = compute_driver_safety_profile(

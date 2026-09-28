@@ -18,6 +18,8 @@ from ._common import (
     DriverFields,
     MANUAL_CANDIDATE_FIELDS,
     MANUAL_DRIVER_FIELDS,
+    MINIMUM_CROSSOVER_LABEL,
+    REIMPORT_RESEARCH,
     blocker_issue,
 )
 from .design_inputs import drivers_by_target, resolve_design_inputs
@@ -26,6 +28,7 @@ from .driver_protection import (
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     apply_driver_low_limit,
+    declared_protection_highpass_floor_hz,
     driver_excitation_floor_hz,
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
@@ -503,6 +506,16 @@ def normalise_driver_safety_fields(
             value.get("required_protection_filters"),
             f"{field_name}.required_protection_filters",
         )
+        # Without its owner another declaration or the style default binds, possibly below this high-pass (#2902).
+        if low_limit_hz is None and declared_protection_highpass_floor_hz(out) is not None:
+            fix = REIMPORT_RESEARCH if include_research_evidence else (
+                f"; type its {MINIMUM_CROSSOVER_LABEL}, or remove the stored high-pass under "
+                '"Details and custom settings", at /sound/speaker/')
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_hz is missing for "
+                f"{value.get('target_id') or value.get('role') or 'a driver'}, which declares a protective high-pass{fix}",
+                code="recommended_highpass_missing",
+            )
     if "fit_budget" in value:
         try:
             out["fit_budget"] = normalise_fit_budget(value["fit_budget"])
@@ -1036,9 +1049,9 @@ def compute_driver_safety_profile(
                 else f"{field}: derived from the declared driver low limit"
             )
             # "Derived" alone hides the case that costs an operator something: a
-            # value they TYPED, replaced. /sound/ renders an editable high-pass
-            # cutoff and slope and the derivation overwrites both, so the
-            # replacement is named to stay reviewable before the save.
+            # stored high-pass cutoff or slope (typed under "Details and custom
+            # settings") that the derivation overwrites, so the replacement is
+            # named to stay reviewable before the save.
             replaced = _superseded_typed_highpass(visible, derived) if (
                 field == "required_protection_filters"
             ) else ()
@@ -1073,11 +1086,11 @@ def compute_driver_safety_profile(
             # ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` and no
             # reader could unmix the two otherwise.
             #
-            # DECLARED provenance only: ``apply_driver_low_limit`` also fills
-            # these on an INFERRED limit, and returning that would promote a
-            # guess into a field meaning "the manufacturer published this". The
-            # pair travels together — a slope needs a frequency to condition,
-            # and a target holding one half would disagree with itself.
+            # DECLARED provenance only: a style-default limit resolves too, and
+            # returning it would promote a code figure into a field meaning
+            # "the manufacturer published this". The pair travels together — a
+            # slope needs a frequency to condition, and a target holding one
+            # half would disagree with itself.
             "recommended_highpass_hz": (
                 declared_limit.frequency_hz if declared_limit is not None else None
             ),

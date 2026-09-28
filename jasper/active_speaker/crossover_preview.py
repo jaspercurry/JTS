@@ -270,9 +270,9 @@ def _build_crossover(
     # Disclose-and-recommend, never nanny (#2603). A declared low limit BELOW
     # its style's class default is legal and wins -- that is the ruling -- but
     # the household confirms designs on this page, so the disagreement is named
-    # here rather than left for someone to discover. Never fires for an
-    # inferred or defaulted limit: only a number a human or a research reply
-    # actually declared can disagree with the default.
+    # here rather than left for someone to discover. Never fires for a
+    # defaulted limit: only a number a human or a research reply actually
+    # declared can disagree with the default.
     upper_style = _driver_style_for_role(topology, upper_role)
     upper_limit = resolve_driver_low_limit(
         upper_driver, role=upper_role, driver_style=upper_style

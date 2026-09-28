@@ -6649,6 +6649,20 @@ def test_setup_clears_refused_research_and_an_unplaced_row_without_losing_a_valu
         'left:woofer': -2, 'right:woofer': -2}
 
 
+def test_setup_opens_a_high_pass_without_its_owner_in_its_driver_card(tmp_path, monkeypatch):
+    setup, _topology, inputs, _research, path = _stored_setup(tmp_path, monkeypatch, stereo=False)
+    _store(path, rows=[{'role': 'tweeter', 'target_id': 'mono:tweeter', 'required_protection_filters': [
+        {'kind': 'highpass', 'cutoff_hz': 5000.0, 'minimum_slope_db_per_octave': 24.0}]}])
+
+    refused = setup.load_setup_view()
+    assert (refused['stage'], [issue['code'] for issue in refused['issues']]) == ('details', ['recommended_highpass_missing'])
+    manual = refused['draft']['manual_settings']
+    assert [row['target_id'] for row in manual['drivers']] == ['mono:tweeter']
+    manual['drivers'][0]['recommended_highpass_hz'] = 5000.0
+    setup.save_details({'operator_inputs': inputs, 'manual_settings': manual})
+    assert setup.load_setup_view()['issues'] == []
+
+
 def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile

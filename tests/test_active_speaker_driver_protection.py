@@ -436,12 +436,6 @@ _BAND = {"measurement_band_hz": [40.0, 15000.0]}
             {"recommended_highpass_hz": 80.0, **_BAND}, 80.0, id="declared_owner",
         ),
         pytest.param(
-            {"required_protection_filters": [
-                {"kind": "highpass", "cutoff_hz": 90.0},
-            ], **_BAND},
-            90.0, id="a_stored_protective_highpass",
-        ),
-        pytest.param(
             {"measurement_band_hz": [60.0, 15000.0]}, 60.0, id="the_band_low_edge",
         ),
         pytest.param({"model": "Example"}, None, id="nothing_declared_is_no_floor"),
