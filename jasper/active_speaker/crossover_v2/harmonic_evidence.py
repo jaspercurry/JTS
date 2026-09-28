@@ -5,14 +5,14 @@
 """Read per-take H2/H3 with capture bytes and stimulus identity checked.
 
 Harmonic images precede the linear IR by L·ln(order), so the distortion
-kernel uses a wider pre-guard than the normal response analysis. A branch take
-without stimulus identity retains conditional ratios, with drive unknown,
-because its own program is recorded; timing agreement alone cannot prove the
-played program's level. A MEASURE take is read only under the stimulus id it
-recorded, and one banked under an older program schema is refused as
-superseded (#2902). The id leaves the fader out (#5012), so a MEASURE take's
-drive rests on the session volume it recorded, labelled so and checked against
-the fader readback it banked.
+kernel uses a wider pre-guard than the normal response analysis. A MEASURE
+take is read only under the stimulus id it recorded, and a branch take under
+the program it banked; a branch take whose provenance recorded no stimulus id
+keeps its ratios with drive unknown, since timing agreement alone cannot prove
+the played program's level. A take banked under an older program schema is
+refused as superseded (#2902). The id leaves the fader out (#5012), so a
+MEASURE take's drive rests on the session volume it recorded, labelled so and
+checked against the fader readback it banked.
 """
 
 from __future__ import annotations
@@ -1028,11 +1028,16 @@ def read_round_harmonics(
         }
         sidecar = capture["sidecar"]
         stimulus = _recorded_stimulus(sidecar)
-        if sidecar.get("graph_scope") != "candidate_branches" and _recorded_stimulus_id(sidecar) is None:
-            # A take banked under an older schema recorded its id under the key it had then.
-            version = _banked_program_schema(sidecar)
-            refusal = ("program_schema_superseded" if version is not None and version < PROGRAM_SCHEMA_VERSION
-                       else "stimulus_id_unrecorded")
+        # Nothing reads a take banked under an older schema: no alias, no migration (#2902).
+        version = _banked_program_schema(sidecar)
+        superseded = version is not None and version < PROGRAM_SCHEMA_VERSION
+        if sidecar.get("graph_scope") == "candidate_branches":
+            refusal = "program_schema_superseded" if superseded else None
+        elif _recorded_stimulus_id(sidecar) is None:
+            refusal = "program_schema_superseded" if superseded else "stimulus_id_unrecorded"
+        else:
+            refusal = None
+        if refusal:
             refused.append({**take, "reason": refusal, "fidelity_fields_compared": 0, "failures": [refusal]})
             continue
         program, volume_db, prelude, wav_key = program_for(sidecar)

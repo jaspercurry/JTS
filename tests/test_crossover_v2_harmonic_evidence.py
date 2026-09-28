@@ -1380,28 +1380,40 @@ def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmo
     assert [take["reason"] for take in refused.value.evidence["refused"]] == ["stimulus_id_unrecorded"]
 
 
-@pytest.mark.parametrize("new_key_takes", [(), ("take-b", "take-c")])
-def test_a_take_banked_under_the_old_key_is_refused_as_superseded(harmonic_capture, tmp_path, new_key_takes):
+@pytest.mark.parametrize("old,new_key_takes,readable", [
+    ("measure", (), []),
+    ("measure", ("take-b", "take-c"), ["take-b", "take-c"]),
+    ("branch", (), ["take-a"]),
+])
+def test_a_take_banked_under_the_old_key_is_refused_as_superseded(
+        harmonic_capture, tmp_path, old, new_key_takes, readable):
     """Whatever the other takes recorded: the old key has no alias (#2902)."""
     read, compose, sidecar, _, document = harmonic_capture
+    ring = sidecar.parent.parent
     program, state = compose(-16.0)
     for index, take_id in enumerate(new_key_takes):
-        _write_harmonic_capture(sidecar.parent.parent, tmp_path, f"2_measure_{index}", program, state,
+        _write_harmonic_capture(ring, tmp_path, f"2_measure_{index}", program, state,
                                 take_id=take_id, scale=0.09 - 0.01 * index)
+    if old == "branch":
+        branch, branch_state = compose(-14.0, "front_rear")
+        sidecar, _, document = _write_harmonic_capture(ring, tmp_path, "3_branch", branch, branch_state,
+                                                       take_id="take-branch")
+        document["program"]["program_id"] = document["program"].pop("stimulus_id")
     stimulus = document["provenance"]["stimulus"]
     stimulus["program_id"] = stimulus.pop("stimulus_id")
-    document["program"] = {"schema_version": 2}
+    document["program"] = {**document.get("program", {}), "schema_version": 2}
     sidecar.write_text(json.dumps(document))
 
-    if new_key_takes:
+    if readable:
         captures = read()["captures"]
         refused = captures["refused"]
-        assert sorted(take["take_id"] for take in captures["read"]) == list(new_key_takes)
+        assert sorted(take["take_id"] for take in captures["read"]) == readable
     else:
         with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
             read()
         refused = excinfo.value.evidence["refused"]
-    assert [(take["take_id"], take["reason"]) for take in refused] == [("take-a", "program_schema_superseded")]
+    assert [(take["take_id"], take["reason"]) for take in refused] == [
+        (document["take_id"], "program_schema_superseded")]
 
 
 def test_a_stray_stimulus_id_is_refused_on_its_own_take(harmonic_capture, tmp_path):
@@ -1448,7 +1460,7 @@ def test_an_all_legacy_ring_still_reads_its_branch_takes(harmonic_capture, tmp_p
 
 
 @pytest.mark.parametrize("harmonic_capture", ["front_rear"], indirect=True)
-def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic_capture):
+def test_a_branch_take_without_provenance_keeps_ratios_without_claiming_its_drive(harmonic_capture):
     """A branch take records its own program, so its ratios survive a missing provenance."""
     read, _, sidecar, _, document = harmonic_capture
     bound = read()
