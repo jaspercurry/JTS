@@ -99,6 +99,8 @@ REASON_SPEAKER_SHAPE_UNSUPPORTED = "speaker_shape_unsupported"
 # Its sibling one gate later: the shape is walkable, but live status carries no
 # measurement target for every role it declares. The roles reach the journal.
 REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
+# A tweeter's cap is declared or derived from declared sensitivities (ADR-0382).
+REASON_DRIVER_SENSITIVITY_UNDECLARED = "driver_sensitivity_undeclared"
 
 # The wired capture kernel stopped a take because the microphone heard the
 # speaker above this session's SPL ceiling
@@ -237,6 +239,19 @@ def channel_map_mismatch_message(failed_roles: Sequence[str]) -> str:
     else:
         fact = f"{', '.join(names[:-1])} and {names[-1]} played on their own outputs"
     return f"JTS could not confirm that {fact}. Return to speaker setup and check the wiring before measuring again."
+
+
+def driver_sensitivity_undeclared_message(undeclared: Sequence[str], disagreeing: Sequence[str]) -> str:
+    """``REASON_DRIVER_SENSITIVITY_UNDECLARED``'s sentences naming each driver to fix."""
+    def named(roles: Sequence[str]) -> str:
+        return " and ".join(f"the {role}" for role in roles)
+
+    fixes = [f"Declare the sensitivity of {named(undeclared)} in speaker setup."] if undeclared else []
+    if disagreeing:
+        fixes.append(f"The outputs of {named(disagreeing)} declare different sensitivities; "
+                     "make them agree in speaker setup.")
+    return " ".join([*fixes, "Then measure again: JTS sets a tweeter's measurement level from the "
+                              "declared driver sensitivities."])
 
 
 @dataclass(frozen=True)
@@ -656,6 +671,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "Check the listed driver issues in speaker setup before measuring.",
         next_action={"id": "review_safety_limits", "label": "Review driver limits",
                      "href": "/sound/speaker/#driver-safety-issues"},
+    ),
+    REASON_DRIVER_SENSITIVITY_UNDECLARED: ReasonSpec(
+        REASON_DRIVER_SENSITIVITY_UNDECLARED, TEMPLATE_HARD_STOP, 0, "",
+        "JTS sets a tweeter's measurement level from the declared driver sensitivities, and one is "
+        "missing or differs between a driver's outputs. Declare one sensitivity for each driver in "
+        "speaker setup, then measure again.",
+        next_action={"id": "declare_driver_sensitivity", "label": "Declare this driver's sensitivity",
+                     "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_TARGETS_MISSING: ReasonSpec(
         REASON_MEASUREMENT_TARGETS_MISSING, TEMPLATE_HARD_STOP, 0, "",

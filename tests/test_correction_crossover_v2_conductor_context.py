@@ -510,7 +510,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             },
         }
 
-    # JTS3 shape: woofer cap -8; tweeter cap left at the -65 class-default seed.
+    # JTS3 shape: woofer cap -8; the tweeter declares no level limit.
     settings = {
         "drivers": [
             _driver(
@@ -519,7 +519,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
                 132, 83.3, baffle_width_mm=210,
             ),
             _driver(
-                "tweeter", -65,
+                "tweeter", None,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
                 25, 108.5,
             ),
@@ -676,7 +676,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
                 132, baffle_width_mm=210,
             ), "sensitivity_db_2v83_1m": 83.3},
             {**_driver(
-                "tweeter", -65,
+                "tweeter", None,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
                 25,
             ), "sensitivity_db_2v83_1m": 108.5, "driver_class": "compression_horn",

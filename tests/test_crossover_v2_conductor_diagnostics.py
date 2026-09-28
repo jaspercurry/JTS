@@ -232,7 +232,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
 
     # JTS3 declaration: Epique E150HE-44 83.3 dB / B&C DE250-8 108.5 dB.
     topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities={"woofer": 83.3, "tweeter": 108.5},
+        woofer_peak=-8.0, tweeter_peak=None, sensitivities={"woofer": 83.3, "tweeter": 108.5},
     )
     # PRODUCTION cap resolution — the exact call the fixed context site makes.
     caps = {}

@@ -60,7 +60,7 @@ def speaker(request, tmp_path_factory):
     name = request.param
     if name == 'three_way_active':
         topology, safety, targets = _three_way_safety(
-            mode='active_3_way', woofer_peak=0, mid_peak=0, tweeter_peak=-65,
+            mode='active_3_way', woofer_peak=0, mid_peak=0, tweeter_peak=None,
             hard_band=[40, 20000], measurement_band=[60, 10000], sensitivities=SENSITIVITIES,
         )
         targets = {role: target['target_fingerprint'] for role, target in targets.items()}
@@ -70,7 +70,7 @@ def speaker(request, tmp_path_factory):
             rear=name == 'cardioid', passive=name == 'one_way_passive',
             woofer_floor=40, woofer_measurement_floor=60, woofer_highpass=40,
             woofer_upper=20000 if name == 'one_way_passive' else 4000, max_sweep_duration_s=4,
-            sensitivities=SENSITIVITIES,
+            tweeter_peak=None, sensitivities=SENSITIVITIES,
         )
         preset = _rear_pair('mono')[0] if name == 'cardioid' else resolve_capture_preset(topology)
     roles = required_driver_roles(preset.way_count)

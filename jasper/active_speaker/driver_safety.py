@@ -127,11 +127,7 @@ def driver_protection_policy_view(
 
     Display-only, derived, never persisted-authoritative: every design-draft
     load that knows the topology re-stamps it, so a saved copy can never be read
-    back as current policy. It exists because the browser must answer *has this
-    target delegated its level?* before anything is saved, and must not own a
-    second copy of that policy: an absent peak says delegated, and a profile
-    saved under the retired contract carries the class default and means the
-    same, so the page needs ``max_auto_level_dbfs`` to recognise it.
+    back as current policy.
 
     The class low limit travels only as ``low_limit_hz`` +
     ``low_limit_provenance``, never as a bare ``min_highpass_hz`` beside a

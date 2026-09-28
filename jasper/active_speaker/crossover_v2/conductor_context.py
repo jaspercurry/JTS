@@ -16,12 +16,14 @@ from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_r
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
 
 from .refusal_copy import (
+    REASON_DRIVER_SENSITIVITY_UNDECLARED,
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
+    driver_sensitivity_undeclared_message,
 )
 from jasper.output_topology import topology_is_subless_passive_mains
 from jasper.speaker_layout import declared_radiating_diameters_mm, measurement_target_id
@@ -192,6 +194,7 @@ def resolve_conductor_context(
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
         ExcitationSafetyPlanError,
+        ExcitationSafetyPlanRefusal,
         require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
@@ -298,6 +301,14 @@ def resolve_conductor_context(
                 safety_profile, fingerprint,
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
+            if (isinstance(exc, ExcitationSafetyPlanError)
+                    and exc.code == ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value):
+                raise CrossoverV2Refused(
+                    driver_sensitivity_undeclared_message(
+                        exc.detail["undeclared_roles"], exc.detail["disagreeing_roles"],
+                    ),
+                    code=REASON_DRIVER_SENSITIVITY_UNDECLARED,
+                ) from exc
             raise CrossoverV2Refused(
                 f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
             ) from exc
