@@ -865,6 +865,8 @@ flock() {{
 }}
 _build_sandbox_log() {{ :; }}
 install_run_bounded() {{ echo "bounded $*" >> "{tmp_path}/calls.log"; }}
+python3() {{ command python3 -S "$@"; }}
+JASPER_SYSTEM_PYTHON=python3
 fence_fanin_coupling
 # The second consumer must use the same loaded bound.
 JASPER_SYSTEM_PYTHON=false
