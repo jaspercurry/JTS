@@ -290,8 +290,16 @@ def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         applied_bass_extension,
     )
-    from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-    bass = applied_bass_extension()
+    from jasper.bass_extension.dynamic import DynamicBassDescriptorError, dynamic_bass_gain_reserve_db
+    try:
+        bass = applied_bass_extension()
+    except DynamicBassDescriptorError as exc:
+        return CheckResult(
+            "bass extension profile", "fail",
+            f"saved bass section refused: {exc}. `jasper-crossover-prescriber status` lists the banked tunes "
+            "to `jasper-round apply` (ADR-0381)",
+            reason=exc.reason,
+        )
     if not bass:
         return CheckResult(
             "bass extension profile", "ok", "bass extension: not commissioned",

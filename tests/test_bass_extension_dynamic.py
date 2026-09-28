@@ -33,11 +33,6 @@ def _descriptor(**changes) -> DynamicBassDescriptor:
     return DynamicBassDescriptor(**{**values, **changes})
 
 
-DESCRIPTORS = {
-    "new": _descriptor(),
-}
-
-
 @pytest.mark.parametrize(("changes", "reason"), [
     ({"detector_lowpass_hz": 201.0}, "bass_detector_lowpass_hz_invalid"),
     ({"compressor_threshold_dbfs": 0.1}, "bass_compressor_threshold_dbfs_invalid"),
@@ -50,6 +45,7 @@ DESCRIPTORS = {
     ({"linkwitz_transform": {**JTS3_SHAPE, "gain_db": 3.0}}, "bass_linkwitz_transform_invalid"),
     ({"linkwitz_transform": [107.0, 0.44, 30.0, 0.707]}, "bass_linkwitz_transform_invalid"),
     ({"duplicate_limit": 1}, "bass_descriptor_malformed"),
+    ({None: 1}, "bass_descriptor_malformed"),
 ])
 def test_descriptor_refuses_a_section_outside_its_bounds(changes, reason) -> None:
     with pytest.raises(ValueError) as refused:
@@ -97,10 +93,9 @@ def _fragment_transfer(graph, freqs: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return state, detector
 
 
-@pytest.mark.parametrize("name", DESCRIPTORS)
 @pytest.mark.parametrize("groups", [(), ((0, 2),)])
-def test_the_emitted_block_plays_the_model_at_every_volume(name, groups) -> None:
-    descriptor = DESCRIPTORS[name]
+def test_the_emitted_block_plays_the_model_at_every_volume(groups) -> None:
+    descriptor = _descriptor()
     graph = build_native_dynamic_bass_graph(channels=4, owner_channels=(0, 2), descriptor=descriptor, owner_groups=groups)
     freqs = np.geomspace(5.0, 20000.0, 400)
 
@@ -172,13 +167,12 @@ def test_the_boost_is_the_closed_form_linkwitz_transform(shape, highpass_hz) -> 
     assert boost == pytest.approx(20 * np.log10(np.abs(1 + highpass * (transform - 1))), abs=0.01)
 
 
-@pytest.mark.parametrize("name", DESCRIPTORS)
-def test_the_reserve_is_the_peak_gain_at_every_compressor_setting(name) -> None:
-    delta = np.asarray(_delta_response(DESCRIPTORS[name], np.geomspace(0.01, 23000.0, 20000).tolist()))
+def test_the_reserve_is_the_peak_gain_at_every_compressor_setting() -> None:
+    delta = np.asarray(_delta_response(_descriptor(), np.geomspace(0.01, 23000.0, 20000).tolist()))
     # |1 + g * delta| <= 1 + |delta| for every compressor gain g in [0, 1].
     bound = 20 * np.log10(1 + np.max(np.abs(delta)))
 
-    assert bound <= dynamic_bass_gain_reserve_db(DESCRIPTORS[name]) <= bound + 0.011
+    assert bound <= dynamic_bass_gain_reserve_db(_descriptor()) <= bound + 0.011
     assert dynamic_bass_gain_reserve_db({}) == 0.0
 
 
@@ -207,15 +201,14 @@ def _base_graph() -> dict:
     }
 
 
-@pytest.mark.parametrize("name", DESCRIPTORS)
 @pytest.mark.parametrize("groups", [(), ((0, 2),), ((2, 0),)])
-def test_decorator_is_exactly_reversible_for_static_graph_proof(name, groups) -> None:
+def test_decorator_is_exactly_reversible_for_static_graph_proof(groups) -> None:
     base = _base_graph()
 
-    decorated = apply_dynamic_bass_graph(base, DESCRIPTORS[name], (0, 2), groups)
+    decorated = apply_dynamic_bass_graph(base, _descriptor(), (0, 2), groups)
 
     assert base == _base_graph()
-    assert validated_base_graph(decorated, DESCRIPTORS[name], (0, 2), groups) == base
+    assert validated_base_graph(decorated, _descriptor(), (0, 2), groups) == base
 
 
 def test_projection_refuses_a_changed_native_definition() -> None:

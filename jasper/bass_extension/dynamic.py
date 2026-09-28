@@ -37,20 +37,21 @@ LINKWITZ_Q_MAX = 1.5
 # A 1/48-octave grid under-reads a Q <= 1.5 delta peak by < 0.003 dB (ADR-0352).
 _RESERVE_GRID_MARGIN_DB = 0.01
 
-_COMMON_REQUIRED = {"detector_lowpass_hz", "compressor_threshold_dbfs"}
-REQUIRED_FIELDS = _COMMON_REQUIRED | {"linkwitz_transform", "delta_highpass_hz"}
+_DETECTOR_FIELDS = {"detector_lowpass_hz", "compressor_threshold_dbfs"}
+REQUIRED_FIELDS = _DETECTOR_FIELDS | {"linkwitz_transform", "delta_highpass_hz"}
 OPTIONAL_FIELDS = {"compressor_factor", "compressor_attack_s", "compressor_release_s"}
+_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
+# A stored section that still carries one of these needs a tune in the ADR-0359 form (ADR-0381).
+_ADR_0352_FIELDS = {"low_boost_db", "reference_level_db"}
 
-DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {
-    f"bass_{name}_invalid" for name in REQUIRED_FIELDS | OPTIONAL_FIELDS
-})
+DYNAMIC_BASS_REFUSAL_REASONS = frozenset({"bass_descriptor_malformed"} | {f"bass_{name}_invalid" for name in _FIELDS})
 
 
 class DynamicBassDescriptorError(ValueError):
     def __init__(self, field: str, detail: str) -> None:
         super().__init__(detail)
         self.field = field
-        self.reason = f"bass_{field}_invalid" if field in REQUIRED_FIELDS | OPTIONAL_FIELDS else "bass_descriptor_malformed"
+        self.reason = f"bass_{field}_invalid" if field in _FIELDS else "bass_descriptor_malformed"
 
 
 def _finite(value: object, name: str) -> float:
@@ -92,7 +93,7 @@ class DynamicBassDescriptor:
     compressor_release_s: float = 0.25
 
     def __post_init__(self) -> None:
-        for name in sorted(_COMMON_REQUIRED | OPTIONAL_FIELDS):
+        for name in sorted(_DETECTOR_FIELDS | OPTIONAL_FIELDS):
             object.__setattr__(self, name, _finite(getattr(self, name), name))
         if not DETECTOR_CORNER_HZ_MIN <= self.detector_lowpass_hz <= DETECTOR_CORNER_HZ_MAX:
             raise DynamicBassDescriptorError("detector_lowpass_hz", "detector_lowpass_hz is outside the measured bass domain")
@@ -122,7 +123,7 @@ class DynamicBassDescriptor:
 
     def payload(self) -> dict[str, Any]:
         """The normalized candidate payload."""
-        payload = {name: getattr(self, name) for name in sorted(REQUIRED_FIELDS | OPTIONAL_FIELDS)}
+        payload = {name: getattr(self, name) for name in sorted(_FIELDS)}
         payload["linkwitz_transform"] = asdict(self.linkwitz_transform)
         return payload
 
@@ -132,13 +133,13 @@ def validate_dynamic_bass_descriptor(value: Any) -> dict[str, Any]:
 
     if not isinstance(value, Mapping):
         raise DynamicBassDescriptorError("dynamic_bass", "dynamic_bass must be an object")
-    unknown = next((name for name in value if name not in REQUIRED_FIELDS | OPTIONAL_FIELDS), None)
-    if unknown is not None:
-        raise DynamicBassDescriptorError(str(unknown),
-            f"{unknown} is not a bass section field; apply a tune whose bass section is "
-            "linkwitz_transform with delta_highpass_hz (ADR-0359)")
-    if not REQUIRED_FIELDS <= set(value):
-        raise DynamicBassDescriptorError("dynamic_bass", "dynamic_bass has unknown or missing fields")
+    unknown = [str(name) for name in value if name not in _FIELDS]
+    if unknown:
+        advice = ("; apply a tune whose bass section is linkwitz_transform with delta_highpass_hz (ADR-0359)"
+                  if unknown[0] in _ADR_0352_FIELDS else "")
+        raise DynamicBassDescriptorError(unknown[0], f"{unknown[0]} is not a bass section field{advice}")
+    if missing := sorted(REQUIRED_FIELDS - set(value)):
+        raise DynamicBassDescriptorError("dynamic_bass", f"dynamic_bass is missing {', '.join(missing)}")
     return DynamicBassDescriptor(**dict(value)).payload()
 
 
