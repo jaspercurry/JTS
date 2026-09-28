@@ -41,6 +41,7 @@ def carrier(tmp_path):
         persisted_carrier=lambda: persistence.load().main_volume_db,
         write_guard=AsyncMock(side_effect=write_guard),
         push_source=AsyncMock(return_value=True),
+        stamp_outbound=lambda source: None,
         write_level=AsyncMock(side_effect=write_level),
         voice_session_active=lambda: False,
         active_source=AsyncMock(return_value=Source.IDLE),

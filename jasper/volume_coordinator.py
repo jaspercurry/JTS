@@ -183,6 +183,7 @@ class VolumeCoordinator:
                 db, context=context, persist=persist,
             ),
             push_source=lambda source, level: self._push_source(source, level),
+            stamp_outbound=lambda source: self._stamp_outbound(source),
             write_level=lambda level: self._set_camilla(level),
             voice_session_active=lambda: self._voice_session_active,
             active_source=lambda: self.active_source(),

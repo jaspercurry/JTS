@@ -551,33 +551,48 @@ async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
 
 
 @pytest.mark.parametrize(
-    ("seen", "prev", "current", "handoff", "applies"),
+    ("seen", "skipped", "prev", "current", "handoff", "applies"),
     [
-        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY, (8, "spotify", "ok"),
+        pytest.param(7, None, Source.AIRPLAY, Source.SPOTIFY, {"id": 8},
                      False, id="mux_handed_it_off"),
-        pytest.param(7, Source.SPOTIFY, Source.IDLE, (7, "spotify", "ok"),
+        pytest.param(7, None, Source.SPOTIFY, Source.IDLE, {"id": 7},
                      True, id="to_idle_without_a_handoff"),
-        pytest.param(7, Source.IDLE, Source.SPOTIFY, (7, "spotify", "ok"),
+        pytest.param(7, None, Source.IDLE, Source.SPOTIFY, {"id": 7},
                      True, id="back_to_spotify_without_a_handoff"),
-        pytest.param(7, Source.SPOTIFY, Source.IDLE, (8, "airplay", "ok"),
+        pytest.param(7, ("deferred", 8), Source.IDLE, Source.SPOTIFY,
+                     {"id": 8}, True, id="its_handoff_came_while_deferring"),
+        pytest.param(7, ("dropped", 8), Source.IDLE, Source.SPOTIFY,
+                     {"id": 8}, True, id="its_handoff_came_while_dropping"),
+        pytest.param(7, None, Source.SPOTIFY, Source.IDLE,
+                     {"id": 8, "to": "airplay"},
                      True, id="its_newest_handoff_went_elsewhere"),
-        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY,
-                     (8, "spotify", "degraded_safe"),
+        pytest.param(7, None, Source.AIRPLAY, Source.SPOTIFY,
+                     {"id": 8, "result": "degraded_safe"},
                      True, id="a_degraded_handoff_is_retried"),
-        pytest.param(None, Source.AIRPLAY, Source.SPOTIFY, (8, "spotify", "ok"),
+        pytest.param(7, None, Source.AIRPLAY, Source.SPOTIFY,
+                     {"id": 8, "level": 40},
+                     True, id="the_level_moved_after_the_handoff"),
+        pytest.param(None, None, Source.AIRPLAY, Source.SPOTIFY, {"id": 8},
                      True, id="first_transition_after_start"),
-        pytest.param(7, Source.AIRPLAY, Source.SPOTIFY, None,
+        pytest.param(7, None, Source.AIRPLAY, Source.SPOTIFY, None,
                      True, id="mux_status_unreadable"),
     ],
 )
 async def test_the_observer_carries_only_transitions_mux_did_not_hand_off(
-    tmp_path, monkeypatch, pushes, seen, prev, current, handoff, applies,
+    tmp_path, monkeypatch, pushes, seen, skipped, prev, current, handoff,
+    applies,
 ):
     """Mux performs each source handoff (ADR-0150). The observer sees the
     same switch about 1 s later and must not push or write it again. Every
     other switch it applies as before: one mux made with no newer handoff,
-    one whose handoff did not deliver it, or one mux cannot say about."""
+    one whose handoff did not deliver it, or one mux cannot say about.
+    Either way, the renderer's first report after the switch may still lag
+    the push, and it must not become the listening level."""
     status: dict | None = None
+
+    def mux(active: Source, **handoff) -> dict:
+        return {"active_source": active.value, "last_handoff": {
+            "to": "spotify", "result": "ok", "level": 50, **handoff}}
 
     async def mux_status(_command, *, timeout):
         if status is None:
@@ -595,13 +610,20 @@ async def test_the_observer_carries_only_transitions_mux_did_not_hand_off(
     persistence.save_now(fader_db)
     if seen is not None:
         # Any earlier transition reads mux's handoff; idle → airplay writes nothing.
-        status = {"active_source": "airplay", "last_handoff": {
-            "id": seen, "to": "spotify", "result": "ok"}}
+        status = mux(Source.AIRPLAY, id=seen)
         await coord.apply_active_source_transition(Source.IDLE, Source.AIRPLAY)
-    status = None if handoff is None else {
-        "active_source": current.value,
-        "last_handoff": dict(zip(("id", "to", "result"), handoff)),
-    }
+    if skipped is not None:
+        # Mux hands off to Spotify while a voice session defers the observer's
+        # switch, or while it queues for a lane mux has left (it drops it).
+        how, handoff_id = skipped
+        status = mux(Source.SPOTIFY, id=handoff_id)
+        coord.note_voice_session(how == "deferred")
+        await coord.apply_active_source_transition(
+            Source.AIRPLAY,
+            Source.SPOTIFY if how == "deferred" else Source.BLUETOOTH,
+        )
+        coord.note_voice_session(False)
+    status = None if handoff is None else mux(current, **handoff)
     pushes_before, writes_before = len(pushes.spotify), len(cam.set_calls)
 
     await coord.apply_active_source_transition(prev, current)
@@ -612,6 +634,8 @@ async def test_the_observer_carries_only_transitions_mux_did_not_hand_off(
     }[current] if applies else ([], [])
     assert pushes.spotify[pushes_before:] == pushed
     assert cam.set_calls[writes_before:] == pytest.approx(written)
+    assert not await coord.observe_source_volume(Source.SPOTIFY, 60, initial=True)
+    assert coord.get_volume_state().listening_level == 50
 
 
 @pytest.mark.parametrize(
