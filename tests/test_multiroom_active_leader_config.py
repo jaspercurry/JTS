@@ -33,7 +33,7 @@ import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
-from jasper.active_speaker import graph_types
+from jasper.active_speaker import graph_selector, graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
@@ -630,7 +630,7 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod, "safe_graph_for_current_topology", decide
+        graph_selector, "safe_graph_for_current_topology", decide
     )
 
 

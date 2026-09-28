@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jasper.active_speaker.output_contract import RING_STEREO_PROGRAM_CHANNELS
-from jasper.active_speaker.runtime_contract import safe_graph_for_current_topology
+from jasper.active_speaker.graph_selector import safe_graph_for_current_topology
 from jasper.sound.camilla_yaml import (
     emit_flat_outputd_cutover_config,
 )

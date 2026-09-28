@@ -154,7 +154,7 @@ def _stage_box(
     """
     import json
 
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.graph_selector import write_camilla_statefile
     from jasper.fanin import ring_readiness as rh
 
     configs = tmp_path / "configs"

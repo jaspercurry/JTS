@@ -370,7 +370,7 @@ def seed_crossover_statefile(
     (never full-range to a tweeter) guarantee
     for an ARMED camilla#2 rests on THIS arm-time re-seed pointing the statefile
     at the re-proven driver-domain (Layer-A-intact) graph. Reuses the canonical
-    :func:`jasper.active_speaker.runtime_contract.write_camilla_statefile` (the
+    :func:`jasper.active_speaker.graph_selector.write_camilla_statefile` (the
     same writer install.sh + the runtime contract use), which preserves any
     existing statefile fields, writes ``config_path`` + muted/unity slots, mode
     0644. Returns the statefile path written.
@@ -378,7 +378,7 @@ def seed_crossover_statefile(
     Paths read from the module globals / env at CALL time (the reconcile idiom),
     overridable for tests.
     """
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.graph_selector import write_camilla_statefile
 
     target_config = config_path or CROSSOVER_CONFIG_PATH
     target_statefile = str(crossover_statefile(statefile))

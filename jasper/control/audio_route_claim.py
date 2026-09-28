@@ -78,7 +78,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     :func:`_transport_state` resolves it, so a no-active-lane DAC still gets
     that clause after this reason, not instead of it.
     """
-    from ..active_speaker.runtime_contract import (  # lazy: import cost, the graph verifier loads only for a parked graph
+    from ..active_speaker.graph_selector import (  # lazy: import cost, the graph verifier loads only for a parked graph
         active_graph_is_parked,
         parked_muted_exits,
     )

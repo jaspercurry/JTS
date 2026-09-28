@@ -113,11 +113,11 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     and a mid-commission box must stay deployable.
     """
     from jasper.active_speaker.output_contract import CONTRACT_UNCONFIGURED, classify_output_contract, topology_allows_flat_dac_graph
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_selector import (
         active_graph_is_parked,
-        classify_bass_extension_graph,
         parked_muted_exits,
     )
+    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
     from jasper.output_topology import OutputTopologyError
 
     name = "active speaker runtime graph"

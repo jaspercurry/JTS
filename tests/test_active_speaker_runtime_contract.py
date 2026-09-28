@@ -18,7 +18,7 @@ import yaml
 
 from pathlib import Path
 
-from jasper.active_speaker import runtime_contract
+from jasper.active_speaker import graph_selector, runtime_contract
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
@@ -61,14 +61,16 @@ from jasper.active_speaker.graph_types import (
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
 )
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
-    _normalized_graph_fingerprint,
     active_graph_is_parked,
     build_parked_muted_graph,
-    classify_camilla_graph as _classify_camilla_graph,
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,
+)
+from jasper.active_speaker.runtime_contract import (
+    _normalized_graph_fingerprint,
+    classify_camilla_graph as _classify_camilla_graph,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_active_bass_extension_graph,
     classify_bass_extension_graph,
@@ -3500,7 +3502,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         "- false\n",
         encoding="utf-8",
     )
-    real_classify = runtime_contract.classify_bass_extension_graph
+    real_classify = graph_selector.classify_bass_extension_graph
     switched = False
 
     def switch_selector_before_canonical_proof(*args, **kwargs):
@@ -3518,7 +3520,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         return real_classify(*args, **kwargs)
 
     monkeypatch.setattr(
-        runtime_contract,
+        graph_selector,
         "classify_bass_extension_graph",
         switch_selector_before_canonical_proof,
     )

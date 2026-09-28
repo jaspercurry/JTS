@@ -25,7 +25,7 @@ from tests.active_speaker_fixtures import (
 )
 
 from jasper.active_speaker import runtime_convergence
-from jasper.active_speaker.runtime_contract import parked_safe_graph_decision
+from jasper.active_speaker.graph_selector import parked_safe_graph_decision
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import (
     read_topology_fingerprint_stamp,

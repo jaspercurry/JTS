@@ -31,7 +31,7 @@ from jasper.log_event import log_event
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
-from jasper.active_speaker import graph_types
+from jasper.active_speaker import graph_selector, graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
@@ -356,7 +356,7 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod, "safe_graph_for_current_topology", decide
+        graph_selector, "safe_graph_for_current_topology", decide
     )
 
 
@@ -750,7 +750,7 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_baseline.yml"))
     monkeypatch.setattr(
-        runtime_contract_mod,
+        graph_selector,
         "safe_graph_for_current_topology",
         lambda *_a, **_k: SimpleNamespace(
             current_graph=None,
