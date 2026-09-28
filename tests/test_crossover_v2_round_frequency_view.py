@@ -1085,8 +1085,8 @@ def test_bass_fit_refuses_unusable_evidence_by_code(bass_fit_pairs, fault, code)
 
 @pytest.fixture
 def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
-    descriptor = {'low_boost_db': 12, 'reference_level_db': 0,
-                  'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
+    descriptor = {'linkwitz_transform': {'source_hz': 60, 'source_q': 0.707, 'target_hz': 30, 'target_q': 0.707},
+                  'delta_highpass_hz': 20, 'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
     monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact',
                         lambda _: SimpleNamespace(fingerprint='boost', bass_extension=descriptor))
     takes = []
@@ -1415,9 +1415,9 @@ def test_bass_table_refuses_invalid_descriptors_by_code(bass_run, capsys, fault)
     if fault == 'extra':
         bass_run.descriptor['unknown'] = 1
     elif fault == 'missing':
-        del bass_run.descriptor['low_boost_db']
+        del bass_run.descriptor['delta_highpass_hz']
     else:
-        bass_run.descriptor['low_boost_db'] = -1
+        bass_run.descriptor['delta_highpass_hz'] = -1
     assert round_views_main(bass_run.argv) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer['code'] == 'bass_fit_candidate_unreadable'

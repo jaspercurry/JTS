@@ -87,7 +87,8 @@ def test_filters_mixers_and_pipeline_round_trip_verbatim() -> None:
 def test_whole_graph_render_keeps_native_bass_and_protection():
     source = yaml.safe_load(_emit())
     source = apply_dynamic_bass_graph(source, bass_channels=(0,), descriptor=DynamicBassDescriptor(
-        low_boost_db=8, reference_level_db=0, detector_lowpass_hz=120, compressor_threshold_dbfs=-30,
+        linkwitz_transform={"source_hz": 60, "source_q": 0.707, "target_hz": 48, "target_q": 0.707},
+        delta_highpass_hz=20, detector_lowpass_hz=120, compressor_threshold_dbfs=-30,
     ))
     derived = yaml.safe_load(_derive(yaml.safe_dump(source), roles=None).yaml_text)
     assert {k: v for k, v in derived.items() if k != 'devices'} == {k: v for k, v in source.items() if k != 'devices'}

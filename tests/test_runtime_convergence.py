@@ -474,6 +474,7 @@ def test_a_read_only_convergence_stamps_nothing(tmp_path: Path) -> None:
 @pytest.mark.parametrize("case", [
     "heal", "heal_current", "read_only", "disabled", "missing", "bad_candidate", "unsafe_emit",
     "publish_error", "reselect_refusal", "already_safe", "current_startup", "regressed", "regressed_unproved",
+    "adr_0352_section",
 ])
 def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, staged):
     regressed = case.startswith("regressed")
@@ -492,8 +493,8 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
     _, base = declared_graph_fixture(topology, draft)
     declaration = measurement_emit.load_tuning_declaration(topology)
     candidate = replace(base, bass_extension={
-        "low_boost_db": 4.0, "reference_level_db": -10.0,
-        "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
+        "linkwitz_transform": {"source_hz": 60.0, "source_q": 0.707, "target_hz": 48.0, "target_q": 0.707},
+        "delta_highpass_hz": 20.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
     } if not regressed else {})
     banked = publish_authored_candidate(candidate, root=tmp_path / "bank")
     paths = _boot_convergence_paths(tmp_path)
@@ -506,6 +507,9 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         banked, declaration=declaration, design_draft=draft, config_path=artifact,
     )
     applied["status"] = "applied"
+    if case == "adr_0352_section":
+        applied["recomposition_snapshot"]["bass_extension"] = {
+            "low_boost_db": 4.0, "reference_level_db": -10.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0}
     paths["applied_baseline_path"].write_text(json.dumps(applied))
     fresh = measurement_emit.compile_tuning_graph(declaration, candidate=candidate)
     old_payload = yaml.safe_load(fresh)
@@ -578,13 +582,16 @@ def test_boot_rebuilds_saved_tune_before_parking(tmp_path, monkeypatch, case, st
         assert read_camilla_statefile_config_path(paths["statefile_path"]) == str(current)
         assert artifact.read_bytes() == before[artifact]
     else:
-        assert result.decision.status == ("select_active_startup" if staged else "parked_muted")
+        # A stored ADR-0352 section refuses the staged startup graph too, so the box parks (ADR-0381).
+        assert result.decision.status == ("select_active_startup" if staged and case != "adr_0352_section" else "parked_muted")
+        if case == "adr_0352_section":
+            assert result.decision.preferred_graph.issues[0]["code"] == "bass_extension_block_invalid"
         if case == "read_only":
             assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
         else:
             assert read_camilla_statefile_config_path(paths["statefile_path"]) == result.decision.selected_config_path
             assert yaml.safe_load(Path(result.decision.selected_config_path).read_text())["devices"]["volume_limit"] == 0.0
-    if case in {"bad_candidate", "unsafe_emit", "publish_error"}:
+    if case in {"bad_candidate", "unsafe_emit", "publish_error", "adr_0352_section"}:
         assert artifact.read_bytes() == before[artifact]
         assert not (tmp_path / "canonical.yml").exists()
     if case != "missing":

@@ -351,7 +351,6 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
 @pytest.mark.parametrize("change, code", [
     ("missing_field", "bass_descriptor_malformed"),
     ({"unknown": 1}, "bass_descriptor_malformed"),
-    ({**BASS_EXTENSION, "linkwitz_transform": None}, "bass_descriptor_malformed"),
     ({"compressor_threshold_dbfs": 0.5}, "bass_compressor_threshold_dbfs_invalid"),
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
     ({"linkwitz_transform": True}, "bass_linkwitz_transform_invalid"),

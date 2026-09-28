@@ -100,19 +100,15 @@ def build_native_dynamic_bass_graph(
                 "order": 4,
             },
         },
-    }
-    delta_steps: list[dict[str, Any]] = []
-    if descriptor.delta_highpass_hz is not None:
-        filters[f"{PREFIX}_delta_highpass"] = {
+        f"{PREFIX}_delta_highpass": {
             "type": "BiquadCombo",
             "parameters": {
                 "type": "ButterworthHighpass",
                 "freq": descriptor.delta_highpass_hz,
                 "order": 2,
             },
-        }
-        delta_steps.append({"type": "Filter", "channels": list(boost_by_owner.values()),
-                            "names": [f"{PREFIX}_delta_highpass"]})
+        },
+    }
 
     expand_sources = [[_source(channel)] for channel in range(channels)]
     expand_sources.extend([[_source(owner)] for owner in owners])
@@ -149,7 +145,7 @@ def build_native_dynamic_bass_graph(
         {"type": "Mixer", "name": f"{PREFIX}_expand"},
         {"type": "Filter", "channels": list(boost_by_owner.values()), "names": [f"{PREFIX}_boost"]},
         {"type": "Mixer", "name": f"{PREFIX}_form_delta"},
-        *delta_steps,
+        {"type": "Filter", "channels": list(boost_by_owner.values()), "names": [f"{PREFIX}_delta_highpass"]},
         {"type": "Filter", "channels": detector_channels, "names": [f"{PREFIX}_detector_lowpass"]},
         *({"type": "Processor", "name": name} for name in processors),
         {"type": "Mixer", "name": f"{PREFIX}_reduce"},

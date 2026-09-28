@@ -375,8 +375,8 @@ def _persisted_boundary(
 
 def _dynamic_bass_descriptor() -> dict:
     return {
-        "low_boost_db": 4.0,
-        "reference_level_db": -10.0,
+        "linkwitz_transform": {"source_hz": 60.0, "source_q": 0.707, "target_hz": 48.0, "target_q": 0.707},
+        "delta_highpass_hz": 20.0,
         "detector_lowpass_hz": 120.0,
         "compressor_threshold_dbfs": -12.0,
     }
@@ -436,7 +436,7 @@ def test_persisted_dynamic_graph_matches_saved_descriptor(
     }
     accepted = classify_bass_extension_graph(topology, **kwargs)
     assert accepted.allowed is True, accepted.issues
-    assert accepted.details["bass_extension"]["low_boost_db"] == 4.0
+    assert accepted.details["bass_extension"]["compressor_threshold_dbfs"] == -12.0
 
     if tamper == "compressor":
         payload = yaml.safe_load(text)
@@ -457,7 +457,7 @@ def test_persisted_dynamic_graph_matches_saved_descriptor(
     else:
         applied = authority["applied"]
         if tamper == "descriptor":
-            applied["recomposition_snapshot"]["bass_extension"]["low_boost_db"] = 5.0
+            applied["recomposition_snapshot"]["bass_extension"]["compressor_threshold_dbfs"] = -13.0
         else:
             applied["recomposition_snapshot"].pop("bass_extension")
         authority["applied_baseline_path"].write_text(json.dumps(applied), encoding="utf-8")
@@ -610,16 +610,16 @@ def test_desired_boundary_is_disk_free_and_rejects_persisted_paths(
 
 @pytest.mark.parametrize("graph_kind", ["solo", "driver_domain"])
 @pytest.mark.parametrize(("clip_limit", "allowed"), [(-2.0, True), (1.0, False)])
-@pytest.mark.parametrize("boost_db", [4.0, 20.0])
+@pytest.mark.parametrize("target_hz", [48.0, 19.0])
 def test_desired_dynamic_graph_preserves_bass_owner_limiter_ceiling(
     graph_kind: str,
     clip_limit: float,
     allowed: bool,
-    boost_db: float,
+    target_hz: float,
 ) -> None:
     topology = _active_topology("mono", "active_2_way")
     descriptor = _dynamic_bass_descriptor()
-    descriptor["low_boost_db"] = boost_db
+    descriptor["linkwitz_transform"]["target_hz"] = target_hz
     applied = {"recomposition_snapshot": {"bass_extension": descriptor}}
     if graph_kind == "solo":
         text = _active_baseline_yaml(
