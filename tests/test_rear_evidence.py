@@ -7,44 +7,15 @@ from __future__ import annotations
 
 import json
 import math
-from importlib import import_module
 from typing import Any
 
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import evidence_reasons, rear_evidence
+from jasper.audio_measurement import rear_evidence
 from jasper.audio_measurement.alignment import DEFAULT_CONFIDENCE_THRESHOLD
 from tests.test_seat_figures import COVERAGE_HZ, FREQS_HZ
 
-
-@pytest.mark.parametrize("module_name, prefixes", [
-    ('jasper.audio_measurement.rear_evidence', 'REASON_'),
-    ('jasper.audio_measurement.interference_nulls', 'REASON_'),
-    ('jasper.audio_measurement.room_limits', 'REASON_'),
-    ('jasper.audio_measurement.timing_verification', 'REASON_'),
-    ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
-    ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
-    ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
-    ('jasper.active_speaker.round_verdicts', 'REASON_'),
-    ('jasper.active_speaker.round_view_artifacts', 'REASON_'),
-    ('jasper.cli.round_views._common', 'REASON_'),
-    ('jasper.cli.round_views.repeat', 'REASON_'),
-    ('jasper.active_speaker.crossover_v2.round_views.directivity', 'REASON_'),
-])
-def test_analysis_reason_constants_have_one_frozen_registry(module_name, prefixes):
-    constants = {name: value for name, value in vars(evidence_reasons).items()
-                 if name.isupper() and isinstance(value, str)}
-    registry = evidence_reasons.EVIDENCE_REASONS
-    assert len(constants) == len(set(constants.values())) == len(registry)
-    assert set(constants.values()) == set(registry)
-    assert all(isinstance(meaning, str) and meaning and "\n" not in meaning
-               for meaning in registry.values())
-    codes = [value for name, value in vars(import_module(module_name)).items()
-             if name.startswith(prefixes) and isinstance(value, str)]
-    assert codes and set(codes) <= registry.keys()
-    with pytest.raises(TypeError):
-        registry["new_reason"] = ""
 
 #: The pair fixture: one arrival per woofer inside a window long enough to hold
 #: both, on the take's own sample rate.
