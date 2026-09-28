@@ -10,8 +10,9 @@
 //! This keeps the final output loop alive even when renderers are idle.
 
 use alsa::pcm::{Access, Format, HwParams, State, IO, PCM};
-use alsa::{Direction, ValueOr};
+use alsa::Direction;
 use anyhow::{Context, Result};
+use jasper_alsa::{is_xrun_errno, prepare_hw_params, BufferSize, HwRequest};
 
 use crate::config::Config;
 use crate::types::{narrow_period, narrow_period_i24_le, ProgramSample, SampleFormat, CHANNELS};
@@ -20,22 +21,16 @@ const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 
 /// What the write loop does after one recovery attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum XrunAction {
+pub(crate) enum XrunAction {
     Continue,
     /// The budget is spent — bail, which takes the unit's ordinary exit-1
     /// restart ladder.
     GiveUp,
 }
 
-/// **The one recovery budget, shared by the coherent single sink and the
-/// composite**, so the two write paths cannot answer "how many times may one
-/// period recover?" differently.
-///
-/// Calling convention, which is the whole off-by-one bug class: the caller has
-/// ALREADY attempted the recovery and ALREADY incremented, so `1` means "one
-/// recovery has happened" and this check-AFTER-increment `>` permits exactly
-/// `MAX_RECOVERIES_PER_PERIOD` recoveries with no further write past them.
-fn xrun_policy(recoveries_so_far_including_this_one: u32) -> XrunAction {
+/// Call after recovery and increment: the fourth attempt gives up before
+/// another write. Zero-frame writes consume the same per-period budget.
+pub(crate) fn xrun_policy(recoveries_so_far_including_this_one: u32) -> XrunAction {
     if recoveries_so_far_including_this_one > MAX_RECOVERIES_PER_PERIOD {
         XrunAction::GiveUp
     } else {
@@ -1333,19 +1328,15 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
     let negotiated;
     {
         let install = |channels| -> Result<HwParams<'_>> {
-            let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-            hwp.set_channels(channels)
-                .with_context(|| format!("set_channels({})", channels))?;
-            hwp.set_rate(sample_rate, ValueOr::Nearest)
-                .with_context(|| format!("set_rate({})", sample_rate))?;
-            hwp.set_format(requested_format)
-                .with_context(|| format!("set_format({:?})", requested_format))?;
-            hwp.set_access(Access::RWInterleaved)
-                .context("set_access(RWInterleaved)")?;
-            hwp.set_period_size(period_frames as i64, ValueOr::Nearest)
-                .with_context(|| format!("set_period_size({})", period_frames))?;
-            hwp.set_buffer_size(buffer_frames as i64)
-                .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
+            let request = HwRequest {
+                channels,
+                sample_rate,
+                format: requested_format,
+                period_frames,
+                buffer: BufferSize::Exact(buffer_frames),
+            };
+            let hwp = prepare_hw_params(pcm, request)
+                .with_context(|| format!("preparing {role} HwParams {request:?}"))?;
             pcm.hw_params(&hwp).context("installing HwParams")?;
             Ok(hwp)
         };
@@ -1706,7 +1697,7 @@ fn write_dac_frames<S: Copy>(
             }
             Err(e) => {
                 let errno = e.errno();
-                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                if is_xrun_errno(errno) {
                     *xrun_count += 1;
                     let pending = frames_total - frames_done;
                     eprintln!(
@@ -1834,7 +1825,7 @@ fn write_dac_fail_closed<S: Copy>(
             Ok(n) => frames_done += n,
             Err(e) => {
                 let errno = e.errno();
-                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                if is_xrun_errno(errno) {
                     *ledger.xrun_count += 1;
                     *ledger.child_xrun_count += 1;
                     let pending = frames_total - frames_done;

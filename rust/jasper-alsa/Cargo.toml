@@ -1,0 +1,13 @@
+[package]
+name = "jasper-alsa"
+version.workspace = true
+edition.workspace = true
+description = "Shared ALSA hardware-parameter preparation for JTS audio daemons."
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+alsa.workspace = true
+libc = "0.2"

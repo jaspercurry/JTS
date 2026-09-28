@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! ALSA fan-in mixer — the core work loop.
-//!
 //! Reads N capture lanes (snd-aloop substream, renderer SHM ring, or the USB
 //! gadget), sums them sample-wise, and publishes the sum to the program SHM
 //! ring, this daemon's only final-output transport (ADR-0100).
@@ -30,9 +28,9 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
-use alsa::{Direction, ValueOr};
+use alsa::pcm::{Frames, State, IO, PCM};
 use anyhow::{Context, Result};
+use jasper_alsa::is_xrun_errno;
 use jasper_daemon::HELPER_STACK_BYTES;
 use log::{info, warn};
 
@@ -1242,7 +1240,7 @@ enum PcmIoFate {
 fn classify_pcm_errno(errno: i32) -> PcmIoFate {
     if errno == libc::EAGAIN {
         PcmIoFate::WouldBlock
-    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+    } else if is_xrun_errno(errno) {
         PcmIoFate::Xrun
     } else {
         PcmIoFate::Fatal
