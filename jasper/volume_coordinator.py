@@ -71,7 +71,7 @@ from .volume_curve import (
 )
 from .volume_handoff import VolumeHandoff
 from .volume_reconcile import VolumeReconciler, converged
-from .volume_state import VolumeState, OutboundStamp
+from .volume_state import FIRST_BOOT_DEFAULT_PCT, VolumeState, OutboundStamp
 from .volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
@@ -138,8 +138,8 @@ class VolumeCoordinator:
         self._spotify_device_name = spotify_device_name
 
         # Canonical level. Loaded from persistence by initialize();
-        # before that, defaults to 50 (mid-scale, hearing-safe).
-        self._level: int = 50
+        # before that, the level a record without one projects.
+        self._level: int = FIRST_BOOT_DEFAULT_PCT
         # Mute state. None = not muted; int = pre-mute level to
         # restore on unmute.
         self._pre_mute_level: int | None = None
@@ -290,7 +290,7 @@ class VolumeCoordinator:
         stale_after_sec: float = 1800.0,
         safe_low_pct: int = 20,
         safe_high_pct: int = 70,
-        first_boot_default_pct: int = 50,
+        first_boot_default_pct: int = FIRST_BOOT_DEFAULT_PCT,
     ) -> tuple[int, str]:
         """Read persistence, compute the boot listening_level (with
         idle-reset / safety regression), apply it. Returns the
@@ -511,11 +511,11 @@ class VolumeCoordinator:
         a prior mute() that ran in a different coordinator instance."""
         record = self._persistence.load()
         if record is None:
-            return
-        if record.listening_level is not None:
-            self._level = int(record.listening_level)
-        self._pre_mute_level = record.pre_mute_level
-        self._mute_token = record.mute_token
+            return  # A failed read is not a reset: keep this process's state.
+        state = VolumeState.from_record(record)
+        self._level = state.listening_level
+        self._pre_mute_level = state.pre_mute_level
+        self._mute_token = state.mute_token
 
     # ------------------------------------------------------------------
     # Observer hook — called by inbound DBus/HTTP observers when they
