@@ -8,7 +8,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -16,7 +18,8 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
+from jasper.active_speaker.graph_transfer import complex_channel_transfer
+from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs, compile_candidate_config
 from jasper.active_speaker.measurement_programs import preset, run_preset
 from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
@@ -39,6 +42,7 @@ from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
+from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 
 
 def _boost(boost_db, **changes):
@@ -553,18 +557,39 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
 
 
 _CUT = PeqFilter(50.0, 8.0, -6.0)
-_BOOST = PeqFilter(400.0, 8.0, 3.0)
 
 
-@pytest.mark.parametrize("peqs,band_hz,rise_db", [
-    ((), (20.0, 1100.0), 0.0), ((_CUT,), (20.0, 1100.0), 6.0), ((_BOOST,), (20.0, 1100.0), 3.0),
-    ((_CUT, _BOOST), (20.0, 1100.0), 9.0), ((_CUT, _BOOST), (100.0, 1100.0), 3.0),
+@pytest.mark.parametrize("room,boost,rise_db", [
+    ((), None, 0.0),
+    (({"freq": 50.0, "q": 8.0, "gain": -6.0},), None, 6.0),
+    (({"freq": 120.0, "q": 2.0, "gain": 3.0},), None, 3.99),  # a lone boost pays its peak and the margin
+    (({"freq": 120.0, "q": 2.0, "gain": -3.0},), 3.0, 0.0),  # the room cut nets a driver boost
 ])
-def test_the_room_off_rise_is_the_room_charge_less_its_lowest_response_in_band(peqs, band_hz, rise_db):
-    """Clearing the room layer drops its boost charge and its cuts, so a graph
-    without it plays up to the charge less the room's lowest response in the
-    band louder (ADR-0370)."""
-    assert rise_without_room_db(peqs, band_hz) == pytest.approx(rise_db, abs=0.1)
+def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(tuning_profile, room, boost, rise_db):
+    """Clearing the applied room layer moves the program charge by what the layer adds to it and
+    gives back the layer's response, so the room-off graph plays at most that much louder across
+    the band, read off the two compiled graphs (ADR-0385)."""
+    band_hz = (20.0, 1100.0)
+    boosts = [entry["freq"] for entry in room if entry["gain"] > 0.0]
+    candidate = replace(
+        _room_candidate(tuning_profile), blend_correction=(), role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
+        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 120.0, "q": 2.0, "gain": boost}]}}
+        if boost else {},
+        room_correction=_room_correction(
+            sides={"mono": list(room)}, basis={**_room_correction()["basis"], "admitted_boosts_hz": boosts},
+            boost_db_total=sum(entry["gain"] for entry in room if entry["gain"] > 0.0),
+            level_cost_db=sum(entry["gain"] for entry in room if entry["gain"] > 0.0),
+        ) if room else {},
+    )
+    rise = rise_without_room_db(candidate_room_peqs(candidate), band_hz,
+                                charge_db=candidate_parts.room_layer_charge_db(candidate))
+    hz = np.geomspace(*band_hz, 4001)
+    with_room, without = (np.abs(complex_channel_transfer(
+        yaml.safe_load(compile_candidate_config(played, playback_device="null", room_peqs=candidate_room_peqs(played))),
+        hz, input_weights={0: 1.0}, output_channels={"woofer": 0}, allow_limiter_passthrough=True,
+    )["woofer"]) for played in (candidate, replace(candidate, room_correction={})))
+    assert rise == pytest.approx(rise_db, abs=0.02)
+    assert rise == pytest.approx(max(0.0, float(np.max(20.0 * np.log10(without / with_room)))), abs=0.01)
 
 
 @pytest.mark.parametrize("purpose,candidate_id,stimulus,room,rise_db", [
@@ -617,7 +642,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert facts.applied_room_peqs == room
+    assert (facts.applied_room_peqs, facts.applied_room_charge_db) == (room, None if room is None else 0.0)
 
 
 def test_margin_clamp_lands_under_the_bound():

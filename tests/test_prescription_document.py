@@ -328,7 +328,7 @@ def test_a_one_way_speaker_with_no_declared_band_judges_its_full_range_role(bank
 
 @pytest.mark.parametrize("rear,gain,pin,refused", [
     (False, 30.0, None, False), (False, 45.0, None, True), (False, 45.0, -20.0, False),
-    (True, 36.0, None, True),
+    (True, 36.0, None, False), (True, 40.0, None, True),
 ])
 def test_composition_judges_the_charge_the_emitted_graph_applies(bank, evidence, rear, gain, pin, refused):
     """#5909: the door judges no headroom. Composition refuses what the emitter would, with the

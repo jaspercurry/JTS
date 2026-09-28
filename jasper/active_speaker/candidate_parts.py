@@ -77,6 +77,14 @@ def program_charge_db(candidate: MeasuredCrossoverCandidate) -> float:
         return exc.charge_db
 
 
+def room_layer_charge_db(candidate: MeasuredCrossoverCandidate) -> float:
+    """What ``candidate``'s room layer adds to its :func:`program_charge_db`, dB: negative where
+    its cuts net a boost the rest of the graph charges (ADR-0385)."""
+    if not candidate_room_peqs(candidate):
+        return 0.0
+    return program_charge_db(candidate) - program_charge_db(replace(candidate, room_correction={}))
+
+
 def candidate_from_applied_profile(
     topology: OutputTopology | None, applied_profile: Mapping[str, Any],
     *, find_candidate: Callable[[str], BankedCandidate] | None = None,

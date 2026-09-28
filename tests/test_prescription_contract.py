@@ -57,6 +57,7 @@ from tests.run_manifest_fixture import write_manifest
 from tests.active_speaker_fixtures import bind_role_rows, mono_output_topology
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.crossover_v2_fixtures import _one_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology
 
 PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
@@ -485,6 +486,18 @@ def test_the_contract_spends_what_the_emitted_graph_attenuates(rear):
     rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
     assert [row["program_headroom_spent_db"] for row in rows.values()] == [pytest.approx(charge)] * 2
     assert [row["program_headroom_remaining_db"] for row in rows.values()] == [pytest.approx(40.0 - charge)] * 2
+
+
+@pytest.mark.parametrize("trim_db, charge_db", [(0.0, 5.0), (-2.0, 3.0), (-6.0, 0.0)])
+def test_a_one_way_trim_nets_the_boost_it_follows(trim_db, charge_db):
+    """#5909: a one-way +4 dB boost charges 5.0 / 3.0 / 0.0 dB at trims 0 / -2 / -6 dB in the
+    emitted graph, in the contract and in composition's judgment (ADR-0385)."""
+    candidate = _candidate(preset=_one_way_preset(), trims={"full_range": trim_db}, linearization={
+        "full_range": {"filters": [{"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": 4.0}]}})
+    graph = yaml.safe_load(compile_candidate_config(candidate, playback_device="null"))
+    row = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]["full_range"]
+    assert (-graph["filters"]["active_baseline_headroom"]["parameters"]["gain"], row["program_headroom_spent_db"],
+            candidate_parts.program_charge_db(candidate)) == pytest.approx((charge_db,) * 3, abs=1e-4)
 
 
 def test_an_exhausted_base_spends_the_charge_the_emitter_refused():
