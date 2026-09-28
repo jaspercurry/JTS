@@ -22,12 +22,9 @@ from ._common import (
 )
 
 
-def write_room(
-    inputs: RoundInputs, directory: Path, set_id: str | None, *,
-    calibration_root: Path | None = None,
-) -> tuple[dict[str, Any], Path]:
+def write_room(inputs: RoundInputs, directory: Path, set_id: str | None) -> tuple[dict[str, Any], Path]:
     try:
-        payload = room_payload(inputs, set_id, calibration_root=calibration_root)
+        payload = room_payload(inputs, set_id)
     except RoundSetRefused:
         raise
     except _ROUND_TOOL_ERRORS as exc:
@@ -41,8 +38,7 @@ def _cmd_room(args: argparse.Namespace) -> int:
     if args.applied_profile:
         inputs = replace(inputs, applied_profile_path=Path(args.applied_profile))
     try:
-        payload, written = write_room(inputs, Path(args.round_dir), args.set,
-                                      calibration_root=args.calibration_root)
+        payload, written = write_room(inputs, Path(args.round_dir), args.set)
     except RoundCapturesRefused as exc:
         return refused_by_name(exc.reason, exc.detail)
     median, features = payload["median"], payload["persistence"]["features"]
@@ -64,6 +60,5 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("room", help="ceiling, median, persistence, limits, incumbent and boundary")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     parser.add_argument("--applied-profile", metavar="PATH", help="applied profile for this room")
-    parser.add_argument("--calibration-root", type=Path)
     add_set_argument(parser)
     parser.set_defaults(func=_cmd_room)
