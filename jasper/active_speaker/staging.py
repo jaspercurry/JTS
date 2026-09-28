@@ -688,20 +688,7 @@ def _stage_protected_startup_config_locked(
 
     devices = None
     if blocker_count == 0 and bound_preset and resolved_playback_device:
-        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
-        # the operator as this function's ordinary blocker, not as a traceback
-        # out of a wizard or the CLI. Mirrors the applied path's refusal, code
-        # included, so one bad token reads the same wherever it surfaces.
-        try:
-            devices = active_emit_devices(resolved_playback_device, topology=topology)
-        except ValueError as exc:
-            issues.append(_issue(
-                "blocker",
-                "ring_wire_declaration_invalid",
-                f"this box declares a ring wire neither jasper-fanin nor JTS can "
-                f"resolve, so there is no wire to emit against: {exc}",
-            ))
-            blocker_count += 1
+        devices = active_emit_devices(resolved_playback_device, topology=topology)
 
     if (
         blocker_count == 0
@@ -1011,20 +998,7 @@ def prepare_driver_commissioning_config(
     devices = None
     emitted_config: str | None = None
     if blocker_count == 0 and bound_preset is not None and resolved_playback_device:
-        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
-        # the operator as this function's ordinary blocker, not as a traceback
-        # out of a wizard or the CLI. Mirrors the anchor's refusal, code
-        # included, so one bad token reads the same wherever it surfaces.
-        try:
-            devices = active_emit_devices(resolved_playback_device, topology=topology)
-        except ValueError as exc:
-            issues.append(_issue(
-                "blocker",
-                "ring_wire_declaration_invalid",
-                f"this box declares a ring wire neither jasper-fanin nor JTS can "
-                f"resolve, so there is no wire to emit against: {exc}",
-            ))
-            blocker_count += 1
+        devices = active_emit_devices(resolved_playback_device, topology=topology)
 
     if (
         blocker_count == 0
@@ -1196,10 +1170,7 @@ def prepare_driver_commissioning_config(
     # here — role, outputs — cover a ring-sink/snd-aloop-source mismatch with
     # one grep, and the commissioning vocabulary stays stable. See #2412.
     #
-    # `wire` is read off the emitted block rather than re-derived via
-    # `resolve_ring_wire(topology)`: identical by construction (both come
-    # from the same `active_emit_devices` call), but re-deriving could raise
-    # `ValueError` on a bad wire token, which this logging line must not do.
+    # `wire` comes from the emitted block, so the event reports that artifact.
     # The literal `-` (never empty, which would read as "unknown") covers a
     # non-ring emit (no ring wire) and a blocked prepare (no emitted block).
     transport_is_ring = resolved_playback_device in RING_PCM_DEVICES
