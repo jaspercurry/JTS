@@ -18,7 +18,6 @@ from tests.test_prescription_contract import round_bank as round_bank
 from tests.test_prescription_contract import bass_packet as bass_packet
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS
 from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
 from jasper.active_speaker.preset_binding import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
@@ -449,20 +448,35 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
 
 
-@pytest.mark.parametrize("row", PRESCRIPTION_SECTIONS, ids=lambda row: row.name)
-def test_a_section_is_read_under_the_envelope_its_row_names(row):
-    authored = {} if "kind" in row.envelope or row.kind is None else {"kind": row.kind}
-    payload = prescription_document_mod._section_payload(row.name, authored, "Why.", prescription_contracts())
-    added = {key: value for key, value in payload.items() if key not in authored}
-    assert tuple(added) == row.envelope
-    assert (added.get("kind", row.kind), added.get("rationale", "Why.")) == (row.kind, "Why.")
-    assert isinstance(added.get("artifact_schema_version", 1), int)
+def test_a_section_authored_without_its_envelope_is_judged_and_carries_the_rationale_its_reader_names(
+    base, evidence, bass_packet,
+):
+    evidence = replace(evidence, sources={**deepcopy(dict(evidence.sources)), "receipt": _receipt()})
+    authored = {
+        "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 2}], dict(evidence.packet)),
+        "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
+        "alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
+        "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
+        "room": room_document(), "bass": bass_document(bass_packet),
+    }
+    raw = document(base.fingerprint, {name: {key: value for key, value in section.items()
+                                             if key not in ("kind", "artifact_schema_version", "rationale")}
+                                      for name, section in authored.items()})
+
+    judged = judge_prescription_document(raw, base=base, evidence=evidence).analysis["evidence"]["prescriptions"]
+
+    assert {name: receipt.get("rationale") for name, receipt in judged.items()} == {
+        "driver": raw["rationale"], "blend": raw["rationale"], "room": raw["rationale"],
+        "alignment": None, "topology": None, "bass": None}
 
 
-@pytest.mark.parametrize("name", ["bass", "rear_calibration"])
-def test_a_refused_set_names_the_section_it_was_read_for(base, bank, tmp_path, capsys, bass_round, bass_packet, name):
+@pytest.mark.parametrize("clears_room, name", [(False, "bass"), (False, "rear_calibration"), (True, "bass")])
+def test_a_refused_set_names_the_section_it_was_read_for(
+    base, bank, tmp_path, capsys, bass_round, bass_packet, clears_room, name,
+):
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps(document(base.fingerprint, {
+        **({"room": None} if clears_room else {}),
         name: bass_document(bass_packet) if name == "bass" else _rear_document()})))
     argv = ["judge", str(path), "--root", str(bank), "--round", str(bass_round), "--set", "missing"]
     assert crossover_prescriber.main(argv) == crossover_prescriber.EXIT_REFUSED

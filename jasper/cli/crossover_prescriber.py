@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence,
+    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence, blamed_section,
     judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
     read_prescription_document, saved_base, vary_document,
 )
@@ -69,11 +69,6 @@ def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) ->
     return PrescriptionEvidence(sources, packet, sha, Path(args.round).name if args.round else "")
 
 
-def _set_section(document: Mapping[str, Any]) -> str | None:
-    """A refused set names room, whose median the set selects, else the document's first section in document order."""
-    return next((name for name in ("room", *SECTION_KINDS) if name in document["sections"]), None)
-
-
 def _room_median(source: Path | Mapping[str, Any]) -> tuple[RoomMedian, str]:
     """Bind the canonical median independently of the document's incumbent."""
     try:
@@ -102,7 +97,7 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
         if kind == "emitted_graph" and args.round:
             capture_id = resolve_set(round_inputs(Path(args.round)), args.set).take_id(args.take)
     except RoundSetRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, _set_section(document), str(exc), evidence=exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail) from exc
     return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
                                          base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
 
@@ -184,7 +179,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except PrescriptionDocumentRefused as exc:
         return _document_failure(exc)
     except RoundSetRefused as exc:
-        return _document_failure(PrescriptionDocumentRefused(exc.reason, _set_section(document), str(exc), evidence=exc.detail))
+        return _document_failure(PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail))
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return _document_failure(PrescriptionDocumentRefused(exc.code, None, exc.detail))
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:

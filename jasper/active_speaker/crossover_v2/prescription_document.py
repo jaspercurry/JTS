@@ -54,6 +54,14 @@ _SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
 
 
+def blamed_section(sections: Mapping[str, Any]) -> str | None:
+    """The section an evidence refusal names: a stated room, whose median the round's
+    set selects, else the first section stated, else the first named (document order)."""
+    named = [name for name in SECTION_KINDS if name in sections]
+    stated = [name for name in named if sections[name]]
+    return "room" if "room" in stated else next(iter(stated or named), None)
+
+
 REASON_EVIDENCE_UNREADABLE = "evidence_unreadable"
 
 
@@ -229,7 +237,6 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
 
 def _section_payload(name: str, section: Mapping[str, Any], rationale: str,
                      contracts: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The authored section under the envelope its row names."""
     row = _SECTIONS[name]
     header: dict[str, Any] = {"kind": row.kind, "rationale": rationale}
     if "artifact_schema_version" in row.envelope:
@@ -246,7 +253,7 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
                            base: BankedCandidate, evidence: PrescriptionEvidence,
                            capture_id: str) -> dict[str, Any]:
     composed = judge_prescription_document(document, base=base, evidence=evidence)
-    section = "driver" if "driver" in document["sections"] else "blend"
+    section = blamed_section(document["sections"])
     try:
         return capture_prediction(round_dir, capture_id=capture_id,
                                   candidate=composed, basis_candidate=base.candidate)
@@ -299,7 +306,7 @@ def preview_prescription_document(
             kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
         else:
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
-                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, "driver" if "driver" in sections else "blend",
+                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, blamed_section(sections),
                                                   "a driver/blend preview needs --round <diagnostic round>")
             assert base is not None and evidence is not None
             if kind == "room":
