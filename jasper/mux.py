@@ -1406,7 +1406,10 @@ class Mux:
             return {"error": f"not a preemptable source {source_name!r}"}
         async with self._transition_lock:
             await self._airplay_session.release()
-        return {"preempted": Source.AIRPLAY.value}
+            return {
+                "preempted": Source.AIRPLAY.value,
+                "airplay_session_cleanup": self._airplay_session.snapshot(),
+            }
 
     async def _control_select(self, source_name: str) -> dict[str, Any]:
         source = _music_source(source_name)

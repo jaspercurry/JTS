@@ -18,6 +18,7 @@ import io
 import json
 from email.message import Message
 from http import HTTPStatus
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -202,9 +203,10 @@ def test_get_state_failure_is_explicit_for_initial_hydration(monkeypatch):
     assert _body_json(h) == {"error": "invalid source intent"}
 
 
-def test_post_set_without_csrf_is_rejected():
+@pytest.mark.parametrize("path", ["/set", "/airplay/reset"])
+def test_mutation_without_csrf_is_rejected(path):
     h = _drive(
-        "POST", "/set",
+        "POST", path,
         body=json.dumps({"source": "airplay", "enabled": True}).encode(),
     )
     # reject_csrf sends 403 before the handler (and _apply) ever runs.
@@ -496,3 +498,32 @@ def test_post_set_routes_each_source_through_shared_coordinator(
     assert h.status == 200
     assert applied == [(source, enabled)]
     assert blocker_calls == ([source] if enabled else [])
+
+
+@pytest.mark.parametrize(
+    "outcome,expected_status",
+    [
+        ({"status": "ok", "reason": "drop_acknowledged"}, 200),
+        ({"status": "ok", "reason": "receiver_absent"}, 200),
+        ({"status": "degraded", "reason": "stop_unconfirmed"}, 502),
+        ({"status": "degraded", "reason": "cleanup_failed"}, 502),
+        ({}, 502),
+        (TimeoutError(), 503),
+        (OSError(), 503),
+        (RuntimeError(), 503),
+    ],
+)
+def test_airplay_reset_reports_the_mux_release_outcome(monkeypatch, outcome, expected_status):
+    command = AsyncMock()
+    if isinstance(outcome, Exception):
+        command.side_effect = outcome
+    else:
+        command.return_value = {"preempted": "airplay", "airplay_session_cleanup": outcome}
+    monkeypatch.setattr(mod, "mux_socket_command", command)
+    h = _drive("POST", "/airplay/reset", body=b"{}", csrf_cookie=CSRF, csrf_header=CSRF)
+    assert h.status == expected_status
+    command.assert_awaited_once_with("PREEMPT airplay", timeout=6.0)
+    payload = _body_json(h)
+    assert ("error" in payload) is (expected_status != 200)
+    if not isinstance(outcome, Exception):
+        assert payload["airplay_session_cleanup"] == outcome
