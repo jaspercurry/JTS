@@ -148,7 +148,7 @@ class VolumeObserver:
         # transition handler when a source comes online or goes
         # offline, so camilla stays consistent with the boundary.
         try:
-            current_active = await self._coord._active_source()
+            current_active = await self._coord.active_source()
         except Exception as e:  # noqa: BLE001
             logger.debug("active_source query failed: %s", e)
             current_active = None
