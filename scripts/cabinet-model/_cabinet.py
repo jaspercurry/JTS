@@ -75,7 +75,7 @@ SIDES = {"front": "bearing", "behind": "behind"}
 def nearfield_raw(views: Sequence[Path]) -> dict[str, dict[str, Any]]:
     """Each woofer's raw curve at its nearest distance, from `jasper-round-views nearfield`; a later
     view's curve replaces an earlier one's for each woofer it has (a re-run after a fix)."""
-    curves = {}
+    curves: dict[str, Any] = {}
     for view in views:
         drivers = {driver["driver"]: driver for driver in json.loads(view.read_text())["drivers"]}
         for name, driver in WOOFERS.items():

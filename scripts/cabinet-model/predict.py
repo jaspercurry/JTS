@@ -6,27 +6,21 @@
 --farfield, the model checked against gated far-field takes first.
 
     .venv/bin/python scripts/cabinet-model/predict.py --transfer transfer.npz --nearfield nearfield_view.json \\
-        --dsp live.yml --dsp prescription.json --png compare.png --xmax-mm 14.7
+        --farfield farfield_view.json --dsp live.yml --dsp prescription.json --png compare.png --xmax-mm 14.7
 
 --dsp takes the speaker's live CamillaDSP graph or a rear-calibration or prescription JSON. Only the
 rear stage's rear/front ratio is modelled: its front chain, the woofer chain, room cuts and the bass
 boost are left out, as rear-design.py scores it. Levels are per unit front drive, 0 dB = the front
 woofer alone on axis at 400-600 Hz. Trust about 30-600 Hz.
 
---farfield takes the `jasper-round-views nearfield` view of a drivers/each round that took each
-woofer alone, gated, in front (bearing poses) and behind (behind poses) at the model's microphone
-distance (bem-transfer.py --mic-m). It prints measured - model for each woofer and side over [the
-take's gate floor 1/T, 600 Hz], 2.5/T beside it, with the model gated like the take. One anchor sets
-0 dB = the front woofer alone in front at 400-600 Hz (the median difference, ADR-0358). The model
-passes within 1 dB, max |measured - model|, on each front row. Not for near-field or ungated takes,
-nor with a transfer saved before --mic-m existed: re-run bem-transfer.py.
-
-    .venv/bin/python scripts/cabinet-model/predict.py --transfer transfer.npz --nearfield nearfield_view.json \\
-        --farfield farfield_view.json
-
-Exit codes: 0 when every row compared (the verdict is printed, not encoded); 1 when a row is missing
-(no_placement, no_raw, not_gated, no_band), or, before printing, when the transfer has no microphone
-points or the front woofer's front row cannot anchor 400-600 Hz; 2 on a usage error.
+--farfield takes the nearfield view of a drivers/each round with each woofer alone, gated, in front
+(bearing poses) and behind (behind poses) at bem-transfer.py's --mic-m. It prints measured - model
+per woofer and side over [the gate's 1/T, 600 Hz], 2.5/T beside it, the model gated like the take,
+on one anchor: 0 dB = the front woofer in front at 400-600 Hz (the median difference, ADR-0358).
+Pass: max |measured - model| <= 1 dB on each front row. Not for near-field or ungated takes, nor a
+transfer.npz saved before --mic-m. Exit codes: 0 every row compared (the verdict is printed); 1 a row
+missing (no_placement, no_raw, not_gated, no_band), or, before printing, no microphone points or no
+400-600 Hz anchor; 2 a usage error.
 """
 from __future__ import annotations
 
@@ -54,7 +48,7 @@ def model_check(cab: Cabinet, view: dict[str, Any]) -> dict[str, Any]:
     """measured - model for each woofer alone in front and behind over [its gate's 1/T floor, 600 Hz],
     the model gated like the take. One offset, the front woofer's median difference in front at
     400-600 Hz (ADR-0358), comes off every row, so each row keeps its level against that one."""
-    if not cab.at_mic:
+    if cab.mic_m is None:
         raise SystemExit("the transfer has no microphone points: re-run bem-transfer.py (--mic-m, 0.5 m by default)")
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     for (woofer, side), take in farfield_takes(view, cab.mic_m).items():
@@ -62,14 +56,14 @@ def model_check(cab: Cabinet, view: dict[str, Any]) -> dict[str, Any]:
                                     **{key: take.get(key) for key in ("missing", "distance_m", "take_ids", "gate")}}
         if take["missing"] is None:
             freqs, measured = (np.asarray(take["raw"][key], float) for key in ("freqs_hz", "level_db"))
-            band = [float(max(take["gate"]["validity_floor_hz"], freqs[0], TRUSTED_HZ[0])),
-                    float(min(TRUSTED_HZ[1], freqs[-1], take["high_hz"] or np.inf, cab.solved_to_hz))]
+            band = (float(max(take["gate"]["validity_floor_hz"], freqs[0], TRUSTED_HZ[0])),
+                    float(min(TRUSTED_HZ[1], freqs[-1], take["high_hz"] or np.inf, cab.solved_to_hz)))
             model = gated_db(cab.at_mic[woofer, side], take["gate"]["window_ms"], freqs)
-            row.update(band_hz=band, diff=curve_difference(freqs, measured, freqs, model, band_hz=band, remove_level=False))
+            row.update(band_hz=list(band), diff=curve_difference(freqs, measured, freqs, model, band_hz=band, remove_level=False))
             row["missing"] = None if row["diff"] else "no_band"
     front, anchor = rows["front", "front"], None
     if front.get("diff"):
-        anchor_band = [max(ANCHOR_HZ[0], front["band_hz"][0]), min(ANCHOR_HZ[1], front["band_hz"][1])]
+        anchor_band = (max(ANCHOR_HZ[0], front["band_hz"][0]), min(ANCHOR_HZ[1], front["band_hz"][1]))
         anchor = curve_difference(front["diff"].freqs_hz, front["diff"].curve_db, front["diff"].freqs_hz,
                                   front["diff"].against_db, band_hz=anchor_band)
     if anchor is None:
@@ -82,7 +76,7 @@ def model_check(cab: Cabinet, view: dict[str, Any]) -> dict[str, Any]:
                        freqs_hz=diff.freqs_hz.tolist(), delta_db=delta.tolist())
             if row["side"] == "front":
                 row["within_1_db"] = row["max_abs_db"] <= WITHIN_DB
-    return {"mic_m": cab.mic_m, "anchor_offset_db": anchor.level_offset_db, "anchor_band_hz": anchor_band,
+    return {"mic_m": cab.mic_m, "anchor_offset_db": anchor.level_offset_db, "anchor_band_hz": list(anchor_band),
             "nearfield_take_ids": cab.nearfield_take_ids, "rows": list(rows.values())}
 
 

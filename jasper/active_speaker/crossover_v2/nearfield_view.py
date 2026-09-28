@@ -7,11 +7,11 @@ band, and their distance self-test: a pure view of banked evidence (ADR-0346,
 ADR-0360).
 
 Each kept take banks its first sweep's curve with the other sweeps nested
-beside it, and states the gate they ran. The first sweep against the others
-shows an amplifier waking late (#5684); the last two sweeps against each other
-give the band's SNR. A driver's placements are its distances per pose kind, so
-a take in front and one behind stay apart; the level step between two
-distances of one kind is held to a rigid piston of the declared cone.
+beside it. The first sweep against the others shows an amplifier waking late
+(#5684); the last two sweeps against each other give the band's SNR. Per
+driver, placements key by distance and pose kind, so a take in front and one
+behind stay apart, and the level step between two distances of one kind is
+held to a rigid piston of the declared cone.
 
 A take's curve already has its sweep's digital gain divided out; its raw
 curve also has the fader and the played graph divided out, so every driver

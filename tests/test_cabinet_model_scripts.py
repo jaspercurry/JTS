@@ -64,18 +64,17 @@ def _farfield_view(window_ms=(), drop=()):
     """The nearfield view of a drivers/each round: each woofer alone at MIC_M in front and behind,
     its raw curve the monopole's level there plus OFFSET_DB, gated at 20 ms unless ``window_ms``
     names another (``None`` is ungated); ``drop`` leaves those rows' placements out."""
-    takes, drivers = [], {}
+    takes, drivers = [], {driver: [] for driver in SOURCE}
     for (driver, side), path in MIC_PATH_M.items():
         take_id, gate_ms = f"{driver}/{side}", dict(window_ms).get((driver, side), 20.0)
         takes.append({"take_id": take_id, "gate": {"window": "ungated"} if gate_ms is None else {
             "window": "gated", "window_ms": gate_ms, "validity_floor_hz": 1000.0 / gate_ms,
             "trusted_floor_hz": 2500.0 / gate_ms, "floor_source": "search_span_bound"}})
-        raw = {"take_ids": [take_id], "freqs_hz": FAR_FREQS.tolist(),
-               "level_db": [20.0 * np.log10(1.0 / path) + OFFSET_DB] * FAR_FREQS.size}
-        placements = drivers.setdefault(driver, [])
         if (driver, side) not in drop:
-            placements.append({"distance_mm": MIC_M * 1000.0, "kind": KIND[side], "take_ids": [take_id],
-                               "trusted_band": {"high_hz": 26_000.0}, "raw": raw})
+            drivers[driver].append({"distance_mm": MIC_M * 1000.0, "kind": KIND[side], "take_ids": [take_id],
+                                    "trusted_band": {"high_hz": 26_000.0}, "raw": {
+                                        "take_ids": [take_id], "freqs_hz": FAR_FREQS.tolist(),
+                                        "level_db": [20.0 * np.log10(1.0 / path) + OFFSET_DB] * FAR_FREQS.size}})
     return {"takes": takes, "drivers": [{"driver": driver, "placements": at} for driver, at in drivers.items()]}
 
 
