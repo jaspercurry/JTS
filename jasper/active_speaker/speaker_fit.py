@@ -15,9 +15,9 @@ import numpy as np
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_section import sections_by_role
-from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
+from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB
 from jasper.active_speaker.alignment_evidence import alignment_evidence
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
+from jasper.active_speaker.candidate_parts import applied_round_base, program_charge_db
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
@@ -26,18 +26,17 @@ from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
 from jasper.active_speaker.linearization_budget import fit_budgets_by_role, normalise_fit_budget
 from jasper.active_speaker.linearization_fit import (
-    FitVocabulary, LinearizationFit, complex_correction_response, linearization_filters_by_role, unavailable_fit,
+    FitVocabulary, LinearizationFit, complex_correction_response, unavailable_fit,
 )
-from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
-from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion
+from jasper.active_speaker.profile import CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
-from jasper.output_topology import OutputTopology
 
 
 class SpeakerFitUnreadable(RoundViewsError):
@@ -71,7 +70,7 @@ def _round_candidate(directory: Path, sources: Mapping[str, Any]) -> dict[str, A
     if path.is_file():
         return _read_candidate(path)
     if applied := sources.get("applied_profile"):
-        return candidate_from_applied_profile(OutputTopology.from_mapping(sources["draft"]["topology"]), applied).to_dict()
+        return applied_round_base(sources["draft"], applied).to_dict()
     raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
@@ -134,22 +133,17 @@ def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarra
 def _fit_vocabularies(
     candidate: Mapping[str, Any], budgets: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, FitVocabulary]:
-    sections = sections_by_role(CrossoverRegion.from_mapping(region)
-                                for region in candidate["source_preset"].get("crossover_regions") or ())
-    trims = candidate.get("role_attenuations_db") or {}
-    linearization = linearization_filters_by_role(candidate.get("linearization") or {})
-    room = candidate.get("room_correction") or {}
-    context = {role: (sections.get(role, ()), float(trims.get(role, 0.0)))
-               for role in sections.keys() | budgets.keys() | trims.keys() | linearization.keys()}
-    room_peqs = room_peqs_from_correction(room, ActiveSpeakerPreset.from_mapping(candidate["source_preset"])) if room else ()
+    try:
+        base: MeasuredCrossoverCandidate | None = MeasuredCrossoverCandidate.from_mapping(candidate)
+    except MeasuredCrossoverCandidateError:
+        base = None
     vocabularies = {}
     for role, budget in budgets.items():
-        headroom = boost_headroom_by_role(
-            branch_context=context,
-            linearization={name: filters for name, filters in linearization.items() if name != role},
-            room_peqs=room_peqs,
-        )
-        remaining = headroom[role]["program_headroom_remaining_db"]
+        # The charge without this role's chain (#5909). An unreadable base leaves
+        # only the ceiling, which composition enforces.
+        spent = None if base is None else program_charge_db(replace(base, linearization={
+            name: fit for name, fit in base.linearization.items() if name != role}))
+        remaining = MAX_PROGRAM_HEADROOM_DB if spent is None else max(0.0, MAX_PROGRAM_HEADROOM_DB - spent)
         vocabularies[role] = FitVocabulary(
             allow_boost=True, per_filter_boost_cap_db=remaining, composed_boost_cap_db=remaining,
         ).with_budget(budget)

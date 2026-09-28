@@ -389,13 +389,6 @@ def test_a_candidate_refuses_to_carry_a_non_finite_fit_cost():
     ``evidence_identity.json_fingerprint`` freezes the fingerprint payload, both
     through ``json_fields.freeze_json``, which refuses a non-finite float
     (verified by mutation: relaxing it turns this red).
-
-    Pinned because a reader downstream leans on it (#2357). The sweep reduces
-    this mapping to one figure with ``worst_headroom_cost_db``, whose own
-    ``isfinite`` guard is belt-and-braces exactly as long as this refusal holds:
-    relax it and that guard becomes the only thing standing between a NaN and
-    the Fc selector's saturation penalty, which clamps a NaN to 0.0 and charges
-    nothing.
     """
     for bad in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(MeasuredCrossoverCandidateError) as caught:

@@ -59,11 +59,12 @@ not software ranks.
 The emitter absorbs the largest branch peak plus its margin before the
 branches split. Boost spends program headroom (maximum SPL); it cannot raise a
 branch above the fader. `bounds.boost_headroom` discloses that cost and the
-remaining budget. The door refuses total program absorption above 40 dB
-(ADR-0219). Measurement excitation caps do not bound playback; session volume
-and measurement SPL headroom are disclosures here. The measurement SPL stop
-stays in force. The fitter uses remaining program headroom and the owner's
-`fit_budget.max_gain_db`; the mic tier limits where it has evidence.
+remaining budget. Composition refuses total program absorption above 40 dB as
+`program_headroom_exhausted` (ADR-0219). Measurement excitation caps do not
+bound playback; session volume and measurement SPL headroom are disclosures
+here. The measurement SPL stop stays in force. The fitter uses remaining
+program headroom and the owner's `fit_budget.max_gain_db`; the mic tier limits
+where it has evidence.
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`

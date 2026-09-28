@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import yaml
 import pytest
 
 from jasper.active_speaker.bundles import mark_state
@@ -46,6 +47,9 @@ from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_rou
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.round_packet import _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
+from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
@@ -928,18 +932,17 @@ def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
     assert not (tmp_path / "absent.json").exists()
 
 
-@pytest.mark.parametrize("incumbent_role,remaining", [("tweeter", 40.0), ("woofer", 3.0)])
-def test_fit_budget_excludes_replaced_role_but_charges_other_branches(speaker_round, incumbent_role, remaining):
-    *_, region = speaker_round
-    vocabularies = _fit_vocabularies({
-        "source_preset": {"crossover_regions": [region]},
-        "linearization": {incumbent_role: {"filters": [
-            {"biquad_type": "Peaking", "freq": 300.0, "q": 1.0, "gain": 36.0},
-        ]}},
-    }, {"tweeter": {"max_gain_db": 2.0}})
-    vocabulary = vocabularies["tweeter"]
-    assert vocabulary.per_filter_boost_cap_db == pytest.approx(remaining, abs=0.05)
-    assert vocabulary.composed_boost_cap_db == pytest.approx(remaining, abs=0.05)
+@pytest.mark.parametrize("incumbent_role,rear", [("tweeter", False), ("woofer", False), ("woofer", True)])
+def test_fit_budget_excludes_replaced_role_but_charges_other_branches(incumbent_role, rear):
+    """#5909: the tweeter's cap is what the emitted graph charges without its own chain."""
+    speaker = {"preset": _rear_pair("mono")[0], "rear_calibration": _rear_document()} if rear else {}
+    chain = {"filters": [{"biquad_type": "Peaking", "freq": 300.0, "q": 1.0, "gain": 30.0}]}
+    others = _candidate(linearization={} if incumbent_role == "tweeter" else {"woofer": chain}, **speaker)
+    graph = yaml.safe_load(compile_candidate_config(others, playback_device="null"))
+    remaining = 40.0 + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    candidate = _candidate(linearization={incumbent_role: chain}, **speaker)
+    vocabulary = _fit_vocabularies(candidate.to_dict(), {"tweeter": {"max_gain_db": 2.0}})["tweeter"]
+    assert vocabulary.per_filter_boost_cap_db == vocabulary.composed_boost_cap_db == pytest.approx(remaining)
     assert vocabulary.max_gain_db == 2.0
 
 

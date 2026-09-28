@@ -68,6 +68,18 @@ APPLIED_RESPONSE_FILTER_MODE = "applied_crossover_response"
 
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 
+PROGRAM_HEADROOM_EXHAUSTED = "program_headroom_exhausted"
+
+
+class ProgramHeadroomExhausted(ActiveSpeakerConfigError):
+    """The program charge, ``charge_db``, is past :data:`MAX_PROGRAM_HEADROOM_DB` (#5909)."""
+
+    code = PROGRAM_HEADROOM_EXHAUSTED
+
+    def __init__(self, charge_db: float) -> None:
+        super().__init__(f"program headroom {charge_db:g} dB exceeds {MAX_PROGRAM_HEADROOM_DB:g} dB")
+        self.charge_db = charge_db
+
 
 def _emit_delay_filter(name: str, delay_ms: float = 0.0) -> list[str]:
     return [
@@ -702,8 +714,7 @@ def _emit_baseline_filter_definitions(
     # the PRE-SPLIT gain because every branch sees the same program, so absorbing
     # the worst branch's total covers all of them — the mechanism that lets the
     # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard rail.
-    # The linearization term is the SAME quantity the fit discloses as
-    # ``LinearizationFit.headroom_cost_db``.
+    # Every judge reads this charge back off the graph (#5909).
     #
     # A NUMBER, never a gate: `active_baseline_headroom` is always emitted, so
     # folding the trim into its value keeps a flat-window crossing a parameter
@@ -716,9 +727,7 @@ def _emit_baseline_filter_definitions(
         branch_context=_branch_context(preset, corrections),
     )
     if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
-        raise ActiveSpeakerConfigError(
-            f"program headroom {total_headroom_db:g} dB exceeds {MAX_PROGRAM_HEADROOM_DB:g} dB"
-        )
+        raise ProgramHeadroomExhausted(total_headroom_db)
     headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
     lines.extend(
         emit_gain_filter(

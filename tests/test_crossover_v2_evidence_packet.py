@@ -53,8 +53,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "beaa590551555e31dd20d64410157d7053e5250ef191baaa0bf63e13598371ab")
-    assert packet["packet_fingerprint"] == "98a08a89d73ac9060bbcf1042b386396a6aa90bbda907a4ef6afe3ddfced3e87"
+        "1bec0514e9dd635286ff3b8c98c685b7d066edc61175efcc132dcb5f4ab17530")
+    assert packet["packet_fingerprint"] == "0d64338c80f5cea512969450dab30412a5d537dd54f0a3190ac3cacf498cad0c"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):

@@ -234,21 +234,6 @@ def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
     return dict(record) if isinstance(record, Mapping) else None
 
 
-def _candidate_headroom_cost_db(linearization: Any) -> float:
-    """The applied correction's disclosed max-level cost, dB.
-
-    Thin adapter over the fit module's own reducer, so this payload and the
-    conductor's cannot disagree about a household-facing number.
-    """
-    from jasper.active_speaker.linearization_fit import (
-        worst_headroom_cost_db,
-    )  # lazy: fitting stack import cost
-
-    if not isinstance(linearization, Mapping):
-        return 0.0
-    return worst_headroom_cost_db(linearization)
-
-
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary``, achieved-minus-target dB at
@@ -371,6 +356,7 @@ def candidate_summary(
     *,
     topology_pinned: bool = False,
     headroom_cost_basis: str | None = None,
+    applied_headroom_db: float | None = None,
 ) -> dict[str, Any] | None:
     from jasper.active_speaker.linearization_fit import (  # lazy: fitting stack import cost
         HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
@@ -413,7 +399,7 @@ def candidate_summary(
         "linearization_driver_class": _candidate_octave_driver_classes(
             candidate.linearization, octaves
         ),
-        "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
+        "applied_headroom_db": applied_headroom_db,
         "headroom_cost_basis": stamped_basis,
     }
 

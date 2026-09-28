@@ -22,11 +22,15 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_measurement_band_hz,
     resolve_driver_protection_slope_db_per_octave,
 )
-from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_context, boost_headroom_by_role
+from jasper.active_speaker.branch_chain import branch_chain_peak_db
+from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_EXHAUSTED
+from jasper.active_speaker.candidate_parts import applied_round_base, program_charge_db
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
-from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB, required_driver_roles,
+)
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
@@ -136,9 +140,23 @@ def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
     return programs_for_topology(OutputTopology("", "", unknown_output_hardware(), groups))
 
 
+def _base_charge_db(candidate: Mapping[str, Any], draft: Mapping[str, Any],
+                    applied_profile: Mapping[str, Any]) -> float | None:
+    """The program charge of the base the round was measured on, which the fit reads too.
+
+    ``None`` when neither the round nor an applied tune names a readable base.
+    """
+    try:
+        base = (MeasuredCrossoverCandidate.from_mapping(candidate) if candidate
+                else applied_round_base(draft, applied_profile) if applied_profile else None)
+    except (LookupError, TypeError, ValueError):
+        return None
+    return None if base is None else program_charge_db(base)
+
+
 def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
              preset: ActiveSpeakerPreset | None, candidate: Mapping[str, Any],
-             manifest: Mapping[str, Any]) -> dict[str, Any]:
+             manifest: Mapping[str, Any], applied_profile: Mapping[str, Any]) -> dict[str, Any]:
     blend_format = blend.prescription_response_format()
     driver_format = driver.driver_prescription_response_format()
     alignment_format = alignment.alignment_prescription_response_format()
@@ -157,16 +175,17 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             spl = finite_float(level.get("loudest_half_second_db_spl"))
             if spl is not None:
                 spl_margins.append(max(0.0, preset.safety.max_commissioning_level_db_spl - spl - SPL_RAISE_MARGIN_DB))
-    context = _branch_context(preset, {
-        role: {"gain_db": trim} for role, trim in as_mapping(candidate.get("role_attenuations_db")).items()
-    }) if preset is not None else {role: ((), 0.0) for role in passbands}
-    headroom = boost_headroom_by_role(
-        branch_context=context,
-        linearization=linearization_filters_by_role(as_mapping(candidate.get("linearization"))),
-        room_peqs=room_peqs_from_correction(as_mapping(candidate.get("room_correction")), preset) if preset else (),
-        session_volume_db=max(levels) if levels and len(levels) == len(takes) else None,
-        spl_headroom_db=min(spl_margins) if spl_margins else None,
-    )
+    spent = _base_charge_db(candidate, draft, applied_profile)
+    linearization = linearization_filters_by_role(as_mapping(candidate.get("linearization")))
+    headroom = {role: {
+        "composed_boost_db": max(0.0, branch_chain_peak_db(linearization.get(role, ()))),
+        "program_headroom_spent_db": spent,
+        "program_headroom_remaining_db": None if spent is None else max(0.0, MAX_PROGRAM_HEADROOM_DB - spent),
+        "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
+        "session_volume_db": max(levels) if levels and len(levels) == len(takes) else None,
+        "spl_headroom_db": min(spl_margins) if spl_margins else None,
+        "binding": "program_headroom" if spent is not None and spent >= MAX_PROGRAM_HEADROOM_DB else None,
+    } for role in (required_driver_roles(preset.way_count) if preset else sorted(passbands))}
     band = as_mapping(as_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
     corner = fc["fc_hz"] if fc else None
@@ -232,7 +251,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "q_range_cut": [driver.EVALUABLE_Q_MIN, driver.EVALUABLE_Q_MAX],
                 "q_max_boost": driver.DRIVER_MAX_BOOST_Q,
                 "boost_headroom": headroom,
-                "boost_headroom_rule": f"Program headroom spent must not exceed {MAX_PROGRAM_HEADROOM_DB:g} dB",
+                "boost_headroom_rule": (f"Program headroom spent must not exceed {MAX_PROGRAM_HEADROOM_DB:g} dB; "
+                                        f"composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past it"),
                 "shelf_rule": driver_format["bounds"]["where_a_shelf_may_sit"],
                 "shelf_q": driver.SHELF_Q,
             },
@@ -547,7 +567,8 @@ def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mappi
                            manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate, applied_profile or {})
-    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}) if name == "speaker" else
+    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}, applied_profile or {})
+                   if name == "speaker" else
                    _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
                    _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS if name in programs}
 
