@@ -62,6 +62,7 @@ from jasper.active_speaker.graph_safety import (
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 
+from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from tests.test_rear_output_foundation import _rear_pair
@@ -382,8 +383,8 @@ def test_emit_gate_logs_before_raising(monkeypatch, caplog) -> None:
             emit_active_speaker_baseline_config(
                 _preset("mono", 2), playback_device=ACTIVE_PCM
             )
-    assert "event=active_speaker.emit_gate" in caplog.text
-    assert "blocked_unprotected_tweeter" in caplog.text
+    fields = event_fields(caplog, "active_speaker.emit_gate")
+    assert fields["result"] == "blocked_unprotected_tweeter"
 
 
 @pytest.mark.parametrize("layout", ["mono", "stereo"])
