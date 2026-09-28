@@ -47,7 +47,7 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_verify_program,
 )
-from tests._log_events import event_field_maps, event_fields, leaked_lines
+from tests._log_events import event_field_maps, event_fields, event_records
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
 
@@ -297,7 +297,7 @@ def test_a_closed_session_volume_is_an_answer_not_an_unreadable_field(caplog) ->
         )
 
     assert observed.session_volume_db is None
-    assert leaked_lines(caplog, "session_volume_db") == []
+    assert event_records(caplog, "active_speaker.capture_provenance") == []
 
 
 def test_a_raising_surface_cannot_escape_into_the_capture(caplog) -> None:

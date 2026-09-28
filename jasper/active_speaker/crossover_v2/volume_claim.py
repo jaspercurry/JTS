@@ -138,13 +138,16 @@ class OwnerVolumeDoor:
             await self._claim.acquire(level_db)
         except VolumeClaimRefused as exc:
             # ``reason=`` separates a conflict from an unconfirmed write —
-            # opposite fixes. ``holder=`` is the owner's message, which names
-            # the claim kind only; the owner keeps no holder identity.
+            # opposite fixes. ``kind=`` is the claim this door tried to take —
+            # a conflict is always same-kind, so that names the conflict too.
+            # ``holder=`` is the owner's free-text message; the owner keeps no
+            # holder identity.
             log_event(
                 logger,
                 "correction.session_volume_claim_refused",
                 level=logging.ERROR,
                 level_db=f"{float(level_db):.2f}",
+                kind=ClaimKind.SESSION_MEASUREMENT.value,
                 reason=type(exc).__name__,
                 holder=str(exc),
             )

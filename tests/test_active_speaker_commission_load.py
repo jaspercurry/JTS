@@ -375,21 +375,27 @@ def test_commissioning_ramp_reload_can_skip_output_reconcile(
 
 
 def test_commissioning_load_fails_closed_when_reconcile_trigger_fails(
-    monkeypatch, tmp_path
+    monkeypatch, caplog, tmp_path
 ):
     def fail_manage_units(*units: str, **kwargs):
         return {"ok": False, "rc": 3, "error": "systemd unavailable"}
 
     monkeypatch.setattr(startup_load_mod, "manage_units", fail_manage_units)
-    result, _cam, _staged, _staged_path, _statefile, state_path = _load(
-        tmp_path, monkeypatch, role="woofer"
-    )
+    with caplog.at_level("WARNING", logger=commission_load_mod.logger.name):
+        result, _cam, _staged, _staged_path, _statefile, state_path = _load(
+            tmp_path, monkeypatch, role="woofer"
+        )
 
     assert result["load"]["status"] == "failed"
     assert result["load"]["last_action"] == "output_reconcile_failed"
     assert {
         issue["code"] for issue in result["load"]["issues"]
     } == {"commission_output_hardware_reconcile_failed"}
+    # The reconcile-trigger failure reaches the journal too, not just the state.
+    fields = event_fields(caplog, "active_speaker.driver_commission_load")
+    assert fields["reason"] == "output_hardware_reconcile_failed"
+    assert fields["op_id"] == result["load"]["dsp_apply"]["op_id"]
+    assert fields["transport"] == "ring"
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "failed"
     assert state["loaded"] is False
@@ -481,7 +487,9 @@ def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
     # The safety reason reaches the journal, not just the state file.
     fields = event_fields(caplog, "active_speaker.driver_commission_load")
     assert fields["result"] == "failed"
-    assert "drifted" in fields["reason"]
+    assert fields["reason"] == result["load"]["dsp_apply"]["persist_error"]
+    assert fields["rolled_back"] == "true"
+    assert fields["transport"] == "ring"
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "failed"
     assert state["rollback_available"] is False
