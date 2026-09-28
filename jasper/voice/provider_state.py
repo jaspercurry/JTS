@@ -46,6 +46,7 @@ from ..env_load import (
     merged_env_files,
     parse_bool_value,
     read_env_file_state,
+    VOICE_KEYS_ENV_PATH,
 )
 from ..log_event import log_event
 from . import model_discovery
@@ -85,7 +86,7 @@ VOICE_PROVIDER_ENV_OWNER = (
 # keys to every jasper daemon. In this module only keys_set reads it, for presence only
 # (names, never values), on behalf of the wizard and the root CLI; jasper-control never
 # calls it.
-KEYS_FILE = "/var/lib/jasper-secrets/voice_keys.env"
+KEYS_FILE = VOICE_KEYS_ENV_PATH
 
 ProviderStateStatus = Literal[
     "configured",

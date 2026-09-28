@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .. import google_routes, location_state, transit
 from ..transit import citibike
 from ..transit.bus import parse_bus_stops
-from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value
+from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value, GOOGLE_ROUTES_ENV_PATH
 from ..secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
@@ -712,7 +712,7 @@ def _travel_routes_card_html(
     saved_key = _routes_key_value(routes_state)
     masked = mask_secret(saved_key)
     source_label = {
-        "state": "/var/lib/jasper-secrets/google_routes.env",
+        "state": GOOGLE_ROUTES_ENV_PATH,
     }.get(key_source, "")
     saved_key_html = (
         f'<p class="saved-key">Saved key: '
