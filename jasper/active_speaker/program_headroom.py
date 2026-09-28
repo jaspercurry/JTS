@@ -33,6 +33,12 @@ from .profile import ActiveSpeakerConfigError
 
 PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
 
+# A program peak at or under this is unity, dB: it is left uncharged, and it is
+# the verifier's slack on a charged peak. The emitter spells every gain,
+# frequency and q to 4 decimals, so a graph charged exactly can read a hair
+# above unity after the YAML round-trip; an analytic 0 dB reads about 1e-4.
+PEAK_EPS_DB: float = 1e-3
+
 # The Butterworth q as the emitter spells it; a shelf, low- or high-pass at or
 # under it overshoots unity by less than 1e-8 dB.
 _MONOTONIC_Q_MAX = round(SHELF_Q, SHELF_Q_EMIT_DECIMALS)
@@ -42,7 +48,8 @@ _UNITY_COMBOS = frozenset({
 
 
 class ProgramHeadroomUnreadable(ActiveSpeakerConfigError):
-    """An emitted active graph whose :data:`PROGRAM_HEADROOM_FILTER` is not one finite ``Gain``."""
+    """An emitted active graph whose :data:`PROGRAM_HEADROOM_FILTER` is not one finite ``Gain``,
+    or whose program has no exactly modelled transfer to charge."""
 
     code = "program_headroom_unreadable"
 
@@ -110,6 +117,25 @@ def program_peak(graph: Mapping[str, Any], *, charged: bool = False) -> ProgramP
     return ProgramPeak(
         20.0 * math.log10(float(program[output, index])), int(output), float(grid[index]),
     )
+
+
+def charge_db(graph: Mapping[str, Any], *, output_trim_db: float = 0.0) -> float:
+    """The attenuation ``graph`` needs ahead of its split, dB (ADR-0385).
+
+    Its :func:`program_peak` with its own headroom gain held at 0 dB, plus one
+    :data:`~.branch_chain.HEADROOM_MARGIN_DB` when that peak is over
+    :data:`PEAK_EPS_DB`, plus the household's output trim, which is never netted.
+    """
+    try:
+        peak = program_peak(graph).db
+    except GraphTransferError as exc:
+        raise ProgramHeadroomUnreadable(f"the graph's program peak cannot be evaluated: {exc}") from exc
+    trim_db = max(0.0, output_trim_db)
+    if peak <= PEAK_EPS_DB:
+        return trim_db
+    from .branch_chain import headroom_charge_db  # lazy: imports numpy, which a peak over ε has loaded
+
+    return headroom_charge_db(peak) + trim_db
 
 
 def _names(step: Mapping[str, Any]) -> list[str]:

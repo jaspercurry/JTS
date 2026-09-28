@@ -27,6 +27,7 @@ from jasper.biquad import (
 )
 
 from .crossover_section import CrossoverSection
+from .program_headroom import PEAK_EPS_DB
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB
@@ -43,11 +44,6 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # outside the audible band is charged against its own asymptote sample (#2846). 1.0 dB
 # equals ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
 HEADROOM_MARGIN_DB: float = 1.0
-
-# Below this the evaluated peak is treated as "never exceeds unity", dB. The digital
-# biquads evaluate a cascade's analytic zero to a residue of order 1e-4 dB; 0.01 dB is
-# two orders above that.
-_PEAK_EPS_DB: float = 0.01
 
 # BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
@@ -93,7 +89,7 @@ CHAIN_GRID_HZ.flags.writeable = False
 # (#2846: a +12 dB Lowshelf at 1.8 Hz read 10.7063 dB, and at or below 1.0 Hz read
 # exactly half its gain). Each shelf therefore contributes ``freq / K`` (Lowshelf) or
 # ``freq * K`` (Highshelf) to the grid. K = 32 holds the worst residual approach under
-# 1e-4 dB across Q 0.05-50 and |gain| <= 24 dB -- two orders below ``_PEAK_EPS_DB``.
+# 1e-4 dB across Q 0.05-50 and |gain| <= 24 dB -- an order below ``PEAK_EPS_DB``.
 _SHELF_ASYMPTOTE_RATIO: float = 32.0
 
 
@@ -609,7 +605,7 @@ def headroom_charge_db(peak_db: float) -> float:
     that never exceeds unity (#1808); otherwise the peak plus
     :data:`HEADROOM_MARGIN_DB`.
     """
-    if peak_db <= _PEAK_EPS_DB:
+    if peak_db <= PEAK_EPS_DB:
         return 0.0
     return float(peak_db) + HEADROOM_MARGIN_DB
 

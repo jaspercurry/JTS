@@ -238,8 +238,8 @@ def _emit_baseline_pipeline(
 ) -> str:
     lines: list[str] = []
     # Room PEQs (Layer B) run on the stereo program bus before the common
-    # active_baseline_headroom gain. The gain absorbs their positive-boost
-    # headroom so the active path stays one-preamp-shaped.
+    # active_baseline_headroom gain, where the charge nets them with every
+    # later stage (ADR-0385) and the active path stays one-preamp-shaped.
     if room_peq_names:
         names = ", ".join(room_peq_names)
         lines.extend([
@@ -260,9 +260,8 @@ def _emit_baseline_pipeline(
     #     crossover high-pass IS its protection; a pre-split filter cannot push
     #     energy past it.
     #
-    # BEFORE active_baseline_headroom so the stage sits where a boost WOULD be
-    # absorbable — necessary but not sufficient, since absorption needs a TERM in
-    # ``total_headroom_db`` and this stage deliberately has none.
+    # BEFORE active_baseline_headroom, where the charge reads every stage; the
+    # verifier refuses room and blend filters behind it.
     if blend_correction_names:
         names = ", ".join(blend_correction_names)
         lines.extend([

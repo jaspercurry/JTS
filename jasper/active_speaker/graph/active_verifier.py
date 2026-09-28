@@ -73,7 +73,7 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
-from ..program_headroom import PROGRAM_HEADROOM_FILTER, program_peak
+from ..program_headroom import PEAK_EPS_DB, PROGRAM_HEADROOM_FILTER, program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
@@ -87,11 +87,6 @@ _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 ACTIVE_SPLIT_MIXER_PREFIX = "split_active_"
 
-
-# Float slack (dB) on the charged peak. The emitter spells every gain,
-# frequency and q to 4 decimals, so a graph charged exactly can read a hair
-# above unity after the YAML round-trip.
-_CHARGED_PEAK_EPS_DB: float = 1e-3
 
 #: The one NUMERIC refusal in this walk, named apart from the shape refusals
 #: because two other seams key on it rather than re-deriving the condition. A
@@ -606,7 +601,7 @@ def _program_headroom_issues(payload: dict[str, Any]) -> list[dict[str, str]]:
         fields: dict[str, Any] = {"error": str(exc)}
         detail = f"the graph's program peak cannot be evaluated: {exc}"
     else:
-        if peak.db <= _CHARGED_PEAK_EPS_DB:
+        if peak.db <= PEAK_EPS_DB:
             return []
         output = "" if peak.output is None else f" on DAC output {peak.output + 1}"
         fields = {"output": peak.output, "peak_db": round(peak.db, 4), "peak_hz": round(peak.hz, 1)}

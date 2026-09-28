@@ -24,7 +24,6 @@ from jasper.active_speaker.branch_chain import (
     _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
     HEADROOM_MARGIN_DB,
-    _PEAK_EPS_DB,
     _evaluation_grid,
     branch_chain_peak,
     branch_chain_peak_db,
@@ -41,11 +40,9 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
-# The runtime re-proof's own float slack, imported rather than restated so the
-# migration corpus asserts the condition the contract actually applies.
-from jasper.active_speaker.graph.active_verifier import (
-    _CHARGED_PEAK_EPS_DB as _RUNTIME_BOOST_EPS_DB,
-)
+# The one ε the charge and the runtime re-proof share, imported rather than
+# restated so the migration corpus asserts the condition the contract applies.
+from jasper.active_speaker.program_headroom import PEAK_EPS_DB
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
 from jasper.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
 from tests.test_rear_output_foundation import _rear_document
@@ -685,7 +682,7 @@ def test_a_shelf_is_charged_at_its_asymptote_not_at_the_domain_edge(
         "premise: this shelf is a case the pre-fix grid under-read PAST the "
         "margin — if it were not, the pin below proves nothing"
     )
-    assert branch_chain_peak_db(filters) == pytest.approx(gain_db, abs=_PEAK_EPS_DB)
+    assert branch_chain_peak_db(filters) == pytest.approx(gain_db, abs=PEAK_EPS_DB)
 
 
 def test_the_ultrasonic_mixed_sign_residue_sits_under_the_headroom_margin():
@@ -733,31 +730,6 @@ def test_the_shared_grid_only_ever_reads_a_chain_higher():
     for filters in corpus:
         assert branch_chain_peak_db(filters) >= _background_only_read_db(filters)
 
-def test_the_re_proof_tolerance_collapses_at_unity_not_only_at_the_margin():
-    """Why the corpus above asserts the charge and not the margin.
-
-    ``headroom_charge_db`` is a STEP: 0.0 at or under :data:`_PEAK_EPS_DB`, and
-    peak + :data:`HEADROOM_MARGIN_DB` above it. So a chain that sat just under
-    unity was charged NOTHING, and its persisted allowance leaves it the
-    runtime's float slack — 1e-3 dB — before the re-proof refuses. Not the
-    1.0 dB every other chain gets.
-
-    A migration bound stated only as "moved less than the margin" is therefore
-    not the condition, and a corpus asserting it would call this class safe.
-    """
-    just_under = _PEAK_EPS_DB - 0.002
-    just_over = _PEAK_EPS_DB + 0.0001
-
-    assert headroom_charge_db(just_under) == 0.0
-    # A chain charged nothing has NEGATIVE room: any reading above unity at all
-    # is already past its own allowance plus the slack.
-    assert headroom_charge_db(just_under) + _RUNTIME_BOOST_EPS_DB < just_under
-    # One ten-thousandth of a dB higher and the step pays the whole margin.
-    assert headroom_charge_db(just_over) - just_over == pytest.approx(
-        HEADROOM_MARGIN_DB
-    )
-
-
 def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     """**The migration bound, over a corpus rather than an anecdote.**
 
@@ -784,9 +756,9 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
     **The condition asserted here is the RUNTIME's, not a paraphrase of it.**
     The re-proof compares ``peak_new > headroom_charge_db(peak_old) + 1e-3``,
     and ``headroom_charge_db`` returns 0.0 for any chain at or under
-    :data:`_PEAK_EPS_DB` — so near unity the tolerance is 1e-3, NOT the 1.0 dB
-    margin. A chain peaking at +0.008 dB emits an allowance of 0.000000 and
-    refuses at +0.0099. Asserting the margin alone would have called that
+    :data:`PEAK_EPS_DB` — so near unity the tolerance is 1e-3, NOT the 1.0 dB
+    margin. A chain peaking at +0.0008 dB emits an allowance of 0.000000 and
+    refuses at +0.0011. Asserting the margin alone would have called that
     class safe.
 
     So: every chain carrying a REAL charge must still prove, and the near-unity
@@ -863,8 +835,8 @@ def test_a_graph_the_old_gate_accepted_still_proves_after_the_widening():
         )
         new = branch_chain_peak_db(filters, sections=_HP_1600, trim_db=trim_db)
         worst = max(worst, new - old)
-        proves = new <= headroom_charge_db(old) + _RUNTIME_BOOST_EPS_DB
-        if old > _PEAK_EPS_DB:
+        proves = new <= headroom_charge_db(old) + PEAK_EPS_DB
+        if old > PEAK_EPS_DB:
             assert proves, (
                 f"a graph the old gate accepted peaks {new:.4f} dB against the "
                 f"{headroom_charge_db(old):.4f} dB its own bytes set aside — it "
