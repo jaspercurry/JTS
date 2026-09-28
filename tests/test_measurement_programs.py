@@ -469,10 +469,10 @@ def test_a_take_reads_ungated_for_the_room_or_within_one_drivers_near_field(purp
 ])
 def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, supported) -> None:
     if supported:
-        assert mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime) == purpose
+        assert mp.validated_capture_purpose(purpose, regime) == purpose
     else:
         with pytest.raises(ValueError):
-            mp.validated_capture_purpose(purpose, mp.POSE_KIND_BEARING, regime)
+            mp.validated_capture_purpose(purpose, regime)
 
 
 def _program_with(purpose, regime, kind, distance_m, driver):
@@ -598,21 +598,6 @@ def test_run_preset_resolves_rear_layouts_and_custom_bearings() -> None:
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in custom.poses] == [(0, 0), (-45, 0), (45, 0)]
     assert (custom.preset, custom.layout, custom.purpose, custom.regime) == (
         "rear/express", mp.CUSTOM_LAYOUT, mp.PURPOSE_REAR, mp.REGIME_SUMMED)
-
-
-@pytest.mark.parametrize(
-    ("purpose", "kind", "expected"),
-    [
-        (None, mp.POSE_KIND_BEARING, mp.PURPOSE_SPEAKER),
-        (None, mp.POSE_KIND_SEAT, mp.PURPOSE_ROOM),
-        (None, mp.POSE_KIND_CLOSE, mp.PURPOSE_REFERENCE),
-        (mp.PURPOSE_ROOM, mp.POSE_KIND_BEARING, mp.PURPOSE_ROOM),
-    ],
-)
-def test_measurement_purpose_resolves_explicit_and_legacy_rows(
-    purpose: str | None, kind: str, expected: str
-) -> None:
-    assert mp.resolved_measurement_purpose(purpose, kind) == expected
 
 
 def _bundled_config() -> dict[str, object]:

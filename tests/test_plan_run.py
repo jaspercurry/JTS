@@ -28,6 +28,7 @@ from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_P
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
+from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
     REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
@@ -35,7 +36,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
-from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE
+from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
@@ -46,6 +47,7 @@ from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
+from jasper.json_fields import CodedFieldError
 from jasper.web import correction_run_host
 from tests.crossover_v2_fixtures import (
     FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
@@ -61,7 +63,7 @@ _ABORTS = {SeamFailure: "seam_failed"}
 
 def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
-        ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate)
+        ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
         for angle in angles for candidate in candidates),
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE))
 
@@ -137,27 +139,29 @@ def _takes(document):
     return [take for group in document["sets"] for take in group["takes"]]
 
 
-@pytest.mark.parametrize(("purpose", "record_fields", "expected"), [
-    ("room", {}, {"pose_kind": "bearing", "mark_distance_m": 1.0,
-                  "seat_offset_m": None, "measurement_purpose": "room"}),
-    (None, {}, {"pose_kind": "bearing", "mark_distance_m": 1.0,
-               "seat_offset_m": None, "measurement_purpose": "speaker"}),
-    (None, {"pose_kind": "seat", "mark_distance_m": None,
-            "seat_offset_m": [0.2, 0.0, 0.1], "measurement_purpose": "room"},
-     {"pose_kind": "seat", "mark_distance_m": None,
-      "seat_offset_m": [0.2, 0.0, 0.1], "measurement_purpose": "room"}),
+@pytest.mark.parametrize("reader,refusal,field,code", [
+    ("staged_stop", ac.LateralWalkRefused, "reason", ac.WALK_STOP_NO_LONGER_VALID),
+    ("kept_take", CodedFieldError, "code", "field_required"),
+    ("purpose_take", CodedFieldError, "code", "field_required"),
 ])
-def test_manifest_banks_resolved_measurement_purpose(purpose, record_fields, expected):
-    records = FakeSeams().records
-    manifest = RunManifest("run", records)
-    stop = {"index": 1, "repeat": 1, "pose": {"kind": "bearing", "distance_m": 1.0}}
-    if purpose is not None:
-        stop["purpose"] = purpose
-    manifest.begin(stop, attempt=1, pose_index=0)
-
-    asyncio.run(manifest.bank({"take_id": "take", **record_fields}))
-
-    assert {key: records.banked[0][key] for key in expected} == expected
+def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader, refusal, field, code):
+    """No purpose is inferred from a pose kind (#2902): a staged stop that
+    names none is no longer valid, and a banked take that names none refuses
+    by that field."""
+    plan = ac.request_for_preset(run_preset("room", "seat_cube")).to_dict()
+    del plan["stops"][0]["purpose"]
+    session, = (bank_seat_round(tmp_path) / "bundle").iterdir()
+    take = next(session.rglob("positions/*.json"))
+    take.write_text(json.dumps({key: value for key, value in json.loads(take.read_text()).items()
+                                if key != "measurement_purpose"}))
+    reads = {
+        "staged_stop": lambda: ac.AngleCaptureRequest.from_mapping(plan),
+        "kept_take": lambda: list(kept_measurements(session, phases=("lateral",), purposes=("room",))),
+        "purpose_take": lambda: purpose_take_records(session, purpose="room"),
+    }
+    with pytest.raises(refusal) as refused:
+        reads[reader]()
+    assert getattr(refused.value, field) == code
 
 
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
@@ -184,8 +188,8 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
 
 def test_skipped_per_driver_work_is_disclosed_without_an_extra_grant():
     request = ac.AngleCaptureRequest(candidates=("fp-a", "base", "fp-b"), stops=(
-        ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a"),
-        ac.AngleStop(0, ac.REGIME_PER_DRIVER), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-b")))
+        ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),
+        ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-b", purpose="speaker")))
     gate = AnsweredGate()
     result, _ = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "partial"
@@ -223,7 +227,7 @@ def test_interruption_keeps_records_and_names_unmeasured_work(banked):
 
 
 @pytest.mark.parametrize("plan", [
-    ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a"),),
+    ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),),
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL)),
     ac.per_driver_at([0]),
 ])
@@ -604,7 +608,7 @@ def test_manifest_names_emitted_role_levels_and_usable_bands():
 
 def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
     request = ac.AngleCaptureRequest(candidates=("base", "fp-a"), stops=(
-        ac.AngleStop(0, ac.REGIME_PER_DRIVER), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a")))
+        ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker")))
     result, _ = asyncio.run(_run_gated(request, seams=FakeSeams(graph=_StoppingGraph(stop_after=1))))
     assert result.stopped_at["index"] == 2
     assert result.specs[result.stopped_at["index"]].candidate_id == "fp-a"
@@ -690,7 +694,7 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
 
 def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
     plan = ac.AngleCaptureRequest(
-        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear"),),
+        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),),
     )
     request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
     captures = plan_run.prepare_plan_captures(request, roles_bands=tuple(_roles()))
@@ -1053,7 +1057,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     fakes = FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
         level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
         level_source=source,
     )

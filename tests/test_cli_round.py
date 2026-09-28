@@ -1309,7 +1309,7 @@ def test_run_refusals_keep_their_exit_and_code(
         monkeypatch.setattr(v2host, "resolve_conductor_context", resolve)
     flags = ["--poses", "0", "--mover", "arm"]
     if source == "plan":
-        plan = AngleCaptureRequest((AngleStop(0, "summed"),), mover="arm")
+        plan = AngleCaptureRequest((AngleStop(0, "summed", purpose="speaker"),), mover="arm")
         path = tmp_path / "arm-plan.json"
         path.write_text(json.dumps(plan.to_dict()))
         flags = ["--plan", str(path)]

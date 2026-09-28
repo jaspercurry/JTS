@@ -27,8 +27,7 @@ POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
 #: A pose behind the cabinet, on axis, ``distance_m`` from the back panel
 #: toward the wall -- the cardioid null the turntable arm cannot reach
-#: (issue #5330). Never a legacy inference target: a behind pose always
-#: states its own purpose.
+#: (issue #5330).
 POSE_KIND_BEHIND = "behind"
 POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE, POSE_KIND_BEHIND)
 
@@ -196,34 +195,17 @@ BRANCH_PAIR_DRIVERS = "drivers"
 BRANCH_PAIR_FRONT_REAR = "front_rear"
 BRANCH_PAIRS = (BRANCH_PAIR_DRIVERS, BRANCH_PAIR_FRONT_REAR)
 
-_LEGACY_PURPOSE_BY_KIND = {
-    POSE_KIND_BEARING: PURPOSE_SPEAKER,
-    POSE_KIND_SEAT: PURPOSE_ROOM,
-    POSE_KIND_CLOSE: PURPOSE_REFERENCE,
-}
-
 
 def _validated_purpose(purpose: str | None) -> str:
-    if purpose is None:
-        return PURPOSE_SPEAKER
-    if purpose not in PURPOSES:
+    """The purpose a stop or take names; one that names none refuses (#2902)."""
+    if purpose is None or purpose not in PURPOSES:
         raise ValueError(f"a measurement purpose must be one of {PURPOSES}, got {purpose!r}")
     return purpose
 
 
-def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
-    """Resolve explicit purpose, or infer the purpose of an old pose."""
-    if purpose is not None:
-        return _validated_purpose(purpose)
-    try:
-        return _LEGACY_PURPOSE_BY_KIND[kind]
-    except KeyError:
-        raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}") from None
-
-
-def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
-    """Resolve purpose and validate the capture mode supported by the runner."""
-    resolved = resolved_measurement_purpose(purpose, kind)
+def validated_capture_purpose(purpose: str | None, regime: str) -> str:
+    """The purpose a stop names, in a capture mode the runner supports for it."""
+    resolved = _validated_purpose(purpose)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
     supported = _REGIMES_BY_PURPOSE[resolved]
@@ -393,11 +375,11 @@ class Preset:
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement preset must contain at least one pose")
-        validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
+        validated_capture_purpose(self.purpose, self.regime)
         for purpose in self.co_purposes:
             if purpose not in PURPOSES or purpose == self.purpose or self.co_purposes.count(purpose) > 1:
                 raise ValueError("co_purposes must be distinct from each other and the primary purpose")
-            validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
+            validated_capture_purpose(purpose, self.regime)
         validated_branch_pair(self.branch_pair, self.regime)
         for pose in self.poses:
             validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)

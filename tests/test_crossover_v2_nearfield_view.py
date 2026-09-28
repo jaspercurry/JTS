@@ -35,7 +35,7 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
     curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz), **gates[0],
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
                                for sweep, gate in zip(sweeps[1:], gates[1:])]}
-    return {"take_id": take_id, "selected": selected,
+    return {"take_id": take_id, "selected": selected, "purpose": "reference",
             "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
             "quality": {"evidence": {"level_db_spl": 80.0}}, "curve": curve,
             "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs},
