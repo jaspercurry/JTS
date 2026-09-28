@@ -261,9 +261,7 @@ layer, fitted through bass, absorbs the residual tail. A bass section written
 before any bass round is admitted, and its `unqualified_boost_bands_hz` lists
 every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`
 (the 20–30 Hz band when none does).
-A tune stored before ADR-0359 (`low_boost_db`, `reference_level_db`) still
-loads and plays its full boost at every volume; a new document uses the form
-above.
+A tune stored before ADR-0359 refuses by its old field (ADR-0381).
 
 `compressor_threshold_dbfs` is where the boost starts to give way, in dBFS
 at the front woofer output. Set it from the amp, not by ear. Start from the

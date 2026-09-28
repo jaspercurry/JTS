@@ -218,8 +218,7 @@ def bass_level_evidence(aligned: Mapping[str, Any], *, descriptor: DynamicBassDe
     groups, curves = aligned["groups"], aligned["curves"]
     pairs = [pair for repeats in groups.values() for pair in repeats]
     prescribed = np.asarray(expected_boost_db(descriptor, grid)) if descriptor else np.full(grid.shape, np.nan)
-    boost_band = [descriptor.delta_highpass_hz or BASS_BANDS_HZ[0][0],
-                  descriptor.detector_lowpass_hz] if descriptor else None
+    boost_band = [descriptor.delta_highpass_hz, descriptor.detector_lowpass_hz] if descriptor else None
     overlap = [(lo, hi) for lo, hi in BASS_BANDS_HZ
                if boost_band and lo < boost_band[1] and hi > boost_band[0]]
     boost_bands = [(max(lo, boost_band[0]), min(hi, boost_band[1])) for lo, hi in overlap if boost_band]
