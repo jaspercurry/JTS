@@ -50,7 +50,7 @@ from jasper.env_load import WAKE_MODEL_ENV_PATH, env_file_path, merged_env_files
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
-    from jasper.model_downloads import StageAsset
+    from jasper.audio_resources.model_downloads import StageAsset
 
 logger = logging.getLogger(__name__)
 
@@ -469,7 +469,7 @@ def select_wake_model(
     return WakeSelection(entry, state.get("JASPER_WAKE_THRESHOLD", ""))
 
 
-# ---- install.sh staging (jasper.model_downloads is a leaf; this registry
+# ---- install.sh staging (jasper.audio_resources.model_downloads is a leaf; this registry
 # builds its own StageAsset lists rather than being reached into) --------
 
 def openwakeword_stage_assets(
@@ -477,7 +477,7 @@ def openwakeword_stage_assets(
     *,
     active_model: str | None = None,
 ) -> list[StageAsset]:
-    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+    from jasper.audio_resources.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
 
     required_by_key = {asset.key for asset in required_openwakeword_assets()}
     required_by_key.update(asset.key for asset in fallback_openwakeword_assets())
@@ -501,7 +501,7 @@ def openwakeword_stage_assets(
 
 
 def wake_model_stage_assets(*, required: bool) -> list[StageAsset]:
-    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+    from jasper.audio_resources.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
 
     return [
         StageAsset(

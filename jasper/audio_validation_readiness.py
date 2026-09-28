@@ -11,7 +11,7 @@ import socket
 from datetime import datetime
 from typing import Any, Mapping
 
-from . import audio_validation_artifacts as artifacts
+from jasper.audio_resources import audio_validation_artifacts as artifacts
 from .audio_profile_state import RuntimeAecEnv
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,

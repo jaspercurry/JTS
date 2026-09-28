@@ -17,7 +17,7 @@ from ..accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
 from ..renderer import RendererClient
 from ..spotify_oauth import resolved_spotify_redirect_uri
-from ..volume_owner import volume_owner
+from jasper.audio_resources.volume_owner import volume_owner
 from ..volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,

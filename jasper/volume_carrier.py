@@ -4,7 +4,7 @@
 
 """CamillaDSP's main fader and ``main_mute``, as the volume coordinator drives them.
 
-The one module that builds a :class:`~jasper.volume_owner.VolumeOwner`, and the
+The one module that builds a :class:`~jasper.audio_resources.volume_owner.VolumeOwner`, and the
 coordinator's one caller of ``set_main_mute``.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .log_event import log_event
 from .volume_curve import main_mute_for_db
-from .volume_owner import VolumeOwner
+from jasper.audio_resources.volume_owner import VolumeOwner
 
 if TYPE_CHECKING:
     from .camilla import CamillaController

@@ -503,7 +503,7 @@ Design prose lives in each module's docstring. What that index does not cover:
 |---|---|
 | [`crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py) | `CrossoverV2Session` — session state, seams, irreversible acts, the host adapter; the capture-plan builders, tier/plan shape, cloud prompts. |
 | [`session_volume_plan.py`](../../jasper/active_speaker/session_volume_plan.py) | One fixed measurement volume per session: the `min(−20, max(caps))` SSOT plus open/close/abandon and the restore-once latch. |
-| [`volume_owner.py`](../../jasper/volume_owner.py) | The one owner of CamillaDSP's main fader and its four ranked claim kinds. Sits at `jasper/` root, outside the organ package, so the package index does not cover it. |
+| [`volume_owner.py`](../../jasper/audio_resources/volume_owner.py) | The one owner of CamillaDSP's main fader and its four ranked claim kinds. Sits at `jasper/` root, outside the organ package, so the package index does not cover it. |
 | [`measured_crossover_candidate.py`](../../jasper/active_speaker/measured_crossover_candidate.py) | `MeasuredCrossoverCandidate` — the fingerprinted apply artifact. |
 | [`candidate_bank.py`](../../jasper/active_speaker/candidate_bank.py) | Where banked candidates live on disk, and finding one by its own fingerprint. |
 | [`linearization_envelope.py`](../../jasper/active_speaker/linearization_envelope.py) | The Layer-1a correction envelope: per-bin allowed depth and the terms it takes the `min` across. |

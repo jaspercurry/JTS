@@ -1132,7 +1132,7 @@ def _commissioning_io(monkeypatch) -> aec_commission.SystemIO:
     path itself stays production. The owner install is the shape `main()`
     registers through `install_env_canonical_target_provider`."""
     from jasper.camilla import primary_controller
-    from jasper.volume_owner import VolumeOwner, install_volume_owner
+    from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner
 
     fader = primary_controller()
     install_volume_owner(

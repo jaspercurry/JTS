@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from jasper.model_downloads import StageAsset
+    from jasper.audio_resources.model_downloads import StageAsset
 
 
 # Where install.sh stages downloaded DTLN models. Files here survive
@@ -140,9 +140,9 @@ def default() -> DTLNModelEntry:
 
 
 def dtln_stage_assets(*, required: bool) -> list[StageAsset]:
-    """install.sh staging list. jasper.model_downloads is a leaf; this
+    """install.sh staging list. jasper.audio_resources.model_downloads is a leaf; this
     registry builds its own StageAsset list rather than being reached into."""
-    from jasper.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
+    from jasper.audio_resources.model_downloads import StageAsset  # lazy: pulls ssl/urllib into runtime importers
 
     assets: list[StageAsset] = []
     for entry in REGISTRY:

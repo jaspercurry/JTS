@@ -35,7 +35,7 @@ from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.volume_carrier import write_main_mute
 from jasper.volume_curve import percent_to_db
-from jasper.volume_owner import ClaimKind, VolumeClaimHandle, holding, volume_owner
+from jasper.audio_resources.volume_owner import ClaimKind, VolumeClaimHandle, holding, volume_owner
 
 logger = logging.getLogger(__name__)
 

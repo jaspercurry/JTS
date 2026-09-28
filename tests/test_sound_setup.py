@@ -92,7 +92,7 @@ from jasper.sound.settings import (
 )
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
-from jasper.volume_owner import VolumeOwner, install_volume_owner
+from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner
 from jasper.platform.control_client import ControlError
 from jasper.volume_persistence import VolumePersistence, configured_path
 from jasper.web import (

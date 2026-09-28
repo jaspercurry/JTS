@@ -51,7 +51,7 @@ from jasper.volume_scales import (
     listening_level_to_spotify_percent,
     spotify_percent_to_listening_level,
 )
-from jasper.volume_owner import (
+from jasper.audio_resources.volume_owner import (
     ClaimKind,
     VolumeClaimRefused,
     VolumeOwner,

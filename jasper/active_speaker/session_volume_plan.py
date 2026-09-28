@@ -409,7 +409,7 @@ class FaderVolumeDoor:
     Both verbs land on the same
     :func:`~jasper.volume_latch.set_and_confirm_volume` — at this
     door they are one act. Callers that arbitrate through
-    :class:`~jasper.volume_owner.VolumeOwner` bind a door that does; a process
+    :class:`~jasper.audio_resources.volume_owner.VolumeOwner` bind a door that does; a process
     with no owner to arbitrate through binds this one.
     """
 

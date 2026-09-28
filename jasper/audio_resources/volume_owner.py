@@ -53,17 +53,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from .volume_latch import (
+from jasper.volume_latch import (
     FADER_IO_ERRORS,
     READBACK_TOLERANCE_DB,
     fader_matches,
     read_fader_db,
     set_and_confirm_volume,
 )
-from .json_fields import require_finite
-from .log_event import log_event
+from jasper.json_fields import require_finite
+from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_owner")
 
 __all__ = [
     "ClaimKind",

@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2.volume_claim import (
     OwnerVolumeDoor,
 )
 from jasper.active_speaker.session_volume_plan import RestoreOutcome
-from jasper.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
+from jasper.audio_resources.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
 
 from tests._log_events import event_fields
 from tests.engine_twin import FakeSeams, open_session
