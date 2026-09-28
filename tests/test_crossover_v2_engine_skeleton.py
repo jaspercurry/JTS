@@ -1106,7 +1106,7 @@ async def test_a_stop_after_play_banks_what_played_and_still_stops(caplog, recor
 
 
 async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
-    """R-5a: a hand-raised pose is measured and recorded, not refused.
+    """A hand-raised pose is measured and recorded.
 
     The operator raises the microphone by hand, so the take is taken and
     labelled with where it was taken from.
@@ -1267,7 +1267,7 @@ def test_the_spec_translates_into_exactly_the_branches_the_graph_must_flip(
 
 
 async def test_an_inverted_capture_plays_and_banks_like_any_other():
-    """R-1's whole point: the verb stopped being a stub that captures nothing."""
+    """An inverted spec plays once and banks one record."""
     session, parts = _session()
 
     async with session:

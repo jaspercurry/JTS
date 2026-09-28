@@ -52,7 +52,7 @@ GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, *sorted(CANDIDATE_SCOPES))
 
 @dataclass(frozen=True)
 class MeasureSpec:
-    """The parameter bundle one ``measure`` runs, and one preset saves.
+    """The parameter bundle one ``measure`` runs.
 
     ``positions`` are signed whole-degree bearings on ``position_axis``, in the
     frame :class:`~.spatial.PositionGeometry` declares and owns: negative is
