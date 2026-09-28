@@ -32,6 +32,7 @@ from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
+from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
@@ -81,6 +82,7 @@ def _profile_and_targets(
     woofer_measurement_floor: float | None = None,
     woofer_highpass: float | None = None,
     woofer_upper: float = 20_000,
+    sensitivities: dict | None = None,
 ):
     """Asymmetric caps by default (woofer 0.0, tweeter -65): the realistic
     2-way shape whose ~65 dB spread is exactly what the (fixed) session-volume
@@ -146,7 +148,9 @@ def _profile_and_targets(
         drivers = [{**drivers[0], "role": "full_range"}]
     # See ADR-0316: rear variants share limits but own a target id.
     by_role = {entry["role"]: entry for entry in drivers}
-    drivers = [{**by_role[target["role"]], "target_id": target["target_id"]}
+    drivers = [{**by_role[target["role"]], "target_id": target["target_id"],
+                **({"sensitivity_db_2v83_1m": sensitivities[target["role"]]}
+                   if target["role"] in (sensitivities or {}) else {})}
                for target in active_driver_targets(topology)]
     settings = {"drivers": drivers, "crossover_candidates": []}
     profile = compute_driver_safety_profile(
@@ -210,8 +214,7 @@ def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude
     )
 
 
-def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db,
-           pcm=None, declared_sensitivities=None):
+def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db, pcm=None):
     import tempfile
     from pathlib import Path
 
@@ -227,7 +230,6 @@ def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db,
         return readmit_program_from_wav(
             prog, wav, topology=topology, safety_profile=safety_profile,
             role_targets=role_targets, session_volume_db=session_volume_db,
-            declared_sensitivities=declared_sensitivities,
         )
 
 
@@ -319,14 +321,10 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     moves.
     """
     from jasper.active_speaker.crossover_v2.programs import back_off_gain
-    from jasper.active_speaker.excitation_safety_plan import (
-        resolve_driver_excitation_ceilings,
-    )
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
 
-    declared = {"woofer": 83.3, "tweeter": 108.5}
     topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=-65.0
+        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities={"woofer": 83.3, "tweeter": 108.5},
     )
     # The production context-site resolution (probe a: these ARE the caps
     # admission enforces below — one derivation, two consumers).
@@ -336,13 +334,10 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
             profile,
             fingerprint,
             program_admission=True,
-            declared_sensitivities=declared,
         )
         caps[role] = float(cap)
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
-    sv = session_measurement_volume_db(
-        profile, targets.values(), declared_sensitivities=declared
-    )
+    sv = session_measurement_volume_db(profile, targets.values())
     # max(caps) is still the woofer's -8 (its ceiling is untouched by the HF
     # derivation), so the session volume itself is unaffected by the change.
     assert sv == -20.0
@@ -359,7 +354,6 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
-        declared_sensitivities=declared,
     )
     assert adm.allowed
     by_id = {s.segment_id: s for s in adm.segments}
@@ -1065,11 +1059,29 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     admission = readmit_summed_program_from_wav(
         program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
         role_targets=context.role_targets, session_volume_db=context.session_volume_db,
-        declared_sensitivities=context.declared_sensitivities,
         graph_evidence=measurement_graph_evidence(scope="candidate", candidate=candidate),
     )
     assert admission.allowed, admission.to_dict()
     assert admission.channels[0].cap_dbfs == -36
+
+
+@pytest.mark.parametrize("rear_sensitivity, tweeter_cap", [(None, -61.2), (85.0, -65.0)],
+                         ids=["rear-takes-its-role-figure", "outputs-disagree"])
+def test_the_hf_derivation_anchors_on_each_low_frequency_role(rear_sensitivity, tweeter_cap):
+    """An output declaring no sensitivity takes its role's figure, and its own
+    lower cap anchors; a role whose outputs disagree drops out, leaving the
+    class default."""
+    _topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_peak=-30, tweeter_peak=None, woofer_floor=40, woofer_highpass=40,
+        sensitivities={"woofer": 84.0, "tweeter": 109.2},
+    )
+    rear = next(target for target in safety["targets"] if target["target_fingerprint"] == targets["woofer:rear"])
+    rear["level_duration_limits"]["max_effective_peak_dbfs"] = -36
+    del rear["effective_sensitivity_db_2v83_1m"]
+    if rear_sensitivity is not None:
+        rear["effective_sensitivity_db_2v83_1m"] = rear_sensitivity
+    _band, cap = resolve_driver_excitation_ceilings(safety, targets["tweeter"], program_admission=True)
+    assert cap == pytest.approx(tweeter_cap)
 
 
 def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.0):
@@ -1136,14 +1148,14 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     write_program_wav(wav, program)
     admission = readmit_program_from_wav(
         program, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db, declared_sensitivities=context.declared_sensitivities)
+        session_volume_db=context.session_volume_db)
     assert admission.allowed, admission.to_dict()
     *_, probe = _cardioid_solo_take(monkeypatch, target, stimulus_dbfs=None)
     write_program_wav(wav, probe)
     assert is_level_probe(probe)
     assert readmit_program_from_wav(
         probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db, declared_sensitivities=context.declared_sensitivities).allowed
+        session_volume_db=context.session_volume_db).allowed
 
     plan = build_inline_session_spec(
         [(spec, CloudPositionPrompt("close"), "")], roles_bands=context.roles_bands, fc_hz=context.fc_hz,
@@ -1165,7 +1177,7 @@ def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, 
 
     admission = readmit_program_from_wav(
         program, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db, declared_sensitivities=context.declared_sensitivities)
+        session_volume_db=context.session_volume_db)
     assert not admission.allowed
 
 

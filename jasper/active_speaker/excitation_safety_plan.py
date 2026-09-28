@@ -29,7 +29,7 @@ from jasper.audio_measurement.admission.excitation_admission import (
     FrequencyBand,
 )
 from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
-from jasper.json_fields import require_finite, require_sha256_hex
+from jasper.json_fields import finite_float, require_finite, require_sha256_hex
 from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 
@@ -394,42 +394,40 @@ def effective_sweep_duration_limit_s(
     )
 
 
-def _declared_sensitivity(
-    declared_sensitivities: Mapping[str, Any] | None,
-    role: str,
-) -> float | None:
-    """One role's declared datasheet sensitivity from the caller's mapping.
+def _role_sensitivities(targets: list[Any]) -> dict[str, float]:
+    """Each role's declared effective sensitivity, from its outputs' own figures.
 
-    ``declared_sensitivities`` is read from the DECLARATION
-    (:func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`),
-    the one owner of this physical property; it never rides the computed safety
-    profile. Missing on either side, the derivation degrades to the class
-    default rather than refusing.
+    A role whose outputs declare different figures drops out, and an output
+    declaring none takes its role's figure.
     """
 
-    if not isinstance(declared_sensitivities, Mapping):
-        return None
-    value = declared_sensitivities.get(role)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
+    out: dict[str, float] = {}
+    conflicted: set[str] = set()
+    for target in targets:
+        if not isinstance(target, Mapping):
+            continue
+        role = str(target.get("role") or "")
+        value = finite_float(target.get("effective_sensitivity_db_2v83_1m"))
+        if not role or value is None:
+            continue
+        if out.setdefault(role, value) != value:
+            conflicted.add(role)
+    return {role: value for role, value in out.items() if role not in conflicted}
 
 
 def _derived_hf_ceiling_dbfs(
     safety_profile: Mapping[str, Any],
     hf_role: str,
-    declared_sensitivities: Mapping[str, Any] | None,
 ) -> tuple[float, str, float] | None:
     """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``, or ``None``.
 
-    ``None`` when the declared specs cannot support a derivation (missing
-    declared sensitivity on either side) -- the caller then keeps the existing
-    class-default ceiling.
+    ``None`` when the declared specs cannot support a derivation (no declared
+    sensitivity on either side, per :func:`_role_sensitivities`) -- the caller
+    then keeps the existing class-default ceiling.
 
     Conservative across multiple low-frequency siblings (a 3-way's woofer AND
     mid): takes the MINIMUM derived candidate across every low-frequency
-    target with a declared sensitivity, so the high-frequency driver's
+    target whose role declares a sensitivity, so the high-frequency driver's
     ceiling never exceeds what is safe against any one of them.
 
     The anchor is returned, not just consumed, because it MOVES: this ceiling is
@@ -441,11 +439,12 @@ def _derived_hf_ceiling_dbfs(
     line rather than leaving an operator to infer the contract shape.
     """
 
-    sens_hf = _declared_sensitivity(declared_sensitivities, hf_role)
-    if sens_hf is None:
-        return None
     targets = safety_profile.get("targets")
     if not isinstance(targets, list):
+        return None
+    sensitivities = _role_sensitivities(targets)
+    sens_hf = sensitivities.get(hf_role)
+    if sens_hf is None:
         return None
     candidates: list[tuple[float, str, float]] = []
     for candidate in targets:
@@ -454,7 +453,7 @@ def _derived_hf_ceiling_dbfs(
         candidate_role = str(candidate.get("role") or "")
         if candidate_role not in LOW_FREQUENCY_ROLES:
             continue
-        sens_lf = _declared_sensitivity(declared_sensitivities, candidate_role)
+        sens_lf = sensitivities.get(candidate_role)
         if sens_lf is None:
             continue
         lf_fingerprint = str(candidate.get("target_fingerprint") or "")
@@ -551,7 +550,6 @@ def resolve_driver_excitation_ceilings(
     target_fingerprint: str,
     *,
     program_admission: bool = False,
-    declared_sensitivities: Mapping[str, Any] | None = None,
 ) -> tuple[FrequencyBand, float]:
     """The permitted band + maximum effective-peak ceiling for one
     driver target.
@@ -564,10 +562,8 @@ def resolve_driver_excitation_ceilings(
     crossover high-pass by construction pass ``True``, so a high-frequency
     driver's ceiling derives from a low-frequency sibling's declared cap and the
     two declared sensitivities rather than sitting at the naked-tone class
-    default. Every other caller defaults to ``False``.
-
-    ``declared_sensitivities`` is optional; without it the proven-HP path keeps
-    the class-default ceiling and logs the skip.
+    default; without them it keeps the class default and logs the skip. Every
+    other caller defaults to ``False``.
 
     All but high-frequency roles start at ``MIN_DRIVER_TEST_FREQUENCY_HZ``; those
     start at ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``,
@@ -628,9 +624,7 @@ def resolve_driver_excitation_ceilings(
         and role in HIGH_FREQUENCY_ROLES
         and level_provenance != LEVEL_CEILING_DECLARED
     ):
-        derived = _derived_hf_ceiling_dbfs(
-            safety_profile, role, declared_sensitivities
-        )
+        derived = _derived_hf_ceiling_dbfs(safety_profile, role)
         if derived is None:
             # Named skip: the proven-HP path WOULD derive here but a declared
             # sensitivity is missing on one side, so the usually far too quiet
@@ -739,13 +733,12 @@ def prepare_driver_excitation_plan(
     requested_plan: RequestedDriverExcitationPlan,
     *,
     program_admission: bool = False,
-    declared_sensitivities: Mapping[str, Any] | None = None,
 ) -> PreparedDriverExcitationPlan:
     """Bind exact current policy for Shared admission or a typed refusal.
 
-    ``program_admission`` and ``declared_sensitivities`` are forwarded
-    verbatim to :func:`resolve_driver_excitation_ceilings` -- see that
-    function's docstring for the proven-HP-path ceiling derivation they gate.
+    ``program_admission`` is forwarded verbatim to
+    :func:`resolve_driver_excitation_ceilings`, which documents the
+    proven-HP-path ceiling derivation it gates.
     """
 
     if not isinstance(topology, OutputTopology):
@@ -767,7 +760,6 @@ def prepare_driver_excitation_plan(
         safety_profile,
         requested_plan.target_fingerprint,
         program_admission=program_admission,
-        declared_sensitivities=declared_sensitivities,
     )
     protection = driver_protection_profile(
         role,

@@ -44,7 +44,8 @@ from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_fields
 
 
-def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -70.0):
+def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -70.0,
+                         sensitivities: dict | None = None):
     topology = mono_output_topology()
 
     def _driver(target_id, role, peak, required):
@@ -52,6 +53,7 @@ def _profile_and_targets(*, woofer_peak: float = -30.0, tweeter_peak: float = -7
             "target_id": target_id,
             "role": role,
             "model": f"model-{role}",
+            **({"sensitivity_db_2v83_1m": sensitivities[role]} if role in (sensitivities or {}) else {}),
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             # #2603: the tweeter declares its low limit once; its hard floor and
@@ -211,16 +213,14 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
     and the ``anchor=``/``anchor_cap_dbfs=`` fields vanish from the receipt.
     """
     profile, targets = _profile_and_targets(
-        woofer_peak=woofer_peak, tweeter_peak=-65.0
+        woofer_peak=woofer_peak, tweeter_peak=-65.0, sensitivities={"woofer": 90.0, "tweeter": 100.8},
     )
-    sensitivities = {"woofer": 90.0, "tweeter": 100.8}
 
     def _cap(role):
         return resolve_driver_excitation_ceilings(
             profile,
             targets[role],
             program_admission=True,
-            declared_sensitivities=sensitivities,
         )[1]
 
     with caplog.at_level(
@@ -241,7 +241,6 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
 # sensitivities 108.5 (tweeter) / 83.3 (woofer), and a -14.4 dB L-pad on the
 # tweeter recorded in the same declaration.
 
-_JTS3_NAKED_SENS = {"woofer": 83.3, "tweeter": 108.5}
 _JTS3_PADDED_SENS = {"woofer": 83.3, "tweeter": 108.5 - 14.4}
 
 
@@ -252,16 +251,11 @@ def test_the_session_measurement_volume_is_untouched_by_branch_facts():
     composed v2 program attenuates every other driver down to its own cap with
     per-segment gains. It takes no branch peaks and none of this changes it.
     """
-    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
-    assert (
-        session_measurement_volume_db(
-            profile, targets.values(), declared_sensitivities=_JTS3_PADDED_SENS
-        )
-        == -20.0
+    profile, targets = _profile_and_targets(
+        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities=_JTS3_PADDED_SENS,
     )
-    assert loudest_driver_cap_dbfs(
-        profile, targets.values(), declared_sensitivities=_JTS3_PADDED_SENS
-    ) == pytest.approx(-8.0)
+    assert session_measurement_volume_db(profile, targets.values()) == -20.0
+    assert loudest_driver_cap_dbfs(profile, targets.values()) == pytest.approx(-8.0)
 
 
 def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
@@ -273,15 +267,10 @@ def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
     still the woofer's -8, so the derived session volume is unchanged. No
     behavior change expected; this pins that.
     """
-    profile, targets = _profile_and_targets(woofer_peak=-8.0, tweeter_peak=-65.0)
-    assert (
-        session_measurement_volume_db(
-            profile,
-            targets.values(),
-            declared_sensitivities={"woofer": 83.3, "tweeter": 108.5},
-        )
-        == -20.0
+    profile, targets = _profile_and_targets(
+        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities={"woofer": 83.3, "tweeter": 108.5},
     )
+    assert session_measurement_volume_db(profile, targets.values()) == -20.0
 
 
 def test_session_measurement_volume_refuses_unmeasurable_profile():

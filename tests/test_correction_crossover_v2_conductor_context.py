@@ -486,11 +486,12 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    def _driver(role, peak, filters, diameter, **extra):
+    def _driver(role, peak, filters, diameter, sensitivity, **extra):
         return {
             "target_id": f"mono:{role}",
             "role": role,
             "model": f"model-{role}",
+            "sensitivity_db_2v83_1m": sensitivity,
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             # #2603: the tweeter declares its low limit once, and its hard
@@ -515,12 +516,12 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             _driver(
                 "woofer", -8,
                 [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
-                132, baffle_width_mm=210,
+                132, 83.3, baffle_width_mm=210,
             ),
             _driver(
                 "tweeter", -65,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
-                25,
+                25, 108.5,
             ),
         ],
         "crossover_candidates": [],
@@ -541,17 +542,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             ],
         },
     }
-    draft = {
-        "topology": topo.to_dict(),
-        "driver_safety_profile": profile,
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "target_id": "mono:tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-            "crossover_candidates": [],
-        },
-    }
+    draft = {"topology": topo.to_dict(), "driver_safety_profile": profile, "manual_settings": settings}
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
     # Restore the REAL derivation functions over the autouse stubs.
     monkeypatch.setattr(
@@ -579,7 +570,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         "woofer": -8.0,
         "tweeter": pytest.approx(-33.2),
     }
-    assert context.declared_sensitivities == {"woofer": 83.3, "tweeter": 108.5}
     assert context.session_volume_db == -20.0
     # Probe: context caps == admission caps, per role, from the same inputs.
     for role, fingerprint in targets.items():
@@ -587,7 +577,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             profile,
             fingerprint,
             program_admission=True,
-            declared_sensitivities=context.declared_sensitivities,
         )
         assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
     # Flat-linearization plan PR-4: the tweeter's confirmed measurement_band_hz
@@ -646,9 +635,9 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
     driver_class actually reaches that ctor param. This test closes that
     half: runs the real resolver against a real confirmed safety profile
     plus a declaration-shaped draft (the same JTS3 shape as the sibling test
-    above) and asserts driver_class_by_role is derived correctly. It also
-    confirms declared_sensitivities now reads the PAD-FOLDED effective
-    figure, not the naked one — the other half of #1665's resolver swap.
+    above) and asserts driver_class_by_role is derived correctly, and that the
+    tweeter's cap derives from its PAD-FOLDED effective sensitivity, not the
+    naked one — the other half of #1665's resolver swap.
     """
     from jasper.active_speaker.driver_safety import compute_driver_safety_profile
     from jasper.active_speaker.measurement import active_driver_targets
@@ -681,16 +670,17 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
 
     settings = {
         "drivers": [
-            _driver(
+            {**_driver(
                 "woofer", -8,
                 [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
                 132, baffle_width_mm=210,
-            ),
-            _driver(
+            ), "sensitivity_db_2v83_1m": 83.3},
+            {**_driver(
                 "tweeter", -65,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
                 25,
-            ),
+            ), "sensitivity_db_2v83_1m": 108.5, "driver_class": "compression_horn",
+                "pad": {"kind": "direct_db", "attenuation_db": -14.4}},
         ],
         "crossover_candidates": [],
     }
@@ -710,22 +700,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             ],
         },
     }
-    draft = {
-        "topology": topo.to_dict(),
-        "driver_safety_profile": profile,
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
-                {
-                    "role": "tweeter", "target_id": "mono:tweeter",
-                    "sensitivity_db_2v83_1m": 108.5,
-                    "driver_class": "compression_horn",
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-            ],
-            "crossover_candidates": [],
-        },
-    }
+    draft = {"topology": topo.to_dict(), "driver_safety_profile": profile, "manual_settings": settings}
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
     monkeypatch.setattr(
         excitation_safety_plan_mod,
@@ -746,11 +721,9 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
     context = v2ctx.resolve_conductor_context(status)
 
     assert context.driver_class_by_role == {"tweeter": "compression_horn"}
-    # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5.
-    assert context.declared_sensitivities == {
-        "woofer": 83.3,
-        "tweeter": pytest.approx(94.1),
-    }
+    # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5:
+    # the woofer's -8 less a 10.8 dB delta.
+    assert context.driver_caps_dbfs["tweeter"] == pytest.approx(-18.8)
 
 
 # --------------------------------------------------------------------------- #

@@ -402,7 +402,6 @@ def _evaluate_program(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
     refusals: list[ProgramAdmissionRefusal] = []
     segments: list[SegmentAdmission] = []
@@ -447,7 +446,6 @@ def _evaluate_program(
                 safety_profile,
                 requested,
                 program_admission=True,
-                declared_sensitivities=declared_sensitivities,
             )
         except ExcitationSafetyPlanError as exc:
             reason = _map_safety_plan_error(exc)
@@ -499,7 +497,6 @@ def _evaluate_program(
                     safety_profile,
                     target_fingerprint,
                     program_admission=True,
-                    declared_sensitivities=declared_sensitivities,
                 )
             except ExcitationSafetyPlanError as exc:
                 refusals.append(_map_safety_plan_error(exc))
@@ -586,7 +583,6 @@ def readmit_program_from_wav(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> ProgramAdmission:
     """Re-admit a program from a FRESH readback of its rendered WAV bytes.
 
@@ -601,7 +597,6 @@ def readmit_program_from_wav(
     return _evaluate_program(
         program, pcm, topology=topology, safety_profile=safety_profile,
         role_targets=role_targets, session_volume_db=session_volume_db,
-        declared_sensitivities=declared_sensitivities,
     )
 
 
@@ -650,7 +645,6 @@ def readmit_summed_program_from_wav(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
     graph_evidence: Mapping[str, Any] | None = None,
 ) -> ProgramAdmission:
     """Admit a mono summed artifact through its complete protected tuning graph.
@@ -761,7 +755,6 @@ def readmit_summed_program_from_wav(
         try:
             band, cap = resolve_driver_excitation_ceilings(
                 safety_profile, fingerprint, program_admission=True,
-                declared_sensitivities=declared_sensitivities,
             )
             duration = effective_sweep_duration_limit_s(safety_profile, fingerprint)
         except ExcitationSafetyPlanError as exc:

@@ -11,7 +11,7 @@ import math
 from functools import partial
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import CodedFieldError, issue
+from jasper.json_fields import CodedFieldError, finite_float, issue
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import (
@@ -23,6 +23,7 @@ from ._common import (
     blocker_issue,
 )
 from .design_inputs import drivers_by_target, resolve_design_inputs
+from .driver_pad import effective_sensitivity_db
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
@@ -871,6 +872,8 @@ def _normalise_profile_manual_settings(
                 include_research_evidence=False,
             )
         )
+        # Validated where the declaration is saved; the tweeter cap derivation reads them (ADR-0227 §9).
+        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad") if raw.get(key) is not None})
         drivers.append(driver)
     for index, raw_candidate in enumerate(
         _sequence(
@@ -1105,6 +1108,9 @@ def compute_driver_safety_profile(
             ),
             "measurement_band_hz": derived.get("measurement_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
+            "effective_sensitivity_db_2v83_1m": effective_sensitivity_db(
+                finite_float(visible.get("sensitivity_db_2v83_1m")), visible.get("pad"),
+            ),
             "fit_budget": visible.get("fit_budget"),
             "cabinet": visible.get(
                 "cabinet",

@@ -64,7 +64,6 @@ class SweepLevelReader:
             capture_session_id=bundle_id, cam_factory=lambda: cam,
             config_dir=config_dir, topology=context.topology,
             safety_profile=context.safety_profile, role_targets=context.role_targets,
-            declared_sensitivities=context.declared_sensitivities,
             graph_yaml=graph.installed_graph_yaml,
             level_reference_yaml=graph.level_reference_yaml, roles=excitation.roles,
             graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate=candidate),

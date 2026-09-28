@@ -112,7 +112,6 @@ def bind_program_playback_seams(
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
     session_volume_db: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
     timeout_s: float = 60.0,
     graph_yaml: str,
     summed: bool = False,
@@ -148,15 +147,11 @@ def bind_program_playback_seams(
         return await observer(program, play) if observer else await play()
 
     async def _readmit() -> Any:
-        # ``declared_sensitivities`` MUST match what the session composed
-        # against: readmission re-resolves every cap, so dropping it here would
-        # refuse a program composed at a different HF ceiling.
         arguments = dict(
             topology=topology,
             safety_profile=safety_profile,
             role_targets=role_targets,
             session_volume_db=session_volume_db,
-            declared_sensitivities=declared_sensitivities,
         )
         readmit: Callable[[], Any]
         if not summed:
@@ -187,7 +182,6 @@ def bind_program_composer(
     topology: Any,
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
-    declared_sensitivities: Mapping[str, float] | None = None,
     before_play: Callable[[Any, Any, Any, str], Awaitable[None]] | None = None,
     graph_yaml: Callable[[], str],
     level_reference_yaml: str | None,
@@ -241,7 +235,6 @@ def bind_program_composer(
             config_dir=config_dir, program=program, wav_path=str(wav_path),
             topology=topology, safety_profile=safety_profile,
             role_targets=role_targets, session_volume_db=level_db,
-            declared_sensitivities=declared_sensitivities,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
             graph_evidence=graph_evidence_for_spec(spec) if graph_evidence_for_spec else None,
             phase=phase, before_play=partial(before_play, spec) if before_play else None,

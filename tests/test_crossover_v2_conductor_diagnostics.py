@@ -231,9 +231,8 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
     from tests.test_active_speaker_program_admission import _profile_and_targets
 
     # JTS3 declaration: Epique E150HE-44 83.3 dB / B&C DE250-8 108.5 dB.
-    declared = {"woofer": 83.3, "tweeter": 108.5}
     topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=-65.0
+        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities={"woofer": 83.3, "tweeter": 108.5},
     )
     # PRODUCTION cap resolution — the exact call the fixed context site makes.
     caps = {}
@@ -242,16 +241,13 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
             profile,
             fingerprint,
             program_admission=True,
-            declared_sensitivities=declared,
         )
         caps[role] = float(cap)
     # Probe (a): context caps == admission caps == the derived {-8, -33.2}.
     # -33.2 is the sensitivity arithmetic (-8 less the 25.2 dB delta); the
     # provisional -35 dBFS absolute hedge over it was retired 2026-08-20.
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
-    sv = session_measurement_volume_db(
-        profile, targets.values(), declared_sensitivities=declared
-    )
+    sv = session_measurement_volume_db(profile, targets.values())
     assert sv == -20.0  # max(caps) is still the woofer's — volume unchanged
 
     roles = [
@@ -270,25 +266,16 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
     )
     t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
     assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
-    # And the play-time gate (same declared mapping, as bind_production_play
-    # now threads it) admits what the conductor composed.
+    # And the play-time gate admits what the conductor composed.
     wav = tmp_path / "check.wav"
     write_program_wav(wav, c.program_for_phase(PHASE_CHECK))
     adm = readmit_program_from_wav(
         c.program_for_phase(PHASE_CHECK), wav, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
-        declared_sensitivities=declared,
     )
     assert adm.allowed, adm.refusals
     facts = {f.role: f for f in adm.channels}
     assert facts["tweeter"].cap_dbfs == pytest.approx(-33.2)
-    # Without the declared mapping (the pre-fix admission view) the SAME
-    # composed program is refused — the incoherence the threading closes.
-    stale = readmit_program_from_wav(
-        c.program_for_phase(PHASE_CHECK), wav, topology=topology, safety_profile=profile,
-        role_targets=targets, session_volume_db=sv,
-    )
-    assert not stale.allowed
 
 
 def test_check_priors_carry_fc_for_the_measure_level_solve():

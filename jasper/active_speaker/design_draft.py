@@ -32,8 +32,7 @@ from ._common import (
     DriverFields,
     issue as _issue,
 )
-from .driver_pad import effective_sensitivity_db, normalise_pad
-from .design_inputs import resolved_draft_inputs
+from .driver_pad import normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
     _reject_bool_tree,
@@ -293,7 +292,7 @@ def _normalise_driver_common(raw: Any, prefix: str, *, research: bool) -> dict[s
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
     driver.update(normalise_driver_safety_fields(raw, prefix, include_research_evidence=research))
     # Pad is operator-owned input, excluded from research and safety limits.
-    # declared_effective_driver_sensitivities() folds it into sensitivity;
+    # compute_driver_safety_profile() folds it into each target's sensitivity;
     # level_trim.declared_driver_gains() owns the resulting trims.
     driver["pad"] = normalise_pad(
         raw.get("pad"),
@@ -545,48 +544,6 @@ def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
     if not math.isfinite(millimetres) or millimetres <= 0.0:
         return None
     return millimetres / 1000.0
-
-
-def declared_effective_driver_sensitivities(
-    draft: Mapping[str, Any] | None,
-) -> dict[str, float]:
-    """Per-role declared sensitivities (dB @ 2.83 V/1 m) with each driver's in-line pad folded in.
-
-    The declaration (``manual_settings.drivers``) is the one owner of driver
-    sensitivity, a declared physical property never copied onto the computed
-    safety profile. Excitation-ceiling derivation, session-volume planning and
-    playback admission read this (#1665): the number a microphone would measure
-    at the driver terminals, not the naked rating. Values bind through the
-    draft's topology, one per physical output. A role whose outputs disagree
-    (naked sensitivity, pad, or both) derives nothing, failing toward the
-    class-default ceiling. Returns ``{}`` when the draft has no topology or no
-    declaration.
-    """
-
-    if not isinstance(draft, Mapping) or not draft.get("topology"):
-        return {}
-    out: dict[str, float] = {}
-    conflicted: set[str] = set()
-    for driver in resolved_draft_inputs(draft)["drivers"]:
-        role = str(driver.get("role") or "")
-        value = driver.get("sensitivity_db_2v83_1m")
-        if (
-            not role
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
-            continue
-        effective = effective_sensitivity_db(float(value), driver.get("pad"))
-        if effective is None:
-            continue
-        if role in out and out[role] != effective:
-            conflicted.add(role)
-            continue
-        out[role] = effective
-    for role in conflicted:
-        out.pop(role, None)
-    return out
 
 
 def normalise_operator_inputs(raw: Any) -> dict[str, Any]:

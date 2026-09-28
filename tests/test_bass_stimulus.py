@@ -204,10 +204,9 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, tmp_path, mo
 def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refusal):
     topology, safety, targets = _profile_and_targets(
         woofer_floor=20, woofer_upper=4000, woofer_peak=-8, tweeter_peak=-65,
-        max_sweep_duration_s=4)
-    declared = {"woofer": 83.3, "tweeter": 108.5}
+        max_sweep_duration_s=4, sensitivities={"woofer": 83.3, "tweeter": 108.5})
     excitation = replace(bass_fixture[3], caps_dbfs={r: resolve_driver_excitation_ceilings(
-        safety, t, program_admission=True, declared_sensitivities=declared)[1] for r, t in targets.items()})
+        safety, t, program_admission=True)[1] for r, t in targets.items()})
     applied = _applied_profile(topology)
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph = compile_tuning_graph(MeasurementGraphProfile(preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM),
@@ -220,7 +219,7 @@ def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refu
         write_program_wav(wav, stimulus)
         admission = readmit_summed_program_from_wav(stimulus, wav, graph_yaml=graph, topology=topology,
                                                    safety_profile=safety, role_targets=targets,
-                                                   session_volume_db=excitation.session_volume_db, declared_sensitivities=declared)
+                                                   session_volume_db=excitation.session_volume_db)
         assert admission.allowed is not (fault is not None and index == 1), admission.to_dict()
         assert admission.refusals == ((refusal,) if fault is not None and index == 1 else ())
         if admission.allowed:
