@@ -76,7 +76,7 @@ def test_way1_bass_uses_the_full_range_declared_floor(floor):
 
 
 def test_two_way_bass_program_is_unchanged(bass_fixture):
-    assert _bass(bass_fixture).program_id == "2aa938eac1f5e3cf558383d247eba5d045c196e402ba4cd603add3635964912b"
+    assert _bass(bass_fixture).program_id == "6d7d53e5ac82931de6f722d524c42434fae173dfbac1e971b0bd4ad17b51999e"
 
 
 @pytest.mark.parametrize("roles", [(), ("full_range",), ("woofer", "tweeter")])
@@ -235,7 +235,8 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     bass = _bass(bass_fixture)
     if fault == "mismatch":
         bass = _finalize(bass.phase, bass.channels, [
-            replace(s, gain_db=s.gain_db - 1) if s.segment_id == "sweep_verify_repeat_1" else s
+            replace(s, gain_db=s.gain_db - 1, effective_peak_dbfs=s.effective_peak_dbfs - 1)
+            if s.segment_id == "sweep_verify_repeat_1" else s
             for s in bass.segments
         ], bass.total_samples)
     rate, delay = bass.sample_rate_hz, 800

@@ -564,14 +564,14 @@ def test_real_assessor_sees_glitch_and_retries_once():
 
 @pytest.mark.parametrize("changed", [
     {}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"program_id": "other"},
-    {"level_db": -12.0}, {"stimulus_dbfs": -24.0}, {"loudness_volume_db": -30.0},
+    {"level_db": -12.0}, {"stimulus_dbfs": -24.0},
     {"capture_calibration": {"applied": True, "calibration_id": "other", "curve_fingerprint": "curve"}},
     {"regime": "other"}, {"side": "right"}, {"role": "tweeter"},
 ])
 def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     manifest = RunManifest("run", _Store(FakeSeams().records))
     record = {"candidate_id": "", "graph_fingerprint": "graph", "program_id": "program",
-              "level_db": -20.0, "stimulus_dbfs": -18.0, "loudness_volume_db": -20.0,
+              "level_db": -20.0, "stimulus_dbfs": -18.0,
               "regime": "summed", "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
