@@ -56,9 +56,9 @@ not software ranks.
 
 ## Speaker
 
-The emitter absorbs the largest branch peak plus its margin before the
-branches split. Boost spends program headroom (maximum SPL); it cannot raise a
-branch above the fader. `bounds.boost_headroom` discloses that cost and the
+The emitter absorbs its graph's program peak plus one margin before the
+branches split; a cut or a trim ahead of a boost nets it (ADR-0385). Boost
+spends program headroom (maximum SPL); it cannot raise a branch above the fader. `bounds.boost_headroom` discloses that cost and the
 remaining budget. Composition refuses total program absorption above 40 dB as
 `program_headroom_exhausted` (ADR-0219). Measurement excitation caps do not
 bound playback; session volume and measurement SPL headroom are disclosures
