@@ -85,7 +85,7 @@ from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_records, leaked_lines
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -1384,7 +1384,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
     assert fields["setup_mode"] == "stored"
     assert fields["setup_calibration_id"] == "cal-stale"
     # Redaction: the serial never reaches the journal.
-    assert "SECRET-810" not in caplog.text
+    assert leaked_lines(caplog, "SECRET-810") == []
 
 
 def test_setup_calibration_observation_is_redacted_safe():
