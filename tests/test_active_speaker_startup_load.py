@@ -18,6 +18,7 @@ from jasper.active_speaker.startup_load import build_startup_load_preflight
 from jasper.output_topology import (
     OutputTopology,
 )
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -183,6 +184,11 @@ def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(
         "no_block": False,
         "timeout": 15.0,
     }]
-    assert "event=active_speaker.audio_hardware_reconcile_trigger_failed" in caplog.text
-    assert "error=rc=3" in caplog.text
-    assert "event=active_speaker.audio_hardware_reconcile_triggered" not in caplog.text
+    fields = event_fields(
+        caplog, "active_speaker.audio_hardware_reconcile_trigger_failed"
+    )
+    assert fields["error"] == "rc=3"
+    assert (
+        event_records(caplog, "active_speaker.audio_hardware_reconcile_triggered")
+        == []
+    )

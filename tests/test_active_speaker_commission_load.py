@@ -479,11 +479,9 @@ def test_durable_statefile_drift_fails_closed(monkeypatch, caplog, tmp_path):
     # Rolled the running graph back to the all-muted staged anchor.
     assert cam.loaded_paths[-1] == staged_path
     # The safety reason reaches the journal, not just the state file.
-    assert event_fields(caplog, "active_speaker.driver_commission_load")["result"] == "failed"
-    # `reason=` is hand-rolled (not log_event()), so a multi-word value is
-    # unquoted and truncates under the logfmt parser — caplog.text is the
-    # only surface that can see the whole free-text reason here.
-    assert "drifted" in caplog.text
+    fields = event_fields(caplog, "active_speaker.driver_commission_load")
+    assert fields["result"] == "failed"
+    assert "drifted" in fields["reason"]
     state = load_commission_load_state(state_path=state_path)
     assert state["status"] == "failed"
     assert state["rollback_available"] is False

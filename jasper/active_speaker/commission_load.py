@@ -894,14 +894,16 @@ async def load_driver_commissioning_config(
         # drift / unreadable graph) in the journal, not just the state file — the
         # journal is the operator's first debug surface.
         reason = exc.state.persist_error or exc.state.load_error or str(exc)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "rolled_back=%s reason=%s transport=%s",
-            candidate_path,
-            staged_path,
-            getattr(exc.state, "rollback_succeeded", None),
-            reason,
-            load_transport,
+        log_event(
+            logger,
+            "active_speaker.driver_commission_load",
+            level=logging.WARNING,
+            result="failed",
+            candidate=candidate_path,
+            anchor=staged_path,
+            rolled_back=getattr(exc.state, "rollback_succeeded", None),
+            reason=reason,
+            transport=load_transport,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -948,13 +950,16 @@ async def load_driver_commissioning_config(
             "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
         }
         _record_commission_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "reason=output_hardware_reconcile_failed op_id=%s transport=%s",
-            candidate_path,
-            staged_path,
-            apply_state.op_id,
-            load_transport,
+        log_event(
+            logger,
+            "active_speaker.driver_commission_load",
+            level=logging.WARNING,
+            result="failed",
+            candidate=candidate_path,
+            anchor=staged_path,
+            reason="output_hardware_reconcile_failed",
+            op_id=apply_state.op_id,
+            transport=load_transport,
         )
         return {"preflight": preflight, "load": payload}
     payload["output_reconcile"] = {
