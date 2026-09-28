@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import graph_safety as gs
+from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
 from jasper.speaker_layout import SUB_CROSSOVER_HZ_HI
 
@@ -766,3 +767,81 @@ def test_sub_audible_guard_fails_above_the_shared_ceiling():
     # driver — MUST fail closed.
     assert not _sub_guard(_sub_view(lp_freq=SUB_CROSSOVER_HZ_HI + 1.0))
     assert not _sub_guard(_sub_view(lp_freq=1000.0))
+
+
+# --------------------------------------------------------------------------- #
+# sub_guard_present + mains_highpass_present — as active_verifier calls them
+# --------------------------------------------------------------------------- #
+
+WOOFER_OUTS = frozenset({0, 2})
+BASELINE_SUB_OUT = 4
+BASS_HP_NAME = "as_woofer_bass_mgmt_hp"
+WOOFER_LIMITER_NAME = "as_woofer_baseline_limiter"
+SUB_GAIN_NAME = "as_sub_baseline_gain"
+SUB_BASELINE_LIMITER_NAME = "as_sub_baseline_limiter"
+SUB_LANE = (SUB_LP_NAME, SUB_GAIN_NAME, SUB_BASELINE_LIMITER_NAME)
+
+
+def _bass_managed_view(
+    *,
+    woofer_names: tuple[str, ...] = (BASS_HP_NAME, WOOFER_LIMITER_NAME),
+    sub_names: tuple[str, ...] = SUB_LANE,
+    sub_gain_db: float = 0.0,
+) -> gs.GraphView:
+    """The emitted stereo 2-way + sub baseline, reduced to its woofer and sub
+    steps and read through the verifier's adapter."""
+    lr4 = {"freq": 80.0, "order": 4}
+    limiter = {
+        "type": "Limiter",
+        "parameters": {"soft_clip": True, "clip_limit": BASELINE_LIMITER_CLIP_LIMIT_DB},
+    }
+    return gs.view_from_yaml_dict({
+        "filters": {
+            BASS_HP_NAME: {
+                "type": "BiquadCombo",
+                "parameters": {"type": "LinkwitzRileyHighpass", **lr4},
+            },
+            WOOFER_LIMITER_NAME: limiter,
+            SUB_LP_NAME: {
+                "type": "BiquadCombo",
+                "parameters": {"type": "LinkwitzRileyLowpass", **lr4},
+            },
+            SUB_GAIN_NAME: {
+                "type": "Gain",
+                "parameters": {"gain": sub_gain_db, "inverted": False, "mute": False},
+            },
+            SUB_BASELINE_LIMITER_NAME: limiter,
+        },
+        "pipeline": [
+            {"type": "Filter", "channels": sorted(WOOFER_OUTS), "names": list(woofer_names)},
+            {"type": "Filter", "channels": [BASELINE_SUB_OUT], "names": list(sub_names)},
+        ],
+    })
+
+
+@pytest.mark.parametrize(
+    "sub_names,sub_gain_db,counted",
+    [(SUB_LANE, 0.0, True), (SUB_LANE[1:], 0.0, False), (SUB_LANE, 3.0, False)],
+    ids=["emitted", "lowpass_unwired", "gain_boost"],
+)
+def test_sub_guard_counts_only_a_band_limited_unboosted_sub_lane(
+    sub_names, sub_gain_db, counted,
+):
+    assert gs.sub_guard_present(
+        _bass_managed_view(sub_names=sub_names, sub_gain_db=sub_gain_db),
+        channels={BASELINE_SUB_OUT},
+        lowpass_name=SUB_LP_NAME,
+        gain_name=SUB_GAIN_NAME,
+        limiter_name=SUB_BASELINE_LIMITER_NAME,
+        limiter_clip_ceiling_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
+    ) is counted
+
+
+@pytest.mark.parametrize("wired", [True, False], ids=["wired", "unwired"])
+def test_mains_highpass_counts_only_when_wired_to_the_woofer_group(wired):
+    woofer_names = (BASS_HP_NAME, WOOFER_LIMITER_NAME) if wired else (WOOFER_LIMITER_NAME,)
+    assert gs.mains_highpass_present(
+        _bass_managed_view(woofer_names=woofer_names),
+        channels=WOOFER_OUTS,
+        highpass_name=BASS_HP_NAME,
+    ) is wired
