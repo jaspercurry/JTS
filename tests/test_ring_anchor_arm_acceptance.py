@@ -141,7 +141,7 @@ def _stage_box(
     """Stage graph and anchor evidence; only the saved output topology is stubbed."""
     import json
 
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.graph_selector import write_camilla_statefile
     from jasper.fanin import ring_readiness as rh
 
     configs = tmp_path / "configs"

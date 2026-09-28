@@ -22,7 +22,7 @@ from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_U
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.log_event import log_event
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
     SafeGraphDecision,
     apply_safe_graph_decision_to_statefile,

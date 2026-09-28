@@ -119,7 +119,7 @@ class StatefileCamillaController:
     Reconcile must re-emit that carrier to refresh transport format and geometry;
     the recovery seeder proves graph safety but cannot perform that refresh.
     If the statefile names no graph, selection belongs to
-    :mod:`jasper.active_speaker.runtime_contract`.
+    :mod:`jasper.active_speaker.graph_selector`.
     """
 
     def __init__(self, statefile_path: str | Path | None = None) -> None:
@@ -137,7 +137,7 @@ class StatefileCamillaController:
     async def set_config_file_path(
         self, path: str, *, best_effort: bool = False
     ) -> bool:
-        from jasper.active_speaker.runtime_contract import write_camilla_statefile
+        from jasper.active_speaker.graph_selector import write_camilla_statefile
 
         write_camilla_statefile(self.statefile_path, path)
         return True

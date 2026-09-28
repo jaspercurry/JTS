@@ -45,7 +45,7 @@ from .path_safety import (
     topology_target_signature,
     validate_startup_load_evidence_binding,
 )
-from .runtime_contract import (
+from .graph_selector import (
     safe_graph_for_current_topology,
     write_camilla_statefile,
 )

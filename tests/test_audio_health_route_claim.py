@@ -210,7 +210,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     another.
     """
     from jasper import audio_runtime_plan
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.active_speaker.graph_selector import build_parked_muted_graph
 
     register_passive_only_dac(monkeypatch)
     topology = _no_lane_active_two_way()
@@ -263,7 +263,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
 
 def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path) -> None:
     """A fresh/reset speaker is intentionally silent, never a hidden outage."""
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_selector import (
         UNCONFIGURED_PARKED_EXIT,
         build_parked_muted_graph,
     )
@@ -297,7 +297,7 @@ def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
     monkeypatch, tmp_path
 ) -> None:
     """A safe parked graph does not conceal corrupt persisted intent."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.active_speaker.graph_selector import build_parked_muted_graph
     from tests.test_active_speaker_runtime_contract import _topology
 
     text, graph = build_parked_muted_graph(_topology([]))

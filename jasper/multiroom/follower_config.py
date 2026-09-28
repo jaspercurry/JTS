@@ -305,7 +305,7 @@ async def restore_active_camilla_solo(
     the two arms stay distinguishable in the journal; ``apply_source`` labels the
     dsp-apply for the same reason.
     """
-    from jasper.active_speaker.runtime_contract import safe_graph_for_current_topology
+    from jasper.active_speaker.graph_selector import safe_graph_for_current_topology
     from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
     from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
