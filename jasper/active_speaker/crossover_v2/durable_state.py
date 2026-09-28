@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable crossover state and advisory VERIFY records."""
+"""Durable crossover state."""
 
 from __future__ import annotations
 
@@ -457,7 +457,6 @@ def build_conductor_state(
             else prior.get("sound_design_revision")
         ),
         "measure": None,
-        "verify": None,
         "failure": (
             {
                 "code": failure_code,
@@ -475,7 +474,6 @@ def build_conductor_state(
         ),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
-            "predicted_spec": None,
             "commanded_delta": None,
             "declared_transfer": None,
             "verify_measured": None,
