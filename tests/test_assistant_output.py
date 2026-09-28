@@ -34,7 +34,7 @@ def _output(tts: FakeTts):
 
 
 async def test_mute_click_uses_matched_cue_path():
-    from jasper.assistant_loudness import AssistantLoudnessProfile
+    from jasper.runtime_config.assistant_loudness import AssistantLoudnessProfile
 
     profile = AssistantLoudnessProfile(
         provider="jts",
@@ -66,7 +66,7 @@ async def test_mute_click_uses_matched_cue_path():
 
 
 async def test_listening_chirp_uses_matched_chirp_path():
-    from jasper.assistant_loudness import AssistantLoudnessProfile
+    from jasper.runtime_config.assistant_loudness import AssistantLoudnessProfile
 
     profile = AssistantLoudnessProfile(
         provider="jts",

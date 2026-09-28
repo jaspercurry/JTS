@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from ...audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_AUTO,
     normalize_aec_mode,
     probe_xvf_mic,

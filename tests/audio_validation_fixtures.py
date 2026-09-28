@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from jasper.audio_hardware import dac
-from jasper.audio_profile_state import MicProbe
+from jasper.runtime_config.audio_profile_state import MicProbe
 
 
 NOW = datetime(2026, 6, 1, 16, 0, tzinfo=timezone.utc)

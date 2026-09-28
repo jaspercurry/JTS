@@ -13,7 +13,7 @@ import time
 from typing import Any, cast
 
 from ... import enhanced_aec, wake_models
-from ...audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     WAKE_LEG_DEFAULTS,

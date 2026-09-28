@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import NamedTuple
 from ... import enhanced_aec
 from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
-from ...audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_AUTO,
     AEC_MODE_ENV,
     AecIntent,

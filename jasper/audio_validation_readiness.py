@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from .audio_profile_state import RuntimeAecEnv
+from jasper.runtime_config.audio_profile_state import RuntimeAecEnv
 from .chip_aec.policy import (
     APPROVED_DAC_IDS,
     STATUS_APPROVED,

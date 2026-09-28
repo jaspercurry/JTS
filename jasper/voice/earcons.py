@@ -43,7 +43,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from ..assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     AssistantLoudnessProfile,
     measure_pcm_24k_mono,
 )

@@ -35,7 +35,7 @@ from jasper.service_units import (
     read_unit_property,
     systemd_int,
 )
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )

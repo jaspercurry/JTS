@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import jasper.assistant_loudness as assistant_loudness
+import jasper.runtime_config.assistant_loudness as assistant_loudness
 import jasper.cues.generator as cue_generator
-from jasper.assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     AssistantSourceMeter,
     CALIBRATION_TEXT,
     LoudnessMeasurement,

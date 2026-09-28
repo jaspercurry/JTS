@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from jasper import tts_playout
-from jasper.assistant_loudness import UPSAMPLE_2X_CONTEXT, upsample_2x
+from jasper.runtime_config.assistant_loudness import UPSAMPLE_2X_CONTEXT, upsample_2x
 from jasper.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,

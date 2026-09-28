@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from .audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_FILE_ENV,
     MicProbe,
     probe_xvf_mic as _probe_xvf_mic,

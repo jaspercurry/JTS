@@ -23,11 +23,11 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .atomic_io import atomic_write_json, read_json_mapping
-from .json_fields import utc_now_iso
-from .log_event import log_event
+from jasper.atomic_io import atomic_write_json, read_json_mapping
+from jasper.json_fields import utc_now_iso
+from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.assistant_loudness")
 
 DEFAULT_PROFILE_PATH = "/var/lib/jasper/assistant_loudness_profiles.json"
 PROFILE_VERSION = 1
@@ -382,7 +382,7 @@ def upsample_2x(samples: "Any") -> "Any":
     through the float32 playout path); numpy-only for the RSS reason
     ``jasper.dsp_numpy`` states (issue #3697). One dimension only.
     """
-    from .dsp_numpy import resample_poly  # lazy: import cost, numpy stays out of jasper-control and jasper-mux
+    from jasper.dsp_numpy import resample_poly  # lazy: import cost, numpy stays out of jasper-control and jasper-mux
 
     return resample_poly(samples, 2, 1)
 
@@ -469,7 +469,7 @@ def _build_active_seed_backend(
     max_attempts: int | None = None,
     retry_backoff_sec: float | None = None,
 ) -> Any | None:
-    from .cues.factory import build_provider_tts_backend  # lazy: cycle (cues.manager imports this module); TTS generator import cost
+    from jasper.cues.factory import build_provider_tts_backend  # lazy: cycle (cues.manager imports this module); TTS generator import cost
 
     backend, _voice_label = build_provider_tts_backend(
         cfg,

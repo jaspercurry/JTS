@@ -11,7 +11,7 @@ import hashlib
 import numpy as np
 import pytest
 
-from jasper.assistant_loudness import SPINE_SCALE, measure_pcm_24k_mono
+from jasper.runtime_config.assistant_loudness import SPINE_SCALE, measure_pcm_24k_mono
 from jasper.voice.earcons import (
     generate_listening_chirp,
     generate_mute_click,
