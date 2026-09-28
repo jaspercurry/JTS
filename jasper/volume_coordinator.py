@@ -65,7 +65,7 @@ from .volume_measurement_gate import MeasurementGate
 from .volume_owner import VolumeOwner
 from .volume_scales import native_to_listening_level
 from .volume_curve import (
-    guard_in_effect,
+    canonical_target_db,
     main_mute_for_level,
     percent_to_db,
 )
@@ -167,7 +167,7 @@ class VolumeCoordinator:
             measurement=self._measurement,
             graph_mutation_in_progress=lambda: camilla.graph_mutation_in_progress(),
             voice_session_active=lambda: self._voice_session_active,
-            active_source=lambda: self._active_source(),
+            active_source=lambda: self.active_source(),
             refresh=lambda: self._refresh_from_disk(),
             effective_level=lambda: self._effective_level(),
             mutation=lambda: self._mutation(),
@@ -179,8 +179,7 @@ class VolumeCoordinator:
             load=lambda: self._persistence.load(),
             cached=lambda: (self._level, self._pre_mute_level),
             read_carrier=lambda: self._carrier.read_volume_and_mute(),
-            active_source=lambda: self._active_source(),
-            push_carrier_target_db=self._push_carrier_target_db,
+            active_source=lambda: self.active_source(),
         )
         self._handoff = VolumeHandoff(
             effective_level=lambda: self.get_volume_state().effective_percent,
@@ -192,7 +191,7 @@ class VolumeCoordinator:
             push_source=lambda source, level: self._push_source(source, level),
             write_level=lambda level: self._set_camilla(level),
             voice_session_active=lambda: self._voice_session_active,
-            active_source=lambda: self._active_source(),
+            active_source=lambda: self.active_source(),
             refresh=lambda: self._refresh_from_disk(),
             mutation=lambda: self._mutation(),
             publish=lambda: self.publish_volume_context(),
@@ -315,7 +314,7 @@ class VolumeCoordinator:
         )
         async with self._mutation():
             self._level = target_level
-            source = await self._active_source()
+            source = await self.active_source()
             # Make camilla consistent with the boot mode. Idle and
             # AirPlay use camilla as the remembered/audible volume;
             # Spotify and Bluetooth carry listening_level on their own
@@ -324,7 +323,8 @@ class VolumeCoordinator:
             if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                 await self._set_camilla(target_level)
             else:
-                pin_db = percent_to_db(0) if main_mute_for_level(target_level) else 0.0
+                # No guard at boot: the dispatch below guards if its push fails.
+                pin_db = canonical_target_db(target_level, VolumeMode.PUSH, None)
                 await self._set_camilla_db(
                     pin_db,
                     context="boot_push_pin",
@@ -401,7 +401,7 @@ class VolumeCoordinator:
         hears that level, muted, and the dispatched level is not persisted.
         """
         muted = restore_level is not None or main_mute_for_level(level)
-        source = await self._active_source()
+        source = await self.active_source()
         # Fan-in is the immediate TTS stop and does not depend on Camilla
         # being healthy. Publish before touching the final-output backstop.
         await self._publication.publish_intent(
@@ -586,7 +586,7 @@ class VolumeCoordinator:
         return True
 
     async def _ignore_inactive_source(self, source: Source, level: int) -> bool:
-        active = await self._active_source()
+        active = await self.active_source()
         if active != source:
             logger.debug(
                 "observe %s: ignoring %d%% because active source is %s",
@@ -600,7 +600,7 @@ class VolumeCoordinator:
         optimistic check. Revalidate source ownership at the ordering point
         so a queued observation cannot update canonical state after mux has
         moved to another lane."""
-        active = await self._active_source()
+        active = await self.active_source()
         if active != source:
             self._refresh_from_disk()
             logger.debug(
@@ -802,7 +802,7 @@ class VolumeCoordinator:
         the sender's slider reaches us through shairport's volume hook
         (ADR-0206).
         """
-        source = source if source is not None else await self._active_source()
+        source = source if source is not None else await self.active_source()
         try:
             if volume_mode(source) == VolumeMode.PUSH:
                 await self._handoff.push_or_guard(
@@ -879,22 +879,10 @@ class VolumeCoordinator:
         actual intent after a duck."""
         self._refresh_from_disk()
         effective_level = self._effective_level()
-        source = await self._active_source()
-        if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
-            return percent_to_db(effective_level)
-        muted = main_mute_for_level(effective_level)
-        return self._push_carrier_target_db(
-            muted, None if muted else self._persisted_main_volume_db(),
+        source = await self.active_source()
+        return canonical_target_db(
+            effective_level, volume_mode(source), self._persisted_main_volume_db(),
         )
-
-    @staticmethod
-    def _push_carrier_target_db(muted: bool, persisted_db: float | None) -> float:
-        # Preserve content mute and failed-push attenuation through duck release.
-        if muted:
-            return percent_to_db(0)
-        if guard_in_effect(persisted_db):
-            return persisted_db
-        return 0.0
 
     async def maybe_reconcile_camilla(self, source: Source | None = None) -> None:
         """The 1 Hz drift backstop: :meth:`VolumeReconciler.maybe_reconcile_camilla`."""
@@ -906,7 +894,7 @@ class VolumeCoordinator:
         measurement."""
         return self._reconciler.reconcile_deferred
 
-    async def _active_source(self) -> Source:
+    async def active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
         (mux preempts in <1 s) but possible during transitions; pick
         a stable priority: airplay > spotify > bluetooth > usbsink

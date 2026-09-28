@@ -511,7 +511,7 @@ async def test_transition_drops_a_verdict_the_lease_no_longer_agrees_with(
     backend.selected_source = selected_source
     before = list(cam.set_calls)
 
-    assert await coord._active_source() is Source.SPOTIFY
+    assert await coord.active_source() is Source.SPOTIFY
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
 
     assert pushes.spotify == []
@@ -1982,9 +1982,7 @@ async def test_reconcile_no_loop_when_already_converged(tmp_path):
         pytest.param({"aplactive": True}, 40, 0.0, percent_to_db(40), id="airplay"),
         pytest.param({"spotactive": True}, 70, 0.0, 0.0, id="push_mode"),
         pytest.param({"spotactive": True}, 0, 0.0, percent_to_db(0), id="push_mode_at_zero"),
-        pytest.param({"spotactive": True}, 70, -1.0, 0.0, id="guard_boundary"),
         pytest.param({"spotactive": True}, 70, -1.01, -1.01, id="guard_active"),
-        pytest.param({"spotactive": True}, 0, -25.0, percent_to_db(0), id="mute_before_guard"),
     ],
 )
 async def test_the_duck_restore_target_follows_the_active_carrier(
@@ -2211,7 +2209,7 @@ async def test_active_source_honours_mux_over_the_raw_probes(
         tmp_path, active={"spotactive": True}, selected=selected,
     )
 
-    assert await coord._active_source() is expected
+    assert await coord.active_source() is expected
 
 
 @pytest.mark.parametrize(

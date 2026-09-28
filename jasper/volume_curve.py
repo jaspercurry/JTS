@@ -20,6 +20,7 @@ import logging
 import threading
 from typing import TypeGuard
 
+from .music_sources import VolumeMode
 from .sound import settings as sound_settings
 from .volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
@@ -138,3 +139,22 @@ def guard_in_effect(db: float | None) -> TypeGuard[float]:
     dead band is a degraded-safe guard to keep, not jitter.
     """
     return db is not None and float(db) < -RECONCILE_DRIFT_DB
+
+
+def canonical_target_db(
+    effective_level: int, mode: VolumeMode, persisted_db: float | None,
+) -> float:
+    """The absolute Camilla ``main_volume`` the canonical intent asks for,
+    ignoring any duck; a releasing duck lands against it (ADR-0004).
+
+    A camilla-master source carries the level on Camilla. Push mode pins
+    Camilla at 0 dB, except that a content mute keeps the mute floor and a
+    failed push's guard (``persisted_db``) stays in place.
+    """
+    if mode == VolumeMode.CAMILLA_MASTER:
+        return percent_to_db(effective_level)
+    if main_mute_for_level(effective_level):
+        return percent_to_db(0)
+    if guard_in_effect(persisted_db):
+        return persisted_db
+    return 0.0

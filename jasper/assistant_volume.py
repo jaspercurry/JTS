@@ -42,7 +42,7 @@ from .tts_routing import (
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
 )
-from .volume_curve import percent_to_db
+from .volume_curve import canonical_target_db, percent_to_db
 from .volume_state import VolumeState
 
 if TYPE_CHECKING:
@@ -164,7 +164,6 @@ class VolumeContextPublication:
         cached: Callable[[], tuple[int, int | None]],
         read_carrier: Callable[[], Awaitable[tuple[float | None, bool | None]]],
         active_source: Callable[[], Awaitable[Source]],
-        push_carrier_target_db: Callable[[bool, float | None], float],
     ) -> None:
         self._publisher = publisher
         self._lock = lock
@@ -172,7 +171,6 @@ class VolumeContextPublication:
         self._cached = cached
         self._read_carrier = read_carrier
         self._active_source = active_source
-        self._push_carrier_target_db = push_carrier_target_db
 
     def _state(self, record: VolumeRecord | None) -> VolumeState:
         if record is None:
@@ -184,8 +182,8 @@ class VolumeContextPublication:
         mutation-coherent snapshot without holding IPC open.
 
         The canonical dB value represents user intent. ``downstream_db`` is
-        Camilla's actual gain when readable, with the coordinator's safe target
-        as a fail-soft fallback.
+        Camilla's actual gain when readable, with ``canonical_target_db`` as a
+        fail-soft fallback.
         """
         for _attempt in range(3):
             # The short lock sections serialize this process's mutations. Slow
@@ -206,12 +204,11 @@ class VolumeContextPublication:
             current_db, current_mute = await self._read_carrier()
             if current_db is None:
                 source = await self._active_source()
-                if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
-                    downstream_db = percent_to_db(state.effective_percent)
-                else:
-                    downstream_db = self._push_carrier_target_db(
-                        muted, before.main_volume_db if before is not None else None,
-                    )
+                downstream_db = canonical_target_db(
+                    state.effective_percent,
+                    volume_mode(source),
+                    before.main_volume_db if before is not None else None,
+                )
             else:
                 downstream_db = current_db
             if current_mute is not None:
