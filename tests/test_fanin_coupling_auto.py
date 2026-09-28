@@ -49,8 +49,7 @@ from tests._log_events import event_field_maps
 
 
 def test_pure_auto_decision_module_does_not_import_transition_owner():
-    """ca is the pure decision surface; importing coupling_reconcile (the
-    state-owning module) would reintroduce the coupling ADR-0100 removed."""
+    """Keep the USB owner independent of the daemon transition owner."""
     tree = ast.parse(Path(ca.__file__).read_text(encoding="utf-8"), filename=ca.__file__)
     imported = set()
     for node in ast.walk(tree):
@@ -540,7 +539,7 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
         raise RuntimeError("bad USB intent value")
 
     monkeypatch.setattr(
-        cr,
+        ca,
         "usbsink_effectively_enabled",
         invalid_usb_intent,
     )
