@@ -4477,13 +4477,14 @@ def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
     against a plain role chain (ADR-0322); no graph the route emits differs
     between the two, so the proof's own input is what this pins.
     """
-    from jasper.active_speaker import baseline_profile, runtime_contract
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.graph import bass_extension
     from jasper.active_speaker.candidate_bank import publish_authored_candidate
 
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = replace(_run6_measured_candidate(preset), analysis={"measurement_status": "unmeasured"})
     publish_authored_candidate(candidate)
-    classify, proved = runtime_contract.classify_bass_extension_graph, []
+    classify, proved = bass_extension.classify_bass_extension_graph, []
 
     def record(*args, **kwargs):
         snapshot = (kwargs.get("applied_baseline_state") or {}).get("recomposition_snapshot")
@@ -4491,7 +4492,7 @@ def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
             proved.append(dict(snapshot))
         return classify(*args, **kwargs)
 
-    monkeypatch.setattr(runtime_contract, "classify_bass_extension_graph", record)
+    monkeypatch.setattr(bass_extension, "classify_bass_extension_graph", record)
     assert v2apply.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
                                    _bg_run_async, lambda: _FakeApplyCam())["status"] == "applied"
     applied = baseline_profile.load_applied_baseline_profile_state()

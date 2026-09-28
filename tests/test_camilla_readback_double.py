@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.active_speaker.runtime_contract import _normalized_graph_fingerprint
+from jasper.active_speaker.graph.bass_extension import _normalized_graph_fingerprint
 from tests._camilla_readback_double import camilla_default_filled
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "camilla_readback"

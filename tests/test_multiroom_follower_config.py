@@ -30,7 +30,7 @@ from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.runtime_contract as runtime_contract_mod
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker import graph_selector, graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology_store as output_topology_mod
@@ -359,7 +359,7 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )
@@ -398,7 +398,7 @@ def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
     async def classify(*_args, **_kwargs):
         return next(proofs)
 
-    monkeypatch.setattr(runtime_contract_mod, "classify_active_bass_extension_graph", classify)
+    monkeypatch.setattr(bass_extension, "classify_active_bass_extension_graph", classify)
     result = asyncio.run(_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
         _FakeCamilla(current="/tmp/paired.yml"),
         expected_config_path="/tmp/paired.yml",
@@ -437,7 +437,7 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )
@@ -507,7 +507,7 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )

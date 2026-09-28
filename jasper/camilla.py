@@ -963,7 +963,7 @@ class CamillaController:
         :meth:`set_active_config_raw` and :meth:`patch_config` both do, through
         :meth:`_graph_mutation`, so "make it match its siblings" is the tempting
         wrong edit — but this call mutates nothing, and the live-graph boundary
-        (``runtime_contract.classify_active_bass_extension_graph``) invokes it
+        (``graph.bass_extension.classify_active_bass_extension_graph``) invokes it
         from *inside* that lock on live paths — among them
         ``multiroom.follower_config``'s
         ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``.

@@ -117,7 +117,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         active_graph_is_parked,
         parked_muted_exits,
     )
-    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+    from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
     from jasper.output_topology import OutputTopologyError
 
     name = "active speaker runtime graph"

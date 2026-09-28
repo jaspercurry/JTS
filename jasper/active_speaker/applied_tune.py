@@ -17,7 +17,8 @@ from jasper import output_topology_store as output_topology
 from jasper.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
-from . import baseline_profile, baseline_record, candidate_bank, measurement_emit, runtime_contract
+from . import baseline_profile, baseline_record, candidate_bank, measurement_emit
+from .graph import bass_extension
 from . import design_draft as design_drafts
 from .crossover_declaration import assert_crossover_honours_declared_floor
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_on_declaration
@@ -61,9 +62,9 @@ def compile_applied_tune(
         preference_filters=preference_filters, output_trim_db=output_trim_db)
     prepared = baseline_record.prepare_applied_baseline_profile(tune.banked, declaration=tune.declaration,
         design_draft=tune.draft, provenance=tune.applied)
-    proof = runtime_contract.prove_desired_graph(tune.declaration.topology, text,
+    proof = bass_extension.prove_desired_graph(tune.declaration.topology, text,
                                                  snapshot=prepared.get("recomposition_snapshot"))
-    if not runtime_contract.desired_graph_approved(proof):
+    if not bass_extension.desired_graph_approved(proof):
         raise ValueError(proof.classification)
     return text, prepared
 
@@ -169,8 +170,8 @@ def compile_commissioning_profile(
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_profile.baseline_candidate_fingerprint(profile)
         profile["config"]["exists"] = target.exists()
-        proof = runtime_contract.prove_desired_graph(topology, text, snapshot=profile.get("recomposition_snapshot"))
-        if not runtime_contract.desired_graph_approved(proof):
+        proof = bass_extension.prove_desired_graph(topology, text, snapshot=profile.get("recomposition_snapshot"))
+        if not bass_extension.desired_graph_approved(proof):
             raise measurement_emit.MeasurementGraphRefused("baseline_graph_safety_proof_failed", proof.classification)
         profile.update(status="ready_to_compile", permissions={"may_compile": True})
     except (candidate_bank.CandidateBankRefusal, ValueError) as exc:

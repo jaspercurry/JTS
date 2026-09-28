@@ -347,7 +347,7 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr("jasper.output_topology_store.load_output_topology", lambda: topology)
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        "jasper.active_speaker.graph.bass_extension.classify_bass_extension_graph",
         lambda *_a, **_k: _ApprovedGraph(),
     )
     monkeypatch.setattr(

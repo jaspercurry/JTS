@@ -45,7 +45,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
-from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.audio_measurement import measurement_geometry
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology

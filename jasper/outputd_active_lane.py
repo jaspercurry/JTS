@@ -20,7 +20,7 @@ from jasper.active_speaker.graph_types import (
     GRAPH_PROGRAM_BAKE_PIPE,
     GraphSafety,
 )
-from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.output_topology import OutputTopology
 from jasper.output_topology_store import load_output_topology_strict

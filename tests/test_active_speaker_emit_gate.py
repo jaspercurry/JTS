@@ -60,7 +60,7 @@ from jasper.active_speaker.graph_safety import (
     view_from_emitted_text,
 )
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
-from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor

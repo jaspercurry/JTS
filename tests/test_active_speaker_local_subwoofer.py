@@ -32,9 +32,9 @@ from jasper.active_speaker import (
 from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.active_speaker.output_contract import classify_output_contract
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    classify_bass_extension_graph,
     classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology

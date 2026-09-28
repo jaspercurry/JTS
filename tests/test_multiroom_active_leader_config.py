@@ -32,7 +32,7 @@ import yaml
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.runtime_contract as runtime_contract_mod
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker import graph_selector, graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
@@ -437,7 +437,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
             issues=[] if ok else [{"code": "forced_bake"}],
         )
 
-    monkeypatch.setattr(runtime_contract_mod, "classify_bass_extension_graph", _selective)
+    monkeypatch.setattr(bass_extension, "classify_bass_extension_graph", _selective)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))

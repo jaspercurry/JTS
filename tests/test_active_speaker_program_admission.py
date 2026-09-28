@@ -50,7 +50,7 @@ from jasper.active_speaker.program_admission import (
     readmit_program_from_wav,
     readmit_summed_program_from_wav,
 )
-from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley

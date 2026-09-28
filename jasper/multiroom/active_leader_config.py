@@ -136,7 +136,7 @@ async def precheck_active_leader(
         emit_active_speaker_program_bake_config,
     )
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+    from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
     from jasper.fanin_coupling import capture_half, capture_kwargs_for_coupling
     from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
     from jasper.sound.profile import load_profile
