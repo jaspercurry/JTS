@@ -121,8 +121,9 @@ class RendererClient:
         return effective if isinstance(effective, str) else None
 
     async def get_currentsong(self) -> dict[str, Any]:
-        """The :func:`audible_source`'s track: title/album/artist tags, plus
-        the URI for Spotify; ``{}`` for any other source or none."""
+        """The :func:`audible_source`'s track: AirPlay's title/album/artist,
+        or Spotify's URI with empty tags; ``{}`` for any other source, for
+        none, or when the read fails."""
         source = await audible_source(self)
         if source is Source.SPOTIFY:
             return await self._spot_currentsong()
@@ -136,9 +137,7 @@ class RendererClient:
         # librespot's --onevent hook only gives us TRACK_ID / URI;
         # title/artist/album require a Spotify Web API lookup.
         # Voice tools that need rich metadata go through
-        # jasper.spotify_router (which already does Web API). For
-        # the renderer's purposes we return the URI so transport
-        # routing can identify the source as Spotify.
+        # jasper.spotify_router (which already does Web API).
         uri = librespot_state.track_uri(self._librespot_state_path)
         if not uri:
             return {}
