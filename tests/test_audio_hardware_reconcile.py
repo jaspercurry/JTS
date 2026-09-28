@@ -2271,7 +2271,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
 ):
     """The current legal endpoint set cannot reach this accepted/no-endpoint
     case. Both lane markers must still agree if that set grows."""
-    from jasper.active_speaker.runtime_contract import OutputdActiveLaneDecision
+    from jasper.outputd_active_lane import OutputdActiveLaneDecision
 
     result = _run_reconcile(
         tmp_path,
@@ -2280,7 +2280,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
         "test",
         extra_env=_active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
         patches={
-            "jasper.active_speaker.runtime_contract.outputd_active_lane_decision":
+            "jasper.outputd_active_lane.outputd_active_lane_decision":
                 lambda *_a, **_k: OutputdActiveLaneDecision(
                     ok=True, width=4, reason="accepted", endpoint_device=None
                 ),
@@ -2467,7 +2467,7 @@ def test_dual_apple_park_names_an_unavailable_active_graph_contract(tmp_path: Pa
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(_dual_apple_topology(tmp_path)),
         },
         patches={
-            "jasper.active_speaker.runtime_contract.outputd_active_lane_decision": (
+            "jasper.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract module unusable"))
             )
         },
@@ -3719,7 +3719,7 @@ _PROBE_FAILURES = {
     "active_graph_decision": (
         {
             **_LANE_CAP_ANSWERS_FOUR,
-            "jasper.active_speaker.runtime_contract.outputd_active_lane_decision": (
+            "jasper.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract gone"))
             ),
         },

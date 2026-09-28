@@ -40,9 +40,8 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
 )
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology, ring_channels_for_topology
-from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
-    GraphSafety,
+from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME, GraphSafety
+from jasper.outputd_active_lane import (
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
     OUTPUTD_LEGAL_ENDPOINT_DEVICES,
     _outputd_endpoint_width,
@@ -584,7 +583,7 @@ def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
     different graphs (a re-emit landing between the reads is enough). The
     decision therefore reports which endpoint it accepted.
     """
-    from jasper.active_speaker.runtime_contract import OutputdActiveLaneDecision
+    from jasper.outputd_active_lane import OutputdActiveLaneDecision
 
     decision = OutputdActiveLaneDecision(
         ok=True, width=2, reason="x", endpoint_device=RING_ACTIVE_PLAYBACK_DEVICE
