@@ -1125,6 +1125,7 @@ fn period_duration(period_frames: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jasper_tts_protocol::flush::DEFAULT_MAX_PENDING_FRAMES;
     // Only the test `Config` literal names this type; importing it at
     // module scope would be an unused import in a non-test build.
     use jasper_outputd::config::ContentBridgeMode;
@@ -1392,12 +1393,10 @@ mod tests {
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
             dac_content_trim_db: 0.0,
             tts_socket_path: None,
-            tts_max_pending_frames: jasper_outputd::tts::DEFAULT_MAX_PENDING_FRAMES,
+            tts_max_pending_frames: DEFAULT_MAX_PENDING_FRAMES,
             tts_program_duck_db: -25.0,
             assistant_loudness: Default::default(),
             active_lane: false,
-            // ACTIVE_LANE's pair — false is the passive default, which is what
-            // this chip-ref fixture wants (it is not an active-ring endpoint).
             ring_active_endpoint: false,
         }
     }

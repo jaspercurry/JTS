@@ -355,11 +355,9 @@ contract; the reference/held-content algorithm itself lives in
   (`JASPER_TTS_MIX_STAGE=post_dsp`, `MixStage::PostDsp`) treats `downstream_db`
   as zero. Outputd honors mute and live re-gain, and fails closed to silence
   when an atomic turn-start context is missing or rejected.
-- Its TTS lane keeps a bounded pending queue (2 s, `DEFAULT_MAX_PENDING_FRAMES`
-  in `rust/jasper-fanin/src/tts.rs`) and drops audio commands arriving while it
-  is full (`event=fanin.tts_command_dropped`) rather than blocking the socket
+- Its TTS lane keeps a bounded pending queue (2 s) and drops audio commands
+  arriving while it is full (`event=fanin.tts_command_dropped`) rather than blocking the socket
   reader, which would stall a barge-in `FLUSH_SYNC` behind queued audio.
-  `tests/test_tts_ipc_pacing.py` pins the writer watermark to that budget.
 - Hearing safety is peak-aware here: requested gain is capped so the profiled
   source peak stays under the assistant peak ceiling (default `-3 dBFS`), then
   floored. There is deliberately no fixed source-gain ceiling — the positive

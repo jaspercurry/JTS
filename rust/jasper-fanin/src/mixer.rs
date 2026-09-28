@@ -2171,10 +2171,10 @@ mod tests {
 
     use jasper_ring::{RingReader, SlotRead};
     use jasper_tts_protocol::loudness::{gain_db_to_linear, AssistantLoudnessConfig};
-    use jasper_tts_protocol::{QueuedTtsCommand, TtsCommand};
+    use jasper_tts_protocol::{flush::QueuedFlush, QueuedTtsCommand, TtsCommand};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
 
-    use crate::tts::{tts_channels, QueuedFlush};
+    use crate::tts::tts_channels;
 
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
@@ -2236,8 +2236,7 @@ mod tests {
         }
     }
 
-    /// Returns it with its senders, which the caller must keep alive for the
-    /// mixer's whole life.
+    /// Keep the returned senders alive for the mixer's whole life.
     fn ducking_tts_mixer(
         payload: &[i32],
         program_duck_db: f32,

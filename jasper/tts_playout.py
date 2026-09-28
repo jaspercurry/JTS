@@ -67,8 +67,7 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
     _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 8
 )
 # Pace sustained writes so the IPC owner's pending-audio queue never
-# overflows. The owner (jasper-fanin's TTS lane, DEFAULT_MAX_PENDING_FRAMES
-# in rust/jasper-fanin/src/tts.rs = 2 s) DROPS whole audio commands that
+# overflows. The owner drops whole audio commands that
 # arrive while its queue is full — it cannot block the socket reader,
 # because a blocked reader would also stall FLUSH (barge-in) behind queued
 # audio. OpenAI Realtime delivers replies faster than realtime (~11 s of
@@ -77,7 +76,6 @@ _OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
 # (event=fanin.tts_command_dropped).
 # The 1.2 s watermark leaves room for a 125 ms chunk and a concurrent
 # listening chirp (~0.3 s) within the owner's 2 s queue budget.
-# tests/test_tts_ipc_pacing.py pins this against the Rust budget.
 _OUTPUTD_PACE_AHEAD_SEC = 1.2
 
 # Pacing sleeps go through this alias so tests can substitute a spy

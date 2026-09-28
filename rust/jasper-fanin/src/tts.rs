@@ -12,11 +12,10 @@
 //! CamillaDSP performs crossover/protection.
 
 use std::collections::VecDeque;
-use std::io::{BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +25,7 @@ use log::{info, warn};
 use crate::log_writer::{send_drop_counted, FaninLogEvent};
 use crate::mixer::CHANNELS;
 use crate::playout::{frames_to_ms, PlayoutEvent, PlayoutLedger};
+use jasper_tts_protocol::flush::{self, FlushEvent, FlushSummary, QueuedFlush};
 use jasper_tts_protocol::loudness::{
     apply_gain, gain_db_to_linear, linear_to_db, sanitize_tts_gain_db, AssistantGainDecision,
     AssistantLoudness, AssistantLoudnessConfig, AssistantProfile, GainRamp, HeldLoudnessReference,
@@ -36,8 +36,6 @@ use jasper_tts_protocol::{
     VolumeContext, SAMPLE_RATE, TTS_FRAME_DEADLINE,
 };
 
-pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
-pub const DEFAULT_MAX_PENDING_FRAMES: u64 = SAMPLE_RATE as u64 * 2;
 // Keep this above voice's `JASPER_IDLE_TIMEOUT_SEC` default (20 s):
 // fan-in only sees the one-shot duck IPC, not the provider turn state, so
 // a shorter TTL could un-duck program audio during a legitimate quiet turn.
@@ -52,25 +50,6 @@ const STARVED_LOG_MIN_MS: u64 = 10;
 /// 502 ms. Keep both durations observable when assessing this threshold.
 const STARVED_DROPOUT_MAX_MS: u64 = 250;
 const PACKED_DB_NONE: i64 = i64::MIN;
-
-#[derive(Debug)]
-pub struct QueuedFlush {
-    pub epoch: u64,
-    pub ack: Option<SyncSender<FlushSummary>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FlushSummary {
-    requests: usize,
-    pending_frames: u64,
-    flushed_frames: u64,
-    segments: usize,
-    max_audio_played_ms: u64,
-    /// Rendered to JSON lazily, in [`Self::to_json_line`] — the mixer thread
-    /// that builds a `FlushSummary` must not pay `render_events_json`'s
-    /// per-event `format!` itself (issue #4809 R-023).
-    events: Vec<PlayoutEvent>,
-}
 
 #[derive(Debug, Clone)]
 pub struct TtsMetrics {
@@ -1208,7 +1187,7 @@ impl TtsMixer {
         self.assistant_reference_disqualified_serial = None;
         self.metrics.mark_flush(requests, flushed);
         self.metrics.mark_pending(0);
-        let summary = FlushSummary::from_parts(requests, pending, flushed, events);
+        let summary = flush_summary(requests, pending, flushed, events);
         // Formatted and logged off this SCHED_FIFO thread by `fanin-ring-log`
         // (issue #4787): `prepare_period` runs this every period a FLUSH_SYNC
         // landed, and `info!` both allocates the line and writes journald's
@@ -1287,10 +1266,8 @@ pub fn spawn_tts_server(
 }
 
 pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
-    let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
-    let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
+    let (tx, rx, flush_tx, flush_rx, epoch) = flush::channels();
     let metrics = TtsMetrics::new(max_pending_frames);
-    let epoch = Arc::new(AtomicU64::new(0));
     (tx, rx, flush_tx, flush_rx, metrics, epoch)
 }
 
@@ -1319,99 +1296,35 @@ fn handle_tts_client(
         frame_deadline,
         |line| warn!("{line}"),
         || {},
-        |reader| queue_flush(reader, flush_tx, &sink.epoch),
+        |reader| flush::queue_flush(reader, flush_tx, &sink.epoch),
     );
 }
 
-fn queue_flush(
-    reader: &mut BufReader<UnixStream>,
-    flush_tx: &SyncSender<QueuedFlush>,
-    epoch: &AtomicU64,
-) -> bool {
-    let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-    if flush_tx
-        .send(QueuedFlush {
-            epoch: next_epoch,
-            ack: Some(ack_tx),
-        })
-        .is_err()
-    {
-        return false;
-    }
-    let response = match ack_rx.recv_timeout(Duration::from_secs(2)) {
-        Ok(summary) => summary.to_json_line(),
-        Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-    };
-    reader.get_mut().write_all(response.as_bytes()).is_ok()
-}
-
-impl FlushSummary {
-    /// Build the ack from the ledger's flush events. `flushed_frames` is the
-    /// mixer's cleared-queue count (kept for backward-compatible metrics); in
-    /// normal operation it equals the per-segment flushed total, asserted in
-    /// debug builds at the call site.
-    fn from_parts(
-        requests: usize,
-        pending_frames: u64,
-        flushed_frames: u64,
-        events: Vec<PlayoutEvent>,
-    ) -> Self {
-        let segments = events.len();
-        let max_audio_played_ms = events.iter().map(|e| e.audio_played_ms).max().unwrap_or(0);
-        Self {
-            requests,
-            pending_frames,
-            flushed_frames,
-            segments,
-            max_audio_played_ms,
-            events,
-        }
-    }
-
-    fn to_json_line(&self) -> String {
-        format!(
-            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":{},\"flushed_frames\":{},\"max_audio_played_ms\":{},\"events\":{}}}\n",
-            self.requests,
-            self.pending_frames,
-            self.segments,
-            self.flushed_frames,
-            self.max_audio_played_ms,
-            render_events_json(&self.events),
-        )
-    }
-}
-
-/// Render the ledger flush events as the ack's `events` JSON array. Field
-/// names mirror `jasper-outputd`'s ack (`segment`, `written_frames`,
-/// `drained_frames`) so barge-in consumes one shape regardless of which
-/// daemon owns playout; at fan-in's single mix-commit point written ==
-/// drained == played. `provider_item_id` is escaped (the upstream protocol
-/// already restricts it to graphic ASCII, but strip quote/backslash as
-/// defense in depth so a value can never break the JSON).
-fn render_events_json(events: &[PlayoutEvent]) -> String {
-    let mut json = String::from("[");
-    for (i, e) in events.iter().enumerate() {
-        if i > 0 {
-            json.push(',');
-        }
-        let provider_item_id = match &e.provider_item_id {
-            Some(id) => format!("\"{}\"", id.replace(['\\', '"'], "")),
-            None => "null".to_string(),
-        };
-        json.push_str(&format!(
-            "{{\"segment\":{},\"kind\":\"{}\",\"provider_item_id\":{},\"queued_frames\":{},\"written_frames\":{},\"drained_frames\":{},\"flushed_frames\":{}}}",
-            e.local_segment_id,
-            e.kind.as_str(),
-            provider_item_id,
-            e.queued_frames,
-            e.played_frames,
-            e.played_frames,
-            e.flushed_frames,
-        ));
-    }
-    json.push(']');
-    json
+fn flush_summary(
+    requests: usize,
+    pending_frames: u64,
+    flushed_frames: u64,
+    events: Vec<PlayoutEvent>,
+) -> FlushSummary {
+    let max_audio_played_ms = events.iter().map(|e| e.audio_played_ms).max().unwrap_or(0);
+    FlushSummary::new(
+        requests as u64,
+        pending_frames,
+        flushed_frames,
+        max_audio_played_ms,
+        events
+            .into_iter()
+            .map(|event| FlushEvent {
+                segment: event.local_segment_id,
+                kind: event.kind,
+                provider_item_id: event.provider_item_id,
+                queued_frames: event.queued_frames,
+                written_frames: event.played_frames,
+                drained_frames: event.played_frames,
+                flushed_frames: event.flushed_frames,
+            })
+            .collect(),
+    )
 }
 
 fn fetch_max(cell: &AtomicU64, value: u64) {
@@ -1532,7 +1445,8 @@ mod tests {
     use super::*;
 
     use std::cell::RefCell;
-    use std::io;
+    use std::io::{self, Write};
+    use std::sync::mpsc;
     use std::sync::Once;
     use std::thread;
 
@@ -2556,68 +2470,6 @@ mod tests {
         assert!(line.contains("\"max_audio_played_ms\":300"), "{line}");
         assert!(!line.contains("\"events\":[]"), "{line}");
         assert!(!line.contains("\"max_audio_played_ms\":0"), "{line}");
-    }
-
-    #[test]
-    fn flush_sync_ack_satisfies_shared_key_contract() {
-        // The FLUSH_SYNC ack key shape is a shared wire contract
-        // (jasper-tts-protocol) so fan-in's solo ack and outputd's
-        // bonded-member ack cannot drift apart under the one Python
-        // consumer. outputd has the mirror of this test.
-        use jasper_tts_protocol::{FLUSH_SYNC_ACK_EVENT_KEYS, FLUSH_SYNC_ACK_KEYS};
-
-        let (tx, rx, flush_tx, flush_rx, metrics, _epoch) = tts_channels(48_000);
-        let mut mixer = TtsMixer::new(TtsInput {
-            rx,
-            flush_rx,
-            metrics,
-            max_pending_frames: 48_000,
-            program_duck_db: -25.0,
-            cue_duck_db: -6.0,
-            assistant_loudness: AssistantLoudnessConfig::default(),
-            assistant_reference: None,
-            assistant_reference_tx: None,
-            log_tx: None,
-        });
-        // A flushed segment so the `events` array is non-empty and its keys
-        // are exercised too.
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::SegmentStart {
-                kind: SegmentKind::Assistant,
-                provider_item_id: Some("item-x".to_string()),
-                profile: None,
-            },
-        })
-        .unwrap();
-        tx.send(QueuedTtsCommand {
-            epoch: 0,
-            command: TtsCommand::AudioWide(vec![7 << 16; 4 * (CHANNELS as usize)]),
-        })
-        .unwrap();
-        mixer.drain_commands();
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        flush_tx
-            .send(QueuedFlush {
-                epoch: 1,
-                ack: Some(ack_tx),
-            })
-            .unwrap();
-        mixer.prepare_period();
-
-        let line = ack_rx.try_recv().expect("flush ack").to_json_line();
-        for key in FLUSH_SYNC_ACK_KEYS {
-            assert!(
-                line.contains(&format!("\"{key}\":")),
-                "fan-in ack missing top-level key {key}: {line}"
-            );
-        }
-        for key in FLUSH_SYNC_ACK_EVENT_KEYS {
-            assert!(
-                line.contains(&format!("\"{key}\":")),
-                "fan-in ack missing event key {key}: {line}"
-            );
-        }
     }
 
     #[test]
