@@ -173,21 +173,9 @@ def compile_tuning_graph(
         raise MeasurementGraphRefused("measurement_candidate_invalid", type(candidate).__name__)
     require_candidate_speaker_identity(candidate, profile.preset)
     candidate = played_candidate(candidate_on_declaration(candidate, profile.preset), cleared_layers)
-    devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
-
-    def compiled(candidate: MeasuredCrossoverCandidate, preference_filters: Sequence[FilterSpec] | None,
-                 output_trim_db: float, excited_target_ids: tuple[str, ...] = ()) -> str:
-        return compile_candidate_config(
-            candidate, playback_device=profile.playback_device,
-            preference_filters=preference_filters or (), output_trim_db=output_trim_db,
-            **devices.emit_kwargs(),
-            protection_sections_by_role=profile.protection_sections_by_role,
-            room_peqs=candidate_room_peqs(candidate),
-            excited_target_ids=excited_target_ids,
-        )
-
     if scope == "timing":
-        charged = compiled(candidate, preference_filters, output_trim_db)
+        charged = compile_tuning_graph(profile, candidate, preference_filters=preference_filters,
+                                       output_trim_db=output_trim_db)
         candidate = timing_candidate(candidate, headroom_db=graph_headroom_db(view_from_emitted_text(charged)))
         preference_filters, output_trim_db = (), 0.0
     # The shared reducer skips malformed records; refuse before it loses identity.
@@ -208,7 +196,15 @@ def compile_tuning_graph(
         if len(branches) != 2 or not all(branches) or set(branches.values()) != {0, 1}:
             raise MeasurementGraphRefused("measurement_branch_channels", branch_channels)
         excited_target_ids = tuple(branches)
-    candidate_text = compiled(candidate, preference_filters, output_trim_db, excited_target_ids)
+    devices = camilla_yaml.active_emit_devices(profile.playback_device, topology=profile.topology)
+    candidate_text = compile_candidate_config(
+        candidate, playback_device=profile.playback_device,
+        preference_filters=preference_filters or (), output_trim_db=output_trim_db,
+        **devices.emit_kwargs(),
+        protection_sections_by_role=profile.protection_sections_by_role,
+        room_peqs=candidate_room_peqs(candidate),
+        excited_target_ids=excited_target_ids,
+    )
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
         prefix, rest = candidate_text.split("\nmixers:\n", 1)

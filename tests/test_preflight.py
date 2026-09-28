@@ -569,20 +569,13 @@ def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(
     """Clearing the applied room layer moves the program charge by what the layer adds to it and
     gives back the layer's response, so the room-off graph plays at most that much louder across
     the band, read off the two compiled graphs (ADR-0385)."""
-    band_hz = (20.0, 1100.0)
-    boosts = [entry["freq"] for entry in room if entry["gain"] > 0.0]
+    band_hz, spend = (20.0, 1100.0), sum(entry["gain"] for entry in room if entry["gain"] > 0.0)
     candidate = replace(
         _room_candidate(tuning_profile), blend_correction=(), role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
-        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 120.0, "q": 2.0, "gain": boost}]}}
-        if boost else {},
-        room_correction=_room_correction(
-            sides={"mono": list(room)}, basis={**_room_correction()["basis"], "admitted_boosts_hz": boosts},
-            boost_db_total=sum(entry["gain"] for entry in room if entry["gain"] > 0.0),
-            level_cost_db=sum(entry["gain"] for entry in room if entry["gain"] > 0.0),
-        ) if room else {},
-    )
-    rise = rise_without_room_db(candidate_room_peqs(candidate), band_hz,
-                                charge_db=candidate_parts.room_layer_charge_db(candidate))
+        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 120.0, "q": 2.0, "gain": boost}]}} if boost else {},
+        room_correction=_room_correction(sides={"mono": list(room)}, boost_db_total=spend, level_cost_db=spend, basis={
+            **_room_correction()["basis"], "admitted_boosts_hz": [e["freq"] for e in room if e["gain"] > 0.0]}) if room else {})
+    rise = rise_without_room_db(candidate_room_peqs(candidate), band_hz, charge_db=candidate_parts.room_layer_charge_db(candidate))
     hz = np.geomspace(*band_hz, 4001)
     with_room, without = (np.abs(complex_channel_transfer(
         yaml.safe_load(compile_candidate_config(played, playback_device="null", room_peqs=candidate_room_peqs(played))),

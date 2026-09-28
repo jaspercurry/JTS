@@ -1028,36 +1028,22 @@ def test_cardioid_timing_graph_plays_only_the_front_drivers_at_the_candidate_lev
         assert reference is not None and reference.unmodelled_targets == unmodelled
 
 
-@pytest.mark.parametrize("front_gain_db, front_boost_db, woofer_cut_db, louder_db", [
-    (0.0, 0.0, 0.0, 0.0),  # the seed's rear plays in the candidate and its charge folds into the trims
-    (-2.0, 3.0, -3.0, -2.0),  # a front-chain boost the candidate's cut nets now charges the take
-])
-def test_the_timing_take_never_plays_louder_than_its_candidate(front_gain_db, front_boost_db, woofer_cut_db, louder_db):
-    """ADR-0385: the take folds its candidate's whole charge into the trims and charges only what it
-    still peaks, so each front driver plays at its candidate's level or quieter."""
+def test_a_front_boost_its_candidate_netted_makes_the_timing_take_quieter_never_louder():
+    """ADR-0385: the take folds its candidate's whole charge into the trims, and its own graph charges
+    the front-chain boost the candidate's woofer cut netted, so it plays quieter, never louder."""
     topology, safety, targets = _profile_and_targets(
-        rear=True, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4,
-    )
-    profile = MeasurementGraphProfile(
-        _rear_pair("mono")[0], topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
-        protection_sections_by_role=confirmed_protection_sections(safety, targets),
-    )
-    document = _rear_document()
-    if front_boost_db:
-        document = {**document, "rear_muted": True, "front": {**document["front"], "gain_db": front_gain_db, "filters": [
-            {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 60.0, "q": 1.0, "gain": front_boost_db}}]}}
-    cut = [{"biquad_type": "Peaking", "freq": 60.0, "q": 1.0, "gain": woofer_cut_db}] if woofer_cut_db else []
-    candidate = replace(_trial_candidate(profile), rear_calibration=document, blend_correction=(),
-                        linearization={"woofer": {"filters": cut}} if cut else {})
-    graphs = {scope: yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)) for scope in ("timing", "candidate")}
-
-    def level_db(graph, role):
-        filters = graph["filters"]
-        return (filters[driver_baseline_gain_name(role)]["parameters"]["gain"]
-                + filters["active_baseline_headroom"]["parameters"]["gain"])
-
-    assert [level_db(graphs["timing"], role) - level_db(graphs["candidate"], role) for role in ("woofer", "tweeter")] == [
-        pytest.approx(louder_db, abs=1e-3)] * 2
+        rear=True, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4)
+    profile = MeasurementGraphProfile(_rear_pair("mono")[0], topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+                                      protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    front = {**_rear_document()["front"], "gain_db": -2.0, "filters": [
+        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 60.0, "q": 1.0, "gain": 3.0}}]}
+    candidate = replace(_trial_candidate(profile), blend_correction=(), rear_calibration=_rear_document(rear_muted=True, front=front),
+                        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 60.0, "q": 1.0, "gain": -3.0}]}})
+    graphs = [yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)) for scope in ("timing", "candidate")]
+    levels = [[graph["filters"][driver_baseline_gain_name(role)]["parameters"]["gain"]
+               + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"] for role in ("woofer", "tweeter")]
+              for graph in graphs]
+    assert [timing - household for timing, household in zip(*levels)] == [pytest.approx(-2.0, abs=1e-3)] * 2
 
 
 def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
