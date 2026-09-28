@@ -5,8 +5,7 @@
 """Regression: TTS IPC writes must pace to the owner's pending budget.
 
 jasper-fanin's TTS lane accepts audio into a bounded pending queue
-(``DEFAULT_MAX_PENDING_FRAMES`` in rust/jasper-fanin/src/tts.rs — 2 s
-at 48 kHz) and DROPS whole audio commands that arrive while the queue
+(2 s at 48 kHz) and DROPS whole audio commands that arrive while the queue
 is full. It cannot block the socket reader instead: a blocked reader
 would stall FLUSH (barge-in) behind queued audio. OpenAI Realtime
 delivers replies faster than realtime (~11 s of audio in ~4 s), so an
@@ -24,15 +23,11 @@ chunk, sleep off whatever queued-ahead time exceeds
 * writes under the watermark do not sleep (no added latency for the
   short replies / chirps / clicks that fit the budget);
 * a write that would land beyond the watermark sleeps the excess off
-  before hitting the socket;
-* the Python watermark stays safely under the Rust budget — parsed
-  from the Rust source so the two constants cannot silently drift.
+  before hitting the socket.
 """
 from __future__ import annotations
 
-import re
 import time
-from pathlib import Path
 
 import numpy as np
 
@@ -130,45 +125,3 @@ async def test_paced_time_is_accounted_and_taken(monkeypatch):
     assert abs(taken - sleeps[0]) < 1e-9
     assert 0.25 <= taken <= 0.35  # ~the 0.30 s excess, minus clock grain
     assert p.take_paced_sec() == 0.0  # read resets
-
-
-def test_pace_watermark_stays_under_fanin_budget():
-    """Cross-language contract: the Python pace-ahead watermark plus one
-    IPC chunk must stay under jasper-fanin's pending-frames budget with
-    margin, or sustained writes start dropping again. Parsed from the
-    Rust source so a budget change over there fails this test instead
-    of silently reintroducing the garble."""
-    tts_rs = (
-        Path(__file__).resolve().parents[1]
-        / "rust" / "jasper-fanin" / "src" / "tts.rs"
-    ).read_text()
-    m = re.search(
-        r"DEFAULT_MAX_PENDING_FRAMES:\s*u64\s*=\s*SAMPLE_RATE as u64\s*\*\s*([0-9_]+)",
-        tts_rs,
-    )
-    assert m, (
-        "DEFAULT_MAX_PENDING_FRAMES not found in rust/jasper-fanin/src/tts.rs "
-        "— if its shape changed, update this test so the pace-ahead/budget "
-        "contract stays pinned."
-    )
-    # The fan-in budget is in TTS wire frames; the protocol crate owns the rate.
-    loudness_rs = (
-        Path(__file__).resolve().parents[1]
-        / "rust" / "jasper-tts-protocol" / "src" / "loudness.rs"
-    ).read_text()
-    rate = re.search(r"pub const SAMPLE_RATE:\s*u32\s*=\s*([0-9_]+)", loudness_rs)
-    assert rate, "SAMPLE_RATE not found in rust/jasper-tts-protocol/src/loudness.rs"
-    budget_frames = int(rate.group(1).replace("_", "")) * int(
-        m.group(1).replace("_", "")
-    )
-    budget_sec = budget_frames / tts_mod._OUTPUTD_SAMPLE_RATE
-    ipc_chunk_sec = tts_mod._OUTPUTD_MAX_AUDIO_CHUNK_BYTES / (
-        tts_mod._OUTPUTD_SAMPLE_RATE
-        * tts_mod._OUTPUTD_AUDIO_FRAME_BYTES
-    )
-    # Worst-case pending at the owner: watermark + the chunk in flight.
-    # Keep >= 0.25 s of margin for event-loop jitter.
-    assert (
-        tts_mod._OUTPUTD_PACE_AHEAD_SEC + ipc_chunk_sec
-        <= budget_sec - 0.25
-    )

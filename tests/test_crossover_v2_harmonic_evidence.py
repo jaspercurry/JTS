@@ -26,7 +26,9 @@ from typing import Any
 import numpy as np
 import pytest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
+from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
 from jasper.cli.round_views import main
+from jasper.active_speaker.candidate_parts import COMPOSITION_KIND
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
@@ -167,7 +169,7 @@ def _artifact(n_roles: int = 1) -> dict[str, Any]:
         "round_dir": "cap_TESTONLY",
         "orders": list(ORDERS),
         "program": {
-            "program_id": "b542773d8a8d",
+            "stimulus_id": "b542773d8a8d",
             "crossover_fc_hz": 1648.7,
             "state_capture_session_id": "wired-TESTONLY",
         },
@@ -347,7 +349,6 @@ def test_two_captures_are_two_blocks_because_captures_are_poses(tmp_path):
 def _state(**overrides: Any) -> dict[str, Any]:
     state: dict[str, Any] = {
         "gain_plan_db": {"woofer": -6.0, "tweeter": -31.2},
-        "candidate": {"program_id": "not-a-real-id"},
     }
     state.update(overrides)
     return state
@@ -444,17 +445,9 @@ def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
     assert excinfo.value.reason == he.STATE_UNREADABLE
 
 
-def test_a_state_without_a_program_id_refuses_before_any_audio_is_read():
-    """An unproved program cannot be read: every offset derives from its L."""
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(candidate={}), he_bands())
-    assert excinfo.value.reason == he.STATE_UNREADABLE
-    assert excinfo.value.evidence["missing"] == "candidate.program_id"
-
-
 def test_a_state_without_a_gain_plan_refuses_by_name():
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(gain_plan_db={"woofer": -6.0}), he_bands())
+        he.rebuild_measure_program(_state(gain_plan_db={"woofer": -6.0}), he_bands(), {"not-a-real-id"})
     assert excinfo.value.reason == he.STATE_UNREADABLE
 
 
@@ -463,17 +456,15 @@ def he_bands() -> dict[str, tuple[float, float]]:
 
 
 def test_a_program_that_cannot_prove_itself_is_refused_not_read():
-    """The whole point of proving the rebuild instead of asserting it.
-
-    Slow-ish (it walks the solve grid twice before giving up), and that is the
-    behaviour: the refusal is what a wrong band pair produces, rather than a
-    reading taken through the wrong sweep L.
+    """The whole point of proving the rebuild instead of asserting it: the
+    refusal is what a wrong band pair produces, rather than a reading taken
+    through the wrong sweep L.
     """
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(), he_bands())
+        he.rebuild_measure_program(_state(), he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["program_id"] == "not-a-real-i"[:12]
+    assert excinfo.value.evidence["stimulus_ids"] == ["not-a-real-i"]
 
 
 def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_path):
@@ -484,38 +475,36 @@ def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_p
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
         he.read_round_harmonics(
-            tmp_path, tmp_path / "dumps", _real_state(), he_bands(),
+            tmp_path, tmp_path / "dumps", _state(), he_bands(),
             applied_profile_path=_write_applied_profile(tmp_path),
         )
     assert excinfo.value.reason == he.NO_ADMISSIBLE_CAPTURES
 
 
-def _real_state() -> dict[str, Any]:
-    state = _state()
-    program = build_measure_program(
+def _program_at(downstream_db: float):
+    """A real MEASURE program composed at one session volume."""
+    return build_measure_program(
         {"woofer": -6.0, "tweeter": -31.2},
         (
             RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
             RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
         ),
-        downstream_gain_db=-20.0,
+        downstream_gain_db=downstream_db,
         leading_pilot_gains_db=(-6.0 - PILOT_LEVEL_DELTA_DB, -6.0),
         leading_pilot_role="woofer",
         courtesy_prelude=courtesy_prelude_for_phase("measure"),
     )
-    state["candidate"] = {"program_id": program.program_id}
-    return state
 
 
-def test_the_solve_recovers_the_session_volume_the_round_never_banked():
-    """The one parameter no artifact carries, proved rather than asserted."""
-    program, downstream, prelude = he.rebuild_measure_program(
-        _real_state(), he_bands()
-    )
+@pytest.mark.parametrize("volume", [-20.0, -24.7, -43.0, -59.9])
+def test_a_program_at_any_fader_is_proved_by_the_id_its_takes_recorded(volume):
+    """The id leaves the fader out (#5012), so the proof needs no recorded volume."""
+    recorded = _program_at(volume).stimulus_id
 
-    assert downstream == pytest.approx(-20.0)
+    program, prelude = he.rebuild_measure_program(_state(), he_bands(), {recorded})
+
+    assert program.stimulus_id == recorded
     assert prelude is False
-    assert program.program_id == _real_state()["candidate"]["program_id"]
 
 
 # --------------------------------------------------------------------------- #
@@ -575,15 +564,11 @@ def test_a_banked_duration_fit_reproduces_without_a_search():
     assert durations is not None
     assert durations["woofer"] <= 3.5  # confidence check: the fit actually bit
 
-    state = _state(
-        candidate={"program_id": program.program_id},
-        measure_sweep_durations_s=durations,
-    )
+    state = _state(measure_sweep_durations_s=durations)
 
-    rebuilt, downstream, prelude = he.rebuild_measure_program(state, he_bands())
+    rebuilt, prelude = he.rebuild_measure_program(state, he_bands(), {program.stimulus_id})
 
-    assert rebuilt.program_id == program.program_id
-    assert downstream == pytest.approx(-20.0)
+    assert rebuilt.stimulus_id == program.stimulus_id
     assert prelude is False
 
 
@@ -594,22 +579,14 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     replay composes at the nominal length and cannot match.
     """
     program = _fitted_program_at(-20.0)
-    state = _state(candidate={"program_id": program.program_id})
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, he_bands())
+        he.rebuild_measure_program(_state(), he_bands(), {program.stimulus_id})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
     assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
-    note = excinfo.value.evidence["note"]
-    assert "FITTED" in note
-    assert "#2921" in note
-    assert "did not bank the realized durations (#2923)" in note
-    # The fix narrows cause (2); it does not remove the other three.
-    assert "not on the solve grid" in note
-    assert "driver bands supplied are wrong" in note
-    assert "does not describe a MEASURE round" in note
+    assert excinfo.value.evidence["causes"] == ["sweep_durations_unbanked", "bands_wrong", "not_a_measure_round"]
 
 
 @pytest.mark.parametrize("raw", [
@@ -704,15 +681,12 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
     )
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, he_bands())
+        he.rebuild_measure_program(state, he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
     assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
-    note = excinfo.value.evidence["note"]
-    assert "did not bank" not in note
-    assert "carries a measure_sweep_durations_s entry" in note
-    assert "TREATED THE SAME AS ABSENT" in note
+    assert excinfo.value.evidence["causes"][0] == "sweep_durations_unusable"
 
 
 # --------------------------------------------------------------------------- #
@@ -746,26 +720,20 @@ def test_a_datasheet_wide_declared_band_reproduces_a_fitted_round():
     durations = priors.measure_sweep_durations_s(program)
     assert durations is not None
 
-    state = _state(
-        candidate={"program_id": program.program_id},
-        measure_sweep_durations_s=durations,
-    )
+    state = _state(measure_sweep_durations_s=durations)
     accepted = he._banked_sweep_durations_s(state, _DATASHEET_WIDE_BANDS)
     assert accepted is not None
     assert accepted == pytest.approx(durations)
 
-    rebuilt, downstream, prelude = he.rebuild_measure_program(
-        state, _DATASHEET_WIDE_BANDS
-    )
+    rebuilt, prelude = he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {program.stimulus_id})
 
-    assert rebuilt.program_id == program.program_id
-    assert downstream == pytest.approx(-20.0)
+    assert rebuilt.stimulus_id == program.stimulus_id
     assert prelude is False
 
 
 def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
     """Even when the round refuses for an UNRELATED reason (here: a
-    ``program_id`` that simply does not match anything, standing in for a
+    ``stimulus_id`` that simply does not match anything, standing in for a
     wrong gain plan or wrong bands), a usable ≥24 kHz bank must still read
     as banked AND usable in the evidence — not as "did not bank" merely
     because its band happens to need the composer's clamp.
@@ -775,18 +743,15 @@ def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
     program = _fitted_program_at(-20.0, bands=_DATASHEET_WIDE_BANDS)
     durations = priors.measure_sweep_durations_s(program)
     assert durations is not None
-    state = _state(
-        candidate={"program_id": "not-a-real-id"},
-        measure_sweep_durations_s=durations,
-    )
+    state = _state(measure_sweep_durations_s=durations)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS)
+        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
     assert excinfo.value.evidence["measure_sweep_durations_usable"] is True
-    assert "did not bank" not in excinfo.value.evidence["note"]
+    assert excinfo.value.evidence["causes"][0] == "banked_sweep_durations_wrong"
 
 
 def test_a_sidecar_carrying_no_gate_field_is_refused_rather_than_read_ungated():
@@ -993,7 +958,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     """Both directions, because a derivation that answered ``full_range`` for
     every round would break every 2-way one — and the 1-way arm is then driven
     all the way through the rebuild, which proves itself against the banked
-    ``program_id`` and so could only refuse a two-role composition."""
+    ``stimulus_id`` and so could only refuse a two-role composition."""
     from jasper.audio_measurement.program import (
         FrequencyBand,
         RoleBand,
@@ -1039,16 +1004,12 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
         leading_pilot_role="full_range",
         courtesy_prelude=courtesy_prelude_for_phase("measure"),
     )
-    state = {
-        "gain_plan_db": {"full_range": -11.0},
-        "candidate": {"program_id": program.program_id},
-    }
+    state = {"gain_plan_db": {"full_range": -11.0}}
     bands = he.round_bands_hz(state, overrides)
 
     assert bands == {"full_range": band}
-    rebuilt, downstream, _prelude = he.rebuild_measure_program(state, bands)
-    assert rebuilt.program_id == program.program_id
-    assert downstream == pytest.approx(-20.0)
+    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.stimulus_id})
+    assert rebuilt.stimulus_id == program.stimulus_id
 
     # A 1-way round measured on a non-default band gets an operator remedy,
     # same as the pair's --woofer-band / --tweeter-band.
@@ -1065,91 +1026,6 @@ def test_the_orders_the_product_publishes_are_not_the_kernels_ceiling():
 
     assert he.HARMONIC_ORDERS == (2, 3)
     assert he.HARMONIC_ORDERS is not deconv.DEFAULT_HARMONIC_ORDERS
-
-
-def _program_at(downstream_db: float):
-    """A real MEASURE program composed at one session volume."""
-    from jasper.active_speaker.crossover_v2.programs import (
-        PILOT_LEVEL_DELTA_DB,
-        courtesy_prelude_for_phase,
-    )
-    from jasper.audio_measurement.program import (
-        FrequencyBand,
-        RoleBand,
-        build_measure_program,
-    )
-
-    return build_measure_program(
-        {"woofer": -6.0, "tweeter": -31.2},
-        (
-            RoleBand("woofer", 0, FrequencyBand(150.0, 4000.0)),
-            RoleBand("tweeter", 1, FrequencyBand(1600.0, 20000.0)),
-        ),
-        downstream_gain_db=downstream_db,
-        leading_pilot_gains_db=(-6.0 - PILOT_LEVEL_DELTA_DB, -6.0),
-        leading_pilot_role="woofer",
-        courtesy_prelude=courtesy_prelude_for_phase("measure"),
-    )
-
-
-@pytest.mark.parametrize("volume", [-20.0, -20.5, -40.0])
-def test_a_session_volume_on_the_solve_grid_is_recovered(volume):
-    """The half-dB reference volumes the grid does cover, solved by hash."""
-    state = _state(candidate={"program_id": _program_at(volume).program_id})
-
-    _program, solved, prelude = he.rebuild_measure_program(state, he_bands())
-
-    assert solved == pytest.approx(volume)
-    assert prelude is False
-
-
-@pytest.mark.parametrize("volume", [-24.7, -43.0, -59.9])
-def test_a_session_volume_off_the_solve_grid_refuses_and_names_the_real_cause(volume):
-    """The claim that used to sit on the grid was false, and the note misled.
-
-    `session_measurement_volume_db` returns `min(reference, loudest_cap)` as an
-    UNQUANTIZED float, and its reference half admits any value above the -60 dB
-    floor — so the true domain is (-60, 0] with no step, and a half-dB grid from
-    -40 cannot cover it. Refusing is the CORRECT behaviour; what was wrong was
-    the docstring saying the grid covered everything, and a refusal note that
-    offered two causes ("bands wrong", "not a MEASURE round") when neither is
-    what an operator on a real box has hit.
-
-    -43.0 is in here deliberately: it is ON the half-dB step but BELOW the
-    grid's -40 floor, so it isolates the range half of the claim from the
-    quantization half.
-    """
-    state = _state(candidate={"program_id": _program_at(volume).program_id})
-
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, he_bands())
-
-    assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    note = excinfo.value.evidence["note"]
-    assert "not on the solve grid" in note
-    assert "unquantized float" in note
-    assert "-60 dB floor" in note
-    # The two causes that were the ONLY ones offered before are still named,
-    # because they are real — they are just no longer the whole list.
-    assert "driver bands supplied are wrong" in note
-    assert "does not describe a MEASURE round" in note
-
-
-def test_the_solve_grid_is_half_db_steps_from_minus_forty_to_zero():
-    """The grid's own shape, asserted apart from any claim about coverage."""
-    assert he._DOWNSTREAM_GRID_DB[0] == -40.0
-    assert he._DOWNSTREAM_GRID_DB[-1] == 0.0
-    assert all(value <= 0.0 for value in he._DOWNSTREAM_GRID_DB)
-    assert len(he._DOWNSTREAM_GRID_DB) == 81
-    # The composer's floor is -60, not -40, so the grid is a SUBSET of what the
-    # flow can produce. Pinned so the docstring's honesty cannot quietly rot
-    # back into "covers every value".
-    from jasper.active_speaker.seat_level_reference import (
-        seat_level_reference_volume_db,
-    )
-
-    assert seat_level_reference_volume_db is not None
-    assert he._DOWNSTREAM_GRID_DB[0] > -60.0
 
 
 def test_reading_a_capture_ring_never_raises_on_a_hand_edited_sidecar(tmp_path):
@@ -1255,9 +1131,10 @@ def test_the_sign_convention_comes_from_the_mic_registry(calibration_id):
     )
 
 
-def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="take-a"):
+def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="take-a",
+                            volume_db=SESSION_VOLUME_DB, scale=0.1):
     wav = ring / f"wav/{name}.wav"
-    samples = np.pad(render_program_pcm(program).sum(axis=1).astype(float) * 0.1, (24000, 24000))
+    samples = np.pad(render_program_pcm(program).sum(axis=1).astype(float) * scale, (24000, 24000))
     with wave.open(str(wav), "wb") as writer:
         writer.setparams((1, 4, 48000, len(samples), "NONE", "not compressed"))
         writer.writeframes((samples * 2**31).astype("<i4").tobytes())
@@ -1273,9 +1150,11 @@ def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="ta
         "wav_sha256": sha256_file(wav), "diagnostic": diagnostic,
         "jts_session_identity": {"session_id": "c2a1812b849e",
                                  "aliases": {"capture_session_id": state["session_id"]}},
-        "provenance": {"stimulus": {"program_id": program.program_id,
-                                     "wav_sha256": sha256_file(stimulus)}},
+        "provenance": {"stimulus": {"stimulus_id": program.stimulus_id,
+                                    "wav_sha256": sha256_file(stimulus)}},
     }
+    if volume_db is not None:
+        document["provenance"]["session_volume_db"] = volume_db
     if any(":" in role for role in state["gain_plan_db"]):
         document.update(phase="cloud_verify", graph_scope="candidate_branches", program=program.to_dict())
     sidecar.write_text(json.dumps(document))
@@ -1283,29 +1162,28 @@ def _write_harmonic_capture(ring, tmp_path, name, program, state, *, take_id="ta
 
 
 @pytest.fixture
-def harmonic_capture(tmp_path, monkeypatch, request):
+def harmonic_capture(tmp_path, request):
     bundle = _bundle(tmp_path)
     round_dir = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
     bands = he_bands()
     role_bands = tuple(RoleBand(role, i, FrequencyBand(*band)) for i, (role, band) in enumerate(bands.items()))
     branch_pair = getattr(request, "param", None)
 
-    def compose(gain, pair=branch_pair):
+    def compose(gain, pair=branch_pair, volume_db=SESSION_VOLUME_DB):
         gains = {"woofer": gain, "tweeter": gain - 10.0}
         program = build_measure_program(
-            gains, role_bands, downstream_gain_db=-20.0,
+            gains, role_bands, downstream_gain_db=volume_db,
             leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role="woofer",
             courtesy_prelude=False,
         )
         if pair:
             targets = branch_target_ids_for(pair, role_bands)
             program = build_branch_program(build_verify_program(
-                1800.0, gain_db=gain, downstream_gain_db=-20.0,
+                1800.0, gain_db=gain, downstream_gain_db=volume_db,
                 sweep_band_hz=(150.0, 4000.0), leading_pilot_gains_db=pilot_gains(gain),
             ), {target: channel for channel, target in enumerate(targets)})
             gains = dict.fromkeys(targets, gain)
-        return program, {"session_id": round_dir.name, "gain_plan_db": gains,
-                         "candidate": {"program_id": program.program_id}}
+        return program, {"session_id": round_dir.name, "gain_plan_db": gains}
 
     program, state = compose(-16.0)
     ring = tmp_path / "ring"
@@ -1315,7 +1193,6 @@ def harmonic_capture(tmp_path, monkeypatch, request):
         ring, tmp_path, "1_measure_a", program, state,
     )
     profile = _write_applied_profile(tmp_path, fc_hz=1800.0)
-    monkeypatch.setattr(he, "_DOWNSTREAM_GRID_DB", (-20.0,))
 
     def read(supplied_state=state, *, scope="c2a1812b849e", output_dir=round_dir):
         return he.read_round_harmonics(output_dir, ring, supplied_state, bands,
@@ -1335,7 +1212,7 @@ def bank_measure_capture(harmonic_capture, tmp_path: Path) -> Path:
     captured = session / "summed/measure.wav"
     captured.parent.mkdir()
     shutil.copyfile(wav, captured)
-    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+    document.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id,
                     captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
     (positions / "measure.json").write_text(json.dumps(document))
     program, state = compose(-16.0)
@@ -1369,7 +1246,7 @@ def test_harmonics_reads_each_capture_with_its_own_program(harmonic_capture, tmp
 
 
 @pytest.mark.parametrize("fault,reason", [
-    ("program", "stimulus_program_mismatch"),
+    ("program", None),
     ("state", "capture_session_mismatch"),
     ("capture", "capture_session_mismatch"),
     ("stimulus", "stimulus_wav_mismatch"),
@@ -1378,7 +1255,7 @@ def test_harmonic_drive_requires_this_takes_program_and_source(harmonic_capture,
     read, compose, sidecar, wav, document = harmonic_capture
     original = read()
     assert original["captures"]["n_read"] == 1
-    assert original["captures"]["read"][0]["identity"]["program_id_status"] == "matched"
+    assert original["captures"]["read"][0]["identity"]["stimulus_id_status"] == "matched"
     assert original["captures"]["read"][0]["fidelity_fields_compared"] == 5
     changed_program, state = compose(-12.0 if fault == "program" else -16.0)
     if fault == "program":
@@ -1399,8 +1276,12 @@ def test_harmonic_drive_requires_this_takes_program_and_source(harmonic_capture,
     sidecar.write_text(json.dumps(document))
     with pytest.raises(he.HarmonicEvidenceRefused) as refused:
         read(state)
-    assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
-    assert refused.value.evidence["refused"][0]["reason"] == reason
+    if reason is None:
+        # A gain plan that cannot rebuild the stimulus the take recorded proves nothing.
+        assert refused.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    else:
+        assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
+        assert refused.value.evidence["refused"][0]["reason"] == reason
 
 
 @pytest.mark.parametrize("fault,reason", [("changed", "capture_wav_mismatch"), ("missing", "capture_wav_missing")])
@@ -1420,7 +1301,167 @@ def test_harmonics_keeps_good_takes_and_names_lost_or_changed_wavs(harmonic_capt
     assert all(block["rows"] for block in artifact["roles"])
 
 
-def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic_capture):
+def test_each_take_reads_its_drive_at_its_own_recorded_session_volume(harmonic_capture, tmp_path):
+    """A quieter take first in the ring (a ladder's lowest rung, an earlier
+    re-measure) neither sinks the round nor lends the others its fader."""
+    read, compose, sidecar, _, _ = harmonic_capture
+    quiet_db = SESSION_VOLUME_DB - 5.0
+    quiet, state = compose(-16.0, volume_db=quiet_db)
+    _write_harmonic_capture(sidecar.parent.parent, tmp_path, "0_measure_quiet", quiet, state,
+                            take_id="take-quiet", volume_db=quiet_db, scale=0.05)
+
+    artifact = read()
+
+    volumes = {take["wav_sha256_12"]: take["program"]["session_volume_db"] for take in artifact["captures"]["read"]}
+    assert sorted(volumes.values()) == [quiet_db, SESSION_VOLUME_DB]
+    for block in artifact["roles"]:
+        drive = block["drive"]
+        assert drive["effective_peak_dbfs"] == pytest.approx(
+            drive["stimulus_peak_dbfs"] + volumes[block["wav_sha256_12"]])
+
+
+def test_a_ring_that_recorded_no_session_volume_reads_its_effective_peak_as_unknown(harmonic_capture):
+    read, _, sidecar, _, document = harmonic_capture
+    del document["provenance"]["session_volume_db"]
+    sidecar.write_text(json.dumps(document))
+    unrecorded = read()
+    assert unrecorded["captures"]["read"][0]["program"]["session_volume_db"] is None
+    for block in unrecorded["roles"]:
+        assert block["drive"]["status"] == "unknown"
+        assert block["drive"]["stimulus_peak_dbfs"] is not None
+        assert block["drive"]["effective_peak_dbfs"] is None
+        assert block["drive"]["reason"] == "session_volume_unrecorded"
+
+
+@pytest.mark.parametrize("readback_offset_db,status,readback", [
+    (None, "recorded_session_volume", "unrecorded"),
+    (0.0, "recorded_session_volume", "matched"),
+    (6.0, "unknown", "mismatched"),
+])
+def test_a_measure_takes_drive_rests_on_its_recorded_volume_checked_by_the_readback(
+        harmonic_capture, readback_offset_db, status, readback):
+    """The id does not prove a recorded session volume (#5012): the drive says it is
+    recorded, and a fader readback that disagrees withholds it."""
+    read, _, sidecar, _, document = harmonic_capture
+    if readback_offset_db is not None:
+        document["provenance"]["main_volume_db"] = SESSION_VOLUME_DB + readback_offset_db
+    sidecar.write_text(json.dumps(document))
+
+    for block in read()["roles"]:
+        drive = block["drive"]
+        assert (drive["status"], drive["session_volume_readback"]) == (status, readback)
+        assert (drive["effective_peak_dbfs"] is None) is (status == "unknown")
+
+
+def test_a_round_whose_takes_banked_a_superseded_program_schema_names_it(harmonic_capture):
+    read, compose, sidecar, _, document = harmonic_capture
+    program, _ = compose(-16.0)
+    document["program"] = {**program.to_dict(), "schema_version": 1}
+    document["provenance"]["stimulus"]["stimulus_id"] = "0" * 64
+    sidecar.write_text(json.dumps(document))
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+        read()
+
+    assert refused.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
+    assert refused.value.evidence["causes"] == ["program_schema_superseded"]
+    assert refused.value.evidence["recorded_program_schema_versions"] == [1]
+
+
+def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmonic_capture):
+    read, _, sidecar, _, document = harmonic_capture
+    del document["provenance"]["stimulus"]
+    sidecar.write_text(json.dumps(document))
+
+    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+        read()
+
+    assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
+    assert [take["reason"] for take in refused.value.evidence["refused"]] == ["stimulus_id_unrecorded"]
+
+
+@pytest.mark.parametrize("old,new_key_takes,readable", [
+    ("measure", (), []),
+    ("measure", ("take-b", "take-c"), ["take-b", "take-c"]),
+    ("branch", (), ["take-a"]),
+])
+def test_a_take_banked_under_the_old_key_is_refused_as_superseded(
+        harmonic_capture, tmp_path, old, new_key_takes, readable):
+    """Whatever the other takes recorded: the old key has no alias (#2902)."""
+    read, compose, sidecar, _, document = harmonic_capture
+    ring = sidecar.parent.parent
+    program, state = compose(-16.0)
+    for index, take_id in enumerate(new_key_takes):
+        _write_harmonic_capture(ring, tmp_path, f"2_measure_{index}", program, state,
+                                take_id=take_id, scale=0.09 - 0.01 * index)
+    if old == "branch":
+        branch, branch_state = compose(-14.0, "front_rear")
+        sidecar, _, document = _write_harmonic_capture(ring, tmp_path, "3_branch", branch, branch_state,
+                                                       take_id="take-branch")
+        document["program"]["program_id"] = document["program"].pop("stimulus_id")
+    stimulus = document["provenance"]["stimulus"]
+    stimulus["program_id"] = stimulus.pop("stimulus_id")
+    document["program"] = {**document.get("program", {}), "schema_version": 2}
+    sidecar.write_text(json.dumps(document))
+
+    if readable:
+        captures = read()["captures"]
+        refused = captures["refused"]
+        assert sorted(take["take_id"] for take in captures["read"]) == readable
+    else:
+        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+            read()
+        refused = excinfo.value.evidence["refused"]
+    assert [(take["take_id"], take["reason"]) for take in refused] == [
+        (document["take_id"], "program_schema_superseded")]
+
+
+def test_a_stray_stimulus_id_is_refused_on_its_own_take(harmonic_capture, tmp_path):
+    """One take of another stimulus proves nothing and costs the others nothing."""
+    read, compose, sidecar, _, _ = harmonic_capture
+    ring = sidecar.parent.parent
+    program, state = compose(-16.0)
+    for name, scale in (("b", 0.09), ("c", 0.08), ("d", 0.07)):
+        _write_harmonic_capture(ring, tmp_path, f"2_measure_{name}", program, state, take_id=f"take-{name}", scale=scale)
+    stray, _ = compose(-14.0)
+    _write_harmonic_capture(ring, tmp_path, "3_measure_stray", stray, state, take_id="take-stray")
+
+    captures = read()["captures"]
+
+    assert sorted(take["take_id"] for take in captures["read"]) == ["take-a", "take-b", "take-c", "take-d"]
+    assert [(take["take_id"], take["reason"]) for take in captures["refused"]] == [
+        ("take-stray", "stimulus_program_mismatch")]
+
+
+def test_a_round_whose_candidate_carries_a_label_reads_its_measure_takes(harmonic_capture):
+    """candidate_parts labels every candidate it builds; the takes' recorded id proves the program."""
+    read, compose, _, _, _ = harmonic_capture
+    _, state = compose(-16.0)
+    state["candidate"] = {"program_id": COMPOSITION_KIND}
+
+    artifact = read(state)
+
+    assert [take["take_id"] for take in artifact["captures"]["read"]] == ["take-a"]
+
+
+def test_an_all_legacy_ring_still_reads_its_branch_takes(harmonic_capture, tmp_path):
+    read, compose, sidecar, _, document = harmonic_capture
+    document.pop("provenance")
+    sidecar.write_text(json.dumps(document))
+    branch, state = compose(-14.0, "front_rear")
+    _write_harmonic_capture(sidecar.parent.parent, tmp_path, "2_branch_b", branch, state,
+                            take_id="take-b", volume_db=None)
+
+    artifact = read()
+
+    assert [take["take_id"] for take in artifact["captures"]["read"]] == ["take-b"]
+    assert [(take["take_id"], take["reason"]) for take in artifact["captures"]["refused"]] == [
+        ("take-a", "stimulus_id_unrecorded")]
+
+
+@pytest.mark.parametrize("harmonic_capture", ["front_rear"], indirect=True)
+def test_a_branch_take_without_provenance_keeps_ratios_without_claiming_its_drive(harmonic_capture):
+    """A branch take records its own program, so its ratios survive a missing provenance."""
     read, _, sidecar, _, document = harmonic_capture
     bound = read()
     document.pop("provenance")
@@ -1428,7 +1469,7 @@ def test_legacy_harmonics_retains_ratios_without_claiming_unbound_drive(harmonic
     sidecar.write_text(json.dumps(document))
     legacy = read()
     assert legacy["captures"]["n_read"] == 1
-    assert legacy["program"]["solved_downstream_gain_db"] is None
+    assert legacy["program"]["session_volume_db"] is None
     for original, historical in zip(bound["roles"], legacy["roles"]):
         assert historical["rows"] == original["rows"]
         assert historical["drive"]["status"] == "unknown"
@@ -1495,7 +1536,7 @@ def test_harmonics_output_directory_name_is_not_capture_identity(harmonic_captur
     output.write_text(json.dumps(original))
     assert read(output_dir=renamed) == {**original, "round_dir": renamed.name}
     assert original["captures"]["n_read"] == 1
-    assert all(role["drive"]["status"] == "program_declared" for role in original["roles"])
+    assert all(role["drive"]["status"] == "recorded_session_volume" for role in original["roles"])
     assert sha256_file(wav) == document["wav_sha256"]
     assert json.loads(sidecar.read_text()) == document
     assert json.loads(output.read_text()) == original
@@ -1520,7 +1561,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     captured = session / "summed" / "measure.wav"
     captured.parent.mkdir()
     shutil.copyfile(wav, captured)
-    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+    document.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id,
                     captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
     (positions / "measure.json").write_text(json.dumps(document))
     program, state = compose(-16.0)
@@ -1530,7 +1571,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     feature_program = next(feature.glob("evidence/v1/artifacts/**/lateral_program.wav"))
     shutil.copyfile(feature_program, artifacts / "lateral_program.wav")
     feature_doc = json.loads(next((ring / "sidecar").glob("*.json")).read_text())
-    feature_doc.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id, take_id="lateral",
+    feature_doc.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id, take_id="lateral",
                        captured_at=1788135641.4, wav_path="summed/lateral.wav", position_deg=15)
     (positions / "lateral.json").write_text(json.dumps(feature_doc))
     shutil.copyfile(next((ring / "wav").glob("*.wav")), captured.with_name("lateral.wav"))

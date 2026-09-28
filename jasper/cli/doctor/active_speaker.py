@@ -227,6 +227,7 @@ def check_sound_profile() -> CheckResult:
     from jasper.sound.camilla_yaml import is_jts_generated_config
     from jasper.sound.profile import (
         SoundProfile,
+        SoundProfileRefused,
         build_sound_filters,
         estimate_headroom_db,
     )
@@ -241,14 +242,13 @@ def check_sound_profile() -> CheckResult:
             reason=REASON_SOUND_PROFILE_DEFAULT,
         )
     try:
-        raw = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as e:
+        profile = SoundProfile.from_mapping(json.loads(path.read_text()))
+    except (OSError, json.JSONDecodeError, SoundProfileRefused) as e:
         return CheckResult(
             "sound profile", "fail", f"could not read {path}: {e}",
             reason=REASON_SOUND_PROFILE_UNREADABLE,
         )
 
-    profile = SoundProfile.from_mapping(raw)
     filter_count = len(build_sound_filters(profile))
     headroom_db = estimate_headroom_db(profile)
     settings = load_sound_settings()
@@ -290,8 +290,16 @@ def check_bass_extension_profile() -> CheckResult:
     from jasper.active_speaker.baseline_profile import (
         applied_bass_extension,
     )
-    from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-    bass = applied_bass_extension()
+    from jasper.bass_extension.dynamic import DynamicBassDescriptorError, dynamic_bass_gain_reserve_db
+    try:
+        bass = applied_bass_extension()
+    except DynamicBassDescriptorError as exc:
+        return CheckResult(
+            "bass extension profile", "fail",
+            f"saved bass section refused: {exc}. `jasper-crossover-prescriber status` lists the banked tunes "
+            "to `jasper-round apply` (ADR-0381)",
+            reason=exc.reason,
+        )
     if not bass:
         return CheckResult(
             "bass extension profile", "ok", "bass extension: not commissioned",

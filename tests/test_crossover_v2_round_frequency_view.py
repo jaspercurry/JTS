@@ -22,6 +22,7 @@ import pytest
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, analysis_provenance
 from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
@@ -30,8 +31,11 @@ from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle, analyzed_measurements
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
-from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
+from jasper.audio_measurement.program_analysis import MeasurementGeometry, analyze_program_capture
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, decode_wav_to_mono
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
@@ -65,7 +69,7 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
         "entry_baseline": {
             "available": True,
             "captured_at": "2026-08-29T12:00:00Z",
-            "program_id": "summed_sweep",
+            "stimulus_id": "summed_sweep",
             "reference_mark": "design_axis",
             "graph_fingerprint": "before",
             "freqs_hz": [100.0, 1000.0, 10000.0],
@@ -78,7 +82,7 @@ def _packet(run_id: str, *, offset: float = 0.0) -> dict:
 def test_frequency_view_exposes_the_stored_entry_baseline():
     view = neutral_view(frequency_run(_packet("aaa")))
 
-    assert view["schema"] == "jts_frequency_view/1"
+    assert view["schema"] == "jts_frequency_view/2"
     run = view["runs"][0]
     assert (run["slot"], run["id"], run["measurement_family"]) == (
         "a", "aaa", "entry_baseline",
@@ -299,7 +303,7 @@ def _bank_one_round(root: Path, session_id: str) -> Path:
     positions.mkdir(parents=True)
     (positions / "t1.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND,
-        "session_id": session_id,
+        "run_id": session_id,
         "take_id": "t1",
         "phase": "measure",
         "position_deg": 0,
@@ -682,7 +686,19 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, **fields):
+    def host_analysis(answer, _record):
+        """The analysis the capture host banks on a take (ADR-0383), read ungated as a seat take is."""
+        if answer.program is None:
+            return {}
+        played = ExcitationProgram.from_dict(answer.program)
+        calibration = resolve_setup_calibration(answer.setup, device=answer.device, root=calibration_root)
+        curve = calibration.curve if calibration is not None else None
+        geometry = MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT)
+        analysis = analyze_program_capture(played, *decode_wav_to_mono(answer.wav), calibration=curve,
+                                           geometry=geometry, capture_report=answer.capture_integrity)
+        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played)}
+
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
         samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         samples *= 10 ** (capture_gain_db / 20)
@@ -708,7 +724,8 @@ def summed_capture_bundle(tmp_path, request):
             WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
             bundle, recorder_factory=lambda *_: Recorder(), setup_reference=lambda: setup,
         )
-        records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured)
+        records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured,
+                                      enrich=host_analysis if analyzed else None)
         await configured.around(play, program=program)
         answer = configured.take_answer()
         if not retain_program:
@@ -727,7 +744,7 @@ def summed_capture_bundle(tmp_path, request):
 
 @pytest.mark.parametrize("summed_capture_bundle,reference_db", [(20000, None), (200, -24.0)],
                          indirect=["summed_capture_bundle"])
-def test_frequency_replays_recorded_program_and_calibration_without_changing_level(
+def test_frequency_reads_recorded_program_and_calibration_without_changing_level(
     summed_capture_bundle, reference_db, tmp_path, capsys,
 ):
     bundle, calibration_root, program, bank = summed_capture_bundle
@@ -741,10 +758,8 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     ])
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
-    assert ExcitationProgram.from_dict(record["program"]).program_id == program.program_id
+    assert ExcitationProgram.from_dict(record["program"]).stimulus_id == program.stimulus_id
     destination = tmp_path / "frequency.json"
-    assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == EXIT_UNREADABLE
-    assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
     reference_args = [] if reference_db is None else ["--reference-db", str(reference_db)]
     if reference_db is not None:
         assert round_views_main([
@@ -841,7 +856,7 @@ def _refuse_decoding(_wav):
 
 
 def test_a_seat_take_banks_the_curves_a_decode_of_its_recording_reads(tmp_path, monkeypatch):
-    """ADR-0373: the capture host banks a room take's curves as a decode of its
+    """The capture host banks a room take's curves, ungated, as a decode of its
     recording reads them, and the reader then serves them without the recording."""
     program = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     signal = np.concatenate([np.zeros(800), render_program_pcm(program)[:, 0] * 0.4 * 10 ** (-20 / 20), np.zeros(5000)])
@@ -853,23 +868,35 @@ def test_a_seat_take_banks_the_curves_a_decode_of_its_recording_reads(tmp_path, 
     bundle, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     decoded, = measurement_analysis.decoded_measurements(bundle, calibration_root=tmp_path / "calibration")
     assert record["curves"] == decoded.document()["curves"] != []
+    assert {curve["window"] for curve in record["curves"]} == {"ungated"}
 
     monkeypatch.setattr(measurement_analysis, "decode_wav_to_mono", _refuse_decoding)
-    banked, = analyzed_measurements(bundle, calibration_root=tmp_path / "calibration")
+    banked, = analyzed_measurements(bundle)
     assert banked.document()["curves"] == record["curves"]
     assert banked.document()["calibration"] == decoded.document()["calibration"]
 
 
-@pytest.mark.parametrize("fields", [
-    {"measurement_purpose": "room"},  # banked before its curves rode on it
-    {"curves": [{"role": "summed", "freqs_hz": [100.0, 1000.0], "magnitude_db": [-20.0, -21.0]}]},  # a gated pre-ADR take
+@pytest.mark.parametrize("fields,read", [
+    ({}, ["take"]),
+    ({"analyzed": False, "analysis_error": {"code": "internal_error", "error_type": "ValueError"}}, []),
+    ({"analyzed": False}, TAKE_CURVES_NOT_BANKED),
 ])
-def test_a_take_without_banked_seat_curves_decodes_its_recording(summed_capture_bundle, monkeypatch, fields):
-    bundle, calibration_root, _, bank = summed_capture_bundle
+def test_a_take_is_read_from_its_record_never_its_recording(summed_capture_bundle, monkeypatch, tmp_path, capsys, fields, read):
+    """A speaker take reads the curves it banked (ADR-0383). A take whose
+    analysis failed has none, so a run of only such takes draws none and says
+    so; a take that banked neither refuses by name."""
+    bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("take", phase="lateral", **fields))
     monkeypatch.setattr(measurement_analysis, "decode_wav_to_mono", _refuse_decoding)
-    with pytest.raises(_Decoded):
-        list(analyzed_measurements(bundle, calibration_root=calibration_root))
+    if read == TAKE_CURVES_NOT_BANKED:
+        with pytest.raises(MeasurementAnalysisRefused) as refused:
+            list(analyzed_measurements(bundle))
+        assert refused.value.code == TAKE_CURVES_NOT_BANKED
+        return
+    assert [take.record["take_id"] for take in analyzed_measurements(bundle)] == read
+    if not read:
+        assert round_views_main(["frequency", str(bundle), "--out", str(tmp_path / "f.json")]) == EXIT_UNREADABLE
+        assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
 
 
 def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bundle, monkeypatch):
@@ -888,10 +915,10 @@ def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bund
 
 
 @pytest.mark.parametrize("banked", [{}, {"gating_applied": True}, {"gating_applied": False}, {"gating_applied": None}])
-def test_analyzed_document_preserves_banked_gating(summed_capture_bundle, banked):
+def test_a_decoded_document_preserves_banked_gating(summed_capture_bundle, banked):
     bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("take", scope="candidate"))
-    take, = analyzed_measurements(bundle)
+    take, = measurement_analysis.decoded_measurements(bundle)
     take.record.update(banked)
     expected = banked.get("gating_applied")
     assert take.document()["gating_applied"] is (False if expected is None else expected)
@@ -915,7 +942,7 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
     assert view['candidate_id'] == 'baseline-fp'
     first, repeat = view['takes']
     assert first['distortion'] == repeat['distortion'] == {'available': True}
-    assert first['program_id'] == first['record']['program_id'] == program.program_id
+    assert first['stimulus_id'] == first['record']['stimulus_id'] == program.stimulus_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
     frequencies = np.array(first['freqs_hz'])
@@ -926,8 +953,8 @@ def test_bass_view_reopens_exact_captures_and_discloses_unknown_harmonics(
         assert not np.array(harmonic['qualified'])[beyond].any()
         assert all(value is None for value in np.array(harmonic['relative_db'])[beyond])
     assert before == {p: p.read_bytes() for p in bundle.rglob('*') if p.is_file()}
-    repeat['record']['program_id'] = 'different-program'
-    assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['program_id']
+    repeat['record']['stimulus_id'] = 'different-program'
+    assert compare_bass_takes(first, repeat, change='candidate')['context']['incompatible_fields'] == ['stimulus_id']
 
 
 @pytest.mark.parametrize("selected_broken", [False, True])
@@ -965,7 +992,7 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
 
 
 @pytest.mark.parametrize('change,main_delta,stimulus_delta,mismatch,field', [
-    ('candidate', 0, 0, {'program_id': 'changed-gains'}, 'program_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
+    ('candidate', 0, 0, {'stimulus_id': 'changed-gains'}, 'stimulus_id'), ('volume', 3, 0, {'stimulus_dbfs': -21}, 'stimulus_dbfs'),
     ('candidate', 0, 0, {'level_db': -23}, 'level_db'),
     ('candidate', 0, 0, {'position_deg': 20}, 'pose_key'), ('demand', 0, 3, {'position_deg': 20}, 'pose_key'),
 ])
@@ -974,7 +1001,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0, 'program_id': 'program-0', 'loudness_volume_db': -20},
+                   'position_deg': 0, 'vertical_deg': 0, 'stimulus_id': 'program-0'},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
@@ -984,7 +1011,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
              'fundamental_db': [-20 + 1 - stimulus_delta] * 7}
     after['record']['level_db'] += main_delta
     after['record']['stimulus_dbfs'] += stimulus_delta
-    after['record']['program_id'] = f'program-{stimulus_delta}'
+    after['record']['stimulus_id'] = f'program-{stimulus_delta}'
     if change == 'candidate':
         after['record'].update(candidate_id='b', graph_fingerprint='graph-b')
     result = compare_bass_takes(before, after, change=change)
@@ -1010,7 +1037,7 @@ def bass_fit_pairs():
         'record_path': 'off.json',
         'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
                    'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
-                   'loudness_volume_db': -10, 'program_id': 'sweep'},
+                   'stimulus_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),
         'fundamental_qualified': ((grid < 90) | (grid > 110)).tolist(), 'harmonics': {},
@@ -1047,7 +1074,7 @@ def test_bass_fit_weights_positions_equally_on_shared_coverage(bass_fit_pairs):
 def test_bass_fit_refuses_unusable_evidence_by_code(bass_fit_pairs, fault, code):
     before, after = bass_fit_pairs[0]
     if fault == 'context':
-        after['record']['program_id'] = 'different-sweep'
+        after['record']['stimulus_id'] = 'different-sweep'
     elif fault == 'reference_band':
         before['sweep_band_hz'] = after['sweep_band_hz'] = [20, 200]
     with pytest.raises(CrossoverV2Refused) as caught:
@@ -1058,8 +1085,8 @@ def test_bass_fit_refuses_unusable_evidence_by_code(bass_fit_pairs, fault, code)
 
 @pytest.fixture
 def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
-    descriptor = {'low_boost_db': 12, 'reference_level_db': 0,
-                  'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
+    descriptor = {'linkwitz_transform': {'source_hz': 60, 'source_q': 0.707, 'target_hz': 30, 'target_q': 0.707},
+                  'delta_highpass_hz': 20, 'detector_lowpass_hz': 120, 'compressor_threshold_dbfs': -30}
     monkeypatch.setattr('jasper.active_speaker.bass_table_inputs.load_candidate_artifact',
                         lambda _: SimpleNamespace(fingerprint='boost', bass_extension=descriptor))
     takes = []
@@ -1067,7 +1094,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     roots = [tmp_path / f'round-{volume}' for volume in volumes]
     for volume, gain in zip(volumes, (10, 6, 3)):
         for index, take in enumerate(copy.deepcopy(bass_fit_pairs[0])):
-            take['record'].update(level_db=volume, loudness_volume_db=volume,
+            take['record'].update(level_db=volume,
                                   take_id=f'take-{len(takes)}', run_id=f'run-{volume}', phase='lateral')
             take['record_path'] = f'capture-{len(takes)}.json'
             take['fundamental_db'] = [volume - 6 + index * gain] * len(take['freqs_hz'])
@@ -1087,7 +1114,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 record = take['record']
                 if record['run_id'] != f'run-{volume}':
                     continue
-                key = record.get('candidate_id'), record.get('level_db'), record.get('loudness_volume_db')
+                key = record.get('candidate_id'), record.get('level_db')
                 groups.setdefault(key, []).append(take)
             manifest_groups = []
             for number, group in enumerate(groups.values()):
@@ -1098,7 +1125,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 if change_basis:
                     change_basis(row)
                 manifest_groups.append(row)
-                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/1', 'takes': group}))
+                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/2', 'takes': group}))
             manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)))
             manifest['run_id'] = f'run-{volume}'
             path = directory / 'run_manifest.json'
@@ -1159,7 +1186,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
                 take['purpose'] = 'bass'
         verify = copy.deepcopy(manifest['sets'][-1])
         verify['set_id'] = 'd0b471e20e39'
-        verify['capture_basis'].update(program_id='verify', stimulus_dbfs=-30)
+        verify['capture_basis'].update(stimulus_id='verify', stimulus_dbfs=-30)
         verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
         manifest['sets'].insert(0, verify)
         path.write_text(json.dumps(manifest))
@@ -1200,7 +1227,7 @@ def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, m
         original = take["record"]
         take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
             pose=pose, raw_record={key: value for key, value in original.items()
-                if key not in {"stimulus_dbfs", "program_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
+                if key not in {"stimulus_dbfs", "stimulus_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
         if basis == "unknown":
             take["record"]["mark_distance_m"] = None
         assert take["record"]["mark_distance_m"] == distance
@@ -1240,7 +1267,7 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
         takes[1]['diagnostics'] = {'integrity_failed': True}
     elif fault in ('after_level', 'program'):
         index = int(fault.startswith('after'))
-        field = 'level_db' if fault == 'after_level' else 'program_id'
+        field = 'level_db' if fault == 'after_level' else 'stimulus_id'
         del takes[index]['record'][field]
     elif fault == 'pair_level':
         takes[1]['record']['level_db'] -= 1
@@ -1265,14 +1292,14 @@ def test_bass_table_cli_preserves_levels_and_qualified_boost(bass_run, capsys, f
     table, = run['tables']
     assert table['tested_volume_range_db'] == [-30, -10]
     assert [row['level_key'] for row in table['levels']] == [
-        {'level_db': level, 'program_id': 'sweep'} for level in (-30, -20, -10)]
+        {'level_db': level, 'stimulus_id': 'sweep'} for level in (-30, -20, -10)]
     for row, gain in zip(table['levels'], (6, 3, 10)):
         expected = None if fault == 'zero_coverage' and gain == 10 else pytest.approx(gain)
         assert row['realized_boost_db'][-1]['value_db'] == expected
     assert all(band['value_db'] is None for band in table['levels'][-1]['realized_boost_db']) == (fault == 'zero_coverage')
 
 
-@pytest.mark.parametrize('field', ['level_db', 'program_id'])
+@pytest.mark.parametrize('field', ['level_db', 'stimulus_id'])
 def test_bass_table_requires_the_manifest_level_key(bass_run, capsys, field):
     bass_run.write(change_basis=lambda row: row['capture_basis'].pop(field))
     assert round_views_main(bass_run.argv) == 1
@@ -1353,7 +1380,7 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         assert len(tables) == (2 if case == 'two_candidates' else 1)
         assert len(tables[0]['levels']) == (1 if case == 'one_level' else 2 if case == 'partial_levels' else 3)
         if case == 'entry_baseline':
-            assert run['schema'] == 'jts_bass_run_table/1'
+            assert run['schema'] == 'jts_bass_run_table/2'
         if case == 'repeat':
             assert tables[0]['levels'][-1]['take_pair_count'] == 2
             assert tables[0]['levels'][-1]['position_count'] == 1
@@ -1388,9 +1415,9 @@ def test_bass_table_refuses_invalid_descriptors_by_code(bass_run, capsys, fault)
     if fault == 'extra':
         bass_run.descriptor['unknown'] = 1
     elif fault == 'missing':
-        del bass_run.descriptor['low_boost_db']
+        del bass_run.descriptor['delta_highpass_hz']
     else:
-        bass_run.descriptor['low_boost_db'] = -1
+        bass_run.descriptor['delta_highpass_hz'] = -1
     assert round_views_main(bass_run.argv) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer['code'] == 'bass_fit_candidate_unreadable'

@@ -15,6 +15,7 @@ from jasper.active_speaker import emit_active_speaker_baseline_config
 from jasper.active_speaker.camilla_yaml.decorate_dynamic_bass import _with_dynamic_bass
 from jasper.active_speaker.candidate_bank import bank_candidate
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.driver_safety import driver_research_targets
 from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
@@ -264,11 +265,7 @@ def register_passive_only_dac(monkeypatch) -> DacProfile:
     return profile
 
 
-def standard_driver_research(
-    *,
-    tweeter_gain_db: float = -18.5,
-    with_subwoofer: bool = False,
-) -> dict:
+def standard_driver_research(*, tweeter_gain_db: float = -18.5) -> dict:
     drivers = [
         {
             "role": "woofer",
@@ -302,18 +299,7 @@ def standard_driver_research(
             "sources": ["https://example.test/tweeter"],
         },
     ]
-    if with_subwoofer:
-        drivers.append(
-            {
-                "role": "subwoofer",
-                "model": "Sub driver",
-                "recommended_lowpass_hz": 80,
-                "usable_frequency_range_hz": [20, 200],
-                "sources": ["https://example.test/sub"],
-            }
-        )
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": drivers,
         "crossover_candidates": [
@@ -328,20 +314,33 @@ def standard_driver_research(
     }
 
 
-def standard_design_draft(
-    topology: OutputTopology,
-    *,
-    tweeter_gain_db: float = -18.5,
-    with_subwoofer: bool = False,
-) -> dict:
-    return build_design_draft(
-        topology,
-        driver_research=standard_driver_research(
-            tweeter_gain_db=tweeter_gain_db,
-            with_subwoofer=with_subwoofer,
-        ),
-        created_at="2026-06-14T12:00:00Z",
-    )
+def bind_role_rows(topology: OutputTopology, rows: list[dict]) -> list[dict]:
+    """Each role's row once per researchable target of that role; a row no target takes fails loudly."""
+    targets = driver_research_targets(topology)
+    by_role = {row["role"]: row for row in rows}
+    unplaced = set(by_role) - {target["role"] for target in targets}
+    assert not unplaced, f"no researchable target for the {sorted(unplaced)} rows"
+    return [{**by_role[target["role"]], "target_id": target["target_id"]} for target in targets]
+
+
+def current_research(topology: OutputTopology, research: dict) -> tuple[dict, dict]:
+    """``research``'s role rows answered for every researchable target, and the models that asks for."""
+    drivers = bind_role_rows(topology, research["drivers"])
+    return ({**research, "artifact_schema_version": 2, "drivers": drivers},
+            {"target_models": {driver["target_id"]: driver["model"] for driver in drivers}})
+
+
+def research_design_draft(topology: OutputTopology, research: dict | None, **kwargs) -> dict:
+    if research is None:
+        return build_design_draft(topology, **kwargs)
+    reply, inputs = current_research(topology, research)
+    return build_design_draft(topology, driver_research=reply,
+                              operator_inputs={**kwargs.pop("operator_inputs", {}), **inputs}, **kwargs)
+
+
+def standard_design_draft(topology: OutputTopology, *, tweeter_gain_db: float = -18.5) -> dict:
+    return research_design_draft(topology, standard_driver_research(tweeter_gain_db=tweeter_gain_db),
+                                 created_at="2026-06-14T12:00:00Z")
 
 
 def applied_graph_fixture(topology, applied, *, playback_device=None):

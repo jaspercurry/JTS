@@ -63,8 +63,8 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "run-manifest": ViewArtifact(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--out", "<render-dir>"), schema=DSP_REPLAY_SCHEMA),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>"), schema=DSP_LEVELS_SCHEMA),
-    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/1"),
-    "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,), schema="jts_entry_state_grade/1"),
+    "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/2"),
+    "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,), schema="jts_entry_state_grade/2"),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER, schema="jts_repeatability/1"),
     "candidates": ViewArtifact("candidates.json", schema="jts_candidates/2"),
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,), schema="jts_directivity/1"),
@@ -76,28 +76,28 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "decay": ViewArtifact("decay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_decay/1", per_take=True),
     "compare": ViewArtifact("compare.json", (
         "<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>",
-    ), schema="jts_compare/1", per_take=True),
+    ), schema="jts_compare/2", per_take=True),
     "frequency": ViewArtifact(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR), builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": ViewArtifact(
         "rear_view.json", ("--run", "<run-id>"), producer="jasper-round wait", purposes=(PURPOSE_REAR,),
-        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/1",
+        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/2",
     ),
     "bass": ViewArtifact("bass_view.json", TAKES_SET, purposes=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,), builder="round_bookkeeping.bass", packet="bass", schema=BASS_VIEW_SCHEMA),
     "bass-compare": ViewArtifact("bass_comparison.json", (
         "<before-round>", TAKES_THIS_ROUND, "--before-set", "<before-set-id>",
         "--after-set", "<set-id>", "--change", "<change>",
-    ), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/1"),
+    ), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/2"),
     "delay-landscape": ViewArtifact("delay_landscape.json", purposes=(PURPOSE_SPEAKER,), schema="jts_delay_landscape/1"),
     "nearfield": ViewArtifact("nearfield_view.json", purposes=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1"),
-    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/1"),
+    "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/2"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/1"),
+    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/3"),
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
     ),
-    "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), grades_against_base=True, builder="round_bookkeeping.room_grade", packet="room", schema="jts_room_grade/1"),
+    "room-grade": ViewArtifact("room_grade.json", TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), grades_against_base=True, builder="round_bookkeeping.room_grade", packet="room", schema="jts_room_grade/2"),
     # The banker writes this index; inventory reports its presence.
     "position-cycle": ViewArtifact(
         POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait",

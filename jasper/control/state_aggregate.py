@@ -19,12 +19,14 @@ from .. import librespot_state
 from ..accessories import status as accessory_status
 from ..active_speaker.audition import audition_summary
 from ..dsp_apply import last_dsp_apply_state
-from ..music_sources import MUSIC_SOURCE_VALUES
+from ..json_fields import as_mapping
+from ..music_sources import MUSIC_SOURCE_VALUES, Source
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
 )
 from ..output_hardware import load_state as load_output_hardware_state
+from ..renderer import PROBE_ORDER
 from ..source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..log_event import log_event
@@ -135,8 +137,9 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
 
 
 def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
-    """Whether the USB-sink DIRECT lane is audible. Feeds the ``usbsink``
-    rung of :func:`_active_source`; false when fan-in exposes no DIRECT lane.
+    """Whether the USB-sink DIRECT lane is audible: the level predicate, not
+    mux's streaming edge (see :func:`jasper.source_state.usbsink_streaming`).
+    False when fan-in exposes no DIRECT lane.
     """
 
     input_state = fanin_usbsink_input(fanin_status)
@@ -337,59 +340,48 @@ def _spotify_playing() -> bool:
     return bool(blob.get("playing", False))
 
 
+def _mux_bluetooth_playing(mux_status: dict | None) -> bool:
+    """Mux's held BlueZ observation, from the STATUS already in hand, so no
+    BlueZ probe runs per request (see ADR-0233 rule 2)."""
+    sources = as_mapping(as_mapping(mux_status).get("sources"))
+    return as_mapping(sources.get(Source.BLUETOOTH.value)).get("playing") is True
+
+
 def _active_source(
     *,
     voice_session: bool,
     audio_health: Mapping[str, Any] | None,
     mux_status: dict | None,
-    spotify_playing: bool,
-    airplay_playing: bool | None,
-    usbsink_playing: bool,
+    playing: Mapping[Source, bool | None],
 ) -> str:
     """Pick ``/state.active_source`` — the only derivation on the wire.
 
-    The audio-health sampler's verdict wins whenever it has one, so it and
-    ``audio_health.overall.active_source`` cannot name different sources in one
-    response. It models music lanes only and answers None for "cannot confirm",
-    so a voice session still leads.
+    A voice session leads. Then the audio-health sampler's verdict, so it and
+    ``audio_health.overall.active_source`` cannot name different sources in
+    one response; it models music lanes only and answers None for "cannot
+    confirm". Then :func:`jasper.renderer.audible_source`'s rule: mux's
+    answer when it names a source or idle, else the first source in
+    :data:`jasper.renderer.PROBE_ORDER` that ``playing`` reports.
     """
-    overall = audio_health.get("overall") if isinstance(audio_health, Mapping) else None
-    overall = overall if isinstance(overall, Mapping) else {}
+    overall = as_mapping(as_mapping(audio_health).get("overall"))
     # The sampler keeps the last lane verbatim once its own sample goes stale
     # and says so with status `unknown`; that must not outrank a live mux.
     health_source = (
         None if overall.get("status") == "unknown"
         else overall.get("active_source")
     )
-
-    # Mux's own answer to "what is audible now" — one field, not a second
-    # reconstruction from the manual pin and the raw winner. Mux also answers
-    # "idle" and, while a measurement holds the fan-in test lease, that lane's
-    # label; neither is a source this surface may report, and both must fall
-    # through to the raw-probe fallbacks below.
-    mux_effective_source = None
-    if isinstance(mux_status, dict):
-        raw_effective = mux_status.get("active_source")
-        if raw_effective in MUSIC_SOURCE_VALUES:
-            mux_effective_source = raw_effective
+    mux_source = as_mapping(mux_status).get("active_source")
 
     if voice_session:
         return "voice"
     if isinstance(health_source, str) and health_source:
         return health_source
-    if mux_effective_source:
-        return mux_effective_source
-    if spotify_playing:
-        return "spotify"
-    if airplay_playing:
-        return "airplay"
-    if usbsink_playing:
-        # `playing` is authoritative on both box shapes: solo reads the
-        # bridge's RMS-gated flag, combo derives it from the fan-in DIRECT
-        # lane's level (audible above the shared -60 dBFS gate), so a combo
-        # box streaming silence reads false exactly like solo.
-        return "usbsink"
-    return "idle"
+    if mux_source in MUSIC_SOURCE_VALUES or mux_source == Source.IDLE.value:
+        return mux_source
+    return next(
+        (source.value for source in PROBE_ORDER if playing.get(source)),
+        Source.IDLE.value,
+    )
 
 
 def _read_output_hardware() -> dict[str, Any] | None:
@@ -587,7 +579,6 @@ async def get_state(
     )
     listening_level, persisted_main_volume_db = volume_state or (None, None)
 
-    spotify_playing = _spotify_playing()
     if sound_profile is not None:
         runtime = _sound_runtime_status(
             sound_profile,
@@ -605,9 +596,12 @@ async def get_state(
         voice_session=voice_session,
         audio_health=audio_health,
         mux_status=mux,
-        spotify_playing=spotify_playing,
-        airplay_playing=airplay_playing,
-        usbsink_playing=_usbsink_renderer_playing(fanin),
+        playing={
+            Source.AIRPLAY: airplay_playing,
+            Source.SPOTIFY: _spotify_playing(),
+            Source.BLUETOOTH: _mux_bluetooth_playing(mux),
+            Source.USBSINK: _usbsink_renderer_playing(fanin),
+        },
     )
 
     volume_policy = build_volume_policy_snapshot(

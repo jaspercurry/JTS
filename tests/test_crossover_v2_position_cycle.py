@@ -23,12 +23,13 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     PositionCycleError,
     position_cycle_document,
     read_entry_baseline_take,
-    read_pose_curve_pair,
     read_position_cycle,
+    select_pose_curve_pair,
     takes_by_position,
     write_position_cycle,
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.crossover_v2.spatial import (
     MARK_DISTANCE_M,
     POSITION_AXIS_HORIZONTAL,
@@ -41,6 +42,7 @@ from tests.crossover_v2_banked_round import (
     entry_baseline_record,
     lateral_pose_record,
 )
+from tests.run_manifest_fixture import write_manifest
 
 
 def _record(
@@ -69,7 +71,7 @@ def _record(
             POSITION_AXIS_HORIZONTAL, position_deg, MARK_DISTANCE_M, vertical_deg,
         ),
         lateral_consumer="forward_model",
-        session_id="sess-1", graph_fingerprint="fp-applied",
+        run_id="sess-1", graph_fingerprint="fp-applied",
         captured_at="2026-08-26T00:00:00Z",
         wav_sha256=f"sha-{index}-{attempt}",
         claim=TakeClaim(candidate_id=candidate_id),
@@ -306,8 +308,8 @@ def test_takes_from_two_capture_sessions_name_both_sources(tmp_path):
 def _entry_take(tmp_path: Path, **overrides) -> Path:
     """One banked entry-baseline sidecar, from the shared take-record builder."""
     fields = {
-        "index": 9, "attempt": 1, "session_id": "sess-1",
-        "program_id": "prog-entry", "reference_mark": "design_axis",
+        "index": 9, "attempt": 1, "run_id": "sess-1",
+        "stimulus_id": "prog-entry", "reference_mark": "design_axis",
         "graph_fingerprint": "fp-entry", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
         "excluded": (True, False),
@@ -334,7 +336,7 @@ def test_the_before_reads_back_in_the_shape_its_record_type_rehydrates_from(
     take = read_entry_baseline_take(_entry_take(tmp_path))
 
     assert take == {
-        "program_id": "prog-entry",
+        "stimulus_id": "prog-entry",
         "reference_mark": "design_axis",
         "graph_fingerprint": "fp-entry",
         "captured_at": "2026-08-11T00:00:00Z",
@@ -722,18 +724,17 @@ def _pose_bank(tmp_path: Path) -> Path:
     than as "unknown height".
     """
     mark = {k: v for k, v in _record(1, 0).items() if k != "vertical_deg"}
-    _bank(tmp_path, [
-        {**mark, "curves": _BOTH_ROLES},
-        {**_record(2, 0), "vertical_deg": 10, "curves": _BOTH_ROLES},
-    ])
+    speaker = {"measurement_purpose": PURPOSE_SPEAKER, "curves": _BOTH_ROLES}
+    _bank(tmp_path, [{**mark, **speaker}, {**_record(2, 0), "vertical_deg": 10, **speaker}])
+    write_manifest(tmp_path)
     return tmp_path / "bundle" / "sess-1"
 
 
 def _pair_take(bundle_dir: Path, **pose) -> list[str]:
-    found = read_pose_curve_pair(
-        bundle_dir, phase=PHASE_LATERAL, roles=("woofer", "tweeter"), **pose
+    found = select_pose_curve_pair(
+        bundle_dir, phases=(PHASE_LATERAL,), roles=("woofer", "tweeter"), **pose
     )
-    return [] if found is None else [found[2]]
+    return [] if found is None else [found.take.path]
 
 
 def _indexed(bundle_dir: Path, **filters) -> list[str]:

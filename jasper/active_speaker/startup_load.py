@@ -20,6 +20,7 @@ from jasper.dsp_apply import (
     validate_camilla_config,
 )
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
+from jasper.log_event import log_event
 from jasper.output_topology import OutputTopology
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 from jasper.active_speaker.crossover_preview import current_crossover_preview
@@ -168,17 +169,16 @@ def _trigger_audio_hardware_reconcile(*, source: str) -> bool:
         timeout=15.0,
     )
     if not result.get("ok"):
-        logger.warning(
-            "event=active_speaker.audio_hardware_reconcile_trigger_failed source=%s unit=%s error=%s",
-            source,
-            AUDIO_HARDWARE_RECONCILE_UNIT,
-            result.get("error") or f"rc={result.get('rc')}",
+        log_event(
+            logger, "active_speaker.audio_hardware_reconcile_trigger_failed",
+            level=logging.WARNING, source=source,
+            unit=AUDIO_HARDWARE_RECONCILE_UNIT,
+            error=result.get("error") or f"rc={result.get('rc')}",
         )
         return False
-    logger.info(
-        "event=active_speaker.audio_hardware_reconcile_triggered source=%s unit=%s",
-        source,
-        AUDIO_HARDWARE_RECONCILE_UNIT,
+    log_event(
+        logger, "active_speaker.audio_hardware_reconcile_triggered",
+        source=source, unit=AUDIO_HARDWARE_RECONCILE_UNIT,
     )
     return True
 

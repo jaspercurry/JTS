@@ -20,9 +20,9 @@ import subprocess
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any, Callable
 
 from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
@@ -33,8 +33,9 @@ from jasper.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
 from jasper.log_event import log_event
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.settings import SoundSettings, load_sound_settings
+from jasper.volume_carrier import write_main_mute
 from jasper.volume_curve import percent_to_db
-from jasper.volume_owner import ClaimKind, VolumeClaimHandle, volume_owner
+from jasper.volume_owner import ClaimKind, VolumeClaimHandle, holding, volume_owner
 
 logger = logging.getLogger(__name__)
 
@@ -402,21 +403,9 @@ class VolumeFloorToneSession:
         self._cancel_start = False
         self._generation = 0
 
-    @asynccontextmanager
-    async def _camilla_op(self) -> AsyncIterator[None]:
-        """Serialize one audition step's CamillaDSP reads and writes.
-
-        Polls instead of parking a worker thread on ``acquire``: a task
-        cancelled while parked there leaves the worker holding a lock nobody
-        will release, which deadlocks every later audition and stop with the
-        fader still down at the floor.
-        """
-        while not self._camilla_op_lock.acquire(blocking=False):
-            await asyncio.sleep(0.02)
-        try:
-            yield
-        finally:
-            self._camilla_op_lock.release()
+    def _camilla_op(self) -> AbstractAsyncContextManager[None]:
+        """Serialize one audition step's CamillaDSP reads and writes."""
+        return holding(self._camilla_op_lock)
 
     async def start_or_update(
         self,
@@ -742,11 +731,11 @@ class VolumeFloorToneSession:
         try:
             camilla = camilla_factory()
             if original_mute:
-                await camilla.set_main_mute(True, best_effort=True)
+                await write_main_mute(camilla, True, context="floor_tone_restore_mute")
                 await _release_floor_level(claim, original_db)
             else:
                 await _release_floor_level(claim, original_db)
-                await camilla.set_main_mute(False, best_effort=True)
+                await write_main_mute(camilla, False, context="floor_tone_restore_unmute")
         finally:
             # After the fader is back, so no reconciler sees the floor
             # unannounced; and even after a failed restore, so one can

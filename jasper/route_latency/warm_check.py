@@ -20,11 +20,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-# The hardware-validated churn-safe floor (see
-# `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` in `rust/jasper-fanin/src/config.rs`)
-# and the `decay.frozen_reason` STATUS value that means "settled at it, not
-# just passing through" (`DecayFrozenReason::AtFloor` in
-# `rust/jasper-fanin/src/lane_resampler.rs`, serialized in `state.rs`).
 EXPECTED_HELD_TARGET_FRAMES = 576
 WARM_FROZEN_REASON = "at_floor"
 

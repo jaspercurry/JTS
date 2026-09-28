@@ -196,7 +196,7 @@ def classify_round(
     detector and the trusted band are read through. ``gates_ms`` is the
     window LADDER, which is :mod:`.gate_sweep`'s. The two are independent.
 
-    ``pose_curves`` is this round's banked lateral-walk curves
+    ``pose_curves`` is this round's banked MEASURE and lateral speaker curves
     (:func:`load_round_pose_curves`), optional and orthogonal to
     ``captures``: a caller with none still gets every EGD/gate/timing fact,
     plus a ``pose_bank``/``pose_persistence`` NOT-RUN pair rather than a

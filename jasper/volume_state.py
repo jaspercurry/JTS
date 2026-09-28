@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .volume_persistence import db_to_percent
+from .volume_persistence import FIRST_BOOT_DEFAULT_PCT
 
 if TYPE_CHECKING:
     from .volume_persistence import VolumeRecord
@@ -45,11 +45,11 @@ class VolumeState:
     def from_record(cls, record: "VolumeRecord | None") -> "VolumeState":
         """Project persistence through the one public volume-state contract."""
         if record is None:
-            return cls(50)
+            return cls(FIRST_BOOT_DEFAULT_PCT)
         level = (
             int(record.listening_level)
             if record.listening_level is not None
-            else db_to_percent(record.main_volume_db)
+            else FIRST_BOOT_DEFAULT_PCT
         )
         return cls(
             listening_level=max(0, min(100, level)),

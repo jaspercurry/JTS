@@ -44,7 +44,9 @@ from tests import nginx_site
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.driver_safety import DriverSafetyProfileError
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
@@ -52,6 +54,7 @@ from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -94,10 +97,13 @@ def _speaker_dirs(
     *,
     draft: dict[str, Any] | None = None,
     classification: dict[str, Any] | None = None,
+    live: bool = False,
 ) -> tuple[Path, Path | None]:
     # Nested under bank/bundle/ (like a real bank) so a classification write
-    # resolves beside the round instead of falling back to the cwd.
-    session, _ = _bundle(tmp_path / "bank" / "bundle")
+    # resolves beside the round instead of falling back to the cwd. A live
+    # session is the bare bundle, whose packet is built from the resolver's
+    # defaults when it is read.
+    session, _ = _bundle(tmp_path / "live" if live else tmp_path / "bank" / "bundle")
     write_manifest(session)
     if classification is not None:
         round_views.default_out(
@@ -107,6 +113,8 @@ def _speaker_dirs(
     if draft is not None:
         draft_path = tmp_path / "draft.json"
         draft_path.write_text(json.dumps(draft))
+    if not live:
+        store_banked_evidence(session.parent.parent)
     return session, draft_path
 
 
@@ -214,7 +222,7 @@ def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
 def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
     tmp_path, capsys, monkeypatch
 ):
-    session, _ = _speaker_dirs(tmp_path)
+    session, _ = _speaker_dirs(tmp_path, live=True)
     seen: dict[str, Any] = {}
     build = evidence_packet.build_crossover_evidence_packet
 
@@ -238,7 +246,7 @@ def test_a_live_session_dir_is_built_from_the_resolvers_defaults(
 
 def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
     """``source_absent`` is the packet's own word, echoed rather than reworded."""
-    session, _ = _speaker_dirs(tmp_path)
+    session, _ = _speaker_dirs(tmp_path, live=True)
 
     _, payload = _status([str(session)], capsys)
 
@@ -253,7 +261,7 @@ def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
 
 def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
     """A prescription is a TOTAL, so "empty" and "unknown" must not merge."""
-    session, _ = _speaker_dirs(tmp_path)
+    session, _ = _speaker_dirs(tmp_path, live=True)
     applied = tmp_path / "applied-profile.json"
     applied.write_text(json.dumps(applied_profile()))
 
@@ -337,6 +345,26 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
         "elevations_deg": [],
         "reason": None,
     }
+
+
+@pytest.mark.parametrize("refusal, expected", [
+    (None, {"reason": None, "caps": {
+        "mono:woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "mono:tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"}}}),
+    (DriverSafetyProfileError("manual_settings.drivers[0] names no output", code="manual_target_missing"),
+     {"reason": "manual_target_missing", "caps": {}}),
+], ids=["published", "declaration-refused"])
+def test_status_publishes_each_drivers_live_cap_or_the_declarations_refusal(monkeypatch, refusal, expected):
+    _topology, safety, _targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+
+    def load():
+        if refusal is not None:
+            raise refusal
+        return {"driver_safety_profile": safety}
+
+    monkeypatch.setattr(cli, "load_design_draft", load)
+    assert cli.status_document(None, "", session_dir=None)["driver_caps_live"] == expected
 
 
 def test_a_raised_walk_publishes_its_elevations():
@@ -656,6 +684,8 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
         info = json.loads(info_path.read_text())
         info.update(session_id=f"s{index}", started_at=index)
         info_path.write_text(json.dumps(info))
+        if banked:
+            store_banked_evidence(path)
         paths.append((path, bundle))
     before = _tree(tmp_path)
 
@@ -690,7 +720,7 @@ def test_a_missing_declaration_carries_the_reason_and_the_page_that_fixes_it(
     tmp_path, capsys
 ):
     """Each absence names why, and the human handoff that closes it."""
-    session, _ = _speaker_dirs(tmp_path, classification=_classification())
+    session, _ = _speaker_dirs(tmp_path, live=True)
 
     _, payload = _status([str(session)], capsys)
 
@@ -713,7 +743,7 @@ def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
     monkeypatch.setattr(round_inputs_mod, "DRIVERS_DEFAULT_PATH", draft_path)
     monkeypatch.setattr(round_inputs_mod, "APPLIED_PROFILE_DEFAULT_PATH", applied_path)
 
-    session, _ = _speaker_dirs(tmp_path, classification=_classification())
+    session, _ = _speaker_dirs(tmp_path, live=True)
     _, payload = _status([str(session)], capsys)  # neither flag passed
 
     assert payload["declared"]["available"] is True
@@ -745,7 +775,7 @@ def _full_range_draft() -> dict[str, Any]:
     from tests.active_speaker_fixtures import mono_output_topology
 
     return build_design_draft(mono_output_topology(mode="full_range_passive"), manual_settings={"drivers": [
-        {"role": "full_range", "measurement_band_hz": [45, 18000],
+        {"role": "full_range", "target_id": "mono:full_range", "measurement_band_hz": [45, 18000],
          "hard_excitation_band_hz": [40, 20000], "required_protection_filters": []},
     ]})
 
@@ -831,6 +861,7 @@ _STATUS_DOCUMENT_KEYS = {
     "banked",
     "applied",
     "seat_level_reference_volume_db",
+    "driver_caps_live",
     "reading_order",
     "next",
     "next_commands",

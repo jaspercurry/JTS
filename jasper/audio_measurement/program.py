@@ -46,7 +46,7 @@ from .room_boundary import AUDIO_BAND_TOP_HZ, ROOM_FLOOR_HZ
 
 logger = logging.getLogger(__name__)
 
-PROGRAM_SCHEMA_VERSION = 1
+PROGRAM_SCHEMA_VERSION = 3
 PROGRAM_KIND = "jts_excitation_program"
 
 # Phase vocabulary, distinct from crossover_v2.journey's PHASE_* family
@@ -139,7 +139,6 @@ DEFAULT_VERIFY_TAIL_S = 0.5
 VERIFY_F_LO_HZ = 150.0
 VERIFY_F_HI_HZ = AUDIO_BAND_TOP_HZ
 # The in-room fit needs the whole audible band (Bank AES-134).
-# This belongs to the per-speaker profile; see #4990.
 SUMMED_SWEEP_BAND_HZ = (ROOM_FLOOR_HZ, VERIFY_F_HI_HZ)
 
 # Leading VERIFY pilot's OWN band:
@@ -191,8 +190,7 @@ class ProgramSegment:
     ``effective_peak_dbfs`` is ``gain_db + downstream_gain_db``, the
     admission input. The gate fields silence part of the sweep without
     changing the parent waveform (:func:`segment_emitted_band_hz` gives the
-    actual emitted band); default is "no gate", omitted by :meth:`to_dict`
-    for byte-identical ``program_id`` on pre-gate programs.
+    actual emitted band); default is "no gate", omitted by :meth:`to_dict`.
     """
 
     segment_id: str
@@ -257,7 +255,6 @@ class ProgramSegment:
             "gain_db": self.gain_db,
             "effective_peak_dbfs": self.effective_peak_dbfs,
         }
-        # Omitted when there is no gate, for byte-identical program_id on pre-gate programs.
         if self.is_gated:
             payload["gate_start_sample"] = self.gate_start_sample
             payload["gate_end_sample"] = self.gate_end_sample
@@ -302,11 +299,11 @@ class ProgramSegment:
 class ExcitationProgram:
     """A pure-data schedule of stimuli the session plays as one stream.
 
-    ``program_id`` is a content hash over the schedule, so a re-run with a
-    different program can never be mistaken for a resume of the old one.
+    ``stimulus_id`` hashes the schedule but not ``effective_peak_dbfs``: the
+    fader is not the stimulus (#5012).
     """
 
-    program_id: str
+    stimulus_id: str
     phase: str
     sample_rate_hz: int
     channels: int
@@ -332,12 +329,12 @@ class ExcitationProgram:
                 raise ValueError(
                     f"segment {seg.segment_id!r} overruns total_samples"
                 )
-        expected = _program_id(
+        expected = _stimulus_id(
             self.phase, self.sample_rate_hz, self.channels,
             self.segments, self.total_samples,
         )
-        if self.program_id != expected:
-            raise ValueError("program_id does not match the schedule content")
+        if self.stimulus_id != expected:
+            raise ValueError("stimulus_id does not match the schedule content")
 
     def segment(self, segment_id: str) -> ProgramSegment:
         for seg in self.segments:
@@ -356,7 +353,7 @@ class ExcitationProgram:
         return {
             "schema_version": PROGRAM_SCHEMA_VERSION,
             "kind": PROGRAM_KIND,
-            "program_id": self.program_id,
+            "stimulus_id": self.stimulus_id,
             "phase": self.phase,
             "sample_rate_hz": self.sample_rate_hz,
             "channels": self.channels,
@@ -367,7 +364,7 @@ class ExcitationProgram:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ExcitationProgram":
         required = {
-            "schema_version", "kind", "program_id", "phase", "sample_rate_hz",
+            "schema_version", "kind", "stimulus_id", "phase", "sample_rate_hz",
             "channels", "segments", "total_samples",
         }
         if not isinstance(value, Mapping) or set(value) != required:
@@ -379,21 +376,29 @@ class ExcitationProgram:
         segments = tuple(
             ProgramSegment.from_dict(s) for s in value["segments"]
         )
-        return cls(
-            program_id=str(value["program_id"]),
+        program = cls(
+            stimulus_id=str(value["stimulus_id"]),
             phase=str(value["phase"]),
             sample_rate_hz=int(value["sample_rate_hz"]),
             channels=int(value["channels"]),
             segments=segments,
             total_samples=int(value["total_samples"]),
         )
+        # The id leaves effective_peak_dbfs out (#5012), so it holds the audible
+        # segments to one downstream gain; 1e-9 dB absorbs float noise only.
+        audible = program.known_audible_segments()
+        fader_db = audible[0].effective_peak_dbfs - audible[0].gain_db if audible else 0.0
+        if any(not math.isclose(s.effective_peak_dbfs, s.gain_db + fader_db, rel_tol=0.0, abs_tol=1e-9)
+               for s in audible):
+            raise ValueError("segment peaks do not share one downstream gain")
+        return program
 
 
 def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:
-    return seg.to_dict()
+    return {key: value for key, value in seg.to_dict().items() if key != "effective_peak_dbfs"}
 
 
-def _program_id(
+def _stimulus_id(
     phase: str,
     sample_rate_hz: int,
     channels: int,
@@ -416,11 +421,11 @@ def _finalize(
     phase: str, channels: int, segments: Sequence[ProgramSegment], total: int
 ) -> ExcitationProgram:
     seg_tuple = tuple(segments)
-    program_id = _program_id(
+    stimulus_id = _stimulus_id(
         phase, PROGRAM_SAMPLE_RATE_HZ, channels, seg_tuple, total
     )
     return ExcitationProgram(
-        program_id=program_id,
+        stimulus_id=stimulus_id,
         phase=phase,
         sample_rate_hz=PROGRAM_SAMPLE_RATE_HZ,
         channels=channels,

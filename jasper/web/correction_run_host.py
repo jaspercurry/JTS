@@ -43,23 +43,23 @@ from jasper.audio_measurement.program import ExcitationProgram
 logger = logging.getLogger(__name__)
 
 
-def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> dict[str, Any]:
-    """The take record's impulses block, once they are written beside its recording.
+def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> dict[str, Any] | None:
+    """The take record's impulses block once they are written beside its
+    recording, or ``None`` when none were kept (a CHECK take).
 
     A failed write costs only the saved copy: the raw recording stays, so the
     impulses remain recomputable.
     """
     bundle_dir = getattr(getattr(records, "capture", None), "bundle_dir", None)
     if bundle_dir is None:
-        return {}
+        return None
     try:
-        block = write_take_impulses(Path(bundle_dir), take_id, analysis,
-                                    recording=getattr(answer, "wav_path", None) or None)
+        return write_take_impulses(Path(bundle_dir), take_id, analysis,
+                                   recording=getattr(answer, "wav_path", None) or None)
     except (OSError, BundleError) as exc:
         log_event(logger, "correction.take_impulses_not_saved", level=logging.WARNING,
                   take_id=take_id, error_type=type(exc).__name__)
-        return {}
-    return {IMPULSES_KEY: block} if block else {}
+        return None
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
@@ -68,7 +68,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                        capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
     roles = tuple(band.role for band in conductor.roles_bands)
-    diameters = context.radiating_diameter_mm_by_role if context is not None else {}
+    diameters = context.radiating_diameter_mm_by_target if context is not None else {}
     index = 0
     phase = ""
     answer: Any = None
@@ -85,7 +85,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             room = load_declared_geometry()
             band = asdict(take_trusted_band(
                 purpose=record.get("measurement_purpose"), kind=kind, distance_m=distance_m,
-                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_role=diameters, room=room))
+                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_target=diameters, room=room))
             return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), band
         except (OSError, ValueError) as exc:
             # The take gates to the default bound and banks no band; its reader states one.
@@ -106,16 +106,15 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 played = ExcitationProgram.from_dict(program)
                 result = analyze_capture(record, played, capture, first_bounce_s)
                 fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
-                          **analysis_blocks(result, played, record)}
+                          **analysis_blocks(result, played)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         else:
-            fields = {**fields, **_kept_impulses(records, record["take_id"], result, capture)}
+            fields = {**fields, IMPULSES_KEY: _kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
-        if band is not None:
-            fields["trusted_band"] = band
+        fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),

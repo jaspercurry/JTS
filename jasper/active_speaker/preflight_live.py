@@ -26,7 +26,7 @@ from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
-from .crossover_v2.conductor_context import resolve_conductor_context
+from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
@@ -90,7 +90,7 @@ def read_preflight_facts(
         pilot = next(segment for segment in program.stimulus_segments() if segment.kind == KIND_PILOT)
         if pilot.f1_hz is not None and pilot.f2_hz is not None:
             pilot_band = (pilot.f1_hz, pilot.f2_hz)
-    def program_ids(request: AngleCaptureRequest) -> tuple[str, ...]:
+    def stimulus_ids(request: AngleCaptureRequest) -> tuple[str, ...]:
         if context is None or request.level.volume_db is None:
             return ()
         excitation = SessionExcitation(
@@ -108,7 +108,7 @@ def read_preflight_facts(
                 safety_profile=safety_profile, role_targets=context.role_targets)
             if capture.spec.graph_scope == "candidate_branches":
                 program = build_branch_program(program, branch_channels_for(capture.spec))
-            programs.append(program.program_id)
+            programs.append(program.stimulus_id)
         return tuple(programs)
 
     near_field = {stop.driver for stop in plan.stops if stop.regime == REGIME_NEAR_FIELD}
@@ -123,7 +123,7 @@ def read_preflight_facts(
         anchor=anchor, summed_pilot_band_hz=pilot_band,
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension, applied_room_peqs=applied_room_peqs,
-        program_ids_for=program_ids,
+        stimulus_ids_for=stimulus_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
         # A near-field pose's driver is offered only when its sweep holds the view's top band whole.
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
@@ -131,4 +131,5 @@ def read_preflight_facts(
                                   or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
+        driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},
     )

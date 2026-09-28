@@ -37,10 +37,11 @@ it must refuse a below-floor corner, and it must not invent a floor where the
 operator declared none.
 
 The two real-box fixtures in ``tests/fixtures/active_speaker_protection_floor_20260814/``
-are verbatim design drafts captured from jts.local's first sanctioned composite
-arm (2026-08-14, issue #2491's closing comment): the 2000 Hz draft that armed
-nothing and produced the 4000 Hz protective high-pass, and the honestly
-re-issued 5000 Hz draft that did arm.
+are design drafts captured from jts.local's first sanctioned composite arm
+(2026-08-14, issue #2491's closing comment), their stored declarations moved to
+the current shape (#2902): the 2000 Hz draft that armed nothing and produced
+the 4000 Hz protective high-pass, and the honestly re-issued 5000 Hz draft that
+did arm.
 """
 
 from __future__ import annotations
@@ -63,10 +64,7 @@ from jasper.active_speaker.camilla_yaml import (
     emit_active_speaker_startup_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.design_draft import (
-    DRIVER_RESEARCH_KIND,
-    build_design_draft,
-)
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND
 from jasper.active_speaker.driver_protection import (
     declared_protection_highpass_floor_hz,
     protection_highpass_floor_satisfied,
@@ -89,6 +87,7 @@ from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields
 from tests.active_speaker_fixtures import (
     mono_output_topology,
+    research_design_draft,
     valid_camilla_config as _valid_config,
 )
 
@@ -140,7 +139,6 @@ def _driver_research(
     if woofer_floor_hz is not None:
         woofer["recommended_highpass_hz"] = woofer_floor_hz
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [woofer, tweeter],
         "crossover_candidates": [{
@@ -161,9 +159,9 @@ def _preview(
     woofer_floor_hz: float | None = None,
 ) -> dict[str, Any]:
     return build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             topology,
-            driver_research=_driver_research(
+            _driver_research(
                 fc_hz=fc_hz,
                 tweeter_floor_hz=tweeter_floor_hz,
                 woofer_floor_hz=woofer_floor_hz,

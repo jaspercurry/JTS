@@ -29,7 +29,7 @@ from typing import Any
 
 from . import librespot_state
 from .busctl import system_busctl
-from .music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from .music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
 from .platform import wire
 from .platform.uds import mux_socket_command
 from .source_state import (
@@ -81,9 +81,8 @@ class RendererClient:
         """Return raw renderer activity keyed by the stable public names.
 
         ``usbsinkactive`` is fan-in's DIRECT-lane *streaming* edge, the same
-        arbitration predicate mux uses — not the level predicate behind
-        ``/state.renderers.usbsink.playing`` — so a caller falling back to
-        these probes cannot pick a different winner than mux did.
+        arbitration predicate mux uses, so a caller falling back to these
+        probes cannot pick a different winner than mux did.
         """
         spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
@@ -99,6 +98,15 @@ class RendererClient:
             SOURCE_TO_ACTIVE_KEY[Source.USBSINK]: usb,
         }
 
+    async def _mux_status(self) -> dict[str, Any]:
+        try:
+            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
+            # mux STATUS is a synchronous snapshot on the daemon's side.
+            return await mux_socket_command(wire.STATUS, timeout=1.0)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug("mux STATUS unavailable: %s", e)
+            return {}
+
     async def selected_source(self) -> str | None:
         """Return mux's effective audible source, or None if unknown.
 
@@ -110,28 +118,23 @@ class RendererClient:
         Fail-soft: an unreachable mux, an unparseable reply, or a STATUS
         without the field all return ``None``.
         """
-        try:
-            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
-            # mux STATUS is a synchronous snapshot on the daemon's side.
-            payload = await mux_socket_command(wire.STATUS, timeout=1.0)
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.debug("mux STATUS unavailable: %s", e)
-            return None
-        effective = payload.get("active_source")
+        effective = (await self._mux_status()).get("active_source")
         return effective if isinstance(effective, str) else None
 
-    # ------------------------------------------------------------------
-    # Currentsong — cascades by active source. Returns a dict with at
-    # minimum "title", "album", "artist" keys that consumers
-    # (transport.py, spotify_routing.py) read from. Empty dict on
-    # error / no source.
-    # ------------------------------------------------------------------
+    async def last_handoff(self) -> dict[str, Any] | None:
+        """Mux's record of its latest source handoff (``id``, ``to``,
+        ``result``, ...), or None when it has made none or cannot say."""
+        handoff = (await self._mux_status()).get("last_handoff")
+        return handoff if isinstance(handoff, dict) else None
 
     async def get_currentsong(self) -> dict[str, Any]:
-        active = await self.active_renderers()
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.SPOTIFY]):
+        """The :func:`audible_source`'s track: AirPlay's title/album/artist,
+        or Spotify's URI with empty tags; ``{}`` for any other source, for
+        none, or when the read fails."""
+        source = await audible_source(self)
+        if source is Source.SPOTIFY:
             return await self._spot_currentsong()
-        if active.get(SOURCE_TO_ACTIVE_KEY[Source.AIRPLAY]):
+        if source is Source.AIRPLAY:
             return await self._ap_currentsong()
         # Bluetooth A2DP doesn't expose reliable AVRCP metadata via
         # bluez-alsa, and there's no other source we can introspect.
@@ -141,9 +144,7 @@ class RendererClient:
         # librespot's --onevent hook only gives us TRACK_ID / URI;
         # title/artist/album require a Spotify Web API lookup.
         # Voice tools that need rich metadata go through
-        # jasper.spotify_router (which already does Web API). For
-        # the renderer's purposes we return the URI so transport
-        # routing can identify the source as Spotify.
+        # jasper.spotify_router (which already does Web API).
         uri = librespot_state.track_uri(self._librespot_state_path)
         if not uri:
             return {}
@@ -156,6 +157,38 @@ class RendererClient:
 
     async def _ap_currentsong(self) -> dict[str, Any]:
         return await airplay_now_playing()
+
+
+PROBE_ORDER = (Source.AIRPLAY, Source.SPOTIFY, Source.BLUETOOTH, Source.USBSINK)
+
+
+async def audible_source(renderer: RendererClient) -> Source:
+    """The source the speaker plays: mux's committed answer, else the first
+    raw probe playing in :data:`PROBE_ORDER`.
+
+    Mux decides the winner (ADR-0150), so its answer stands even when the
+    probes disagree. The probes answer only when mux cannot: it is
+    unreachable, or a measurement lease reports a fan-in lane label, which
+    is not a source. During a handoff mux keeps its last committed source,
+    so its "idle" is true idle.
+    """
+    try:
+        selected = await renderer.selected_source()
+        if selected in MUSIC_SOURCE_VALUES:
+            return Source(selected)
+        if selected == Source.IDLE.value:
+            return Source.IDLE
+    except Exception as e:  # noqa: BLE001
+        logger.debug("selected_source() failed (%s); using probes", e)
+    try:
+        active = await renderer.active_renderers()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("active_renderers() failed (%s); treating as idle", e)
+        return Source.IDLE
+    for source in PROBE_ORDER:
+        if active.get(SOURCE_TO_ACTIVE_KEY[source]):
+            return source
+    return Source.IDLE
 
 
 # ----------------------------------------------------------------------

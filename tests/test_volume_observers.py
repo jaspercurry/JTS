@@ -37,7 +37,7 @@ class _FakeCoordinator:
         self.observation_revision: str | None = None
         self.accept_observations = True
 
-    async def _active_source(self):
+    async def active_source(self):
         return self.active
 
     async def apply_active_source_transition(self, prev, current):
@@ -347,7 +347,7 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
     is idempotent and gated internally so it's safe to call
     unconditionally — the observer's job is just to drive the
     cadence. The tick's own resolved source is forwarded so the
-    reconciler does not re-resolve it (one `_active_source()` per
+    reconciler does not re-resolve it (one `active_source()` per
     tick, not two)."""
     coord = _FakeCoordinator(active=Source.IDLE)
     obs = VolumeObserver(

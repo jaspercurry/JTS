@@ -23,7 +23,8 @@ from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.active_speaker.seat_level_reference import (
-    AnchorFacts, ResolvedLevel, predicted_rung_admission, resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
+    SCHEMA_VERSION as SEAT_LEVEL_SCHEMA_VERSION, AnchorFacts, ResolvedLevel, predicted_rung_admission,
+    resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
@@ -34,21 +35,29 @@ from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_pair
+from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
 
 
+def _boost(boost_db, **changes):
+    """BASS_EXTENSION with its transform's DC lift set to ``boost_db``."""
+    shape = BASS_EXTENSION["linkwitz_transform"]
+    return {**BASS_EXTENSION, "linkwitz_transform": {**shape, "target_hz": shape["source_hz"] / 10 ** (boost_db / 40)},
+            **changes}
+
+
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
         candidates={}, mic_present=True, mic_identified=True,
-        anchor=AnchorFacts({"artifact_schema_version": 2, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
+        anchor=AnchorFacts({"artifact_schema_version": SEAT_LEVEL_SCHEMA_VERSION, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
                             "target": {"target_db_spl": 75.0, "tolerance_db": 1.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
-                            "stimulus": {"program_id": "fixture-sweep"},
+                            "stimulus": {"stimulus_id": "fixture-sweep"},
                             "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
                            MicSensitivity(-12.0, 18.0, "1234")),
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
-        program_ids_for=lambda _plan: ("fixture-sweep",),
+        stimulus_ids_for=lambda _plan: ("fixture-sweep",),
     ), **changes)
 
 
@@ -61,7 +70,7 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
     ready = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     caplog.set_level(logging.INFO)
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -78,6 +87,24 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
+    _topology, safety, targets = _profile_and_targets(
+        woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
+    monkeypatch.setattr(control_client, "get", Mock(return_value=control_client.ControlResponse(
+        200, b'{"muted": false, "percent": 35}')))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    ready = ready_facts(plan)
+    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    context = SimpleNamespace(topology=None, roles_bands=(), role_targets=targets, safety_profile=safety,
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    assert preflight(plan, replace(ready, driver_caps=facts.driver_caps)).to_dict()["driver_caps"] == {
+        "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
+        "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
+    }
 
 
 @pytest.mark.parametrize("layout,name,preset,poses", [
@@ -102,7 +129,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     plan = request_for_preset(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
     ready = ready_facts(plan)
-    context = SimpleNamespace(topology=topology, roles_bands=roles, role_targets=role_targets,
+    context = SimpleNamespace(topology=topology, roles_bands=roles, safety_profile={}, role_targets=role_targets,
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
     monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: context)
@@ -119,11 +146,11 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
     blocked = bool(missing or invalid_pairs)
 
-    def program_ids(_plan):
+    def stimulus_ids(_plan):
         assert not blocked
         return ("fixture-sweep",)
 
-    report = preflight_levels(plan, replace(facts, program_ids_for=program_ids))
+    report = preflight_levels(plan, replace(facts, stimulus_ids_for=stimulus_ids))
     assert report.blocking is blocked
     if blocked:
         issue, = report.issues
@@ -190,7 +217,7 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
     plan = AngleCaptureRequest((AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose="reference",
                                           driver="tweeter"),))
     ready = ready_facts(plan)
-    context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), safety_profile={}, role_targets={},
                               driver_bands={"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(tweeter_floor_hz, 20000)},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
@@ -208,9 +235,9 @@ def test_preflight_per_driver_layout(layout):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
     plan = request_for_preset(preset("speaker/mark"), mover="human")
-    program_ids = Mock(return_value=("fixture-sweep",))
+    stimulus_ids = Mock(return_value=("fixture-sweep",))
     report = preflight(plan, ready_facts(
-        plan, program_ids_for=program_ids,
+        plan, stimulus_ids_for=stimulus_ids,
         declared_target_ids=tuple(measurement_target_id(t["role"], t.get("output_variant", "primary")) for t in targets),
         roles_bands=tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
                           if t.get("output_variant", "primary") == "primary"),
@@ -223,7 +250,7 @@ def test_preflight_per_driver_layout(layout):
         assert report.schedule == () and report.price == {}
         assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
         assert REASON_REGISTRY[issue.code].retry_budget == 0
-        program_ids.assert_not_called()
+        stimulus_ids.assert_not_called()
     else:
         assert report.issues == ()
 
@@ -302,7 +329,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     def context(_status):
         if fault == "box":
             raise CrossoverV2Refused("setup incomplete")
-        return SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+        return SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
             preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
 
     monkeypatch.setattr(preflight_live, "resolve_conductor_context", context)
@@ -383,12 +410,12 @@ def test_run_level_keeps_anchor_and_clamps_to_statement_ceiling(level_db):
 
 
 @pytest.mark.parametrize("boost,tolerance,admitted,clamped", [
-    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 82.95, 82.96), (18, 0.5, 84.5, 84.6),
+    (18, 1, 84.0, 84.1), (0, 1, 84.0, 84.1), (20, 1, 83.8, 83.81), (18, 0.5, 84.5, 84.6),
 ])
 def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, tolerance, admitted, clamped):
-    applied = {**BASS_EXTENSION, "low_boost_db": 18, "reference_level_db": 0,
-               "delta_highpass_hz": 63, "detector_lowpass_hz": 100}
-    candidate = replace(_room_candidate(tuning_profile), bass_extension={**applied, "low_boost_db": boost} if boost else {})
+    applied = _boost(18, delta_highpass_hz=63, detector_lowpass_hz=100)
+    candidate = replace(_room_candidate(tuning_profile),
+                        bass_extension=_boost(boost, delta_highpass_hz=63, detector_lowpass_hz=100) if boost else {})
     name = candidate.fingerprint
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="bass"),), candidates=(name,))
     facts = ready_facts(plan, candidates={name: candidate}, applied_bass_extension=applied)
@@ -408,8 +435,8 @@ def test_jts3_rung_margin_uses_the_applied_stack(tuning_profile, boost, toleranc
         assert row["admitted_db_spl"] <= row["margin_bound_db_spl"] == 85 - (tolerance + row["lift_bound_db"])
         if spl == admitted:
             assert fader == requested
-            assert row["lift_bound_db"] == pytest.approx(1.04676 if boost == 20 else 0, abs=0.001)
-            assert row["margin_bound_db_spl"] == pytest.approx(82.95324 if boost == 20 else 85 - tolerance, abs=0.001)
+            assert row["lift_bound_db"] == pytest.approx(0.19923 if boost == 20 else 0, abs=0.001)
+            assert row["margin_bound_db_spl"] == pytest.approx(83.80077 if boost == 20 else 85 - tolerance, abs=0.001)
 
 
 @pytest.mark.parametrize("tolerance", [None, 0, -1, float("nan")])
@@ -507,11 +534,11 @@ def test_margin_clamp_below_policy_floor_refuses(anchor_spl):
 @pytest.mark.parametrize("applied_boost", [0, 6, 18])
 def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile, applied_boost):
     base = _room_candidate(tuning_profile)
-    descriptors = [{}, *({**BASS_EXTENSION, "low_boost_db": boost} for boost in (6, 18, 20))]
+    descriptors = [{}, *(_boost(boost) for boost in (6, 18, 20))]
     candidates = [replace(base, bass_extension=descriptor) for descriptor in descriptors]
     plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, candidate_id=c.fingerprint) for c in candidates),
                                candidates=tuple(c.fingerprint for c in candidates))
-    applied = {**BASS_EXTENSION, "low_boost_db": applied_boost, "reference_level_db": -10} if applied_boost else {}
+    applied = _boost(applied_boost) if applied_boost else {}
     facts = ready_facts(plan, candidates={c.fingerprint: c for c in candidates}, applied_bass_extension=applied)
     for requested in (-59, -35, -25, -18, -10, -1, 0):
         report = preflight(replace(plan, level=LevelPolicy(level_db=requested)), facts)
@@ -587,7 +614,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", unreadable)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_room_peqs == room
@@ -595,7 +622,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
 
 def test_margin_clamp_lands_under_the_bound():
     requested = -17.621
-    candidate = {**BASS_EXTENSION, "low_boost_db": 20}
+    candidate = _boost(20)
     row = predicted_rung_admission(requested, ResolvedLevel(70.8695, -22.0129, "1234"), {"trial": candidate},
                                    applied={}, ceiling_db_spl=85, tolerance_db=3)
     assert row["level_db"] < requested
@@ -619,12 +646,12 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a, **kw: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
-        roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), role_targets={"woofer": "fp-woofer"}, fc_hz=None,
+        roles_bands=(RoleBand("woofer", 0, FrequencyBand(20, 20000)),), safety_profile={}, role_targets={"woofer": "fp-woofer"}, fc_hz=None,
         driver_caps_dbfs={"woofer": -8}, session_volume_db=-22.23, driver_sweep_duration_limits_s={})
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    ids = facts.program_ids_for(plan)
+    ids = facts.stimulus_ids_for(plan)
     assert ids and len(set(ids)) == 1
-    record["stimulus"] = {"program_id": ids[0] if same else "different"}
+    record["stimulus"] = {"stimulus_id": ids[0] if same else "different"}
     report = preflight(plan, facts)
     assert not report.blocking
     assert report.plan.level.predicted_db_spl == pytest.approx(84 if same else 74.23)
@@ -638,7 +665,7 @@ def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
 
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
 def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
-    candidate = replace(_room_candidate(tuning_profile), bass_extension={**BASS_EXTENSION, "reference_level_db": 0, "low_boost_db": 18})
+    candidate = replace(_room_candidate(tuning_profile), bass_extension=_boost(18))
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     anchor = ready_facts(plan).anchor
@@ -649,13 +676,13 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         driver_caps_dbfs={}, fc_hz=None, driver_sweep_duration_limits_s={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
-    report = preflight(plan, replace(facts, program_ids_for=lambda _: ("fixture-sweep",)))
+    report = preflight(plan, replace(facts, stimulus_ids_for=lambda _: ("fixture-sweep",)))
     assert not report.blocking
     row = report.rung_admission
     assert report.plan.level.volume_db < 0
@@ -686,7 +713,7 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
                         lambda *args, **kwargs: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     context = SimpleNamespace(
         topology=None, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
-        roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),), role_targets={"woofer": "fp-woofer"},
+        roles_bands=(RoleBand("woofer", 0, FrequencyBand(550 if fc_hz is None else 20, 20000)),), safety_profile={}, role_targets={"woofer": "fp-woofer"},
         fc_hz=fc_hz, driver_caps_dbfs={"woofer": -8}, session_volume_db=record["reference_volume_db"], driver_sweep_duration_limits_s={},
     )
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -748,7 +775,7 @@ def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, a
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
-    context = SimpleNamespace(topology=None, roles_bands=(), role_targets={},
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(
         plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"),

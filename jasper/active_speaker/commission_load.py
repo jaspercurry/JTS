@@ -692,11 +692,9 @@ async def load_driver_commissioning_config(
         ]
         payload = _payload("blocked", "load_blocked", issues)
         _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked group=%s role=%s blockers=%d",
-            speaker_group_id,
-            role,
-            len(payload["issues"]),
+        log_event(
+            logger, "active_speaker.driver_commission_load", result="blocked",
+            group=speaker_group_id, role=role, blockers=len(payload["issues"]),
         )
         return {"preflight": preflight, "load": payload}
 
@@ -708,9 +706,9 @@ async def load_driver_commissioning_config(
         )
         payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked reason=rollback_anchor_missing anchor=%s",
-            staged_path,
+        log_event(
+            logger, "active_speaker.driver_commission_load", result="blocked",
+            reason="rollback_anchor_missing", anchor=staged_path,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -731,10 +729,10 @@ async def load_driver_commissioning_config(
         )
         payload = _payload("blocked", "load_blocked", [issue])
         _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load result=blocked reason=active_graph_not_staged current=%s anchor=%s",
-            prior_config_path,
-            staged_path,
+        log_event(
+            logger, "active_speaker.driver_commission_load", result="blocked",
+            reason="active_graph_not_staged", current=prior_config_path,
+            anchor=staged_path,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -894,14 +892,10 @@ async def load_driver_commissioning_config(
         # drift / unreadable graph) in the journal, not just the state file — the
         # journal is the operator's first debug surface.
         reason = exc.state.persist_error or exc.state.load_error or str(exc)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "rolled_back=%s reason=%s transport=%s",
-            candidate_path,
-            staged_path,
-            getattr(exc.state, "rollback_succeeded", None),
-            reason,
-            load_transport,
+        log_event(
+            logger, "active_speaker.driver_commission_load", level=logging.WARNING,
+            result="failed", candidate=candidate_path, anchor=staged_path,
+            rolled_back=exc.state.rollback_succeeded, reason=reason, transport=load_transport,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -919,18 +913,15 @@ async def load_driver_commissioning_config(
             "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
         }
         _record_commission_state(payload, state_path=state_path)
-        logger.info(
-            "event=active_speaker.driver_commission_load action=output_reconcile "
-            "status=skipped reason=same_active_output_lane"
+        log_event(
+            logger, "active_speaker.driver_commission_load", action="output_reconcile",
+            status="skipped", reason="same_active_output_lane",
         )
-        logger.info(
-            "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-            "durable_intact=%s op_id=%s transport=%s",
-            candidate_path,
-            staged_path,
-            captured.get("durable_intact"),
-            apply_state.op_id,
-            load_transport,
+        log_event(
+            logger, "active_speaker.driver_commission_load", result="loaded",
+            candidate=candidate_path, anchor=staged_path,
+            durable_intact=captured.get("durable_intact"),
+            op_id=apply_state.op_id, transport=load_transport,
         )
         return {"preflight": preflight, "load": payload}
 
@@ -948,13 +939,11 @@ async def load_driver_commissioning_config(
             "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
         }
         _record_commission_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.driver_commission_load result=failed candidate=%s anchor=%s "
-            "reason=output_hardware_reconcile_failed op_id=%s transport=%s",
-            candidate_path,
-            staged_path,
-            apply_state.op_id,
-            load_transport,
+        log_event(
+            logger, "active_speaker.driver_commission_load", level=logging.WARNING,
+            result="failed", candidate=candidate_path, anchor=staged_path,
+            reason="output_hardware_reconcile_failed", op_id=apply_state.op_id,
+            transport=load_transport,
         )
         return {"preflight": preflight, "load": payload}
     payload["output_reconcile"] = {
@@ -962,14 +951,11 @@ async def load_driver_commissioning_config(
         "unit": AUDIO_HARDWARE_RECONCILE_UNIT,
     }
     _record_commission_state(payload, state_path=state_path)
-    logger.info(
-        "event=active_speaker.driver_commission_load result=loaded candidate=%s anchor=%s "
-        "durable_intact=%s op_id=%s transport=%s",
-        candidate_path,
-        staged_path,
-        captured.get("durable_intact"),
-        apply_state.op_id,
-        load_transport,
+    log_event(
+        logger, "active_speaker.driver_commission_load", result="loaded",
+        candidate=candidate_path, anchor=staged_path,
+        durable_intact=captured.get("durable_intact"),
+        op_id=apply_state.op_id, transport=load_transport,
     )
     return {"preflight": preflight, "load": payload}
 
@@ -1038,10 +1024,9 @@ async def rollback_driver_commissioning_config(
             ],
         )
         _record_commission_state(payload, state_path=state_path)
-        logger.warning(
-            "event=active_speaker.driver_commission_rollback result=failed target=%s error=%s",
-            staged_path,
-            type(exc).__name__,
+        log_event(
+            logger, "active_speaker.driver_commission_rollback", level=logging.WARNING,
+            result="failed", target=staged_path, error=type(exc).__name__,
         )
         return {"rollback": payload}
 
@@ -1054,9 +1039,8 @@ async def rollback_driver_commissioning_config(
         dsp_apply=apply_state.to_dict(),
     )
     _record_commission_state(payload, state_path=state_path)
-    logger.info(
-        "event=active_speaker.driver_commission_rollback result=rolled_back target=%s op_id=%s",
-        staged_path,
-        apply_state.op_id,
+    log_event(
+        logger, "active_speaker.driver_commission_rollback",
+        result="rolled_back", target=staged_path, op_id=apply_state.op_id,
     )
     return {"rollback": payload}

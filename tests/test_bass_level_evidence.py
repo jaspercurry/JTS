@@ -27,8 +27,8 @@ from jasper.cli.round_views._bass_inputs import fit_run
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs, bass_run as bass_run
 
 
-DESCRIPTOR = {"low_boost_db": 8, "reference_level_db": 0,
-              "detector_lowpass_hz": 100, "compressor_threshold_dbfs": -30}
+DESCRIPTOR = {"linkwitz_transform": {"source_hz": 60, "source_q": 0.707, "target_hz": 38, "target_q": 0.707},
+              "delta_highpass_hz": 20, "detector_lowpass_hz": 100, "compressor_threshold_dbfs": -30}
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def pair(bass_fit_pairs):
     pair = copy.deepcopy(bass_fit_pairs[0])
     grid = np.geomspace(20, 200, 1201).tolist()
     for take in pair:
-        take["record"].update(level_db=-20, loudness_volume_db=-20)
+        take["record"].update(level_db=-20)
         take.update(freqs_hz=grid, fundamental_db=[0.] * len(grid), fundamental_qualified=[True] * len(grid),
                     frequency_curve={"freqs_hz": [300, 500, 1000], "magnitude_db": [0, 0, 0]},
                     bands=[{"band_hz": [lo, hi], "fundamental_qualified": True, "estimated_snr_db": 32}
@@ -100,7 +100,7 @@ def test_prescribed_realized_and_partial_boost_band(pair, fraction, fader_db):
     descriptor = {**DESCRIPTOR, "delta_highpass_hz": 25, "detector_lowpass_hz": 90}
     settings = DynamicBassDescriptor(**descriptor)
     for take in pair:
-        take["record"].update(level_db=fader_db, loudness_volume_db=fader_db)
+        take["record"].update(level_db=fader_db)
     pair[1]["fundamental_db"] = (fraction * np.asarray(expected_boost_db(settings, pair[1]["freqs_hz"]))).tolist()
     row, = table([pair], descriptor)["levels"]
     grid = np.geomspace(BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1], BASS_GRID_POINTS)
@@ -131,17 +131,18 @@ def test_a_take_that_played_the_adr_0352_taper_says_so(pair):
 
 
 def test_live_boost_readings_follow_the_prescribed_shape(pair):
-    descriptor = {**DESCRIPTOR, "low_boost_db": 9.9, "delta_highpass_hz": 25, "detector_lowpass_hz": 125}
+    descriptor = {**DESCRIPTOR, "delta_highpass_hz": 25, "detector_lowpass_hz": 125,
+                  "linkwitz_transform": {"source_hz": 100, "source_q": 0.707, "target_hz": 60, "target_q": 0.707}}
     for take in pair:
-        take["record"].update(level_db=-16.5, loudness_volume_db=-16.5)
+        take["record"].update(level_db=-16.5)
     aligned = fit_bass_shape([pair], candidate_id="boost")
     for (lo, hi), realized in zip(BASS_BANDS_HZ[3:7], (8.8, 6.0, 3.9, 2.8)):
         aligned["delta"][(aligned["freqs_hz"] >= lo) & (aligned["freqs_hz"] < hi)] = realized
     row = bass_level_evidence(aligned, descriptor=DynamicBassDescriptor(**descriptor))
     bands = [band for band in row["realized_boost_db"] if 50 <= band["band_hz"][0] <= 100]
-    assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.938, 6.167, 4.254, 2.694], abs=.001)
+    assert [band["prescribed_boost_db"] for band in bands] == pytest.approx([7.696, 6.289, 4.527, 2.938], abs=.001)
     compression = [band["value_db"] for band in row["compression_db"] if band["band_hz"][0] >= 50]
-    assert compression == pytest.approx([-.862, .167, .354, -.106], abs=.001)
+    assert compression == pytest.approx([-1.104, .289, .627, .138], abs=.001)
 
 
 @pytest.mark.parametrize("change,verdict", [(0, "harmonics_flat"), (6, "harmonics_rose"), (None, "unknown")])
@@ -251,7 +252,7 @@ def ladder(pair):
             for repeat in range(repeats):
                 rung = copy.deepcopy(pair)
                 for side, take in enumerate(rung):
-                    take["record"].update(level_db=spl - 100, loudness_volume_db=spl - 100,
+                    take["record"].update(level_db=spl - 100,
                                           capture_integrity={"spl": {"loudest_half_second_db_spl": spl + side - 1}})
                     take["frequency_curve"]["magnitude_db"] = [spl - 100] * 3
                     take["fundamental_db"] = [spl - 100 + side] * len(take["freqs_hz"])
@@ -339,7 +340,6 @@ def test_ladder_h2_knee_uses_fader_steps_and_stops_at_the_first_knee(ladder):
     for pair in pairs:
         for take in pair:
             take["record"]["level_db"] *= 2
-            take["record"]["loudness_volume_db"] *= 2
             take["harmonics"]["2"], take["harmonics"]["3"] = take["harmonics"]["3"], take["harmonics"]["2"]
             if take["record"]["level_db"] == -38:
                 take["harmonics"]["2"]["relative_db"] = [-40.] * len(take["freqs_hz"])

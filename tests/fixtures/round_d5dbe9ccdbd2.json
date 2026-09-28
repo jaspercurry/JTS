@@ -3,7 +3,7 @@
     "program": "speaker/arm",
     "sets": [
       {
-        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "summed", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "summed", "level_db": -16.924},
         "set_id": "884af938dd68e40332b64e268b3f599a18240a905f5caaaaff652e8f3950ed14",
         "takes": [
           {
@@ -18,7 +18,7 @@
         ]
       },
       {
-        "capture_basis": {"candidate_id": "e17afd203fa65452cb85970dd0ad9937b7d5a725fd29d3ec1e9138a7d971ec44", "graph_fingerprint": "14691e884b5f2d4e52fc44cfa1fae2a705c7d553100ffa1d1a531f777156dd08", "side": "mono", "role": "summed", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": "e17afd203fa65452cb85970dd0ad9937b7d5a725fd29d3ec1e9138a7d971ec44", "graph_fingerprint": "14691e884b5f2d4e52fc44cfa1fae2a705c7d553100ffa1d1a531f777156dd08", "side": "mono", "role": "summed", "level_db": -16.924},
         "set_id": "63bf46d5c8773b134d02748ab501368c39f1f946e764567c8b0fe7532077265f",
         "takes": [
           {
@@ -33,7 +33,7 @@
         ]
       },
       {
-        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "tweeter", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "tweeter", "level_db": -16.924},
         "set_id": "46ca147c9b65bc5b0b1b5d12b17703b82e9b306d1b183b52cf2a19ff993a357e",
         "takes": [
           {
@@ -66,7 +66,7 @@
         ]
       },
       {
-        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "woofer", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "woofer", "level_db": -16.924},
         "set_id": "b52d33e98558d981e17c8ec46ba254a632fd6efb22df45f23502b0287239b1c9",
         "takes": [
           {
@@ -99,7 +99,7 @@
         ]
       },
       {
-        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "tweeter", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "tweeter", "level_db": -16.924},
         "set_id": "345b80b1ab09b069d3b15ff71e3c342ad563eca06d348ea2ad58a8dc82e25712",
         "takes": [
           {
@@ -141,7 +141,7 @@
         ]
       },
       {
-        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "woofer", "level_db": -16.924, "loudness_volume_db": -16.924},
+        "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "woofer", "level_db": -16.924},
         "set_id": "4e7b8f211194f3ee380988adff4139ea9c3f36dbf7369c6a390dfce41a2dc8f3",
         "takes": [
           {

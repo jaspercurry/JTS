@@ -12,6 +12,7 @@ import pytest
 from jasper.cli import round_views
 from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.active_speaker import plan_run
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.audio_measurement.program import build_measure_program, RoleBand
@@ -94,14 +95,17 @@ def test_repeat_refuses_unusable_takes_by_code(repeated_round, bad, capsys):
 def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys):
     program = build_measure_program({"woofer": -20, "tweeter": -20}, [
         RoleBand("woofer", 0, FrequencyBand(200, 4000)), RoleBand("tweeter", 1, FrequencyBand(1000, 20000))])
+    def stand_in(record):
+        return _measure_analysis(program, predicted_ripple_db=float(record["repeat"]))
     class Records(FakeRecords):
         async def bank(self, record):
-            record["program"] = program.to_dict()
+            # What the capture host banks on the take (ADR-0383).
+            record.update(program=program.to_dict(), **analysis_blocks(stand_in(record), program))
             return await super().bank(record)
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(True))
     expected = []
     def analyze(record, record_id):
-        analysis = _measure_analysis(program, predicted_ripple_db=float(record["repeat"]))
+        analysis = stand_in(record)
         expected.append(analysis_json(analysis))
         return analysis
     result, _ = asyncio.run(_run_gated(replace(_walk([0]), repeats=2), analyze=analyze,

@@ -21,6 +21,8 @@ from jasper.active_speaker.baseline_profile import applied_layer_names, load_app
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
+from jasper.active_speaker.design_draft import ActiveSpeakerDesignDraftError, load_design_draft
+from jasper.active_speaker.crossover_v2.conductor_context import published_driver_caps
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
@@ -30,7 +32,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence,
+    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence, blamed_section,
     judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
     read_prescription_document, saved_base, vary_document,
 )
@@ -97,8 +99,7 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
         if kind == "emitted_graph" and args.round:
             capture_id = resolve_set(round_inputs(Path(args.round)), args.set).take_id(args.take)
     except RoundSetRefused as exc:
-        section = "driver" if "driver" in document["sections"] else "blend" if kind == "emitted_graph" else kind
-        raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail) from exc
     return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
                                          base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
 
@@ -180,7 +181,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except PrescriptionDocumentRefused as exc:
         return _document_failure(exc)
     except RoundSetRefused as exc:
-        return _document_failure(PrescriptionDocumentRefused(exc.reason, "room", str(exc), evidence=exc.detail))
+        return _document_failure(PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail))
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return _document_failure(PrescriptionDocumentRefused(exc.code, None, exc.detail))
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
@@ -300,6 +301,17 @@ def _declared_section(
         ),
     }
 
+
+
+def _live_driver_caps() -> dict[str, Any]:
+    """Each driver's program-path cap and its source from today's declaration, whichever
+    round is named, or the code refusing that declaration (ADR-0382)."""
+    try:
+        profile = load_design_draft().get("driver_safety_profile") or {}
+    except ValueError as exc:  # /sound/speaker/ opens a refused declaration and names its fix
+        return {"caps": {}, "reason": getattr(exc, "code", ActiveSpeakerDesignDraftError.code)}
+    targets = {target["target_id"]: target["target_fingerprint"] for target in profile.get("targets", [])}
+    return {"caps": published_driver_caps(profile, targets), "reason": None}
 
 
 def _candidate_records() -> list[dict[str, Any]]:
@@ -529,6 +541,7 @@ def status_document(
         **sections,
         **context,
         "seat_level_reference_volume_db": seat_level_db,
+        "driver_caps_live": _live_driver_caps(),
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
         "last_banked": {name: {key: banked[name][key] for key in ("round_id", "round_dir", "banked_at", "status", "stale")}

@@ -11,8 +11,10 @@ import os
 import pytest
 
 import jasper.volume_curve as volume_curve
+from jasper.music_sources import VolumeMode
 from jasper.sound import settings as sound_settings
 from jasper.volume_curve import (
+    canonical_target_db,
     configured_volume_floor_db,
     db_to_percent,
     main_mute_for_db,
@@ -34,11 +36,33 @@ def test_zero_is_mute_one_is_audible_above_floor():
     assert percent_to_db(100) == 0.0
 
 
+def test_level_one_is_strictly_above_the_mute_floor():
+    assert percent_to_db(1) > percent_to_db(0)
+
+
 @pytest.mark.parametrize("level", range(1, 101))
 def test_main_mute_predicates_agree_for_every_audible_level(level):
     # R-006: a level and its own dB must not disagree on mute, or the
     # coordinator re-mutes an audible level forever.
     assert main_mute_for_level(level) == main_mute_for_db(percent_to_db(level))
+
+
+# -1.01 dB is a guard and -1.0 dB is not: the drift dead band is 1 dB.
+@pytest.mark.parametrize(
+    ("level", "mode", "persisted_db", "expected"),
+    [
+        pytest.param(70, VolumeMode.CAMILLA_MASTER, -1.0, percent_to_db(70), id="master"),
+        pytest.param(70, VolumeMode.CAMILLA_MASTER, -1.01, percent_to_db(70), id="master_ignores_guard"),
+        pytest.param(0, VolumeMode.CAMILLA_MASTER, -1.0, percent_to_db(0), id="master_zero"),
+        pytest.param(0, VolumeMode.CAMILLA_MASTER, -1.01, percent_to_db(0), id="master_zero_ignores_guard"),
+        pytest.param(70, VolumeMode.PUSH, -1.0, 0.0, id="push_pin"),
+        pytest.param(70, VolumeMode.PUSH, -1.01, -1.01, id="push_keeps_guard"),
+        pytest.param(0, VolumeMode.PUSH, -1.0, percent_to_db(0), id="push_content_mute"),
+        pytest.param(0, VolumeMode.PUSH, -1.01, percent_to_db(0), id="push_mute_before_guard"),
+    ],
+)
+def test_canonical_target_follows_the_carrier(level, mode, persisted_db, expected):
+    assert canonical_target_db(level, mode, persisted_db) == pytest.approx(expected)
 
 
 def test_nonzero_percent_round_trips_above_floor():

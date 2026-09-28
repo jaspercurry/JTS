@@ -75,7 +75,7 @@ def speaker_round(tmp_path):
                                   complex_tf=10 ** (db / 20) + 0j, gating={}, snr=None, validity_floor_hz=180)
         responses.append(replace(response, repeat_responses=(response, response)))
     analysis = ProgramAnalysis(
-        phase="measure", program_id=program.program_id, locations=(), driver_responses=tuple(responses),
+        phase="measure", stimulus_id=program.stimulus_id, locations=(), driver_responses=tuple(responses),
         alignment=AlignmentEstimate(delay_us=157.5, raw_delay_us=162, parallax_us=4.5,
                                     polarity="inverted", polarity_sign=-1, confidence=0.9, seed_delay_us=-205, polarity_agrees_with_sum=False),
         candidate=CrossoverCandidate(trim_db={"woofer": 0, "tweeter": -3}, polarity="inverted",
@@ -84,15 +84,15 @@ def speaker_round(tmp_path):
                                      alignment_objective="flat_sum_estimate", flatness_improvement_db=2.25,
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
-    record.update(program=program.to_dict(), program_id=program.program_id,
+    record.update(program=program.to_dict(), stimulus_id=program.stimulus_id,
                   curves=analysis_curve_records(analysis, program),
                   capture_setup={"calibration": {"model": "minidsp_umik2", "calibration_id": "mic-1"}},
                   capture_calibration={"applied": True, "calibration_id": "mic-1", "curve_fingerprint": "curve-1"})
     record_path = take_artifact_path(inputs.session_dir, row.path)
     record_path.write_text(json.dumps(record))
     classes = {"woofer": "unknown", "tweeter": "soft_dome"}
-    (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
-        "drivers": [{"role": role, "driver_class": cls} for role, cls in classes.items()],
+    (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
+        "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": cls} for role, cls in classes.items()],
     }}))
     region = {"id": "pair", "lower_driver": "woofer", "upper_driver": "tweeter", "fc_hz": 2400, "order": 4}
     (directory / "candidate.json").write_text(json.dumps({
@@ -258,13 +258,13 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []}
     if role == "main":
         program = build_measure_program({role: -24.0}, [RoleBand(role, 0, FrequencyBand(150, 20000))])
-        record.update(program=program.to_dict(), program_id=program.program_id)
-        candidate["analysis"]["program_id"] = program.program_id
+        record.update(program=program.to_dict(), stimulus_id=program.stimulus_id)
+        candidate["analysis"]["stimulus_id"] = program.stimulus_id
         candidate["source_preset"]["crossover_regions"] = []
     (directory / "candidate.json").write_text(json.dumps(candidate))
     if changes.get("horn_positions"):
-        (root / "design-draft.json").write_text(json.dumps({"manual_settings": {
-            "drivers": [{"role": role, "driver_class": "compression_horn"}],
+        (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
+            "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": "compression_horn"}],
         }}))
     response = replace(response_from_banked_curve(record["curves"][1])[0], role=role, repeat_responses=())
     rows = []
@@ -283,7 +283,7 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
             if changes["horn_positions"] == 1 and deg:
                 db = np.zeros_like(db)
         measured = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j)
-        analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+        analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
                                   driver_responses=(replace(measured, repeat_responses=(measured, measured)),))
         curves = [c for c in record["curves"] if c["role"] != role and role != "main"] + analysis_curve_records(analysis, program)
         if changes.get("missing_curve") and index == 2:
@@ -386,7 +386,7 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
         role="woofer", freqs_hz=grid, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
         gating={"f_trusted_hz": trusted_floor_hz}, snr=None, validity_floor_hz=143,
     )
-    analysis = ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+    analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
                               driver_responses=(replace(response, repeat_responses=(response, response)),))
     curves = analysis_curve_records(analysis, program) + [record["curves"][1]]
     if trusted_floor_hz is None:
@@ -653,7 +653,7 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
         alignment_objective="saved_timing" if held else "summed_fit_committed",
         residual_rms_db=0.348, margin_db=1.1 if held else 2.12,
         timing_verdict="saved" if held else "measured", repeat_spread_db=.1, repeat_spread_us=2, repeat_count=3, seed_polarity_sign=1, alignment_seed_delay_us=120)
-    analysis = analysis_json(ProgramAnalysis(phase="measure", program_id=program.program_id, locations=(),
+    analysis = analysis_json(ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
         candidate=candidate, alignment=AlignmentEstimate(delay_us=candidate.delay_us, raw_delay_us=candidate.delay_us,
             parallax_us=4.5 if declared else 0, polarity=candidate.polarity, polarity_sign=1 if held else -1,
             confidence=candidate.confidence, seed_delay_us=120)))

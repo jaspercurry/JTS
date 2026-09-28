@@ -2,16 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What one ``measure`` asks for, and what the engine admits it cannot do yet.
+"""What one ``measure`` asks for (ruling S12 -- see ADR-0228).
 
-The mic-only parameter surface ships COMPLETE, with the unbuilt regimes as loud
-stubs — a value returned to the caller, never a log line and never a raise
-(ruling S12 -- see ADR-0228). A preset is a saved :class:`MeasureSpec` and
-nothing more. The vocabulary is copied from
-:mod:`.contracts` rather than imported from its owners, which cost ~1,100
-modules including ``numpy`` on a 1 GB Pi. The two owners this module does
-import — ``output_topology`` (already transitive) and ``measurement_programs``
-(12 further modules) — were measured against that budget first.
+The vocabulary is copied from :mod:`.contracts` rather than imported from its
+owners, which cost ~1,100 modules including ``numpy`` on a 1 GB Pi.
 """
 
 from __future__ import annotations
@@ -35,17 +29,11 @@ from .contracts import (
     POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
-    REGIME_NEAR_FIELD,
     REGIME_REFERENCE_AXIS,
 )
 from .journey import CAPTURE_PHASES
 
 __all__ = [
-    "DISTORTION_VS_LEVEL_NOT_IMPLEMENTED",
-    "NEAR_FIELD_SPLICE_NOT_IMPLEMENTED",
-    "STUB_CODES",
-    "VERTICAL_AXIS_NOT_IMPLEMENTED",
-    "CapabilityStub",
     "MeasureSpec",
     "CANDIDATE_SCOPES",
     "GRAPH_SCOPES",
@@ -55,80 +43,8 @@ __all__ = [
     "inverted_roles_for",
     "level_trims_for",
     "measurement_delays_for",
-    "stubbed_capabilities",
 ]
 
-#: R-3. The near-field capture ships; the splice onto the far-field trace is
-#: the analysis that does not exist.
-NEAR_FIELD_SPLICE_NOT_IMPLEMENTED = "near_field_splice_not_implemented"
-#: R-4. Every rung of the ladder plays and banks its own record; what does not
-#: exist is the consumer that turns the set into a measured floor.
-DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
-#: R-5a. A vertical pose plays and banks, labelled with the elevation the
-#: operator was asked for (:attr:`~.spatial.PositionGeometry.vertical_deg`).
-#: What does not exist is the consumer that reads lobing out of an elevation set.
-VERTICAL_AXIS_NOT_IMPLEMENTED = "vertical_axis_not_implemented"
-
-
-@dataclass(frozen=True)
-class CapabilityStub:
-    """One named hole in the engine's own capability, said out loud.
-
-    ``captured`` is the operationally load-bearing field: a stub whose capture
-    still happened has evidence waiting for the analysis that will read it, and
-    one whose capture did not happen has nothing banked. ``instrument`` names
-    the §5 roster row that closes the hole.
-    """
-
-    code: str
-    instrument: str
-    captured: bool
-    message: str
-
-
-@dataclass(frozen=True)
-class _StubRow:
-    """The four facts one hole is rendered from."""
-
-    capability: str
-    owed: str
-    instrument: str
-    captured: bool
-
-
-def _stub(code: str, row: _StubRow) -> CapabilityStub:
-    """One stub in the wording shape ruling S12 fixes."""
-    banked = "capture banked" if row.captured else "nothing captured"
-    return CapabilityStub(
-        code=code,
-        instrument=row.instrument,
-        captured=row.captured,
-        message=(
-            f"{row.capability} not implemented; {banked}, "
-            f"{row.owed} pending {row.instrument}"
-        ),
-    )
-
-
-#: One row per named hole, kept as data so a fifth stub joins the engine's
-#: vocabulary by adding a row here and nowhere else.
-_ROWS: dict[str, _StubRow] = {
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
-        "near-field splice", "splice", "R-3", captured=True,
-    ),
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: _StubRow(
-        "distortion-vs-level sweep", "level ladder", "R-4", captured=True,
-    ),
-    VERTICAL_AXIS_NOT_IMPLEMENTED: _StubRow(
-        "vertical-axis analysis", "elevation read", "R-5a", captured=True,
-    ),
-}
-
-_STUBS = {code: _stub(code, row) for code, row in _ROWS.items()}
-
-#: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a
-#: code rather than trust it. Derived from the table above, never re-listed.
-STUB_CODES = frozenset(_STUBS)
 GRAPH_SCOPE_DRIVERS = "drivers"
 CANDIDATE_SCOPES = frozenset({"candidate", "candidate_branches", "timing"})
 GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, *sorted(CANDIDATE_SCOPES))
@@ -136,7 +52,7 @@ GRAPH_SCOPES = (GRAPH_SCOPE_DRIVERS, *sorted(CANDIDATE_SCOPES))
 
 @dataclass(frozen=True)
 class MeasureSpec:
-    """The parameter bundle one ``measure`` runs, and one preset saves.
+    """The parameter bundle one ``measure`` runs.
 
     ``positions`` are signed whole-degree bearings on ``position_axis``, in the
     frame :class:`~.spatial.PositionGeometry` declares and owns: negative is
@@ -490,23 +406,3 @@ def inverted_roles_for(spec: MeasureSpec) -> tuple[str, ...]:
     if spec.polarity != POLARITY_INVERTED:
         return ()
     return (spec.inverted_role,)
-
-
-def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
-    """Every capability this spec asks for that the engine has not built.
-
-    Total and side-effect-free. :meth:`~.session.TuningSession.measure` reads
-    ``captured=False`` as "there is nothing to play" and ``captured=True`` as
-    "play, bank, and say what the banked evidence is still owed".
-    """
-    codes: list[str] = []
-    if spec.regime == REGIME_NEAR_FIELD and spec.graph_scope == GRAPH_SCOPE_DRIVERS:
-        codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
-    if spec.level_ladder_dbfs:
-        codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)
-    if spec.position_axis == POSITION_AXIS_VERTICAL or spec.vertical_deg:
-        # Keyed on the ELEVATION, not on the axis word: the two are orthogonal,
-        # so a horizontal walk raised off mark height banks the same unanalysed
-        # evidence a vertical walk does.
-        codes.append(VERTICAL_AXIS_NOT_IMPLEMENTED)
-    return tuple(_STUBS[code] for code in codes)

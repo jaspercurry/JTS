@@ -15,12 +15,11 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker import crossover_preview, design_draft
 from jasper.active_speaker.commission_wiring import resolve_commission_inputs
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import current_research, mono_output_topology
 
 
 def _minimal_research() -> dict[str, object]:
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [
             {"role": "woofer", "model": "Test woofer"},
@@ -63,9 +62,11 @@ def test_fresh_computed_crossover_preview_is_the_commissioning_source(
 ) -> None:
     draft_path = tmp_path / "design-draft.json"
     monkeypatch.setenv(DESIGN_DRAFT_PATH_ENV, str(draft_path))
+    research, inputs = current_research(mono_output_topology(), _minimal_research())
     draft = save_design_draft(
         mono_output_topology(),
-        driver_research=_minimal_research(),
+        driver_research=research,
+        operator_inputs=inputs,
         path=draft_path,
         created_at="2026-07-12T12:00:00Z",
     )

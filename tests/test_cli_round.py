@@ -1192,7 +1192,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
 
     def engine(**kw):
         async def capture_record(record):
-            return await kw["records"].inner.bank({**record, "program_id": "sweep", "stimulus_dbfs": -20,
+            return await kw["records"].inner.bank({**record, "stimulus_id": "sweep", "stimulus_dbfs": -20,
                 "phase": record["program_phase"],
                 "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
                     "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
@@ -1245,7 +1245,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
             take["frequency_curve"]["magnitude_db"] = [take["record"]["level_db"]] * 3
             takes.append(take)
         path = default_out(inputs, target, "bass_view.json", set_id)
-        path.write_text(json.dumps({"schema": "jts_bass_view/1", "takes": takes}))
+        path.write_text(json.dumps({"schema": "jts_bass_view/2", "takes": takes}))
         return {"view": view, "status": "written", "out": str(path)}
     monkeypatch.setattr(round_bookkeeping, "run_bookkeeping", view)
     bank = round_bank.bank_round
@@ -1276,7 +1276,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     if len(levels) == 1:
         assert "bass_table" not in packet
         return
-    assert packet["bass_table"].get("schema") == "jts_bass_run_table/1", packet["bass_table"]
+    assert packet["bass_table"].get("schema") == "jts_bass_run_table/2", packet["bass_table"]
     table, = packet["bass_table"]["tables"]
     assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
 

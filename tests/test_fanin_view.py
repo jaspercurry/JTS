@@ -109,7 +109,6 @@ def test_ring_block_surfaces_empty_reads_rate_and_silent_ms() -> None:
     airplay_obs = view.current["inputs"]["airplay"]
     assert airplay_obs["ring"]["empty_reads"] == 1100
     assert airplay_obs["empty_reads_per_sec"] == 20.0
-    # 20 empty_reads/s * 256 slot_frames / 48000 Hz * 1000 = 106.67 ms/s.
     assert airplay_obs["silent_ms_per_sec"] == 106.7
 
 
@@ -142,7 +141,7 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
                     "fill_frames": 512,
                     "target_fill_frames": 512,
                     "held_target_frames": 1024,
-                    "decay": {"enabled": True, "floor_frames": 1024, "demand_ppm": 125.33},
+                    "decay": {"mode": "medium", "effective_mode": "medium", "enabled": True, "floor_frames": 1024, "demand_ppm": 125.33},
                 },
             }
         ],
@@ -165,11 +164,11 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
     assert fanin["inputs"]["usbsink"]["health"] == "capturing"
     assert fanin["inputs"]["usbsink"]["direct"]["drain_avail"]["max"] == 516
     assert fanin["inputs"]["usbsink"]["resampler"]["unlock_count"] == 17
-    # The #3464 rail counters ride the curated view alongside the ratio.
     assert fanin["inputs"]["usbsink"]["resampler"]["clamp_count"] == 7
     assert fanin["inputs"]["usbsink"]["resampler"]["anti_windup_count"] == 2
     assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["enabled"] is True
-    # The decontamination gauge rides the wholesale decay block (#3466).
+    for key in ("mode", "effective_mode"):
+        assert fanin["inputs"]["usbsink"]["resampler"]["decay"][key] == "medium"
     assert fanin["inputs"]["usbsink"]["resampler"]["decay"]["demand_ppm"] == 125.33
     assert fanin["inputs"]["spotify"]["present"] is False
     assert fanin["host_clock"]["ladder"] == "l0_locked"

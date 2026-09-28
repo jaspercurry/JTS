@@ -20,11 +20,10 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.design_draft import (
     normalise_driver_research,
+    normalise_manual_settings,
     _normalise_candidate,
     design_draft_view,
-    declared_driver_sensitivities,
     declared_driver_spacing_m,
-    declared_effective_driver_sensitivities,
 )
 from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
@@ -34,7 +33,7 @@ from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import current_research, mono_output_topology, research_design_draft
 
 
 def _topology() -> OutputTopology:
@@ -81,7 +80,6 @@ def test_installation_rejects_invalid_facts(facts, code):
 
 def _research() -> dict:
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [
             {
@@ -123,13 +121,21 @@ def _research() -> dict:
     }
 
 
+def _one_research_driver(driver: dict) -> dict:
+    research = {"artifact_schema_version": 2, "kind": DRIVER_RESEARCH_KIND,
+                "drivers": [{**driver, "target_id": f"mono:{driver['role']}"}]}
+    return normalise_driver_research(research)["drivers"][0]
+
+
 def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path):
     path = tmp_path / "active_speaker_design_draft.json"
 
+    research, inputs = current_research(_topology(), _research())
     payload = save_design_draft(
         _topology(),
-        driver_research=_research(),
+        driver_research=research,
         operator_inputs={
+            **inputs,
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
             "notes": "bench bring-up",
@@ -224,7 +230,7 @@ def test_driver_research_cannot_weaken_human_review_requirements():
         "needs_measurement_before_final": False,
     }
 
-    payload = build_design_draft(_topology(), driver_research=raw)
+    payload = research_design_draft(_topology(), raw)
 
     assert payload["driver_research"]["human_review"] == {
         "must_verify_wiring": True,
@@ -236,19 +242,19 @@ def test_driver_research_cannot_weaken_human_review_requirements():
 def test_driver_research_notes_remain_bounded():
     raw = _research()
     raw["drivers"][1]["notes"] = "x" * 2048
-    payload = build_design_draft(_topology(), driver_research=raw)
+    payload = research_design_draft(_topology(), raw)
     assert len(payload["driver_research"]["drivers"][1]["notes"]) == 2048
 
     raw["drivers"][1]["notes"] = "x" * 2049
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=raw)
+        research_design_draft(_topology(), raw)
     assert caught.value.code == "field_too_long"
 
 
 def test_manual_driver_notes_use_same_bound():
     manual_settings = {
         "drivers": [
-            {"role": "tweeter", "notes": "x" * 2048},
+            {"role": "tweeter", "target_id": "mono:tweeter", "notes": "x" * 2048},
         ],
         "crossover_candidates": [],
     }
@@ -278,17 +284,8 @@ def test_research_and_manual_drivers_share_field_normalisation() -> None:
         "notes": "same normalized fields",
         "sources": ["https://example.test/woofer"],
     }
-    research = _research()
-    research["drivers"] = [common]
-    research["crossover_candidates"] = []
-    research_driver = build_design_draft(
-        _topology(),
-        driver_research=research,
-    )["driver_research"]["drivers"][0]
-    manual_driver = build_design_draft(
-        _topology(),
-        manual_settings={"drivers": [common], "crossover_candidates": []},
-    )["manual_settings"]["drivers"][0]
+    research_driver = _one_research_driver(common)
+    manual_driver = normalise_manual_settings({"drivers": [common]})["drivers"][0]
 
     assert research_driver["gain_offset_db_provenance"] == "research_estimate"
     assert manual_driver["gain_offset_db_provenance"] == "operator_pinned"
@@ -299,10 +296,10 @@ def test_research_and_manual_drivers_share_field_normalisation() -> None:
 
 
 def test_research_requires_model_while_manual_driver_does_not() -> None:
-    research = _research()
+    research, _ = current_research(_topology(), _research())
     research["drivers"][0].pop("model")
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=research)
+        normalise_driver_research(research)
     assert caught.value.code == "field_required"
 
     payload = build_design_draft(
@@ -310,7 +307,7 @@ def test_research_requires_model_while_manual_driver_does_not() -> None:
         manual_settings={
             "drivers": [
                 {
-                    "role": "woofer",
+                    "role": "woofer", "target_id": "mono:woofer",
                     "notes": "operator knows the installed driver",
                     "sources": ["https://example.test/not-retained"],
                 }
@@ -331,12 +328,12 @@ def test_manual_crossover_settings_can_replace_ai_research():
         manual_settings={
             "drivers": [
                 {
-                    "role": "woofer",
+                    "role": "woofer", "target_id": "mono:woofer",
                     "model": "Epique E150HE-44",
                     "sensitivity_db_2v83_1m": 83.3,
                 },
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "Eminence F110M-8",
                     "sensitivity_db_2v83_1m": 108.0,
                     "do_not_test_below_hz": 1800,
@@ -374,7 +371,7 @@ def test_ui_suggested_gain_provenance_survives_normalisation():
         manual_settings={
             "drivers": [
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "F110M-8",
                     "gain_offset_db": -24.7,
                     "gain_offset_db_provenance": "sensitivity_estimate",
@@ -408,7 +405,7 @@ def test_design_draft_rejects_unsupported_research_shape():
     raw["kind"] = "not_jts"
 
     with pytest.raises(ActiveSpeakerDesignDraftError):
-        build_design_draft(_topology(), driver_research=raw)
+        research_design_draft(_topology(), raw)
 
 
 def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
@@ -440,8 +437,6 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     old = json.loads(path.read_text())
     old["driver_research_request"] = {"targets": [{"operator_declared_context": {"operator_notes": "old"}}]}
     old["driver_research"].update(request_fingerprint="old", result_fingerprint="old")
-    for driver in old["driver_research"]["drivers"]:
-        driver["target_fingerprint"] = "old"
     path.write_text(json.dumps(old))
 
     loaded = load_design_draft(path, topology=topology)
@@ -453,6 +448,51 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     assert saved["driver_research"] == draft["driver_research"]
     assert saved["manual_settings"] == draft["manual_settings"]
     assert "driver_research_request" not in json.loads(path.read_text())
+
+
+@pytest.mark.parametrize(("where", "update", "code"), [
+    ("driver", {"horn_coverage_deg": 1}, "unknown_driver_fields"),
+    ("driver", {"crossover_search_band_hz": 1}, "unknown_driver_fields"),
+    ("driver", {"target_fingerprint": 1}, "unknown_driver_fields"),
+    ("research", {"artifact_schema_version": 1, "retired_key": 1}, "research_version_unsupported"),
+])
+def test_stored_research_the_import_refuses_refuses_on_load(tmp_path: Path, where, update, code) -> None:
+    from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    save_design_draft(topology, driver_research=research, operator_inputs=_operator_inputs(), path=path)
+    stored = json.loads(path.read_text())
+    research = stored["driver_research"]
+    (research["drivers"][0] if where == "driver" else research).update(update)
+    path.write_text(json.dumps(stored))
+
+    with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
+        load_design_draft(path, topology=topology)
+    assert caught.value.code == code
+
+
+@pytest.mark.parametrize("author", ["driver_research", "manual_settings"])
+def test_a_stored_cabinet_key_the_reader_does_not_know_refuses_on_load(tmp_path: Path, author) -> None:
+    """A driver's size is its own radiating_diameter_mm, so a cabinet key the reader
+    does not know refuses by its name, never dropped unseen (ADR-0384, #2902)."""
+    from tests.test_active_speaker_driver_safety import _manual_settings, _operator_inputs, _research_result
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    save_design_draft(topology, driver_research=research, manual_settings=_manual_settings(),
+                      operator_inputs=_operator_inputs(), path=path)
+    stored = json.loads(path.read_text())
+    stored[author]["drivers"][0]["cabinet"]["radiator_diameter_mm"] = 132
+    path.write_text(json.dumps(stored))
+
+    with pytest.raises(CodedFieldError) as caught:
+        load_design_draft(path, topology=topology)
+    assert caught.value.code == "unknown_driver_fields"
 
 
 def test_design_draft_revision_is_informational(
@@ -661,7 +701,7 @@ def test_driver_research_crossover_vocabulary_is_refused_at_the_same_door():
     research["crossover_candidates"][0]["slope_db_per_octave"] = 18
 
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=research)
+        research_design_draft(_topology(), research)
     assert caught.value.code == "unsupported_slope"
 
 
@@ -695,101 +735,13 @@ def test_manual_crossover_settings_carry_polarity_and_delay_through_draft():
 def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
     # Every pre-existing crossover-candidate fixture in this file omits the
     # new fields; confirm normalisation doesn't inject them.
-    payload = build_design_draft(_topology(), driver_research=_research())
+    payload = research_design_draft(_topology(), _research())
 
     candidate = payload["driver_research"]["crossover_candidates"][0]
     assert "lower_polarity" not in candidate
     assert "upper_polarity" not in candidate
     assert "delay_ms" not in candidate
     assert "delay_target_role" not in candidate
-
-
-# --- declared_driver_sensitivities: the declaration is the sensitivity SSOT ----
-#
-# W6.5 (2026-07-19 gate): sensitivity is a declared physical property whose one
-# owner is the declaration (manual_settings) — the confirmed safety profile
-# never carries a second copy, and JTS3's persisted draft (83.3 / 108.5 under
-# sensitivity_db_2v83_1m) makes the derived HF ceiling fire with no migration.
-
-
-def test_declared_driver_sensitivities_reads_the_declaration():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-                {"role": "mid"},  # declared but no sensitivity — omitted
-            ],
-            "crossover_candidates": [],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {
-        "woofer": 83.3,
-        "tweeter": 108.5,
-    }
-
-
-def test_declared_driver_sensitivities_fails_soft_on_absent_or_malformed():
-    assert declared_driver_sensitivities(None) == {}
-    assert declared_driver_sensitivities({}) == {}
-    assert declared_driver_sensitivities({"manual_settings": None}) == {}
-    assert declared_driver_sensitivities(
-        {"manual_settings": {"drivers": "not-a-list"}}
-    ) == {}
-    # Non-numeric / boolean / non-finite values are skipped, not raised on —
-    # this reader runs inside the conductor-context resolution.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": "loud"},
-                {"role": "mid", "sensitivity_db_2v83_1m": True},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": float("nan")},
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {}
-
-
-def test_declared_driver_sensitivities_drops_conflicting_role_rows():
-    # Two rows for one role with DISAGREEING values (e.g. stereo declarations
-    # that drifted apart): ambiguity derives nothing for that role, failing
-    # toward the conservative class-default ceiling. Agreeing duplicates keep
-    # the value.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "tweeter", "target_id": "left:tweeter",
-                 "sensitivity_db_2v83_1m": 108.5},
-                {"role": "tweeter", "target_id": "right:tweeter",
-                 "sensitivity_db_2v83_1m": 95.0},
-                {"role": "woofer", "target_id": "left:woofer",
-                 "sensitivity_db_2v83_1m": 83.3},
-                {"role": "woofer", "target_id": "right:woofer",
-                 "sensitivity_db_2v83_1m": 83.3},
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {"woofer": 83.3}
-
-
-def test_declared_sensitivities_survive_the_normalised_persisted_draft():
-    # End-to-end through the REAL normaliser + draft builder: what
-    # resolve_conductor_context reads is the persisted draft's
-    # manual_settings, so pin the values' survival through that path.
-    payload = build_design_draft(
-        _topology(),
-        manual_settings={
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-            "crossover_candidates": [],
-        },
-    )
-    assert declared_driver_sensitivities(payload) == {
-        "woofer": 83.3,
-        "tweeter": 108.5,
-    }
 
 
 # --- #1864: declared woofer<->tweeter acoustic-center spacing -------------
@@ -838,9 +790,9 @@ def test_build_design_draft_does_not_raise_with_driver_class_set():
         _topology(),
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114},
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 114},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "B",
                     "driver_class": "compression_horn",
                     "nominal_impedance_ohm": 8,
@@ -884,85 +836,16 @@ def test_driver_class_accepts_every_hoisted_value():
         payload = build_design_draft(
             _topology(),
             manual_settings={
-                "drivers": [{"role": "woofer", "model": "A", "driver_class": value}],
+                "drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "A", "driver_class": value}],
                 "crossover_candidates": [],
             },
         )
         assert payload["manual_settings"]["drivers"][0]["driver_class"] == value
 
 
-def test_legacy_horn_coverage_deg_draft_still_saves_and_drops_the_key(
-    tmp_path: Path,
-) -> None:
-    """#2872: a draft written before the deletion must still round-trip.
-
-    ``horn_coverage_deg`` was a wizard-collected number that reached no
-    consumer, so it was deleted rather than kept alive.  An operator who typed
-    a coverage angle before that has the key sitting in their saved draft, on a
-    field /sound/ no longer shows them.  Refusing that record would strand them
-    on a save they cannot fix from the page, so every gate that re-validates a
-    stored driver TOLERATES the key and every normaliser DROPS it: the draft
-    saves, and the value does not come back.
-    """
-
-    path = tmp_path / "active_speaker_design_draft.json"
-    legacy_manual = {
-        "drivers": [
-            {
-                "target_id": "mono:tweeter",
-                "role": "tweeter",
-                "model": "Legacy Horn",
-                "driver_class": "compression_horn",
-                "horn_coverage_deg": 90,
-            }
-        ],
-        "crossover_candidates": [],
-    }
-    # Written the way an older build wrote it -- by hand, because today's
-    # save path can no longer produce this file.
-    path.write_text(
-        json.dumps(
-            {
-                "artifact_schema_version": 1,
-                "kind": DESIGN_DRAFT_KIND,
-                "status": "ready_for_review",
-                "revision": 3,
-                "operator_inputs": {},
-                "manual_settings": legacy_manual,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = load_design_draft(path)
-    assert loaded["manual_settings"]["drivers"][0]["horn_coverage_deg"] == 90
-
-    saved = save_design_draft(
-        _topology(),
-        manual_settings=loaded["manual_settings"],
-        operator_inputs=loaded["operator_inputs"],
-        path=path,
-        created_at="2026-08-22T12:00:00Z",
-    )
-    tweeter = saved["manual_settings"]["drivers"][0]
-    assert "horn_coverage_deg" not in tweeter
-    assert tweeter["driver_class"] == "compression_horn"
-    on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert all(
-        "horn_coverage_deg" not in driver
-        for driver in on_disk["manual_settings"]["drivers"]
-    )
-    assert saved["driver_safety_profile"] is not None
-
-
-@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("shape", ["document", "driver", "candidate", "provenance"])
-def test_pasted_research_refuses_unknown_fields(version, shape):
-    research = _research()
-    research["artifact_schema_version"] = version
-    if version == 2:
-        for item in research["drivers"]:
-            item["target_id"] = f"mono:{item['role']}"
+def test_pasted_research_refuses_unknown_fields(shape):
+    research, _ = current_research(_topology(), _research())
     driver = research["drivers"][0]
     driver["field_provenance"] = {"sensitivity_db_2v83_1m": {
         "confidence": "high", "basis": "datasheet",
@@ -981,8 +864,8 @@ def test_pasted_research_refuses_unknown_fields(version, shape):
 def test_extra_manual_keys_are_ignored(tmp_path):
     manual = {
         "typo": True,
-        "drivers": [{"role": "woofer", "model": "A", "typo": True,
-                     "cabinet": {"enclosure_kind": "sealed", "typo": True},
+        "drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "A", "typo": True,
+                     "cabinet": {"enclosure_kind": "sealed"},
                      "level_duration_limits": {"max_sweep_duration_s": 4, "typo": True}}],
         "crossover_candidates": [{"between_roles": ["woofer", "tweeter"],
                                   "frequency_hz": 2500, "typo": True}],
@@ -1005,7 +888,7 @@ def test_radiating_diameter_mm_must_be_positive():
         _topology(),
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A", "radiating_diameter_mm": 114}
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 114}
             ],
             "crossover_candidates": [],
         },
@@ -1017,7 +900,7 @@ def test_radiating_diameter_mm_must_be_positive():
             _topology(),
             manual_settings={
                 "drivers": [
-                    {"role": "woofer", "model": "A", "radiating_diameter_mm": 0}
+                    {"role": "woofer", "target_id": "mono:woofer", "model": "A", "radiating_diameter_mm": 0}
                 ],
                 "crossover_candidates": [],
             },
@@ -1027,7 +910,7 @@ def test_radiating_diameter_mm_must_be_positive():
 
 def test_pad_error_propagates_through_design_draft():
     driver = {
-        "role": "tweeter",
+        "role": "tweeter", "target_id": "mono:tweeter",
         "model": "B",
         "nominal_impedance_ohm": 8,
         "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
@@ -1073,9 +956,9 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
         topology,
         manual_settings={
             "drivers": [
-                {"role": "woofer", "model": "A"},
+                {"role": "woofer", "target_id": "mono:woofer", "model": "A"},
                 {
-                    "role": "tweeter",
+                    "role": "tweeter", "target_id": "mono:tweeter",
                     "model": "B",
                     "nominal_impedance_ohm": 8,
                     "sensitivity_db_2v83_1m": 108.0,
@@ -1114,118 +997,28 @@ def test_research_and_manual_drivers_share_the_new_fields_too():
         "driver_class": "soft_dome",
         "radiating_diameter_mm": 25,
     }
-    research = _research()
-    research["drivers"] = [common]
-    research["crossover_candidates"] = []
-    research_driver = build_design_draft(
-        _topology(),
-        driver_research=research,
-    )["driver_research"]["drivers"][0]
-    manual_driver = build_design_draft(
-        _topology(),
-        manual_settings={"drivers": [common], "crossover_candidates": []},
-    )["manual_settings"]["drivers"][0]
+    research_driver = _one_research_driver(common)
+    manual_driver = normalise_manual_settings({"drivers": [common]})["drivers"][0]
 
     for field in ("driver_class", "radiating_diameter_mm"):
         assert research_driver[field] == manual_driver[field] == common[field]
 
 
-# --- declared_effective_driver_sensitivities: sensitivity with pad folded in -
-
-
-def test_declared_effective_driver_sensitivities_folds_the_pad():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {
-                    "role": "tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-            ],
-            "crossover_candidates": [],
-        },
-    }
-    assert declared_effective_driver_sensitivities(draft) == {
-        "woofer": 83.3,
-        "tweeter": pytest.approx(93.6),
-    }
-    # Without folding, the tweeter would still read 108.0 -- confirm the two
-    # readers genuinely disagree once a pad is declared.
-    assert declared_driver_sensitivities(draft)["tweeter"] == 108.0
-
-
-def test_declared_effective_driver_sensitivities_matches_naked_reader_without_a_pad():
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-        },
-    }
-    assert declared_effective_driver_sensitivities(draft) == declared_driver_sensitivities(
-        draft
-    )
-
-
-def test_declared_effective_driver_sensitivities_fails_soft_on_absent_or_malformed():
-    assert declared_effective_driver_sensitivities(None) == {}
-    assert declared_effective_driver_sensitivities({}) == {}
-    assert declared_effective_driver_sensitivities({"manual_settings": None}) == {}
-    assert (
-        declared_effective_driver_sensitivities(
-            {"manual_settings": {"drivers": "not-a-list"}}
-        )
-        == {}
-    )
-
-
-def test_declared_effective_driver_sensitivities_drops_conflicting_pad_rows():
-    # Same naked sensitivity, but the pads disagree -- the EFFECTIVE figure is
-    # ambiguous even though the naked reader (declared_driver_sensitivities)
-    # would see no conflict at all.
-    draft = {
-        "manual_settings": {
-            "drivers": [
-                {
-                    "role": "tweeter", "target_id": "left:tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-                {
-                    "role": "tweeter", "target_id": "right:tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "pad": {"kind": "direct_db", "attenuation_db": -6.0},
-                },
-            ],
-        },
-    }
-    assert declared_driver_sensitivities(draft) == {"tweeter": 108.0}
-    assert declared_effective_driver_sensitivities(draft) == {}
-
-
-def test_declared_effective_driver_sensitivities_survives_the_normalised_persisted_draft():
-    payload = build_design_draft(
-        _topology(),
-        manual_settings={
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {
-                    "role": "tweeter",
-                    "sensitivity_db_2v83_1m": 108.0,
-                    "nominal_impedance_ohm": 8,
-                    "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0},
-                },
-            ],
-            "crossover_candidates": [],
-        },
-    )
-    assert declared_effective_driver_sensitivities(payload) == {
-        "woofer": 83.3,
-        "tweeter": pytest.approx(93.6),
-    }
+@pytest.mark.parametrize("tweeter, effective", [
+    ({"sensitivity_db_2v83_1m": 108.0, "pad": {"kind": "direct_db", "attenuation_db": -14.4}}, 93.6),
+    ({"sensitivity_db_2v83_1m": 108.0, "nominal_impedance_ohm": 8,
+      "pad": {"kind": "l_pad", "series_ohm": 6.8, "shunt_ohm": 2.0}}, 93.6),
+    ({}, None),
+], ids=["direct_db", "l_pad", "undeclared"])
+def test_each_computed_target_carries_its_declared_sensitivity_with_its_pad_folded_in(tweeter, effective):
+    draft = build_design_draft(_topology(), manual_settings={"drivers": [
+        {"role": "woofer", "target_id": "mono:woofer", "sensitivity_db_2v83_1m": 83.3},
+        {"role": "tweeter", "target_id": "mono:tweeter", **tweeter},
+    ], "crossover_candidates": []})
+    targets = {target["role"]: target for target in design_draft_view(draft)["driver_safety_profile"]["targets"]}
+    assert targets["woofer"]["effective_sensitivity_db_2v83_1m"] == 83.3
+    assert targets["tweeter"].get("effective_sensitivity_db_2v83_1m") == (
+        None if effective is None else pytest.approx(effective))
 
 
 def test_a_draft_without_topology_drops_derived_fields():

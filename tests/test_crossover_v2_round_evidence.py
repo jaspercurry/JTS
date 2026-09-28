@@ -44,7 +44,7 @@ def _grid(n: int = 2048) -> np.ndarray:
 
 def _analysis(
     *,
-    program_id: str = "prog-a",
+    stimulus_id: str = "prog-a",
     freqs: np.ndarray | None = None,
     magnitude_db: np.ndarray | None = None,
     validity_floor_hz: float | None = None,
@@ -55,7 +55,7 @@ def _analysis(
     A double rather than a real analysis because building one needs a capture,
     a deconvolution, and a program — none of which this module touches. The
     three attributes read at runtime are named in the reducer's own body
-    (``program_id``, ``summed_response``, and the summed response's
+    (``stimulus_id``, ``summed_response``, and the summed response's
     ``freqs_hz``/``magnitude_db``/``validity_floor_hz``), so a double that
     carries exactly those is the whole contract.
     """
@@ -70,7 +70,7 @@ def _analysis(
         summed = SimpleNamespace(
             freqs_hz=hz, magnitude_db=db, validity_floor_hz=validity_floor_hz
         )
-    return SimpleNamespace(program_id=program_id, summed_response=summed)
+    return SimpleNamespace(stimulus_id=stimulus_id, summed_response=summed)
 
 
 # --------------------------------------------------------------------------- #
@@ -108,21 +108,21 @@ def test_the_curve_is_the_shipped_decimate_then_smooth_not_a_second_copy():
     assert len(reduced.curve.hz) <= BENEFIT_CURVE_MAX_BINS
 
 
-def test_the_program_id_and_mark_ride_through_unchanged():
+def test_the_stimulus_id_and_mark_ride_through_unchanged():
     """Comparability's two identity fields are carried, never re-derived.
 
-    ``program_id`` equality is the whole comparability check
+    ``stimulus_id`` equality is the whole comparability check
     (:class:`~jasper.audio_measurement.program.ExcitationProgram`: a content
     hash over the schedule, so equal ids are a cryptographic guarantee of same
     program AND same level). A reducer that minted its own id would make that guarantee
     meaningless.
     """
     reduced = measured_response_from_analysis(
-        _analysis(program_id="prog-xyz"), reference_mark=_MARK
+        _analysis(stimulus_id="prog-xyz"), reference_mark=_MARK
     )
 
     assert reduced is not None
-    assert reduced.program_id == "prog-xyz"
+    assert reduced.stimulus_id == "prog-xyz"
     assert reduced.reference_mark == _MARK
 
 
@@ -131,7 +131,7 @@ def test_the_program_id_and_mark_ride_through_unchanged():
     [
         None,
         _analysis(summed=None),
-        _analysis(program_id=""),
+        _analysis(stimulus_id=""),
         # A non-finite bin: ``ResponseCurve`` refuses it rather than hashing
         # it, so the reduction cannot produce a comparand. "Cannot compare
         # this" is an answer, not a crash to propagate into a household
@@ -141,7 +141,7 @@ def test_the_program_id_and_mark_ride_through_unchanged():
             magnitude_db=np.concatenate([np.zeros(63), [np.nan]]),
         ),
     ],
-    ids=["no_analysis", "no_summed_response", "no_program_id", "non_finite_bin"],
+    ids=["no_analysis", "no_summed_response", "no_stimulus_id", "non_finite_bin"],
 )
 def test_an_unreducible_capture_is_none_never_a_raise(analysis):
     assert measured_response_from_analysis(analysis, reference_mark=_MARK) is None
@@ -249,14 +249,14 @@ def _complete_record(**overrides) -> dict:
     Every negative case below starts from a record that would otherwise
     SUCCEED. Without that, a case meant to pin the mask-length check passes
     for the wrong reason — because it also happened to be missing
-    ``program_id`` — and the check it names is not covered at all. (Measured:
+    ``stimulus_id`` — and the check it names is not covered at all. (Measured:
     an earlier form of this test survived deleting the length check outright.)
     """
     record = {
         "freqs_hz": [100.0, 200.0],
         "magnitude_db": [0.0, 1.0],
         "excluded": [False, True],
-        "program_id": "p",
+        "stimulus_id": "p",
         "reference_mark": "m",
         "graph_fingerprint": "g",
         "captured_at": "t",
@@ -286,7 +286,7 @@ def test_the_complete_record_control_rehydrates():
         _complete_record(freqs_hz=None),
         _complete_record(magnitude_db=None),
         _complete_record(magnitude_db=[0.0, float("nan")]),
-        _complete_record(program_id=""),
+        _complete_record(stimulus_id=""),
         _complete_record(graph_fingerprint=""),
     ],
     ids=[
@@ -299,7 +299,7 @@ def test_the_complete_record_control_rehydrates():
         "no_freqs",
         "no_levels",
         "non_finite_level",
-        "empty_program_id",
+        "empty_stimulus_id",
         "empty_graph_fingerprint",
     ],
 )

@@ -188,56 +188,6 @@ def test_save_listening_level_without_main_volume_derives_it(tmp_path):
     assert rec.main_volume_db == round(percent_to_db(50), 2)
 
 
-def test_v1_migration_derives_listening_level(tmp_path):
-    """Files written by old code (no listening_level field) should
-    have it derived from main_volume_db percent on load."""
-    path = tmp_path / "speaker_volume.json"
-    path.write_text(json.dumps({
-        "version": 1,
-        "main_volume_db": -15.0,  # 70%
-        "updated_at": "2026-05-05T10:00:00Z",
-    }))
-    rec = VolumePersistence(str(path)).load()
-    assert rec is not None
-    assert rec.listening_level == 70
-
-
-def test_v1_migration_uses_historical_default_curve(tmp_path, monkeypatch):
-    """V1 files predate the calibratable floor, so decode them with the
-    original shipped curve rather than any current sound setting."""
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text(json.dumps({"volume_floor_db": -20.0}))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    path = tmp_path / "speaker_volume.json"
-    path.write_text(json.dumps({
-        "version": 1,
-        "main_volume_db": -25.0,
-        "updated_at": "2026-05-05T10:00:00Z",
-    }))
-
-    rec = VolumePersistence(str(path)).load()
-
-    assert rec is not None
-    assert rec.listening_level == 50
-
-
-def test_listening_level_out_of_range_rejected(tmp_path):
-    """A v2 file with garbage listening_level should fall back to
-    deriving from main_volume_db rather than carrying through the
-    bad value."""
-    path = tmp_path / "speaker_volume.json"
-    path.write_text(json.dumps({
-        "version": 2,
-        "main_volume_db": -25.0,  # 50%
-        "listening_level": 250,   # garbage
-        "updated_at": "2026-05-05T10:00:00Z",
-    }))
-    rec = VolumePersistence(str(path)).load()
-    assert rec is not None
-    # Out-of-range listening_level rejected → derived from main_volume_db
-    assert rec.listening_level == 50
-
-
 def test_save_listening_level_no_user_change_preserves_last_used_at(tmp_path):
     """Boot-time restore writes listening_level but should NOT bump
     last_used_at — otherwise every reboot resets the staleness clock
@@ -357,7 +307,7 @@ def test_regress_listening_level_uses_last_used_at_not_updated_at():
 
 
 def test_regress_listening_level_falls_back_to_updated_at_if_no_last_used():
-    """v1-migrated records have no last_used_at; fallback to updated_at."""
+    """Boot-written records have no last_used_at; fallback to updated_at."""
     rec = VolumeRecord(
         main_volume_db=percent_to_db(90),
         updated_at=NOW - timedelta(hours=12),
@@ -415,25 +365,9 @@ def test_pre_mute_level_clear(tmp_path):
 def test_pre_mute_level_clamps(tmp_path):
     p = VolumePersistence(_path(tmp_path))
     p.save_listening_level(50)
-    p.save_mute_state(150, None)
+    p.save_mute_state(150, "mute-clamped")
     rec = p.load()
     assert rec.pre_mute_level == 100
-
-
-def test_pre_mute_level_out_of_range_in_file_rejected(tmp_path):
-    """A hand-edited / corrupted file with pre_mute outside [0,100] is
-    treated as 'not muted' rather than respected."""
-    path = tmp_path / "speaker_volume.json"
-    path.write_text(json.dumps({
-        "version": 2,
-        "main_volume_db": -20.0,
-        "listening_level": 60,
-        "pre_mute_level": -5,
-        "updated_at": "2026-05-10T10:00:00Z",
-    }))
-    rec = VolumePersistence(str(path)).load()
-    assert rec is not None
-    assert rec.pre_mute_level is None
 
 
 def test_pre_mute_preserved_across_partial_updates(tmp_path):
@@ -486,22 +420,54 @@ def test_stale_main_volume_writer_preserves_newer_mute_transition(tmp_path):
     assert rec.mute_token == "newer-mute"
 
 
-def test_mute_token_without_latch_is_ignored(tmp_path):
-    """A malformed orphan token cannot manufacture temporary mute state."""
+@pytest.mark.parametrize(
+    ("fields", "loads_as", "boots_at"),
+    [
+        pytest.param(
+            {"listening_level": 60, "pre_mute_level": 60, "mute_token": "m"},
+            (60, 60, "m"), 60, id="latch_with_token",
+        ),
+        pytest.param(
+            {"listening_level": 60, "pre_mute_level": 60},
+            (60, None, None), 60, id="latch_without_token",
+        ),
+        pytest.param(
+            {"listening_level": 60, "pre_mute_level": 60, "mute_token": ""},
+            (60, None, None), 60, id="latch_with_invalid_token",
+        ),
+        pytest.param(
+            {"listening_level": 60, "mute_token": "m"},
+            (60, None, None), 60, id="token_without_latch",
+        ),
+        pytest.param(
+            {"listening_level": 60, "pre_mute_level": -5, "mute_token": "m"},
+            (60, None, None), 60, id="latch_level_out_of_range",
+        ),
+        pytest.param({}, (None, None, None), 42, id="v1_without_listening_level"),
+        pytest.param(
+            {"listening_level": 250}, (None, None, None), 42,
+            id="listening_level_out_of_range",
+        ),
+    ],
+)
+def test_record_shape_loads_as_and_boots_at(tmp_path, fields, loads_as, boots_at):
+    """A mute latch is its restore level plus its token; half of one loads
+    unmuted. A record without a valid listening_level boots at the default."""
     path = tmp_path / "speaker_volume.json"
     path.write_text(json.dumps({
-        "version": 2,
         "main_volume_db": -20.0,
-        "listening_level": 60,
-        "mute_token": "orphan",
-        "updated_at": "2026-05-10T10:00:00Z",
+        "updated_at": "2026-05-05T09:59:00Z",
+        **fields,
     }))
 
     rec = VolumePersistence(str(path)).load()
 
     assert rec is not None
-    assert rec.pre_mute_level is None
-    assert rec.mute_token is None
+    assert (rec.listening_level, rec.pre_mute_level, rec.mute_token) == loads_as
+    level, _ = regress_listening_level_if_stale(
+        rec, now=NOW, first_boot_default_pct=42,
+    )
+    assert level == boots_at
 
 
 def test_save_mute_state_works_on_fresh_persistence(tmp_path):

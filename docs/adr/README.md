@@ -14,8 +14,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0101](0101-proven-once-disclose-on-change.md) | Proven once, disclose on change — validity-proof gates stop parking working systems | amended by 0185 |
 | [0199](0199-the-handoff-doc-corpus-is-deleted.md) | The HANDOFF doc corpus is deleted | accepted |
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
-| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
-| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369 |
+| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | §9 amended by 0382 |
+| [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369; §7's `measure_spec.py` citation superseded by 0380 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
 | [0334](0334-the-repository-root-holds-only-entry-points-and-build-contracts.md) | The repository root holds only entry points and build contracts | accepted |
@@ -317,12 +317,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0327](0327-rear-weight-is-a-boost-on-both-rear-branches.md) | The rear weight is a boost on both rear branches, never front attenuation | accepted |
 | [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; the only protective band edge is a high-frequency driver's floor | accepted |
 | [0329](0329-cardioid-on-off-is-an-audition-layer.md) | Cardioid on/off for listening is an audition layer: the rear mutes in the running graph only, switched in place, loudness-matched by attenuation only | accepted |
-| [0330](0330-speaker-setup-resolves-inputs-on-the-server.md) | The server resolves speaker setup inputs | accepted |
+| [0330](0330-speaker-setup-resolves-inputs-on-the-server.md) | The server resolves speaker setup inputs | role-only legacy authority superseded by 0379 |
 | [0331](0331-applied-tune-reads-use-the-saved-artifact.md) | Applied tune reads use the saved artifact | EQ status dry-run superseded by 0332 |
 | [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
 | [0333](0333-live-followup-counts-from-audible-playout.md) | Live follow-up counts from audible playout | accepted |
 | [0335](0335-dynamic-bass-reduction-is-common-across-the-cardioid-pair.md) | Dynamic-bass reduction is common across a cardioid pair: one detector on the front lane, one gain on both lanes | accepted |
-| [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | accepted |
+| [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | amended by 0383 |
 | [0337](0337-conversation-history-is-local-opt-in-native-text.md) | Conversation history is local, opt-in native text | accepted |
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
@@ -340,8 +340,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0356](0356-a-views-artifact-is-a-file.md) | A view's artifact is a file: `--out -` is retired; depth on demand is reading the `out` path the answer names | accepted |
 | [0357](0357-the-decay-view-reads-reverberation-from-the-kept-impulse.md) | The decay view reads reverberation from the kept impulse: EDT, T20 and T30 per octave, each only where the band's range above its noise carries it | accepted |
 | [0358](0358-one-level-rule-for-b-versus-a.md) | One level rule for "B vs A": the median of the per-bin difference, owned by `series_stats.curve_difference` | accepted |
-| [0359](0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md) | The bass boost plays at every volume: one native biquad per lane, and the compressor gives way only near the amp's clip point | accepted |
-| [0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | amended by 0362; §1, §3 and §5's key superseded by 0366 |
+| [0359](0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md) | The bass boost plays at every volume: one native biquad per lane, and the compressor gives way only near the amp's clip point | §1's plain shelf, §3's loading of a stored ADR-0352 section and the downgrade advice superseded by 0381 |
+| [0360](0360-near-field-driver-takes-are-reference-evidence-one-driver-per-pose.md) | Near-field driver takes are reference evidence: a reference near-field pose names the one driver it plays, alone, within 100 mm of the cone | amended by 0362; §1, §3 and §5's key superseded by 0366; the status line's named splice hole superseded by 0380 |
 | [0361](0361-a-near-field-take-levels-itself-to-80-db-at-the-microphone.md) | A near-field take levels itself to 80 dB at the microphone, in its digital gain under the seat-equivalent level | §3 amended by 0364, §2 superseded by 0365 |
 | [0362](0362-the-near-field-rows-take-each-woofer-at-15-and-30-mm.md) | The near-field rows take each woofer at 15 and 30 mm, with no re-seat | accepted |
 | [0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |
@@ -350,6 +350,12 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0367](0367-a-drivers-declared-band-bounds-a-boost-and-discloses-a-cut.md) | A driver's declared band bounds a boost; a cut outside it is admitted and disclosed on the receipt | partly superseded by 0374 |
 | [0374](0374-every-prescribed-filter-sits-inside-the-evaluators-domain.md) | Every prescribed filter, cut or boost, in band or not, sits inside the evaluator's domain (1-23,995.2 Hz) | accepted |
 | [0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) | Each run purpose declares on its program row which applied layers its takes clear; a bass run plays with room off and its base with bass off, the door derives the played graph and banks nothing measurement-only, and preflight folds the room-off rise into the opener | accepted |
-| [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | accepted |
-| [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | accepted |
+| [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | §2's rebuild of a banked round with no stored packet and §3's old-round fingerprint superseded by 0383 |
+| [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | §1-§3 superseded by 0383 |
 | [0377](0377-a-retired-preset-id-refuses-as-an-unknown-preset.md) | A retired preset id is not kept: it refuses as an unknown preset, and a layout no preset offers is deleted | accepted |
+| [0379](0379-a-stored-driver-declaration-in-a-retired-shape-refuses-by-its-field.md) | A stored driver declaration in a retired shape refuses by its field and names its fix; every row names its physical output, and nothing binds by role | accepted |
+| [0380](0380-the-capability-stub-table-is-gone.md) | The capability stub table is gone: every mic-only capture regime plays and banks, and an analysis gap is tracked on the ticket that plans its work | accepted |
+| [0381](0381-a-stored-bass-section-in-the-adr-0352-form-refuses-by-its-field.md) | A stored bass section in the ADR-0352 form refuses by its field: only the ADR-0359 form loads, and the old `Lowshelf` boost and its model are gone | accepted |
+| [0382](0382-a-tweeters-cap-is-declared-or-derived-else-the-plan-refuses-by-name.md) | A tweeter's cap is declared or derived, else the plan refuses by name (`driver_sensitivity_undeclared`); a stored class default is a declaration | accepted |
+| [0383](0383-one-take-record-for-every-purpose.md) | One take record for every purpose: every take banks its curves, each naming its window, and its analysis; the run manifest copies them, no reader decodes a take for them, and a banked round with no stored packet refuses | accepted |
+| [0384](0384-the-speaker-is-its-declared-components.md) | The speaker is its declared components: no per-speaker measurement profile, and each declared driver fact resolves by measurement target, manual over research; a driver's size is its own `radiating_diameter_mm` | accepted |

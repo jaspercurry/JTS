@@ -42,6 +42,7 @@ def _profile_and_targets(
     measurement_band: list | None = None,
     tweeter_low_limit_hz: float = 1500.0,
     tweeter_published_slope_db_per_octave: float | None = None,
+    sensitivities: dict | None = None,
 ):
     topology = mono_output_topology(mode=mode)
 
@@ -74,11 +75,11 @@ def _profile_and_targets(
             "target_id": f"mono:{role}",
             "role": role,
             "model": f"Example {role}",
+            **({"sensitivity_db_2v83_1m": sensitivities[role]} if role in (sensitivities or {}) else {}),
             "required_protection_filters": required_filters,
             "cabinet": {
                 "enclosure_kind": "sealed",
                 "radiator_count": 1,
-                "effective_radiating_diameter_mm": 132 if role == "woofer" else 25,
                 **({"baffle_width_mm": 210} if role == "woofer" else {}),
             },
         }
@@ -102,24 +103,8 @@ def _profile_and_targets(
         _driver("woofer", woofer_peak, woofer_required_filters),
     ]
     if mode == "active_3_way":
-        drivers.append(
-            _driver(
-                "mid",
-                mid_peak,
-                [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 500,
-                        "minimum_slope_db_per_octave": 24,
-                    },
-                    {
-                        "kind": "lowpass",
-                        "cutoff_hz": 3000,
-                        "minimum_slope_db_per_octave": 24,
-                    },
-                ],
-            )
-        )
+        mid_filters = [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}]
+        drivers.append({**_driver("mid", mid_peak, mid_filters), "recommended_highpass_hz": 500})
     drivers.append(_driver("tweeter", tweeter_peak, tweeter_filters))
     settings = {"drivers": drivers, "crossover_candidates": []}
     profile = compute_driver_safety_profile(
@@ -320,16 +305,14 @@ def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
     value steering a derivation is how a household number typed one dB louder
     than a code figure silently lost both its intent and its level.
 
-    Three cases, one predicate. Absence is the ordinary delegation; a stored
-    class seed said the same thing under the retired contract and is read the
-    same way; anything else is a declaration, honoured verbatim in BOTH
-    directions from the class figure.
+    Absence is the ordinary delegation; any stored value, the class figure
+    included, is a declaration honoured verbatim in BOTH directions from it
+    (ADR-0382).
     """
     from jasper.active_speaker.driver_protection import driver_protection_profile
     from jasper.active_speaker.excitation_safety_plan import (
         LEVEL_CEILING_DECLARED,
-        LEVEL_CEILING_LEGACY_CLASS_SEED,
-        LEVEL_CEILING_UNDECLARED,
+        LEVEL_CEILING_CLASS_DEFAULT,
         declared_level_ceiling_dbfs,
     )
 
@@ -345,12 +328,9 @@ def test_the_level_ceiling_reports_where_its_number_came_from() -> None:
 
     assert declared_level_ceiling_dbfs(_target({})) == (
         -65.0,
-        LEVEL_CEILING_UNDECLARED,
+        LEVEL_CEILING_CLASS_DEFAULT,
     )
-    assert declared_level_ceiling_dbfs(
-        _target({"max_effective_peak_dbfs": -65.0})
-    ) == (-65.0, LEVEL_CEILING_LEGACY_CLASS_SEED)
-    for declared in (-66.0, -64.0):
+    for declared in (-66.0, -65.0, -64.0):
         assert declared_level_ceiling_dbfs(
             _target({"max_effective_peak_dbfs": declared})
         ) == (declared, LEVEL_CEILING_DECLARED)
@@ -375,23 +355,21 @@ def test_an_undeclared_peak_delegates_the_hf_ceiling_on_the_proven_hp_path() -> 
     this lands on the -65 class default, 41.8 dB adrift.
     """
     _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=None,
+        woofer_peak=-8, tweeter_peak=None, sensitivities=_JTS3_SENSITIVITIES,
     )
     _band, ceiling = resolve_driver_excitation_ceilings(
         profile,
         targets["tweeter"]["target_fingerprint"],
         program_admission=True,
-        declared_sensitivities=_JTS3_SENSITIVITIES,
     )
     # woofer cap -8.0, sensitivity delta 25.2 dB -> -33.2.
     assert ceiling == pytest.approx(-33.2)
 
-    # And the naked-tone path still keeps the class default, exactly as it does
-    # for a declared seed -- delegation is what the proven high-pass buys.
+    # And the naked-tone path still keeps the class default -- delegation is
+    # what the proven high-pass buys.
     _band, naked = resolve_driver_excitation_ceilings(
         profile,
         targets["tweeter"]["target_fingerprint"],
-        declared_sensitivities=_JTS3_SENSITIVITIES,
     )
     assert naked == pytest.approx(-65.0)
 
@@ -406,31 +384,15 @@ def test_a_declared_peak_louder_than_the_class_default_is_not_clamped() -> None:
     only bound left on it is digital full scale.
     """
     _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-50,
+        woofer_peak=-8, tweeter_peak=-50, sensitivities=_JTS3_SENSITIVITIES,
     )
     for program_admission in (False, True):
         _band, ceiling = resolve_driver_excitation_ceilings(
             profile,
             targets["tweeter"]["target_fingerprint"],
             program_admission=program_admission,
-            declared_sensitivities=_JTS3_SENSITIVITIES,
         )
         assert ceiling == pytest.approx(-50.0)
-
-
-def test_naked_path_keeps_legacy_ceiling_even_with_sensitivities_declared():
-    # Pin BOTH sides of the conditional: the SAME profile + declared
-    # sensitivities resolve to the untouched -65 class default when the
-    # caller does not mark the proven-HP path.
-    _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-65,
-    )
-    _band, ceiling = resolve_driver_excitation_ceilings(
-        profile,
-        targets["tweeter"]["target_fingerprint"],
-        declared_sensitivities=_JTS3_SENSITIVITIES,
-    )
-    assert ceiling == pytest.approx(-65.0)
 
 
 def test_program_admission_path_derives_jts3_ceiling():
@@ -439,13 +401,12 @@ def test_program_admission_path_derives_jts3_ceiling():
     # this by a further 1.8 dB was retired 2026-08-20; the sensitivity
     # arithmetic is the operative ceiling.
     _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-65,
+        woofer_peak=-8, tweeter_peak=None, sensitivities=_JTS3_SENSITIVITIES,
     )
     _band, ceiling = resolve_driver_excitation_ceilings(
         profile,
         targets["tweeter"]["target_fingerprint"],
         program_admission=True,
-        declared_sensitivities=_JTS3_SENSITIVITIES,
     )
     assert ceiling == pytest.approx(-33.2)
     # The woofer itself is a low-frequency role: its own ceiling is untouched
@@ -454,49 +415,22 @@ def test_program_admission_path_derives_jts3_ceiling():
         profile,
         targets["woofer"]["target_fingerprint"],
         program_admission=True,
-        declared_sensitivities=_JTS3_SENSITIVITIES,
     )
     assert woofer_ceiling == pytest.approx(-8.0)
 
 
 def test_explicit_household_value_is_never_overridden():
-    # The household typed a REAL, different value (-70, not the -65 seed) --
-    # even on the proven-HP path, with sensitivities declared, it is always
-    # respected as-is.
+    # A typed value is always respected as-is, even on the proven-HP path with
+    # sensitivities declared.
     _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-70,
+        woofer_peak=-8, tweeter_peak=-70, sensitivities=_JTS3_SENSITIVITIES,
     )
     _band, ceiling = resolve_driver_excitation_ceilings(
         profile,
         targets["tweeter"]["target_fingerprint"],
         program_admission=True,
-        declared_sensitivities=_JTS3_SENSITIVITIES,
     )
     assert ceiling == pytest.approx(-70.0)
-
-
-def test_missing_sensitivity_falls_back_to_legacy_ceiling():
-    # Seed matches (-65) and program_admission=True, but the declaration
-    # carries no sensitivities -- nothing to derive from, so the legacy
-    # class-default ceiling holds (every caller that doesn't thread the
-    # declaration keeps exactly today's behavior).
-    _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-65,
-    )
-    _band, ceiling = resolve_driver_excitation_ceilings(
-        profile,
-        targets["tweeter"]["target_fingerprint"],
-        program_admission=True,
-    )
-    assert ceiling == pytest.approx(-65.0)
-    # A HALF declaration (tweeter only, no LF sibling) also derives nothing.
-    _band, ceiling = resolve_driver_excitation_ceilings(
-        profile,
-        targets["tweeter"]["target_fingerprint"],
-        program_admission=True,
-        declared_sensitivities={"tweeter": 108.5},
-    )
-    assert ceiling == pytest.approx(-65.0)
 
 
 def test_three_way_shaped_variant_takes_the_conservative_candidate():
@@ -510,20 +444,20 @@ def test_three_way_shaped_variant_takes_the_conservative_candidate():
         mode="active_3_way",
         woofer_peak=-8,
         mid_peak=-30,
-        tweeter_peak=-65,
+        tweeter_peak=None,
+        sensitivities={"woofer": 83.3, "mid": 100.0, "tweeter": 108.5},
     )
     _band, ceiling = resolve_driver_excitation_ceilings(
         profile,
         targets["tweeter"]["target_fingerprint"],
         program_admission=True,
-        declared_sensitivities={"woofer": 83.3, "mid": 100.0, "tweeter": 108.5},
     )
     assert ceiling == pytest.approx(-38.5)
 
 
 def test_ceiling_supersession_logs_event(caplog):
     _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-65,
+        woofer_peak=-8, tweeter_peak=None, sensitivities=_JTS3_SENSITIVITIES,
     )
     with caplog.at_level(
         logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
@@ -532,7 +466,6 @@ def test_ceiling_supersession_logs_event(caplog):
             profile,
             targets["tweeter"]["target_fingerprint"],
             program_admission=True,
-            declared_sensitivities=_JTS3_SENSITIVITIES,
         )
     assert event_records(caplog, "active_speaker.excitation_ceiling_superseded")
     caplog.clear()
@@ -542,42 +475,8 @@ def test_ceiling_supersession_logs_event(caplog):
         resolve_driver_excitation_ceilings(
             profile,
             targets["tweeter"]["target_fingerprint"],
-            declared_sensitivities=_JTS3_SENSITIVITIES,
         )
     assert not event_records(caplog, "active_speaker.excitation_ceiling_superseded")
-
-
-def test_skipped_derivation_logs_named_role(caplog):
-    # Nit 1 (2026-07-19 gate): the proven-HP path WOULD derive (HF role,
-    # seed-equal cap) but no declared sensitivity exists -- the silent
-    # fallback to the near-inaudible class default cost a puzzled hardware
-    # triage, so the skip is a named INFO event. The naked path stays silent.
-    _topology, profile, targets = _profile_and_targets(
-        woofer_peak=-8, tweeter_peak=-65,
-    )
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
-    ):
-        resolve_driver_excitation_ceilings(
-            profile,
-            targets["tweeter"]["target_fingerprint"],
-            program_admission=True,
-        )
-    fields = event_fields(
-        caplog, "active_speaker.excitation_ceiling_derivation_skipped"
-    )
-    assert fields["role"] == "tweeter"
-    assert fields["reason"] == "declared_sensitivity_missing"
-    caplog.clear()
-    with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
-    ):
-        resolve_driver_excitation_ceilings(
-            profile, targets["tweeter"]["target_fingerprint"],
-        )
-    assert not event_records(
-        caplog, "active_speaker.excitation_ceiling_derivation_skipped"
-    )
 
 
 @pytest.mark.parametrize("role", ["woofer", "mid", "subwoofer", "tweeter", "full_range"])
@@ -590,7 +489,7 @@ def test_excitation_band_uses_audio_edges_and_keeps_interior_limits(monkeypatch,
         "role": role, "target_id": f"mono:{role}", "target_fingerprint": "f" * 64,
         "hard_excitation_band_hz": [45, hard_upper],
         "measurement_band_hz": [60, 10000],
-        "required_protection_filters": [], "level_duration_limits": {},
+        "required_protection_filters": [], "level_duration_limits": {"max_effective_peak_dbfs": -30.0},
     }
     band, _cap = resolve_driver_excitation_ceilings(
         {"targets": [target]}, "f" * 64, program_admission=program_admission,

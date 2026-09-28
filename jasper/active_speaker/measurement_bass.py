@@ -23,7 +23,7 @@ from jasper.audio_measurement.repeated_sweep import sweep_ambient_id
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import AnalyzedMeasurement, decoded_measurements
 
-BASS_VIEW_SCHEMA = "jts_bass_view/1"
+BASS_VIEW_SCHEMA = "jts_bass_view/2"
 
 
 def _finite(values: np.ndarray) -> list[float | None]:
@@ -104,7 +104,7 @@ def bass_take(take: AnalyzedMeasurement) -> dict[str, Any]:
     return {
         "record_path": take.record_path,
         "record": {key: value for key, value in take.record.items() if key not in {"curves", "program"}},
-        "program_id": program.program_id,
+        "stimulus_id": program.stimulus_id,
         "sweep_band_hz": [segment.f1_hz, segment.f2_hz],
         "sweep_duration_s": segment.n_samples / take.sample_rate,
         "passes": [{"segment_id": s.segment_id, "start_sample": s.start_sample, "n_samples": s.n_samples,

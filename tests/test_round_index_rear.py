@@ -71,7 +71,7 @@ def test_a_room_rounds_index_gets_no_rear_lines(tmp_path):
 
 
 def test_a_pair_rounds_index_names_the_null_and_the_front_rear_comparisons(tmp_path, banked_candidates):
-    root = pair_round(tmp_path, behind_gap_ms=0.5, sidecar_curves=False)
+    root = pair_round(tmp_path, behind_gap_ms=0.5)
     packet_of(root)
     index = (root / INDEX_FILENAME).read_text()
     commands = [shlex.split(line.strip("`- ")) for line in index.splitlines() if "jasper-round-views compare" in line]

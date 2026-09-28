@@ -18,15 +18,13 @@ from jasper.audio_measurement.series_stats import curve_difference, deviation_su
 from jasper.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
-from .position_cycle import (
-    measured_curve_band,
-    read_take_curves,
-    take_artifact_path,
-)
-from .record_index import Measurement, measurement_documents
+from .position_cycle import measured_curve_band, take_curves
+from .record_index import Measurement
 from .round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key, document_capture_id
 from .round_inputs import RoundInputs
 from ..frequency_view import FREQUENCY_VIEW_FILENAME, frequency_run_from_view
+from ..measurement_programs import PURPOSES
+from ..run_manifest import kept_measurements
 
 __all__ = [
     "REFUSE_NO_LADDER",
@@ -84,13 +82,14 @@ class _Read(NamedTuple):
 
 
 def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
-    """Every lateral take by its own record, with the banked view's curves
-    when the view holds any, else the record's. A take the view lacks reads
-    as having no curve. A view curve is matched by its take id alone: the
-    speaker program's view carries no ``phase`` (round_packet.write_round_packet)."""
+    """Every lateral take the round kept, of any purpose, by its own record,
+    with the banked view's curves when the view holds any, else the record's.
+    A take the view lacks reads as having no curve. A view curve is matched by
+    its take id alone: the speaker program's view carries no ``phase``
+    (round_packet.write_round_packet)."""
     records = {
         document_capture_id(record) or Path(row.path).stem: (row, record)
-        for row, record in measurement_documents(session_dir) if row.phase == PHASE_LATERAL
+        for row, record in kept_measurements(session_dir, phases=(PHASE_LATERAL,), purposes=PURPOSES)
     }
     if frequency_path.is_file():
         run = frequency_run_from_view(json.loads(frequency_path.read_text()))
@@ -104,8 +103,7 @@ def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
                 yield _Take(take_id, row, record, f"{frequency_path}#{take_id}", viewed.get(take_id))
             return
     for take_id, (row, record) in records.items():
-        yield _Take(take_id, row, record, row.path,
-                    read_take_curves(take_artifact_path(session_dir, row.path), phase=PHASE_LATERAL))
+        yield _Take(take_id, row, record, row.path, take_curves(record))
 
 
 def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:

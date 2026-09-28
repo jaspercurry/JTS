@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use jasper_env::{env_f32, env_i64, env_str, env_u32_positive_or_bail, env_u64};
-use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
+use jasper_tts_protocol::{flush::DEFAULT_MAX_PENDING_FRAMES, loudness::AssistantLoudnessConfig};
 
 use crate::dac_content::ChannelPick;
 use crate::types::{SampleFormat, SAMPLE_RATE};
@@ -595,7 +595,7 @@ fn parse_tts() -> Result<(Option<String>, u64, f32)> {
     let tts_socket_path = env_optional("JASPER_OUTPUTD_TTS_SOCKET");
     let tts_max_pending_frames = env_u64(
         "JASPER_OUTPUTD_TTS_MAX_PENDING_FRAMES",
-        crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+        DEFAULT_MAX_PENDING_FRAMES,
     )?;
     let tts_program_duck_db = match std::env::var("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB") {
         Ok(s) if !s.trim().is_empty() => env_f32("JASPER_OUTPUTD_TTS_PROGRAM_DUCK_DB", -25.0)?,
@@ -1838,10 +1838,7 @@ mod tests {
         with_env(&[], || {
             let cfg = Config::from_env().unwrap();
             assert!(cfg.tts_socket_path.is_none()); // solo: fanin owns TTS
-            assert_eq!(
-                cfg.tts_max_pending_frames,
-                crate::tts::DEFAULT_MAX_PENDING_FRAMES
-            );
+            assert_eq!(cfg.tts_max_pending_frames, DEFAULT_MAX_PENDING_FRAMES);
             assert_eq!(cfg.tts_program_duck_db, -25.0);
         });
         with_env(

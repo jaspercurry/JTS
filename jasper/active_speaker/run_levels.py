@@ -185,10 +185,10 @@ async def run_levels(
                         predicted = request.level.predicted_db_spl
                         anchor_stimulus = ladder.facts.anchor.record.get("stimulus") or {}
                         observations.append({"record_id": record_id, "level_db": finite_float(basis["level_db"]), "spl": spl,
-                            "run_stimulus": {"program_id": basis["program_id"],
+                            "run_stimulus": {"stimulus_id": basis["stimulus_id"],
                                              "wav_sha256": basis["stimulus_wav_sha256"],
                                              "peak_dbfs": basis["stimulus_peak_dbfs"]},
-                            "stimulus_mismatch": stimulus_mismatch(anchor_stimulus.get("program_id"), basis["program_id"]),
+                            "stimulus_mismatch": stimulus_mismatch(anchor_stimulus.get("stimulus_id"), basis["stimulus_id"]),
                             "measured_offset_db": measured - predicted
                                 if measured is not None and predicted is not None else None})
                         return bound.analyze(record, record_id)

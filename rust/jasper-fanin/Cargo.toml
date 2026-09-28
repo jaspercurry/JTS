@@ -9,6 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+jasper-alsa = { path = "../jasper-alsa" }
 jasper-daemon = { path = "../jasper-daemon" }
 jasper-tts-protocol = { path = "../jasper-tts-protocol" }
 jasper-env = { path = "../jasper-env" }

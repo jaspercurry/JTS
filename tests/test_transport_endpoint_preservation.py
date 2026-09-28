@@ -39,6 +39,7 @@ from jasper.fanin_coupling import (
     TRANSPORT_RING,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
+from tests._log_events import event_fields
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE
 
@@ -119,22 +120,6 @@ def _issue(payload: dict, code: str) -> dict:
 
 def _gate(payload: dict, gate_id: str) -> dict:
     return next(g for g in payload["required_gates"] if g.get("id") == gate_id)
-
-
-def _event_fields(records, event: str) -> dict[str, str]:
-    """The ONE record carrying ``event=<event>``, as its ``k=v`` field map.
-
-    One record, not ``caplog.text``: fields spread over several lines satisfy a
-    substring check while making the one-grep property false.
-    """
-    lines = [r.message for r in records if f"event={event}" in r.message]
-    assert len(lines) == 1, lines
-    return {
-        key: value.strip('"')
-        for key, _, value in (
-            part.partition("=") for part in lines[0].split() if "=" in part
-        )
-    }
 
 
 # --------------------------------------------------------------------------
@@ -841,7 +826,7 @@ async def test_the_prepared_line_names_the_transport_it_actually_emitted(
         else:
             _commissioning_yaml(topology, preset, tmp_path / case, device)
 
-    fields = _event_fields(caplog.records, "active_speaker.driver_commission_prepared")
+    fields = event_fields(caplog, "active_speaker.driver_commission_prepared")
     assert (fields["transport"], fields["capture"], fields["wire"]) == (
         transport,
         capture,

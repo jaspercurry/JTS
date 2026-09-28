@@ -6,17 +6,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from statistics import median
 from typing import Any, Mapping
 
+from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.speaker_layout import measurement_target_parts
 
+from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
+from .crossover_v2.record_index import Measurement, measurement_documents
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
 from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
@@ -25,6 +30,32 @@ RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
+
+
+def kept_measurements(
+    bundle_dir: Path, *, phases: Collection[str], purposes: Collection[str],
+) -> Iterator[tuple[Measurement, Mapping[str, Any]]]:
+    """The takes of these phases and purposes that the round kept, in path order.
+
+    A kept take is one its verdict accepted and its run manifest selected for
+    its stop, so a refused take, or one a retake or redo replaced, is never
+    read. A bundle with no run manifest keeps none (#2902).
+    """
+    kept = _kept_record_ids(Path(bundle_dir))
+    for row, document in measurement_documents(bundle_dir):
+        if row.phase in phases and document.get("measurement_purpose") in purposes and row.path in kept:
+            yield row, document
+
+
+def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
+    manifests = (bundle_dir / EVIDENCE_ROOT / "artifacts").glob(f"crossover_v2/*/{RUN_MANIFEST_FILENAME}")
+    return frozenset(
+        take["artifacts"]["record_id"]
+        for path in manifests
+        for group in (read_json_mapping(path) or {}).get("sets", ())
+        for take in group["takes"]
+        if take["selected"] and take["quality"]["status"] == TAKE_MEASURED
+    )
 
 
 def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -196,9 +227,10 @@ class RunManifest:
     def capture_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         pose = self._context["pose"]
         planned = {
+            "preset": self.program, "layout": self.layout,
+            "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
-            "seat_offset_m": pose.get("seat_offset_m"),
-            **({"pose_driver": pose["driver"]} if pose.get("driver") else {}),
+            "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
         }
         if "measurement_purpose" not in record:
             planned["measurement_purpose"] = resolved_measurement_purpose(
@@ -220,7 +252,7 @@ class RunManifest:
             # A take at one driver's pose answers to its level target, never its repeats (ADR-0361).
             return {"loudest_half_second_db_spl": observed, "level_reference_db_spl": None, "same_pose": False}
         basis = capture_basis(record)
-        gain, program = basis.get("level_db"), basis.get("program_id")
+        gain, program = basis.get("level_db"), basis.get("stimulus_id")
         candidate = self._context.get("candidate_id")
         # Offsets change the gain, each program composes its own stimulus level, and
         # each candidate graph has its own sensitivity; only repeats of this program
@@ -229,7 +261,7 @@ class RunManifest:
         accepted = {take["take_id"]: take for take in self.takes
                     if take["take_id"] in chosen
                     and take["level"].get("level_db") == gain
-                    and take["level"].get("program_id") == program
+                    and take["level"].get("stimulus_id") == program
                     and take.get("candidate_id") == candidate
                     and take["level"]["loudest_half_second_db_spl"] is not None}
         same = [take for take in accepted.values() if take["pose"] == self._context["pose"]]
@@ -273,7 +305,7 @@ class RunManifest:
                    "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
                    "level": {**{key: basis.get(key) for key in
-                             ("level_db", "stimulus_dbfs", "program_id")},
+                             ("level_db", "stimulus_dbfs", "stimulus_id")},
                              "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
                              "level_delta_db": level_observation.get("level_delta_db")},
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
@@ -298,7 +330,7 @@ class RunManifest:
     def to_dict(self) -> dict[str, Any]:
         chosen = set(self._chosen.values())
         return {
-            "kind": RUN_MANIFEST_KIND, "schema_version": 1, "run_id": self.run_id,
+            "kind": RUN_MANIFEST_KIND, "schema_version": 2, "run_id": self.run_id,
             "program": self.program, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
             "level": self.level,

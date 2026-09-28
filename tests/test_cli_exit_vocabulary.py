@@ -36,6 +36,7 @@ from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
 from jasper.active_speaker.crossover_v2 import prescription_document
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.cli import _refusal, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
@@ -273,10 +274,13 @@ class _FixtureRound(NamedTuple):
 def _fixture_round(root: Path) -> _FixtureRound:
     measured = bank_measure_round(root, candidates=("cand-a", "cand-b"))
     bundle, = (measured / "bundle").iterdir()
-    return _FixtureRound(
+    round_ = _FixtureRound(
         measured=measured, verified=bank_verify_round(root), bundle=bundle,
         seat=bank_seat_round(root),
     )
+    for tree in (round_.measured, round_.verified, round_.seat):
+        store_banked_evidence(tree)
+    return round_
 
 
 def _room_grade_argv(round_: _FixtureRound) -> list[str]:

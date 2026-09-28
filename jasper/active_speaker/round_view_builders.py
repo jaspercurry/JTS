@@ -9,7 +9,6 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_json
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .frequency_view import FrequencyRun, build_frequency_view, manifest_frequency_run
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
@@ -42,7 +41,7 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
             manifest = {}
         purpose = run_purpose(manifest.get("program"))
         run = manifest_frequency_run(manifest) if purpose == PURPOSE_SPEAKER else analyze_measurement_bundle(
-            inputs.session_dir, calibration_root=calibration_root, run_reference_db=run_reference_db,
+            inputs.session_dir, run_reference_db=run_reference_db,
         )
         rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
             (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
@@ -122,12 +121,12 @@ def rear(inputs: RoundInputs, target: Path, set_id: str | None,
                      "reference": comparison["reference"]}
 
 
-def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: Path | None = None) -> dict[str, Any]:
+def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
     manifest = read_run_manifest(inputs)
     selected = resolve_set(inputs, set_id, manifest=manifest)
     selection = select_seat_takes(
         inputs.session_dir, purposes=(*run_purposes(manifest["program"]), PURPOSE_ROOM),
-        take_ids=selected.selected_ids, basis=selected.capture_basis, calibration_root=calibration_root,
+        take_ids=selected.selected_ids, basis=selected.capture_basis,
     )
     if not selection.takes:
         raise RoundCapturesRefused(REFUSE_NO_SEAT_TAKES, {"set_id": selected.set_id,
@@ -141,20 +140,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
     return payload
 
 
-def write_room_document(inputs: RoundInputs, directory: Path, set_id: str | None, *,
-                        calibration_root: Path | None = None) -> tuple[dict, Path]:
-    payload = room_payload(inputs, set_id, calibration_root=calibration_root)
-    spec = ARTIFACT_BY_VIEW["room"]
-    path = default_out(inputs, directory, spec.artifact, set_id)
-    atomic_write_json(path, {**payload, "schema": spec.schema})
-    return payload, path
-
-
-def _document(
-    inputs: RoundInputs, directory: Path, set_id: str | None, calibration_root: Path | None,
-) -> tuple[dict, Path]:
-    if calibration_root is not None:
-        return write_room_document(inputs, directory, set_id, calibration_root=calibration_root)
+def _document(inputs: RoundInputs, directory: Path, set_id: str | None) -> tuple[dict, Path]:
     path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
     document = json.loads(path.read_text())
     if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
@@ -163,16 +149,16 @@ def _document(
 
 
 def room_grade_payload(inputs: RoundInputs, directory: Path, set_id: str | None, *,
-                       incumbent_id: str | None = None, calibration_root: Path | None = None) -> dict[str, Any]:
+                       incumbent_id: str | None = None) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id)
-    candidate, candidate_path = _document(inputs, directory, set_id, calibration_root)
+    candidate, candidate_path = _document(inputs, directory, set_id)
     incumbent_id = incumbent_id or (candidate.get("incumbent") or {}).get("set_id")
     if incumbent_id == selected.set_id:
         incumbent_id = None  # the incumbent's own measurement grades against nothing
     incumbent_doc = None
     if incumbent_id is not None:
         resolve_set(inputs, incumbent_id)
-        incumbent_doc = _document(inputs, directory, incumbent_id, calibration_root)[0]
+        incumbent_doc = _document(inputs, directory, incumbent_id)[0]
     median = read_room_median(candidate.get("median", {}))
     incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
     grade = grade_room_median(median, incumbent=incumbent)

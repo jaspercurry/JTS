@@ -104,13 +104,13 @@ def purpose_take_records(
 def analyzed_purpose_takes(
     bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
     purposes: tuple[str, ...] | None = None,
-    take_ids: tuple[str, ...] | None = None, calibration_root: Path | None = None,
+    take_ids: tuple[str, ...] | None = None,
 ) -> list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]:
-    """A missing WAV yields a ``None`` take for the caller to disclose."""
+    """A missing WAV or a failed analysis yields a ``None`` take for the caller to disclose."""
     documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
                  if take_ids is None or record.get("take_id") in take_ids}
     analyzed: set[str] = set()
-    for measurement in analyzed_measurements(bundle_dir, calibration_root=calibration_root, paths=documents):
+    for measurement in analyzed_measurements(bundle_dir, paths=documents):
         row, _ = documents[measurement.record_path]
         analyzed.add(measurement.record_path)
         documents[measurement.record_path] = row, measurement.document()
@@ -123,7 +123,6 @@ def select_seat_takes(
     bundle_dir: Path, *, capture_id: str | None = None,
     purposes: tuple[str, ...] = (PURPOSE_ROOM,),
     take_ids: tuple[str, ...] | None = None, basis: Mapping[str, Any] | None = None,
-    calibration_root: Path | None = None,
 ) -> SeatSelection:
     """A capture id selects its whole compatible set; no selector may mix sets.
 
@@ -132,9 +131,7 @@ def select_seat_takes(
     """
     groups: dict[str, list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]] = {}
     bases: dict[str, dict[str, Any]] = {}
-    for row, record, take in analyzed_purpose_takes(
-        bundle_dir, purposes=purposes, take_ids=take_ids, calibration_root=calibration_root,
-    ):
+    for row, record, take in analyzed_purpose_takes(bundle_dir, purposes=purposes, take_ids=take_ids):
         row_basis = dict(basis) if basis is not None else capture_basis(record)
         key = "manifest" if take_ids is not None else json_fingerprint(row_basis)
         bases[key] = row_basis

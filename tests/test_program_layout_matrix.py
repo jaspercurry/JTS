@@ -60,8 +60,8 @@ def speaker(request, tmp_path_factory):
     name = request.param
     if name == 'three_way_active':
         topology, safety, targets = _three_way_safety(
-            mode='active_3_way', woofer_peak=0, mid_peak=0, tweeter_peak=-65,
-            hard_band=[40, 20000], measurement_band=[60, 10000],
+            mode='active_3_way', woofer_peak=0, mid_peak=0, tweeter_peak=None,
+            hard_band=[40, 20000], measurement_band=[60, 10000], sensitivities=SENSITIVITIES,
         )
         targets = {role: target['target_fingerprint'] for role, target in targets.items()}
         preset = ActiveSpeakerPreset.from_mapping(_three_way_preset('mono'))
@@ -70,13 +70,14 @@ def speaker(request, tmp_path_factory):
             rear=name == 'cardioid', passive=name == 'one_way_passive',
             woofer_floor=40, woofer_measurement_floor=60, woofer_highpass=40,
             woofer_upper=20000 if name == 'one_way_passive' else 4000, max_sweep_duration_s=4,
+            tweeter_peak=None, sensitivities=SENSITIVITIES,
         )
         preset = _rear_pair('mono')[0] if name == 'cardioid' else resolve_capture_preset(topology)
     roles = required_driver_roles(preset.way_count)
     bands, caps, durations = [], {}, {}
     for channel, role in enumerate(roles):
         band, caps[role] = resolve_driver_excitation_ceilings(
-            safety, targets[role], program_admission=True, declared_sensitivities=SENSITIVITIES,
+            safety, targets[role], program_admission=True,
         )
         bands.append(RoleBand(role, channel, band))
         durations[role] = effective_sweep_duration_limit_s(safety, targets[role])
@@ -126,15 +127,14 @@ def _outcome(speaker, selected, candidates, mover=None):
                                          branch_channels=branches or None)
                 )
             stage = 'render'
-            if program.program_id not in speaker.rendered:
-                wav = speaker.directory / f'{program.program_id}.wav'
+            if program.stimulus_id not in speaker.rendered:
+                wav = speaker.directory / f'{program.stimulus_id}.wav'
                 write_program_wav(wav, program)
-                speaker.rendered[program.program_id] = wav
+                speaker.rendered[program.stimulus_id] = wav
             stage = 'admit'
             kwargs = dict(topology=speaker.topology, safety_profile=speaker.safety_profile,
-                          role_targets=speaker.role_targets, session_volume_db=LEVEL_DB,
-                          declared_sensitivities=SENSITIVITIES)
-            wav = speaker.rendered[program.program_id]
+                          role_targets=speaker.role_targets, session_volume_db=LEVEL_DB)
+            wav = speaker.rendered[program.stimulus_id]
             admission = (readmit_program_from_wav(program, wav, **kwargs) if spec.graph_scope == 'drivers' else
                          readmit_summed_program_from_wav(program, wav, graph_yaml=speaker.graphs[key],
                              graph_evidence=measurement_graph_evidence(scope=spec.graph_scope, candidate=speaker.candidate),

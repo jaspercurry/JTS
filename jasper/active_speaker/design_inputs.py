@@ -7,11 +7,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from collections import Counter
 from typing import Any
 
 from jasper.output_topology import OutputTopology
-from .driver_protection import declared_protection_highpass_floor_hz
+from jasper.speaker_layout import measurement_target_id
 
 
 def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any]:
@@ -25,11 +24,14 @@ def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any
     return result
 
 
-def _target_values(source: Mapping[str, Any], target_id: str, role: str, unique: bool) -> Mapping[str, Any]:
-    drivers = source.get("drivers") or []
-    return next((driver for driver in drivers if driver.get("target_id") == target_id),
-                next((driver for driver in drivers
-                      if unique and not driver.get("target_id") and driver.get("role") == role), {}))
+def drivers_by_target(source: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    """Rows keyed by the output they name; the first row for an output wins (a second one refuses)."""
+    drivers = source.get("drivers") if isinstance(source, Mapping) else None
+    out: dict[str, Mapping[str, Any]] = {}
+    for driver in drivers if isinstance(drivers, list) else []:
+        if isinstance(driver, Mapping) and driver.get("target_id"):
+            out.setdefault(str(driver["target_id"]), driver)
+    return out
 
 
 def resolve_design_inputs(
@@ -37,30 +39,23 @@ def resolve_design_inputs(
     manual_settings: Mapping[str, Any] | None,
     driver_research: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    """Bind by physical target and disclose ambiguous legacy role values."""
+    """Bind researched and operator values by physical target."""
     manual, research = manual_settings or {}, driver_research or {}
-    drivers, bindings = [], {}
-    counts = Counter(channel.role for group in topology.speaker_groups for channel in group.channels)
+    manual_rows, research_rows = drivers_by_target(manual), drivers_by_target(research)
+    drivers = []
     for group in topology.speaker_groups:
         for channel in group.channels:
             target_id = channel.target_id(group.id)
-            facts = dict(_target_values(research, target_id, channel.role,
-                                        channel.output_variant != "rear"))
+            facts = dict(research_rows.get(target_id, {}))
             # Installation belongs to the operator, not an AI specification.
             facts.pop("pad", None)
             facts.pop("installation", None)
             if isinstance(facts.get("cabinet"), Mapping):
                 facts["cabinet"] = {key: value for key, value in facts["cabinet"].items()
                                     if key != "enclosure_kind"}
-            edits = _target_values(manual, target_id, channel.role, channel.output_variant != "rear")
-            if declared_protection_highpass_floor_hz(edits) is not None and not edits.get("recommended_highpass_hz"):
-                facts.pop("recommended_highpass_hz", None)
-                facts.pop("recommended_highpass_slope_db_per_octave", None)
+            edits = manual_rows.get(target_id, {})
             if not facts and not edits:
                 continue
-            source = edits or facts
-            bindings[target_id] = ("explicit" if source.get("target_id") else
-                                   "legacy" if counts[channel.role] == 1 else "ambiguous")
             driver = _overlay(facts, edits)
             driver.update(target_id=target_id, role=channel.role)
             drivers.append(driver)
@@ -73,10 +68,39 @@ def resolve_design_inputs(
                     {"high": 3, "medium": 2, "low": 1}.get(candidate.get("confidence"), 0))
             if pair not in ranks or rank > ranks[pair]:
                 candidates[pair], ranks[pair] = dict(candidate), rank
-    return {"drivers": drivers, "bindings": bindings, "crossover_candidates": list(candidates.values()),
+    return {"drivers": drivers, "crossover_candidates": list(candidates.values()),
             "driver_spacing_mm": manual.get("driver_spacing_mm")}
 
 
 def resolved_draft_inputs(draft: Mapping[str, Any]) -> dict[str, Any]:
     topology = OutputTopology.from_mapping(draft["topology"])
     return resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research"))
+
+
+def declared_by_target(draft: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """Each measurement target's declared ``key``, manual row over research (ADR-0384).
+
+    A target whose outputs disagree declares none, as does a draft whose
+    topology is absent or unreadable; a rear output that declares none takes
+    its front's value.
+    """
+    try:
+        topology = OutputTopology.from_mapping(draft.get("topology"))
+    except ValueError:
+        return {}
+    rows = drivers_by_target(resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research")))
+    values: dict[str, Any] = {}
+    conflicted: set[str] = set()
+    fronts: dict[str, str] = {}
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            target = measurement_target_id(channel.role, channel.output_variant)
+            if channel.output_variant != "primary":
+                fronts[target] = channel.role
+            value = rows.get(channel.target_id(group.id), {}).get(key)
+            if value is not None and values.setdefault(target, value) != value:
+                conflicted.add(target)
+    for target, front in fronts.items():
+        if target not in values and front in values and front not in conflicted:
+            values[target] = values[front]
+    return {target: value for target, value in values.items() if target not in conflicted}

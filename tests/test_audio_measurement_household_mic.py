@@ -24,7 +24,7 @@ import pytest
 
 from jasper.audio_measurement import calibration
 from jasper.audio_measurement import household_mic as hm
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_records, leaked_lines
 
 SAMPLE_CAL = "20 -1\n100 0\n1000 1\n20000 2\n"
 
@@ -343,8 +343,8 @@ def test_household_mic_replaced_on_a_different_serial(tmp_path, monkeypatch, cap
     fields = event_fields(caplog, "correction.household_mic_replaced")
     assert fields["changed"] == "serial"
     # Hashes never ride the event line.
-    assert calibration.serial_hash("810-1111") not in caplog.text
-    assert calibration.serial_hash("810-2222") not in caplog.text
+    assert leaked_lines(caplog, calibration.serial_hash("810-1111")) == []
+    assert leaked_lines(caplog, calibration.serial_hash("810-2222")) == []
 
 
 def test_household_mic_write_failure_never_blocks_the_calibration(

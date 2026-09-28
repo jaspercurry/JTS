@@ -5,6 +5,10 @@
 //! Open-time only: the per-period read and render paths, and the error
 //! classifier they share, stay with the mixer's work loop.
 
+use alsa::pcm::Format;
+use alsa::Direction;
+use jasper_alsa::{prepare_hw_params, BufferSize, HwRequest};
+
 use super::*;
 
 /// PCM sample format for this daemon's snd-aloop capture lanes — the
@@ -218,13 +222,16 @@ pub(super) fn open_direct_capture(
     let pcm = PCM::new(device, Direction::Capture, true)?;
     let negotiated_buffer;
     {
-        let hwp = HwParams::any(&pcm)?;
-        hwp.set_channels(CHANNELS)?;
-        hwp.set_rate(SAMPLE_RATE_HZ, ValueOr::Nearest)?;
-        hwp.set_format(Format::S32LE)?;
-        hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(open_period as i64, ValueOr::Nearest)?;
-        hwp.set_buffer_size_near(want_buffer as i64)?;
+        let hwp = prepare_hw_params(
+            &pcm,
+            HwRequest {
+                channels: CHANNELS,
+                sample_rate: SAMPLE_RATE_HZ,
+                format: Format::S32LE,
+                period_frames: open_period,
+                buffer: BufferSize::Nearest(want_buffer),
+            },
+        )?;
         let rate = hwp.get_rate()?;
         let period = hwp.get_period_size()? as u32;
         let buffer = hwp.get_buffer_size()? as u32;
@@ -293,24 +300,16 @@ pub(super) fn errno_of(e: &alsa::Error) -> i32 {
 }
 
 fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
-    // HwParams must be dropped before pcm.hw_params() is called, hence the
-    // nested scope.
-    {
-        let hwp = HwParams::any(pcm).context("creating HwParams::any")?;
-        hwp.set_channels(CHANNELS)
-            .with_context(|| format!("set_channels({})", CHANNELS))?;
-        hwp.set_rate(config.sample_rate, ValueOr::Nearest)
-            .with_context(|| format!("set_rate({})", config.sample_rate))?;
-        hwp.set_format(LANE_CAPTURE_FORMAT)
-            .with_context(|| format!("set_format({:?})", LANE_CAPTURE_FORMAT))?;
-        hwp.set_access(Access::RWInterleaved)
-            .context("set_access(RWInterleaved)")?;
-        hwp.set_period_size(config.period_frames as i64, ValueOr::Nearest)
-            .with_context(|| format!("set_period_size({})", config.period_frames))?;
-        hwp.set_buffer_size(buffer_frames as i64)
-            .with_context(|| format!("set_buffer_size({})", buffer_frames))?;
-        pcm.hw_params(&hwp).context("installing HwParams")?;
-    }
+    let request = HwRequest {
+        channels: CHANNELS,
+        sample_rate: config.sample_rate,
+        format: LANE_CAPTURE_FORMAT,
+        period_frames: config.period_frames,
+        buffer: BufferSize::Exact(buffer_frames),
+    };
+    let hwp = prepare_hw_params(pcm, request)
+        .with_context(|| format!("preparing capture HwParams {request:?}"))?;
+    pcm.hw_params(&hwp).context("installing HwParams")?;
     Ok(())
 }
 

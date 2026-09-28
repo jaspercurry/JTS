@@ -53,7 +53,8 @@ _STYLE_HIGH_PASS_HZ = {
 #: Shared by the ``tweeter`` and ``full_range`` classes: -65 dBFS was sized for
 #: a naked driver tone with no proven protective high-pass, and 100 ms is the
 #: floor-test duration that figure was validated at. On the program-admission
-#: path it is superseded by :func:`derive_hf_measurement_ceiling_dbfs`.
+#: path a tweeter that declares no level limit takes
+#: :func:`derive_hf_measurement_ceiling_dbfs` instead, or refuses (ADR-0382).
 _HIGH_FREQUENCY_FLOOR_TEST_MS = 100
 _HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
 
@@ -177,11 +178,11 @@ def driver_protection_profile(
 # ``max_commissioning_level_db_spl``, and the leveling ramp's guards.
 #
 # Residual, named rather than hidden: declared sensitivities carry no
-# plausibility validation, so a household that swaps the two rows empties the
-# derivation for that box's composed tweeter level. Refusing on delta <= 0
-# cannot separate that from the legitimate case — both clamp to
-# MAX_TEST_LEVEL_DBFS — so validating the declaration against the preset's own
-# ``sensitivity_db`` is the fix. Issue #2765.
+# plausibility validation, and refusing on delta <= 0 cannot separate a swapped
+# pair from the legitimate case — both clamp to MAX_TEST_LEVEL_DBFS. Nor does
+# the preset's ``sensitivity_db``: a commissioned speaker's preset copies it
+# from the same declaration. A swap shows as a tweeter cap near full scale
+# (ADR-0382, #2765).
 
 
 def derive_hf_measurement_ceiling_dbfs(
@@ -342,7 +343,6 @@ PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE = 24.0
 LOW_LIMIT_PLAUSIBILITY_FACTOR = 4.0
 
 LOW_LIMIT_DECLARED = "declared"
-LOW_LIMIT_LEGACY_PROTECTION_FILTER = "legacy_protection_filter"
 LOW_LIMIT_STYLE_DEFAULT = "style_default"
 
 #: One operator-facing phrase per low-limit provenance. Every surface that
@@ -350,9 +350,6 @@ LOW_LIMIT_STYLE_DEFAULT = "style_default"
 #: an unlabelled class-table figure cannot read as a second floor.
 LOW_LIMIT_PROVENANCE_LABELS = {
     LOW_LIMIT_DECLARED: "manufacturer declared",
-    LOW_LIMIT_LEGACY_PROTECTION_FILTER: (
-        "inferred from a stored protective high-pass"
-    ),
     LOW_LIMIT_STYLE_DEFAULT: "class fallback; nothing declared",
 }
 
@@ -385,24 +382,6 @@ class DriverLowLimit:
             float(published) if published is not None else 0.0,
             PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
         )
-
-
-def _declared_highpass_filter(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    filters = driver.get("required_protection_filters")
-    if not isinstance(filters, list):
-        return None
-    best: Mapping[str, Any] | None = None
-    for item in filters:
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind") or "").strip().lower() != "highpass":
-            continue
-        cutoff = coerce_finite_float(item.get("cutoff_hz"))
-        if cutoff is None or cutoff <= 0:
-            continue
-        if best is None or cutoff > float(best["cutoff_hz"]):
-            best = item
-    return best
 
 
 def driver_low_limit_plausibility_band_hz(
@@ -460,14 +439,13 @@ def resolve_driver_low_limit(
 
     1. The OWNER (``recommended_highpass_hz``): a sourced manufacturer figure
        wins outright, including below the style default.
-    2. A stored ``required_protection_filters`` high-pass, when no owner is
-       declared — the backwards-compatible read, labelled as inferred and
-       resolving to the STRICTER number so a deployed box never loosens.
-    3. The style default, labelled as a code default; see
-       :func:`apply_driver_low_limit` for the one thing it may not do.
+    2. The style default, labelled as a code default; see
+       :func:`apply_driver_low_limit` for the one thing it may not do. A stored
+       high-pass never stands in for the owner: its normaliser refuses a
+       high-pass without one (#2902).
 
-    ``None`` means no low limit at all (no owner, no stored high-pass, no style
-    anchor) — "unchanged behaviour", never a floor of zero.
+    ``None`` means no low limit at all (no owner, no style anchor) —
+    "unchanged behaviour", never a floor of zero.
     """
 
     if not isinstance(driver, Mapping):
@@ -483,19 +461,6 @@ def resolve_driver_low_limit(
             rationale=(
                 "the manufacturer's declared minimum recommended crossover "
                 "frequency"
-            ),
-        )
-    legacy = _declared_highpass_filter(driver)
-    if legacy is not None:
-        return DriverLowLimit(
-            frequency_hz=float(legacy["cutoff_hz"]),
-            slope_db_per_octave=coerce_finite_float(
-                legacy.get("minimum_slope_db_per_octave")
-            ),
-            provenance=LOW_LIMIT_LEGACY_PROTECTION_FILTER,
-            rationale=(
-                "inferred from a stored protective high-pass requirement; no "
-                "minimum recommended crossover frequency is declared"
             ),
         )
     anchor = driver_protection_profile(role, driver_style=driver_style).min_highpass_hz
@@ -570,17 +535,15 @@ def _band_pair(value: Any) -> tuple[float, float] | None:
 def driver_excitation_floor_hz(driver: Any) -> float | None:
     """The declared low edge below which this driver may not be excited.
 
-    The declared owner, then a stored protective high-pass, then the declared
-    ``measurement_band_hz`` low edge. The style default is deliberately NOT
-    reached: this bounds a SWEEP, and the class table is a tone-gate fallback,
-    not a frequency a driver may be driven to. ``None`` means undeclared.
+    The declared owner, then the declared ``measurement_band_hz`` low edge. The
+    style default is deliberately NOT reached: this bounds a SWEEP, and the
+    class table is a tone-gate fallback, not a frequency a driver may be driven
+    to. ``None`` means undeclared.
     """
 
     if not isinstance(driver, Mapping):
         return None
     declared = coerce_finite_float(driver.get("recommended_highpass_hz"))
-    if declared is None or declared <= 0:
-        declared = declared_protection_highpass_floor_hz(driver)
     if declared is not None and declared > 0:
         return declared
     band = _band_pair(driver.get("measurement_band_hz"))

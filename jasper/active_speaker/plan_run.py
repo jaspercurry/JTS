@@ -47,8 +47,6 @@ from .crossover_v2.refusal_copy import (
     channel_map_failed_roles, exception_detail,
 )
 from .crossover_v2.session import TuningSession
-from .crossover_v2.spatial import analysis_curve_records
-from .crossover_v2.planning import analysis_json
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
 from .measurement_programs import (
@@ -520,17 +518,13 @@ async def _run(
                                               spl=(record.get("capture_integrity") or {}).get("spl"),
                                               program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
                                               near_field=at_driver, level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
-                            if program is not None:
-                                record = {**record, "analysis": analysis_json(analysis)}
-                                if "curves" not in record:  # a room, bass or rear take banked its own (ADR-0373)
-                                    record["curves"] = analysis_curve_records(analysis, program)
-                                if is_level_probe(program):
-                                    log_event(logger, "active_speaker.level_probe", fields={
-                                        "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
-                                        "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
-                                        "next_gain_db": assessed.next_gain_db,
-                                        **{key: value for key, value in assessed.evidence.items()
-                                           if key.startswith("level_")}})
+                            if program is not None and is_level_probe(program):
+                                log_event(logger, "active_speaker.level_probe", fields={
+                                    "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
+                                    "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
+                                    "next_gain_db": assessed.next_gain_db,
+                                    **{key: value for key, value in assessed.evidence.items()
+                                       if key.startswith("level_")}})
                         except (ValueError, KeyError, OSError) as exc:
                             manifest.detail = exception_detail(exc)
                             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",

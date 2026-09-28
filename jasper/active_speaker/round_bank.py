@@ -276,7 +276,7 @@ def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> di
         sidecar["setup_calibration_id"] = calibration_id
         identity = SessionIdentity(session_id=session_id)
         try:
-            identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, row.session_id)
+            identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, document.get("capture_session_id", ""))
         except SessionIdentityError:
             pass
         stamp_session_identity(sidecar, identity)

@@ -98,6 +98,17 @@ for (const [source, values, drivers, shown] of [
   assert.deepEqual(row.children.map(text), ['Usable range', shown]);
 });
 
+test('a refused draft shows its refusal once, in the open driver details card', async () => {
+  const initial = state('details');
+  initial.issues = [{severity: 'blocker', code: 'manual_target_unknown', message: 'Enter this driver in its card.'}];
+  const ui = setup(initial);
+  await flush();
+  const card = nodes(ui.root).find(n => n.id === 'driver-safety-issues');
+  assert.equal(card.open, true);
+  assert.match(visible(card), /Enter this driver in its card\./);
+  assert.equal(nodes(ui.root).filter(n => n.tag === 'p' && text(n) === initial.issues[0].message).length, 1);
+});
+
 test('failed import keeps pasted text; failed apply never reports an active setup', async () => {
   const ui = setup(undefined, async () => { throw new Error('Wrong driver target'); });
   await flush();

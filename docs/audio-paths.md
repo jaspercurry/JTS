@@ -43,8 +43,7 @@ opening a capture device itself
 Only the `usbsink` lane takes the second, and only where it is armed.
 
 **The USB leg specifically.** `usbsink` is the one lane with no aloop
-substream: the default `input_pcms` list is one entry shorter than the renderer
-list (`hw:Loopback,1,3` is absent and the surviving pairs do not renumber), and
+substream: its `INPUT_LANES` pair has an empty PCM. Pair 3 stays unused, and
 `JASPER_FANIN_USB_DIRECT` decides whether the lane has a transport at all.
 Armed (the literal `enabled`), fan-in opens `hw:UAC2Gadget` as an S32_LE
 capture and feeds the lane resampler, which is the whole USB data plane
@@ -64,9 +63,8 @@ that permits local sources, and the coordinator-derived
 process — it is the readiness marker the coordinator drives.
 
 The lane labels, and which label carries which source, are owned in two places
-and mirrored nowhere: the compiled-in `input_pcms` / `input_renderers` default
-arrays in `Config::from_env` (`rust/jasper-fanin/src/config.rs`, positionally
-aligned), and `MUSIC_SOURCE_SPECS` in `jasper/music_sources.py`. The ALSA
+and mirrored nowhere: `INPUT_LANES` in `rust/jasper-fanin/src/config.rs`
+and `MUSIC_SOURCE_SPECS` in `jasper/music_sources.py`. The ALSA
 substream-pair allocation behind the aloop lanes is owned by
 `deploy/modprobe.d/snd-aloop.conf`. Room-correction and test playback have
 their own `correction` lane, always mixed; fan-in sums the lanes, writes Ring A
@@ -217,18 +215,11 @@ introduces no second mixer, second output device or new volume model.
    the source from a card of its own, a direct capture like the UAC2 gadget's:
    no alias, no aloop pair, fan-in opens the device. If the aloop pairs are
    exhausted, redesign the topology rather than overloading snd-aloop.
-2. **Teach `jasper-fanin` about the lane.** Extend the compiled-in `input_pcms`
-   and `input_renderers` default arrays in `Config::from_env`, keeping them
-   positionally aligned across the aloop lanes — the direct-capture lane
-   (`JASPER_FANIN_INPUT_RESAMPLER_LANE`, default `usbsink`) has no `input_pcms`
-   entry, because it reads the gadget capture or nothing at all. The
-   `JASPER_FANIN_INPUT_PCMS` /
-   `JASPER_FANIN_INPUT_RENDERERS` env vars only *override* those defaults and
-   are not set by `deploy/systemd/jasper-fanin.service`, so editing the unit
-   alone does nothing. The lists are pipe-delimited because ALSA `hw:` names
-   contain commas. A configured input is part of the production graph: if it
-   cannot be opened, fan-in fails loudly. Keep the label stable — mux uses it
-   to ask fan-in for one selected lane.
+2. **Teach `jasper-fanin` about the lane.** Extend `INPUT_LANES` in
+   `rust/jasper-fanin/src/config.rs` with its `(label, capture_pcm)` pair.
+   An empty PCM reserves the USB direct slot. An aloop input that cannot be
+   opened fails the daemon. Keep the label stable — mux uses it to select
+   the lane.
 3. **Wire the source daemon to the alias**, never to a ring PCM or a raw
    `hw:Loopback,*` name. Order the unit after `jasper-fanin.service` and reuse
    the existing sources' hardening/resource patterns. An optional source
@@ -364,11 +355,9 @@ contract; the reference/held-content algorithm itself lives in
   (`JASPER_TTS_MIX_STAGE=post_dsp`, `MixStage::PostDsp`) treats `downstream_db`
   as zero. Outputd honors mute and live re-gain, and fails closed to silence
   when an atomic turn-start context is missing or rejected.
-- Its TTS lane keeps a bounded pending queue (2 s, `DEFAULT_MAX_PENDING_FRAMES`
-  in `rust/jasper-fanin/src/tts.rs`) and drops audio commands arriving while it
-  is full (`event=fanin.tts_command_dropped`) rather than blocking the socket
+- Its TTS lane keeps a bounded pending queue (2 s) and drops audio commands
+  arriving while it is full (`event=fanin.tts_command_dropped`) rather than blocking the socket
   reader, which would stall a barge-in `FLUSH_SYNC` behind queued audio.
-  `tests/test_tts_ipc_pacing.py` pins the writer watermark to that budget.
 - Hearing safety is peak-aware here: requested gain is capped so the profiled
   source peak stays under the assistant peak ceiling (default `-3 dBFS`), then
   floored. There is deliberately no fixed source-gain ceiling — the positive

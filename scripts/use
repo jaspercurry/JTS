@@ -54,6 +54,14 @@ if [[ -n "$SPEAKER_HOSTNAME_ARG" ]]; then
     fi
 fi
 
+ENV_LOCAL="${REPO_ROOT}/.env.local"
+env_local_value() {
+    { grep -E "^$1=" "$ENV_LOCAL" 2>/dev/null || true; } | tail -n1 | cut -d= -f2- | tr -d '[:space:]'
+}
+named_speaker() { printf '%s %s\n' "$(env_local_value PI_HOST)" "$(env_local_value JASPER_HOSTNAME)"; }
+OLD_SPEAKER="$(named_speaker)"
+OLD_PEER_ID="$(env_local_value PI_PEER_ID)"
+
 write_laptop_state "$HOST" "$USR" "$ALIAS" "$SPEAKER_HOSTNAME"
 
 if [[ -n "$ALIAS" ]]; then
@@ -63,5 +71,14 @@ else
 fi
 if [[ -n "$SPEAKER_HOSTNAME" ]]; then
     echo "    speaker hostname: ${SPEAKER_HOSTNAME}"
+fi
+if [[ -n "$OLD_PEER_ID" ]]; then
+    # The record describes the speaker the file names (_lib.sh verify_or_record_peer_id).
+    if [[ "$(named_speaker)" == "$OLD_SPEAKER" ]]; then
+        printf 'PI_PEER_ID=%s\n' "$OLD_PEER_ID" >> "$ENV_LOCAL"
+        echo "    speaker identity: kept (same speaker)"
+    else
+        echo "    speaker identity: cleared (new speaker; the next deploy records it)"
+    fi
 fi
 echo "    .env.local + CLAUDE.local.md updated"

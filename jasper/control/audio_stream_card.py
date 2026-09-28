@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..fanin.latency_mode import PRESETS
+from ..fanin.latency_mode import MODE_LABELS
 from ..fanin_coupling import RING_SLOT_FRAMES
 from ..music_sources import Source
 from ..platform.status_socket import OUTPUTD_STALE_MS
@@ -131,8 +131,7 @@ def _receiver_latency(
     elif phase == "buffer_held":
         mode_label = "extra buffer in use"
     elif phase == "stable":
-        label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
-        mode_label = f"{label} latency stable"
+        mode_label = f"{MODE_LABELS.get(preset, 'Low').lower()} latency stable"
     else:
         mode_label = None
     details = [

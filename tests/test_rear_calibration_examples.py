@@ -27,7 +27,7 @@ def test_example_document_validates(filename, expected_case):
     assert document["case"] == expected_case
 
 
-def test_bass_example_document_is_a_new_section():
+def test_bass_example_document_is_a_valid_bass_section():
     raw = json.loads((ROOT / "bass_prescription_example.json").read_text(encoding="utf-8"))
     read_prescription_document(raw)
-    validate_dynamic_bass_descriptor(raw["sections"]["bass"], new_section=True)
+    validate_dynamic_bass_descriptor(raw["sections"]["bass"])

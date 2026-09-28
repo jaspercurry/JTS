@@ -41,9 +41,9 @@ def analysis_json(analysis: ProgramAnalysis) -> dict[str, Any]:
     cand = analysis.candidate
     seed = cand.alignment_seed_delay_us if cand else None
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "jts_program_analysis_evidence",
-        "program_id": analysis.program_id,
+        "stimulus_id": analysis.stimulus_id,
         "epsilon_ppm": round(float(drift.epsilon_ppm), 3) if drift else None,
         "repeat_level_delta_db": drift.repeat_level_delta_db if drift else None,
         "glitch_detected": bool(analysis.glitch_detected),

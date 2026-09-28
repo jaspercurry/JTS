@@ -76,6 +76,7 @@ from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.logging_setup import configure_logging
+from jasper.volume_process import install_env_canonical_target_provider
 from jasper.service_units import (
     AEC_BRIDGE_SERVICE,
     AEC_RECONCILE_SERVICE,
@@ -930,8 +931,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     # owner. Registered AFTER the `--emit-class-entry` early exit: that
     # path prints a registry row and touches no hardware, so it should not
     # build a Camilla controller. See tests/test_canonical_target_registration.py.
-    from jasper.volume_process import install_env_canonical_target_provider
-
     install_env_canonical_target_provider()
     handlers = {
         signum: signal.signal(signum, _signal) for signum in (signal.SIGTERM, signal.SIGHUP)

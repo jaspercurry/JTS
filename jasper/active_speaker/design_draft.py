@@ -26,17 +26,15 @@ from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
 from jasper.paths import resolve_state_path
 from ._common import (
     DRIVER_CLASSES,
-    LEGACY_DROPPED_DRIVER_FIELDS,
     MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
+    REIMPORT_RESEARCH,
     DriverFields,
     issue as _issue,
 )
-from .driver_pad import effective_sensitivity_db, normalise_pad
-from .design_inputs import resolved_draft_inputs
+from .driver_pad import normalise_pad
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    _normalise_field_provenance,
     _reject_bool_tree,
     compute_driver_safety_profile,
     driver_protection_policy_view,
@@ -225,15 +223,7 @@ def _driver_class(raw: Any, field_name: str) -> str | None:
     return value
 
 
-def _normalise_driver_common(
-    raw: Any,
-    prefix: str,
-    *,
-    require_model: bool,
-    include_sources: bool,
-    include_research_safety_evidence: bool,
-    gain_provenance_default: str,
-) -> dict[str, Any]:
+def _normalise_driver_common(raw: Any, prefix: str, *, research: bool) -> dict[str, Any]:
     raw = _mapping(raw, prefix)
     gain_offset_db = _finite_float(
         raw.get("gain_offset_db"),
@@ -248,7 +238,7 @@ def _normalise_driver_common(
         "model": _text(
             raw.get("model"),
             f"{prefix}.model",
-            required=require_model,
+            required=research,
             max_chars=120,
         ),
         "manufacturer": _text(
@@ -282,7 +272,7 @@ def _normalise_driver_common(
             _gain_offset_provenance(
                 raw.get("gain_offset_db_provenance"),
                 f"{prefix}.gain_offset_db_provenance",
-                default=gain_provenance_default,
+                default="research_estimate" if research else "operator_pinned",
             )
             if gain_offset_db is not None
             else None
@@ -298,21 +288,11 @@ def _normalise_driver_common(
             f"{prefix}.radiating_diameter_mm",
         ),
     }
-    if include_sources:
+    if research:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
-    if include_sources and not include_research_safety_evidence:
-        _normalise_field_provenance(
-            raw.get("field_provenance"), f"{prefix}.field_provenance",
-        )
-    driver.update(
-        normalise_driver_safety_fields(
-            raw,
-            prefix,
-            include_research_evidence=include_research_safety_evidence,
-        )
-    )
+    driver.update(normalise_driver_safety_fields(raw, prefix, include_research_evidence=research))
     # Pad is operator-owned input, excluded from research and safety limits.
-    # declared_effective_driver_sensitivities() folds it into sensitivity;
+    # compute_driver_safety_profile() folds it into each target's sensitivity;
     # level_trim.declared_driver_gains() owns the resulting trims.
     driver["pad"] = normalise_pad(
         raw.get("pad"),
@@ -322,40 +302,14 @@ def _normalise_driver_common(
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
-def _normalise_driver(
-    raw: Any,
-    *,
-    include_research_safety_evidence: bool = False,
-) -> dict[str, Any]:
-    return _normalise_driver_common(
-        raw,
-        "driver",
-        require_model=True,
-        include_sources=True,
-        include_research_safety_evidence=include_research_safety_evidence,
-        gain_provenance_default="research_estimate",
-    )
-
-
-def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
+def _normalise_manual_driver(raw: Any, prefix: str) -> dict[str, Any]:
     # Legacy manual values had no provenance. Preserve them as pinned: an
     # upgrade must never silently replace an attenuation the operator may have
     # chosen for driver safety. New UI-generated sensitivity proposals send
     # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
-    raw = _mapping(raw, "manual_settings.driver")
-    driver = _normalise_driver_common(
-        raw,
-        "manual_settings.driver",
-        require_model=False,
-        include_sources=False,
-        include_research_safety_evidence=False,
-        gain_provenance_default="operator_pinned",
-    )
-    target_id = _text(
-        raw.get("target_id") if isinstance(raw, Mapping) else None,
-        "manual_settings.driver.target_id",
-        max_chars=160,
-    )
+    raw = _mapping(raw, prefix)
+    driver = _normalise_driver_common(raw, prefix, research=False)
+    target_id = _text(raw.get("target_id"), f"{prefix}.target_id", max_chars=160)
     if target_id:
         driver["target_id"] = target_id
     installation = normalise_installation(raw.get("installation"))
@@ -455,22 +409,16 @@ def normalise_driver_research(
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "driver_research")
+    research_schema_version = raw.get("artifact_schema_version")
+    if type(research_schema_version) is not int or research_schema_version != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:  # noqa: E721
+        raise ActiveSpeakerDesignDraftError(
+            f"driver_research.artifact_schema_version must be {DRIVER_RESEARCH_RESULT_SCHEMA_VERSION}{REIMPORT_RESEARCH}",
+            code="research_version_unsupported",
+        )
     _reject_unknown_keys(raw, "driver_research", {
         "artifact_schema_version", "kind", "drivers", "crossover_candidates",
         "human_review", "request_fingerprint", "result_fingerprint",
-    })
-    research_schema_version = raw.get("artifact_schema_version")
-    if type(research_schema_version) is not int:  # noqa: E721
-        raise ActiveSpeakerDesignDraftError(
-            "driver_research.artifact_schema_version must be integer 1 or 2"
-        )
-    if research_schema_version not in {
-        SCHEMA_VERSION,
-        DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    }:
-        raise ActiveSpeakerDesignDraftError(
-            "driver_research.artifact_schema_version must be 1 or 2"
-        )
+    }, REIMPORT_RESEARCH)
     if raw.get("kind") != DRIVER_RESEARCH_KIND:
         raise ActiveSpeakerDesignDraftError(
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
@@ -482,14 +430,10 @@ def normalise_driver_research(
         _reject_unknown_keys(
             _mapping(item, f"driver_research.drivers[{index}]"),
             f"driver_research.drivers[{index}]",
-            DRIVER_RESEARCH_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+            DRIVER_RESEARCH_FIELDS,
+            REIMPORT_RESEARCH,
         )
-        drivers.append(_normalise_driver(
-            item,
-            include_research_safety_evidence=(
-                research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-            ),
-        ))
+        drivers.append(_normalise_driver_common(item, f"driver_research.drivers[{index}]", research=True))
     target_ids = [
         str(driver["target_id"]) for driver in drivers if driver.get("target_id")
     ]
@@ -502,18 +446,16 @@ def normalise_driver_research(
         raise ActiveSpeakerDesignDraftError("driver_research.drivers is required")
     candidates = []
     for index, item in enumerate(_sequence(
-        raw.get("crossover_candidates"), "driver_research.crossover_candidates",
-        limit=8 if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else _MAX_CANDIDATES,
+        raw.get("crossover_candidates"), "driver_research.crossover_candidates", limit=8,
     )):
         _reject_unknown_keys(
             _mapping(item, f"driver_research.crossover_candidates[{index}]"),
             f"driver_research.crossover_candidates[{index}]", MANUAL_CANDIDATE_FIELDS,
         )
-        if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-            _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
+        _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
-        "artifact_schema_version": research_schema_version,
+        "artifact_schema_version": DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": drivers,
         "crossover_candidates": candidates,
@@ -536,10 +478,10 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
     )
     drivers = [
-        _normalise_manual_driver(item)
-        for item in _sequence(
+        _normalise_manual_driver(item, f"manual_settings.drivers[{index}]")
+        for index, item in enumerate(_sequence(
             raw.get("drivers"), "manual_settings.drivers", limit=_MAX_DRIVERS
-        )
+        ))
     ]
     target_ids = [
         str(driver["target_id"]) for driver in drivers if driver.get("target_id")
@@ -602,99 +544,6 @@ def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
     if not math.isfinite(millimetres) or millimetres <= 0.0:
         return None
     return millimetres / 1000.0
-
-
-def declared_driver_sensitivities(draft: Mapping[str, Any] | None) -> dict[str, float]:
-    """Per-role declared datasheet sensitivities (dB @ 2.83 V/1 m) from the draft.
-
-    The declaration (``manual_settings.drivers``) is the ONE owner of driver
-    sensitivity — a declared physical property, not a safety limit — so it is
-    never duplicated onto the computed safety profile. Consumers wanting the
-    ceiling read the pad-folded
-    :func:`declared_effective_driver_sensitivities` rather than this naked one.
-
-    A role declared more than once with disagreeing values derives nothing for
-    that role (ambiguity fails toward the conservative class-default ceiling).
-    Returns ``{}`` when the draft carries no declaration.
-    """
-
-    if not isinstance(draft, Mapping):
-        return {}
-    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
-    if not isinstance(settings, Mapping):
-        return {}
-    drivers = settings.get("drivers")
-    out: dict[str, float] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("sensitivity_db_2v83_1m")
-        if (
-            not role
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
-            continue
-        number = float(value)
-        if role in out and out[role] != number:
-            conflicted.add(role)
-            continue
-        out[role] = number
-    for role in conflicted:
-        out.pop(role, None)
-    return out
-
-
-def declared_effective_driver_sensitivities(
-    draft: Mapping[str, Any] | None,
-) -> dict[str, float]:
-    """Per-role declared sensitivities with any in-line pad folded in.
-
-    Sibling of :func:`declared_driver_sensitivities` with the same shape, except
-    each row's naked ``sensitivity_db_2v83_1m`` is folded through
-    :func:`jasper.active_speaker.driver_pad.effective_sensitivity_db` using that
-    row's own ``pad``. Excitation-ceiling derivation, session-volume planning and
-    playback admission read THIS one (#1665): they need the number a microphone
-    would measure at the driver terminals, not the naked rating.
-
-    A role is dropped on ANY disagreement between its rows — naked sensitivity,
-    pad, or both — since either makes the effective figure ambiguous. Returns
-    ``{}`` when the draft carries no declaration.
-    """
-
-    if not isinstance(draft, Mapping):
-        return {}
-    settings = resolved_draft_inputs(draft) if draft.get("topology") else draft.get("manual_settings")
-    if not isinstance(settings, Mapping):
-        return {}
-    drivers = settings.get("drivers")
-    out: dict[str, float] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("sensitivity_db_2v83_1m")
-        if (
-            not role
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
-            continue
-        effective = effective_sensitivity_db(float(value), driver.get("pad"))
-        if effective is None:
-            continue
-        if role in out and out[role] != effective:
-            conflicted.add(role)
-            continue
-        out[role] = effective
-    for role in conflicted:
-        out.pop(role, None)
-    return out
 
 
 def normalise_operator_inputs(raw: Any) -> dict[str, Any]:
@@ -802,24 +651,8 @@ def _summary(
     for target_id, role in target_role.items():
         role_target_ids.setdefault(role, []).append(target_id)
 
-    def resolved_target_ids(
-        drivers: list[dict[str, Any]],
-        *,
-        allow_legacy_role_fanout: bool = False,
-    ) -> set[str]:
-        resolved: set[str] = set()
-        for driver in drivers:
-            explicit = driver.get("target_id")
-            if explicit in target_role:
-                resolved.add(str(explicit))
-                continue
-            role = str(driver.get("role") or "")
-            matches = role_target_ids.get(role, [])
-            if allow_legacy_role_fanout:
-                resolved.update(matches)
-            elif len(matches) == 1:
-                resolved.add(matches[0])
-        return resolved
+    def resolved_target_ids(drivers: list[dict[str, Any]]) -> set[str]:
+        return {str(driver["target_id"]) for driver in drivers if driver.get("target_id") in target_role}
 
     research_roles = []
     if driver_research:
@@ -835,17 +668,8 @@ def _summary(
         manual_settings.get("crossover_candidates", []) if manual_settings else []
     )
     research_drivers = driver_research.get("drivers", []) if driver_research else []
-    research_target_ids = resolved_target_ids(
-        research_drivers,
-        allow_legacy_role_fanout=bool(
-            driver_research
-            and driver_research.get("artifact_schema_version") == SCHEMA_VERSION
-        ),
-    )
-    manual_target_ids = resolved_target_ids(
-        manual_drivers,
-        allow_legacy_role_fanout=True,
-    )
+    research_target_ids = resolved_target_ids(research_drivers)
+    manual_target_ids = resolved_target_ids(manual_drivers)
     combined_target_ids = research_target_ids | manual_target_ids
     manual_roles = []
     for driver in manual_drivers:
@@ -938,7 +762,7 @@ def build_design_draft(
     manual = normalise_manual_settings(manual_settings)
     validate_manual_target_bindings(topology, manual)
     research = normalise_driver_research(driver_research)
-    if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
+    if research:
         research = finalise_research_result(
             research, build_driver_research_context(topology, inputs),
         )
@@ -1019,7 +843,6 @@ def build_design_draft(
             "loads_camilla": False,
             "applies_filters": False,
             "requires_human_review": True,
-            "research_is_advisory": True,
         },
         "issues": issues,
         "next_step": (
@@ -1035,7 +858,7 @@ def build_design_draft(
 def design_draft_view(
     draft: Mapping[str, Any], *, topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
-    """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
+    """Add computed driver data to a live or banked declaration (ADR-0323 §2, #2902)."""
     out = {key: value for key, value in draft.items()
            if key not in _COMPUTED_DRAFT_FIELDS}
     if topology is None and draft.get("topology"):
@@ -1044,11 +867,12 @@ def design_draft_view(
         except ValueError:
             return out
     if topology is not None:
+        research = normalise_driver_research(draft.get("driver_research"))
         out["driver_safety_profile"] = compute_driver_safety_profile(
-            topology, draft.get("manual_settings"), draft.get("driver_research"),
+            topology, draft.get("manual_settings"), research,
         )
         out["driver_protection_policy_view"] = driver_protection_policy_view(
-            topology, draft.get("manual_settings"), draft.get("driver_research"),
+            topology, draft.get("manual_settings"), research,
         )
     return out
 
@@ -1057,8 +881,9 @@ def load_design_draft(
     path: str | Path | None = None,
     *,
     topology: OutputTopology | None = None,
+    computed: bool = True,
 ) -> dict[str, Any]:
-    """Load declared values and compute the safety profile for the supplied topology."""
+    """Load declared values and compute the safety profile, which ``computed=False`` skips."""
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
         return raw
@@ -1069,9 +894,6 @@ def load_design_draft(
     if isinstance(research, dict):
         research.pop("request_fingerprint", None)
         research.pop("result_fingerprint", None)
-        for driver in research.get("drivers", []):
-            if isinstance(driver, dict):
-                driver.pop("target_fingerprint", None)
     # Same rule for the deleted per-channel ``protection_status``: this draft's
     # topology is stored verbatim and reaches ``crossover_preview_fingerprint``,
     # so a file written before the delete would move the declaration fingerprint
@@ -1080,7 +902,7 @@ def load_design_draft(
     for group in _stored_items(stored_topology, "speaker_groups"):
         for channel in _stored_items(group, "channels"):
             channel.pop("protection_status", None)
-    return design_draft_view(raw, topology=topology)
+    return design_draft_view(raw, topology=topology) if computed else raw
 
 
 def _stored_items(container: Any, key: str) -> list[dict[str, Any]]:

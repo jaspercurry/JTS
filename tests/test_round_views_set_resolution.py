@@ -281,7 +281,7 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
                   "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30 + number + i] * 5,
                   "fundamental_qualified": [True] * 5, "harmonics": {}}
                  for i, (row, record) in enumerate(rows[number * 2:number * 2 + 2])]
-        view = {"schema": "jts_bass_view/1", "takes": takes}
+        view = {"schema": "jts_bass_view/2", "takes": takes}
         path = default_out(inputs, root, "bass_view.json", group["set_id"])
         path.write_text(json.dumps(view))
         views.append(view)
@@ -306,7 +306,7 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
     {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
     {"level_db": -35.0},
     {"stimulus_dbfs": -20.0},
-    {"program": {"program_id": "changed-gains"}}, {"loudness_volume_db": -23.0}, {"program_id": "stamped"}, {"program_id": None},
+    {"program": {"stimulus_id": "changed-gains"}}, {"stimulus_id": "stamped"}, {"stimulus_id": None},
 ])
 def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, capsys, changed):
     round_dir = bank_seat_round(tmp_path)
@@ -316,7 +316,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         if original.get("pose_kind") != "seat":
             continue
         path = take_artifact_path(root, row.path)
-        original.update(candidate_id="first", graph_scope="candidate", program={"program_id": "program"}, loudness_volume_db=-30.0)
+        original.update(candidate_id="first", graph_scope="candidate", program={"stimulus_id": "program"})
         original["curves"][0]["band_hz"] = [30.0, 200.0]
         path.write_text(json.dumps(original))
         second = json.loads(json.dumps(original))
@@ -362,8 +362,8 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         median = read_room_median(doc)
         assert median.band_hz == (30.0, 200.0)
         assert median.evidence == doc["evidence"]
-        expected_program = changed["program_id"] if record is second and "program_id" in changed else record["program"]["program_id"]
-        assert [median.evidence["basis"][key] for key in ("program_id", "loudness_volume_db")] == [expected_program, record["loudness_volume_db"]]
+        expected_program = changed["stimulus_id"] if record is second and "stimulus_id" in changed else record["program"]["stimulus_id"]
+        assert median.evidence["basis"]["stimulus_id"] == expected_program
         grade = _run(capsys, ["room-grade", str(round_dir), "--set", set_id])
         assert grade["evidence"] == doc["evidence"]
         assert grade["graph_scopes"] == [record["graph_scope"]]

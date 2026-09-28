@@ -33,28 +33,17 @@
 //!
 //! ## What is NOT duplicated: the engine
 //!
-//! fanin's consumer half (its `TtsMixer`) owns queueing/loudness/ledger
-//! emulation because fanin has none. outputd already HAS the real engine
-//! — `OutputCore` (assistant segments, loudness decisions, saturating
-//! mix, the `PlayoutLedger` marked against ACTUAL DAC progress). The
-//! consumer here is therefore a thin `TtsBridge` that translates wire
-//! commands into `OutputCore` calls, drained once per DAC period by the
-//! audio loop. Notably this makes the FLUSH_SYNC ack HONEST for the
-//! first time: fanin's twin hardcodes `"max_audio_played_ms":0` and
-//! `"events":[]` (it cannot know DAC progress); here both come from the
-//! ledger.
+//! `TtsBridge` translates wire commands into `OutputCore` calls once per
+//! DAC period. Its ledger measures DAC progress; fan-in's measures mix-commit.
 //!
 //! Threading is the shared server's: an accept thread + one thread per
 //! client connection parse and enqueue through the shared hand-off rule
-//! ([`jasper_tts_protocol::try_enqueue_command`]). Only the capacity below
-//! and the pending-frame budget are outputd's. The audio loop never blocks
-//! on any of it (inv-1: the DAC write stays the sole pacer).
+//! ([`jasper_tts_protocol::try_enqueue_command`]). The DAC write stays the sole pacer.
 
-use std::io::{BufReader, Write as IoWrite};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -64,91 +53,12 @@ use crate::core::OutputCore;
 use crate::ledger::{PlayoutEvent, SegmentId};
 use crate::mixer::gain_db_to_linear;
 use crate::types::{SegmentKind, SAMPLE_RATE};
-use jasper_daemon::json::json_string;
+use jasper_tts_protocol::flush::{self, FlushEvent, FlushSummary, QueuedFlush};
 use jasper_tts_protocol::loudness::TtsLoudnessSnapshot;
 use jasper_tts_protocol::{
     serve_client, QueuedTtsCommand, TtsCommand, TtsCommandSink, TtsServerCounters,
     TTS_FRAME_DEADLINE,
 };
-
-pub const TTS_COMMAND_QUEUE_CAPACITY: usize = 128;
-/// Default pending-audio budget: 2 s of queued-but-unplayed assistant
-/// audio. Beyond it, new AUDIO32 drops (counted) — bounding both memory
-/// and how stale a reply can get.
-pub const DEFAULT_MAX_PENDING_FRAMES: u64 = jasper_tts_protocol::SAMPLE_RATE as u64 * 2;
-
-const FLUSH_ACK_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug)]
-pub struct QueuedFlush {
-    pub epoch: u64,
-    pub ack: Option<SyncSender<FlushSummary>>,
-}
-
-/// The FLUSH_SYNC ack payload. Unlike fanin's twin (which hardcodes
-/// zeros — it has no ledger), every field here is real: the ledger's
-/// per-segment playout events and the max audio actually DRAINED to the
-/// DAC, which is what barge-in needs to know.
-#[derive(Debug, Clone)]
-pub struct FlushSummary {
-    pub requests: u64,
-    pub pending_frames: u64,
-    pub flushed_frames: u64,
-    pub segments: usize,
-    pub max_audio_played_ms: u64,
-    events_json: String,
-}
-
-impl FlushSummary {
-    pub fn from_events(requests: u64, pending_frames: u64, events: &[PlayoutEvent]) -> Self {
-        let flushed_frames: u64 = events.iter().map(|e| e.flushed_frames).sum();
-        let max_audio_played_ms = events
-            .iter()
-            .map(|e| e.estimated_drained_frames * 1000 / (SAMPLE_RATE as u64))
-            .max()
-            .unwrap_or(0);
-        let mut events_json = String::from("[");
-        for (i, e) in events.iter().enumerate() {
-            if i > 0 {
-                events_json.push(',');
-            }
-            events_json.push_str(&format!(
-                "{{\"segment\":{},\"kind\":\"{}\",\"provider_item_id\":{},\"queued_frames\":{},\"written_frames\":{},\"drained_frames\":{},\"flushed_frames\":{}}}",
-                e.local_segment_id.0,
-                e.kind.as_str(),
-                match &e.provider_item_id {
-                    Some(id) => json_string(id),
-                    None => "null".to_string(),
-                },
-                e.queued_frames,
-                e.written_frames,
-                e.estimated_drained_frames,
-                e.flushed_frames,
-            ));
-        }
-        events_json.push(']');
-        Self {
-            requests,
-            pending_frames,
-            flushed_frames,
-            segments: events.len(),
-            max_audio_played_ms,
-            events_json,
-        }
-    }
-
-    fn to_json_line(&self) -> String {
-        format!(
-            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":{},\"flushed_frames\":{},\"max_audio_played_ms\":{},\"events\":{}}}\n",
-            self.requests,
-            self.pending_frames,
-            self.segments,
-            self.flushed_frames,
-            self.max_audio_played_ms,
-            self.events_json,
-        )
-    }
-}
 
 /// Socket-side counters for the STATUS `tts` block (daemon truth).
 /// Cloneable handle over shared atomics — the socket threads and the
@@ -210,10 +120,8 @@ pub type TtsChannelBundle = (
 );
 
 pub fn tts_channels(max_pending_frames: u64) -> TtsChannelBundle {
-    let (tx, rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
-    let (flush_tx, flush_rx) = mpsc::sync_channel(TTS_COMMAND_QUEUE_CAPACITY);
+    let (tx, rx, flush_tx, flush_rx, epoch) = flush::channels();
     let metrics = TtsMetrics::new(max_pending_frames);
-    let epoch = Arc::new(AtomicU64::new(0));
     (tx, rx, flush_tx, flush_rx, metrics, epoch)
 }
 
@@ -257,33 +165,42 @@ fn handle_tts_client(
         || {
             metrics.requests.fetch_add(1, Ordering::Relaxed);
         },
-        |reader| queue_flush(reader, flush_tx, &sink.epoch, metrics),
+        |reader| {
+            metrics.flush_requests.fetch_add(1, Ordering::Relaxed);
+            flush::queue_flush(reader, flush_tx, &sink.epoch)
+        },
     );
 }
 
-fn queue_flush(
-    reader: &mut BufReader<UnixStream>,
-    flush_tx: &SyncSender<QueuedFlush>,
-    epoch: &AtomicU64,
-    metrics: &TtsMetrics,
-) -> bool {
-    metrics.flush_requests.fetch_add(1, Ordering::Relaxed);
-    let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-    let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-    if flush_tx
-        .send(QueuedFlush {
-            epoch: next_epoch,
-            ack: Some(ack_tx),
-        })
-        .is_err()
-    {
-        return false;
-    }
-    let response = match ack_rx.recv_timeout(FLUSH_ACK_TIMEOUT) {
-        Ok(summary) => summary.to_json_line(),
-        Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
-    };
-    reader.get_mut().write_all(response.as_bytes()).is_ok()
+fn flush_summary(
+    requests: u64,
+    pending_frames: u64,
+    flushed_frames: u64,
+    events: &[PlayoutEvent],
+) -> FlushSummary {
+    let max_audio_played_ms = events
+        .iter()
+        .map(|e| e.estimated_drained_frames * 1000 / (SAMPLE_RATE as u64))
+        .max()
+        .unwrap_or(0);
+    FlushSummary::new(
+        requests,
+        pending_frames,
+        flushed_frames,
+        max_audio_played_ms,
+        events
+            .iter()
+            .map(|event| FlushEvent {
+                segment: event.local_segment_id.0,
+                kind: event.kind,
+                provider_item_id: event.provider_item_id.clone(),
+                queued_frames: event.queued_frames,
+                written_frames: event.written_frames,
+                drained_frames: event.estimated_drained_frames,
+                flushed_frames: event.flushed_frames,
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------
@@ -367,9 +284,10 @@ impl TtsBridge {
                 flushed,
             );
             if let Some(ack) = flush.ack {
-                let summary = FlushSummary::from_events(
+                let summary = flush_summary(
                     self.metrics.flush_requests.load(Ordering::Relaxed),
                     pending_before,
+                    flushed,
                     &events,
                 );
                 let _ = ack.send(summary); // client gone = fine
@@ -525,6 +443,8 @@ impl TtsBridge {
 #[cfg(test)]
 mod tests {
     use crate::types::ProgramSample;
+    use jasper_tts_protocol::flush::DEFAULT_MAX_PENDING_FRAMES;
+    use std::sync::mpsc;
 
     fn w(sample: i16) -> ProgramSample {
         jasper_resampler::widen_i16_to_i32(sample)
@@ -852,49 +772,6 @@ mod tests {
         bridge.drain(&mut core);
         assert_eq!(core.pending_assistant_frames(), 8);
         assert_eq!(metrics.counters.dropped_audio_frames(), 8);
-    }
-
-    #[test]
-    fn flush_sync_ack_satisfies_shared_key_contract() {
-        // Mirror of jasper-fanin's guard: the FLUSH_SYNC ack key shape is a
-        // shared wire contract (jasper-tts-protocol) so the bonded-member
-        // ack and fan-in's solo ack cannot drift apart under the one Python
-        // consumer.
-        use jasper_tts_protocol::{FLUSH_SYNC_ACK_EVENT_KEYS, FLUSH_SYNC_ACK_KEYS};
-
-        let (mut bridge, mut core, tx, ftx) = bridge_with_core();
-        send(
-            &tx,
-            0,
-            TtsCommand::SegmentStart {
-                kind: SegmentKind::Assistant,
-                provider_item_id: Some("item-x".into()),
-                profile: None,
-            },
-        );
-        send(&tx, 0, TtsCommand::AudioWide(vec![w(5); 8])); // a flushed segment
-        bridge.drain(&mut core);
-        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
-        ftx.send(QueuedFlush {
-            epoch: 1,
-            ack: Some(ack_tx),
-        })
-        .unwrap();
-        bridge.drain(&mut core);
-
-        let line = ack_rx.try_recv().expect("flush ack").to_json_line();
-        for key in FLUSH_SYNC_ACK_KEYS {
-            assert!(
-                line.contains(&format!("\"{key}\":")),
-                "outputd ack missing top-level key {key}: {line}"
-            );
-        }
-        for key in FLUSH_SYNC_ACK_EVENT_KEYS {
-            assert!(
-                line.contains(&format!("\"{key}\":")),
-                "outputd ack missing event key {key}: {line}"
-            );
-        }
     }
 
     #[test]

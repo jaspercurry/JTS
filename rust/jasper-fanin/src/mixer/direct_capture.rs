@@ -456,7 +456,7 @@ pub(super) fn read_direct_and_render(
                     // truly-absent host — no need to wait on top of the ~2 s
                     // already spent detecting it.
                     if let Some(r) = input.resampler.as_mut() {
-                        r.reset();
+                        r.reopen();
                     }
                     if let Some(obs) = &input.direct_obs {
                         obs.present.store(false, Ordering::Relaxed);
@@ -478,7 +478,7 @@ pub(super) fn read_direct_and_render(
                     // the zombie arm above; counted separately (card_gen_reopens)
                     // so the two signals stay distinguishable in STATUS.
                     if let Some(r) = input.resampler.as_mut() {
-                        r.reset();
+                        r.reopen();
                     }
                     if let Some(obs) = &input.direct_obs {
                         obs.present.store(false, Ordering::Relaxed);
@@ -517,10 +517,7 @@ pub(super) fn read_direct_and_render(
     real_frames
 }
 
-/// The outcome of one direct-capture drain. All non-`Ok` outcomes drive the SAME
-/// close→Absent→bounded-reopen recovery; they differ only in the log line and
-/// which counter increments, so an operator can tell the three distinct causes
-/// apart:
+/// The outcome of one direct-capture drain:
 ///   - `DeviceLost` — an `avail_update`/read errno (ENODEV on a clean unplug, etc.)
 ///     the drain classified as a device loss.
 ///   - `ZombieReopen` — Present but `avail_update` returned exactly 0 for
@@ -849,17 +846,12 @@ fn maybe_reopen_direct(direct: DirectCapture, input: &mut Input) -> DirectCaptur
     }
 }
 
-/// Adopt (or discard) one finished open from the opener thread. Pure bookkeeping
-/// plus the two transition log lines — no device calls of its own.
 fn adopt_open_outcome(outcome: DirectOpenOutcome, input: &mut Input) -> DirectCapture {
     match outcome {
         DirectOpenOutcome::Opened {
             pcm,
             negotiated_buffer,
         } => {
-            if let Some(r) = input.resampler.as_mut() {
-                r.reset();
-            }
             if let Some(obs) = &input.direct_obs {
                 obs.present.store(true, Ordering::Relaxed);
                 // Fresh handle: clear the flowing→dead latch. The reopened PCM

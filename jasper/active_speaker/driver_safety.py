@@ -11,21 +11,25 @@ import math
 from functools import partial
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import CodedFieldError, issue
+from jasper.json_fields import CodedFieldError, finite_float, issue
 from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import (
     DriverFields,
     MANUAL_CANDIDATE_FIELDS,
     MANUAL_DRIVER_FIELDS,
+    MINIMUM_CROSSOVER_LABEL,
+    REIMPORT_RESEARCH,
     blocker_issue,
 )
-from .design_inputs import resolve_design_inputs
+from .design_inputs import drivers_by_target, resolve_design_inputs
+from .driver_pad import effective_sensitivity_db
 from .driver_protection import (
     DRIVER_PROTECTION_POLICY_VERSION,
     LOW_LIMIT_DECLARED,
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     apply_driver_low_limit,
+    declared_protection_highpass_floor_hz,
     driver_excitation_floor_hz,
     driver_low_limit_plausibility_band_hz,
     driver_low_limit_plausible,
@@ -62,6 +66,9 @@ MAX_PROVENANCE_SOURCE_CHARS = 320
 
 class DriverSafetyProfileError(CodedFieldError):
     """Raised when research or safety-profile input is malformed."""
+
+    #: A refused manual row's own values, which a save from /sound/speaker/ would drop (#2902).
+    declared: dict[str, Any] | None = None
 
 
 _fields = DriverFields(DriverSafetyProfileError, length_limit_separator=" ")
@@ -108,11 +115,7 @@ def driver_research_targets(topology: OutputTopology) -> list[dict[str, Any]]:
 
 
 def _resolved_target_values(topology, manual_settings, driver_research):
-    # Legacy research is advisory; only v2 binds specifications to physical targets.
-    research = driver_research if (driver_research or {}).get("artifact_schema_version") == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else None
-    resolved = resolve_design_inputs(topology, manual_settings, research)
-    return {key: value for key, value in _manual_by_target(resolved).items()
-            if resolved["bindings"][key] != "ambiguous"}
+    return drivers_by_target(resolve_design_inputs(topology, manual_settings, driver_research))
 
 
 def driver_protection_policy_view(
@@ -124,11 +127,7 @@ def driver_protection_policy_view(
 
     Display-only, derived, never persisted-authoritative: every design-draft
     load that knows the topology re-stamps it, so a saved copy can never be read
-    back as current policy. It exists because the browser must answer *has this
-    target delegated its level?* before anything is saved, and must not own a
-    second copy of that policy: an absent peak says delegated, and a profile
-    saved under the retired contract carries the class default and means the
-    same, so the page needs ``max_auto_level_dbfs`` to recognise it.
+    back as current policy.
 
     The class low limit travels only as ``low_limit_hz`` +
     ``low_limit_provenance``, never as a bare ``min_highpass_hz`` beside a
@@ -141,26 +140,14 @@ def driver_protection_policy_view(
     view whose whole contract is that it gets re-stamped.
     """
 
-    manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
-    targets = driver_research_targets(topology)
-    role_counts: dict[str, int] = {}
-    for target in targets:
-        role = str(target.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
     entries: list[dict[str, Any]] = []
-    for target in targets:
+    for target in driver_research_targets(topology):
         target_id = str(target["target_id"])
         role = str(target.get("role") or "")
         style = _topology_driver_style(topology, target_id)
         policy = driver_protection_profile(role, driver_style=style)
-        visible, _ = _visible_values_for_target(
-            target_id=target_id,
-            role=role,
-            manual_by_target=manual_by_target,
-            manual_by_role=manual_by_role,
-            role_counts=role_counts,
-        )
+        visible = manual_by_target.get(target_id, {})
         low_limit = resolve_driver_low_limit(visible, role=role, driver_style=style)
         entries.append({
             "target_id": target_id,
@@ -175,33 +162,6 @@ def driver_protection_policy_view(
         "policy_version": DRIVER_PROTECTION_POLICY_VERSION,
         "targets": entries,
     }
-
-
-def _visible_values_for_target(
-    *,
-    target_id: str,
-    role: str,
-    manual_by_target: Mapping[str, Mapping[str, Any]],
-    manual_by_role: Mapping[str, Mapping[str, Any]],
-    role_counts: Mapping[str, int],
-) -> tuple[Mapping[str, Any], bool]:
-    """The operator-visible values bound to one physical target, and how.
-
-    One owner for the binding rule — target-specific values first, then the
-    legacy per-role entry when that role appears exactly once — so the page
-    cannot explain one number while the profile stores another. The second
-    element is ``True`` only for the legacy per-role read, which is what
-    ``target_values_binding`` records.
-    """
-
-    explicit = manual_by_target.get(target_id)
-    if explicit is not None:
-        return explicit, False
-    if role_counts.get(role) == 1:
-        legacy = manual_by_role.get(role)
-        if legacy is not None:
-            return legacy, True
-    return {}, False
 
 
 def _topology_driver_style(topology: OutputTopology, target_id: str) -> str | None:
@@ -317,11 +277,14 @@ def _normalise_protection_filters(value: Any, field_name: str) -> list[dict[str,
     return sorted(filters, key=lambda item: str(item["kind"]))
 
 
-def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
+def _normalise_cabinet(value: Any, field_name: str, radiating_diameter_mm: float | None, fix: str) -> dict[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
+    # A cabinet holds no size: a driver's is its own radiating_diameter_mm (ADR-0384).
+    _reject_unknown_keys(value, field_name, {"enclosure_kind", "radiator_count", "baffle_width_mm",
+                                             "lf_reconstruction_capability"}, fix)
     enclosure = (
         _text(
             value.get("enclosure_kind") or "unknown",
@@ -340,20 +303,11 @@ def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
         minimum=1,
         maximum=16,
     )
-    diameter = _positive_float(
-        value.get("effective_radiating_diameter_mm"),
-        f"{field_name}.effective_radiating_diameter_mm",
-    )
     baffle_width = _positive_float(
         value.get("baffle_width_mm"),
         f"{field_name}.baffle_width_mm",
     )
-    if (
-        enclosure == "sealed"
-        and radiator_count == 1
-        and diameter is not None
-        and baffle_width is not None
-    ):
+    if enclosure == "sealed" and radiator_count == 1 and radiating_diameter_mm is not None and baffle_width is not None:
         reconstruction = "sealed_single_radiator_supported"
     elif enclosure == "unknown":
         reconstruction = "refused_unknown_enclosure"
@@ -369,8 +323,6 @@ def _normalise_cabinet(value: Any, field_name: str) -> dict[str, Any] | None:
     }
     if radiator_count is not None:
         out["radiator_count"] = radiator_count
-    if diameter is not None:
-        out["effective_radiating_diameter_mm"] = diameter
     if baffle_width is not None:
         out["baffle_width_mm"] = baffle_width
     return out
@@ -543,12 +495,26 @@ def normalise_driver_safety_fields(
             value.get("required_protection_filters"),
             f"{field_name}.required_protection_filters",
         )
+        # Without its owner another declaration or the style default binds, possibly below this high-pass (#2902).
+        if low_limit_hz is None and declared_protection_highpass_floor_hz(out) is not None:
+            fix = REIMPORT_RESEARCH if include_research_evidence else (
+                f"; type its {MINIMUM_CROSSOVER_LABEL}, or remove the stored high-pass under "
+                '"Details and custom settings", at /sound/speaker/')
+            raise DriverSafetyProfileError(
+                f"{field_name}.recommended_highpass_hz is missing for "
+                f"{value.get('target_id') or value.get('role') or 'a driver'}, which declares a protective high-pass{fix}",
+                code="recommended_highpass_missing",
+            )
     if "fit_budget" in value:
         try:
             out["fit_budget"] = normalise_fit_budget(value["fit_budget"])
         except ValueError as exc:
             raise DriverSafetyProfileError(f"{field_name}.{exc}") from exc
-    cabinet = _normalise_cabinet(value.get("cabinet"), f"{field_name}.cabinet")
+    cabinet = _normalise_cabinet(
+        value.get("cabinet"), f"{field_name}.cabinet",
+        _positive_float(value.get("radiating_diameter_mm"), f"{field_name}.radiating_diameter_mm"),
+        REIMPORT_RESEARCH if include_research_evidence else
+        '; remove them under "Details and custom settings" at /sound/speaker/, then save')
     if cabinet is not None:
         out["cabinet"] = cabinet
     limits = _normalise_level_duration_limits(
@@ -601,7 +567,7 @@ def build_driver_research_context(
                 model, f"operator_inputs.target_models.{target_id}", required=True, max_chars=160,
             ),
         })
-    declared = _manual_by_target(manual_settings)
+    declared = drivers_by_target(manual_settings)
     for target in targets:
         driver = declared.get(target["target_id"], {})
         physical = {key: driver[key] for key in ("pad", "installation") if driver.get(key)}
@@ -783,28 +749,35 @@ def finalise_research_result(
     return dict(result)
 
 
-def _research_by_target(
-    driver_research: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(driver_research, Mapping):
-        return {}
-    if (
-        driver_research.get("artifact_schema_version")
-        != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-    ):
-        return {}
-    return {
-        str(driver.get("target_id")): driver
-        for driver in driver_research.get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
+# What a refused manual row lists, in declaration order; the stamps no driver card enters are left out.
+_LISTED_ROW_FIELDS = tuple(key for key in MANUAL_DRIVER_FIELDS
+                           if key not in ("target_id", "role", "source", "gain_offset_db_provenance"))
+
+
+def _unplaced_row(
+    index: int, row: Mapping[str, Any], role: str, outputs: Sequence[str], problem: str, code: str,
+) -> DriverSafetyProfileError:
+    """A row the page cannot place; its refusal carries the row's values so none is lost unseen (#2902)."""
+    declared = {key: row[key] for key in _LISTED_ROW_FIELDS if row.get(key) is not None}
+    listed = ", ".join(f"{key} {value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool)
+                       else f"{key} {json.dumps(value)}" for key, value in declared.items())
+    card = (f"the {role} output's driver card" if len(outputs) == 1 else f"each {role} output's driver card"
+            if outputs else "the driver card they belong to")
+    error = DriverSafetyProfileError(
+        f"manual_settings.drivers[{index}] ({role}{'; ' + listed if listed else ''}) {problem}: "
+        + (f"enter these values in {card} at /sound/speaker/, then save details" if listed
+           else "save details at /sound/speaker/ to drop it"),
+        code=code,
+    )
+    error.declared = declared
+    return error
 
 
 def validate_manual_target_bindings(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None,
 ) -> None:
-    """Refuse ambiguous or contradictory physical-target driver rows."""
+    """Refuse a driver row that does not name exactly one current physical target."""
 
     if not isinstance(manual_settings, Mapping):
         return
@@ -812,65 +785,43 @@ def validate_manual_target_bindings(
     by_id = {str(target["target_id"]): target for target in targets}
     by_role: dict[str, list[str]] = {}
     for physical_target in targets:
-        by_role.setdefault(str(physical_target["role"]), []).append(
-            str(physical_target["target_id"])
-        )
+        by_role.setdefault(str(physical_target["role"]), []).append(str(physical_target["target_id"]))
     resolved_targets: set[str] = set()
-    legacy_roles: set[str] = set()
-    for index, driver in enumerate(manual_settings.get("drivers", [])):
+    for index, driver in enumerate(manual_settings.get("drivers") or []):
         if not isinstance(driver, Mapping):
             raise DriverSafetyProfileError(
                 f"manual_settings.drivers[{index}] must be an object"
             )
-        role = _text(
+        role = str(_text(
             driver.get("role"),
             f"manual_settings.drivers[{index}].role",
             required=True,
             max_chars=40,
-        )
+        ))
         target_id = _text(
             driver.get("target_id"),
             f"manual_settings.drivers[{index}].target_id",
             max_chars=160,
         )
-        if target_id:
-            target = by_id.get(target_id)
-            if target is None:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}].target_id is not a current physical target",
-                    code="manual_target_unknown",
-                )
-            if role != target.get("role"):
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}] role does not match target_id",
-                    code="manual_target_role_mismatch",
-                )
-            if target_id in resolved_targets:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {target_id} more than once",
-                    code="manual_target_bound_twice",
-                )
-            resolved_targets.add(target_id)
-            continue
-        if role in legacy_roles:
+        outputs = by_role.get(role, [])
+        if not target_id:
+            if not outputs:
+                raise _unplaced_row(index, driver, role, outputs, f"names no output, and this layout has no {role} output",
+                                    "manual_role_unknown")
+            raise _unplaced_row(index, driver, role, outputs, "names no output", "manual_target_missing")
+        target = by_id.get(target_id)
+        if target is None:
+            raise _unplaced_row(index, driver, role, outputs, f"names output {target_id}, which this layout does not have",
+                                "manual_target_unknown")
+        if role != target.get("role"):
             raise DriverSafetyProfileError(
-                f"manual_settings.drivers contains duplicate legacy role {role}",
-                code="manual_duplicate_legacy_role",
+                f"manual_settings.drivers[{index}] role does not match target_id",
+                code="manual_target_role_mismatch",
             )
-        legacy_roles.add(str(role))
-        matches = by_role.get(str(role), [])
-        if not matches:
-            raise DriverSafetyProfileError(
-                f"manual_settings.drivers[{index}].role is not a current driver role"
-            )
-        if len(matches) == 1:
-            resolved = matches[0]
-            if resolved in resolved_targets:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {resolved} more than once",
-                    code="manual_target_bound_twice",
-                )
-            resolved_targets.add(resolved)
+        if target_id in resolved_targets:
+            raise _unplaced_row(index, driver, role, [target_id], f"names output {target_id} a second time",
+                                "manual_target_bound_twice")
+        resolved_targets.add(target_id)
 
 
 def _normalise_profile_manual_settings(
@@ -913,6 +864,10 @@ def _normalise_profile_manual_settings(
                 include_research_evidence=False,
             )
         )
+        # Validated where the declaration is saved; the tweeter cap derivation and the sealed-cabinet
+        # check read them (ADR-0227 §9, ADR-0384).
+        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad", "radiating_diameter_mm")
+                       if raw.get(key) is not None})
         drivers.append(driver)
     for index, raw_candidate in enumerate(
         _sequence(
@@ -926,37 +881,9 @@ def _normalise_profile_manual_settings(
             raise DriverSafetyProfileError(f"{field_name} must be an object")
         _reject_unknown_keys(raw_candidate, field_name, MANUAL_CANDIDATE_FIELDS)
         _reject_bool_tree(raw_candidate, field_name)
-    normalised = {"drivers": drivers, "crossover_candidates": []}
-    validate_manual_target_bindings(topology, normalised)
-    return normalised
-
-
-def _manual_by_role(
-    manual_settings: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(manual_settings, Mapping):
-        return {}
-    return {
-        str(driver.get("role")): driver
-        for driver in manual_settings.get("drivers", [])
-        if (
-            isinstance(driver, Mapping)
-            and driver.get("role")
-            and not driver.get("target_id")
-        )
-    }
-
-
-def _manual_by_target(
-    manual_settings: Mapping[str, Any] | None,
-) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(manual_settings, Mapping):
-        return {}
-    return {
-        str(driver.get("target_id")): driver
-        for driver in manual_settings.get("drivers", [])
-        if isinstance(driver, Mapping) and driver.get("target_id")
-    }
+    # The raw rows, so a refusal lists every value the row declares.
+    validate_manual_target_bindings(topology, manual_settings)
+    return {"drivers": drivers, "crossover_candidates": []}
 
 
 def _band_subset(inner: Sequence[float], outer: Sequence[float]) -> bool:
@@ -1052,14 +979,9 @@ def compute_driver_safety_profile(
 ) -> dict[str, Any]:
     """Compute limits, provenance and issues from the current declaration."""
     manual_settings = _normalise_profile_manual_settings(topology, manual_settings)
-    manual_by_role = _manual_by_role(manual_settings)
     manual_by_target = _resolved_target_values(topology, manual_settings, driver_research)
-    research_by_target = _research_by_target(driver_research)
+    research_by_target = drivers_by_target(driver_research)
     physical_targets = active_driver_targets(topology)
-    role_counts: dict[str, int] = {}
-    for physical in physical_targets:
-        role = str(physical.get("role") or "")
-        role_counts[role] = role_counts.get(role, 0) + 1
     driver_styles = {
         channel.target_id(group.id): channel.driver_style
         for group in topology.speaker_groups
@@ -1071,13 +993,7 @@ def compute_driver_safety_profile(
     for physical in physical_targets:
         target_id = str(physical["target_id"])
         role = str(physical["role"])
-        visible, used_legacy_role_value = _visible_values_for_target(
-            target_id=target_id,
-            role=role,
-            manual_by_target=manual_by_target,
-            manual_by_role=manual_by_role,
-            role_counts=role_counts,
-        )
+        visible = manual_by_target.get(target_id, {})
         research = research_by_target.get(target_id, {})
 
         provenance: dict[str, Any] = {}
@@ -1130,9 +1046,9 @@ def compute_driver_safety_profile(
                 else f"{field}: derived from the declared driver low limit"
             )
             # "Derived" alone hides the case that costs an operator something: a
-            # value they TYPED, replaced. /sound/ renders an editable high-pass
-            # cutoff and slope and the derivation overwrites both, so the
-            # replacement is named to stay reviewable before the save.
+            # stored high-pass cutoff or slope (typed under "Details and custom
+            # settings") that the derivation overwrites, so the replacement is
+            # named to stay reviewable before the save.
             replaced = _superseded_typed_highpass(visible, derived) if (
                 field == "required_protection_filters"
             ) else ()
@@ -1157,13 +1073,7 @@ def compute_driver_safety_profile(
             "speaker_group_mode": str(physical["speaker_group_mode"]),
             "role": role,
             "driver_style": style,
-            "target_values_binding": (
-                "explicit_target"
-                if target_id in manual_by_target
-                else "unique_legacy_role"
-                if used_legacy_role_value
-                else "missing"
-            ),
+            "target_values_binding": "explicit_target" if target_id in manual_by_target else "missing",
             "physical_output_index": physical.get("output_index"),
             "model": visible.get("model"),
             "manufacturer": visible.get("manufacturer"),
@@ -1173,11 +1083,11 @@ def compute_driver_safety_profile(
             # ``max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`` and no
             # reader could unmix the two otherwise.
             #
-            # DECLARED provenance only: ``apply_driver_low_limit`` also fills
-            # these on an INFERRED limit, and returning that would promote a
-            # guess into a field meaning "the manufacturer published this". The
-            # pair travels together — a slope needs a frequency to condition,
-            # and a target holding one half would disagree with itself.
+            # DECLARED provenance only: a style-default limit resolves too, and
+            # returning it would promote a code figure into a field meaning
+            # "the manufacturer published this". The pair travels together — a
+            # slope needs a frequency to condition, and a target holding one
+            # half would disagree with itself.
             "recommended_highpass_hz": (
                 declared_limit.frequency_hz if declared_limit is not None else None
             ),
@@ -1192,14 +1102,13 @@ def compute_driver_safety_profile(
             ),
             "measurement_band_hz": derived.get("measurement_band_hz"),
             "level_duration_limits": visible.get("level_duration_limits", {}),
-            "fit_budget": visible.get("fit_budget"),
-            "cabinet": visible.get(
-                "cabinet",
-                {
-                    "enclosure_kind": "unknown",
-                    "lf_reconstruction_capability": "refused_unknown_enclosure",
-                },
+            "effective_sensitivity_db_2v83_1m": effective_sensitivity_db(
+                finite_float(visible.get("sensitivity_db_2v83_1m")), visible.get("pad"),
             ),
+            "fit_budget": visible.get("fit_budget"),
+            # Judged on the merged declaration: each value manual over research (ADR-0384).
+            "cabinet": _normalise_cabinet(visible.get("cabinet") or {}, f"{target_id}.cabinet",
+                                          visible.get("radiating_diameter_mm"), REIMPORT_RESEARCH),
             "unknowns": unknowns,
             "field_provenance": provenance,
             "authority": "operator_visible_values",

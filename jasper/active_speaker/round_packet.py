@@ -88,6 +88,28 @@ class RoundPacket:
         self.manifest.path = await self.manifest.records.bank(self.to_dict())
 
 
+def banked_evidence(inputs: RoundInputs) -> tuple[dict[str, Any], Exception | None]:
+    """The evidence a bank stores in ``packet.json``, built once from the round's
+    inputs (ADR-0371), and the error when that build failed. A failed build
+    stores ``evidence: None``, which readers refuse (ADR-0383)."""
+    try:
+        evidence = build_round_evidence(inputs)
+    except ROUND_INPUT_ERRORS as exc:
+        return {"packet_fingerprint": None, EVIDENCE_KEY: None}, exc
+    return {"packet_fingerprint": evidence.get("packet_fingerprint"), EVIDENCE_KEY: fingerprinted(evidence)}, None
+
+
+def store_banked_evidence(round_dir: Path) -> Exception | None:
+    """Store a round's evidence in its ``packet.json`` when a bank other than
+    :func:`write_round_packet` banks it, keeping what the file already holds.
+    It names its round as that bank does: a packet's bass evidence binds on ``round_id``."""
+    stored, error = banked_evidence(round_inputs(round_dir))
+    path = round_dir / PACKET_FILENAME
+    packet = json.loads(path.read_text()) if path.is_file() else {}
+    atomic_write_json(path, {"round_id": round_dir.name, **packet, **stored})
+    return error
+
+
 def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
     destination = round_dir / PACKET_FILENAME
     manifest = json.loads(manifest_path.read_text())
@@ -210,11 +232,9 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                            if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
             limits[group["set_id"]] = {"status": "unavailable", "reason": getattr(exc, "reason", "evidence_unreadable")}
-    try:
-        evidence = build_round_evidence(inputs)
-    except ROUND_INPUT_ERRORS as exc:
-        evidence = {}
-        errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(exc, "reason", "evidence_unavailable")})
+    stored, error = banked_evidence(inputs)
+    if error is not None:
+        errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
     clouds = design_clouds(inputs, manifest)
     alignments, alignment_verdict = round_alignment(
         {**manifest, "round_id": target.name}, sources,
@@ -239,9 +259,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "next_action": timing_next_action(alignment_verdict or {},
                   measured=axis.get("timing_verdict") == TIMING_MEASURED,
                   needs_measurement=axis.get("timing_verdict") == TIMING_NEEDS_MEASUREMENT),
-              "packet_fingerprint": evidence.get("packet_fingerprint"),
-              EVIDENCE_KEY: fingerprinted(evidence) or None,
-              "limits": limits, "artifacts": artifacts, "unavailable": errors}
+              **stored, "limits": limits, "artifacts": artifacts, "unavailable": errors}
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)

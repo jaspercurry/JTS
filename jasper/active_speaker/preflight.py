@@ -86,12 +86,14 @@ class PreflightFacts:
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     #: ``None`` when an applied profile's room layer could not be read.
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
-    program_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
+    stimulus_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
     roles_bands: tuple[RoleBand, ...] = ()
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
+    #: Each driver's program-path ``cap_dbfs`` and ``cap_source`` (ADR-0382).
+    driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ class PreflightReport:
     price: Mapping[str, int | float | None]
     spl_ceiling_db_spl: float | None
     rung_admission: Mapping[str, Any] = field(default_factory=dict)
+    driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def blocking(self) -> bool:
@@ -136,6 +139,7 @@ class PreflightReport:
                       **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
             "live_admission": list(LIVE_ADMISSION),
             "rung_admission": dict(self.rung_admission),
+            "driver_caps": {target: dict(cap) for target, cap in self.driver_caps.items()},
         }
 
 
@@ -193,7 +197,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message),
                               evidence={"driver_roles": DRIVER_ROLES_BY_WAY[3]}))
-        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
+        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
@@ -209,7 +213,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                 "missing_target_ids": missing, "declared_target_ids": facts.declared_target_ids,
                 "invalid_branch_target_ids": invalid_pairs,
             }))
-            return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
+            return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     # A stereo pair plays no driver alone until #5697 (ADR-0360).
     unoffered = tuple(sorted({stop.driver for stop in plan.stops if stop.driver} - set(facts.near_field_drivers or ())))
@@ -217,7 +221,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
             "unoffered_drivers": unoffered, "near_field_drivers": facts.near_field_drivers}))
-        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl)
+        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     scopes: dict[str, str] = {}
     bass_extensions: dict[str, Mapping[str, Any]] = {}
@@ -298,12 +302,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                                      margin_db=margin, quantity="max_window_db_spl", ceiling_db_spl=stop)
                 else:
                     try:
-                        program_ids = facts.program_ids_for(plan) if facts.program_ids_for else ()
+                        stimulus_ids = facts.stimulus_ids_for(plan) if facts.stimulus_ids_for else ()
                     except (ValueError, KeyError):
-                        program_ids = ()
-                    anchor_program_id = (facts.anchor.record.get("stimulus") or {}).get("program_id")
-                    same_stimulus = bool(program_ids) and all(stimulus_mismatch(anchor_program_id, pid) is False for pid in program_ids)
-                    admission.update(anchor_program_id=anchor_program_id, run_program_ids=program_ids,
+                        stimulus_ids = ()
+                    anchor_stimulus_id = (facts.anchor.record.get("stimulus") or {}).get("stimulus_id")
+                    same_stimulus = bool(stimulus_ids) and all(stimulus_mismatch(anchor_stimulus_id, pid) is False for pid in stimulus_ids)
+                    admission.update(anchor_stimulus_id=anchor_stimulus_id, run_stimulus_ids=stimulus_ids,
                                      stimulus_mismatch=not same_stimulus)
                     if not same_stimulus:
                         admission.update(basis="unmeasured_stimulus_opener", bound_db_spl=anchor.anchor_db_spl)
@@ -351,4 +355,4 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.driver or facts.roles_bands
                                     for stop in plan.stops)
     price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
-    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission)
+    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission, facts.driver_caps)

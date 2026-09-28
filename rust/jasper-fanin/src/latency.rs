@@ -7,6 +7,67 @@
 pub const BUFFER_ADJUST_PPM: f64 = 2000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatencyMode {
+    Low,
+    Medium,
+    High,
+}
+
+impl LatencyMode {
+    const ALL: [Self; 3] = [Self::Low, Self::Medium, Self::High];
+
+    pub fn parse(raw: &str) -> Result<Option<Self>, &'static str> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" => Ok(None),
+            "low" => Ok(Some(Self::Low)),
+            "medium" => Ok(Some(Self::Medium)),
+            "high" => Ok(Some(Self::High)),
+            _ => Err("JASPER_USB_LATENCY_MODE must be low, medium, or high"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn floor_frames(self) -> u32 {
+        match self {
+            Self::Low => 576,
+            Self::Medium => 1024,
+            Self::High => 2560,
+        }
+    }
+
+    pub fn observed(
+        enabled: bool,
+        floor: u64,
+        held: u64,
+        locked: bool,
+    ) -> (Option<Self>, Option<Self>) {
+        let applied = if enabled {
+            Self::ALL
+                .into_iter()
+                .find(|mode| *mode != Self::High && u64::from(mode.floor_frames()) == floor)
+        } else {
+            Some(Self::High)
+        };
+        let effective = if locked {
+            Self::ALL
+                .into_iter()
+                .find(|mode| u64::from(mode.floor_frames()) == held)
+                .or_else(|| applied.filter(|mode| held <= u64::from(mode.floor_frames())))
+        } else {
+            None
+        };
+        (applied, effective)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecayFrozenReason {
     Unlocked,
     NotL0,
@@ -173,8 +234,9 @@ impl CushionDecay {
 
     // Only a continuously observed, configured physical USB connection may
     // reuse a buffer. Capture-handle reopen is not a physical disconnect.
-    pub fn context(&mut self, connection: u64, failed: bool, locked: bool) {
-        if connection != self.connection || failed && !self.failed {
+    pub fn context(&mut self, connection: u64, failed: bool, locked: bool) -> bool {
+        let invalidated = connection != self.connection || failed && !self.failed;
+        if invalidated {
             self.last_good = None;
             self.interrupted_at = None;
             self.reused = false;
@@ -187,6 +249,12 @@ impl CushionDecay {
         }
         self.connection = connection;
         self.failed = failed;
+        invalidated
+    }
+
+    pub fn hold_for_reopen(&mut self) {
+        self.motion_ppm = 0.0;
+        self.frozen_reason = Some(DecayFrozenReason::Unlocked);
     }
 
     pub fn snap_back(&mut self, reason: DecayFrozenReason) {
@@ -315,6 +383,39 @@ mod tests {
             dll_l0_locked: locked,
             buffer_low: false,
         }
+    }
+
+    #[test]
+    fn observed_modes_preserve_buffer_classification_and_idle() {
+        use LatencyMode::{High, Low, Medium};
+        for (enabled, floor, held, locked, applied, effective) in [
+            (true, 576, 576, true, Some(Low), Some(Low)),
+            (true, 576, 1024, true, Some(Low), Some(Medium)),
+            (true, 1024, 576, true, Some(Medium), Some(Low)),
+            (true, 576, 2560, true, Some(Low), Some(High)),
+            (true, 576, 1088, true, Some(Low), None),
+            (true, 1024, 1000, true, Some(Medium), Some(Medium)),
+            (true, 576, 2560, false, Some(Low), None),
+            (false, 576, 2048, true, Some(High), Some(High)),
+            (false, 2048, 2048, true, Some(High), Some(High)),
+            (false, 2560, 3000, true, Some(High), None),
+            (true, 544, 1024, true, None, Some(Medium)),
+        ] {
+            assert_eq!(
+                LatencyMode::observed(enabled, floor, held, locked),
+                (applied, effective)
+            );
+        }
+        let high = DecayParams {
+            enabled: false,
+            floor_frames: u64::from(High.floor_frames()),
+            stability_ms: 2000,
+        }
+        .build(2048, 256, 48000, 500.0);
+        assert_eq!(
+            (high.enabled(), high.floor(), high.held()),
+            (false, 2048, 2048)
+        );
     }
 
     #[test]

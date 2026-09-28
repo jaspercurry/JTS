@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! ALSA fan-in mixer — the core work loop.
-//!
 //! Reads N capture lanes (snd-aloop substream, renderer SHM ring, or the USB
 //! gadget), sums them sample-wise, and publishes the sum to the program SHM
 //! ring, this daemon's only final-output transport (ADR-0100).
@@ -30,9 +28,9 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
-use alsa::pcm::{Access, Format, Frames, HwParams, State, IO, PCM};
-use alsa::{Direction, ValueOr};
+use alsa::pcm::{Frames, State, IO, PCM};
 use anyhow::{Context, Result};
+use jasper_alsa::is_xrun_errno;
 use jasper_daemon::HELPER_STACK_BYTES;
 use log::{info, warn};
 
@@ -41,8 +39,8 @@ use jasper_ring::{Geometry, RingWriter, SAMPLE_FORMAT_S32LE};
 use jasper_resampler::RMS_DBFS_FLOOR;
 
 use crate::config::{
-    periods_for_ms, Config, DEFAULT_PERIOD_FRAMES, DEFAULT_SAMPLE_RATE, MEASUREMENT_LANE,
-    RING_SLOT_FRAMES,
+    periods_for_ms, Config, DEFAULT_PERIOD_FRAMES, DEFAULT_SAMPLE_RATE, INPUT_LANES,
+    MEASUREMENT_LANE, RING_SLOT_FRAMES, USB_DIRECT_LANE,
 };
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
@@ -461,22 +459,14 @@ impl LaneSource {
     }
 }
 
-/// The transport a lane will be built with, decided BEFORE anything is opened.
-/// The USB lane reads the gadget capture when DIRECT is armed and nothing at all
-/// otherwise: its aloop substream has had no writer since the usbsink bridge was
-/// deleted, so opening it would only sum silence from a lane that can never
-/// carry audio. Every other lane reads its aloop substream and is required.
-/// [`Input::lane_source`] re-derives the same token from what was actually
-/// opened, so STATUS cannot disagree with this plan.
-pub(crate) fn planned_lane_source(config: &Config, label: &str) -> LaneSource {
-    if config.lane_wants_resampler(label) {
-        // "USB lane AND direct armed" is spelled once, by the same predicate
-        // that arms this lane's resampler.
-        LaneSource::Direct
-    } else if config.input_resampler_lane_label == label {
-        LaneSource::Disabled
-    } else {
+/// USB has no aloop fallback (ADR-0281).
+pub(crate) fn planned_lane_source(config: &Config, pcm_name: &str) -> LaneSource {
+    if !pcm_name.is_empty() {
         LaneSource::Lane
+    } else if config.usb_direct_enabled {
+        LaneSource::Direct
+    } else {
+        LaneSource::Disabled
     }
 }
 
@@ -537,10 +527,7 @@ pub struct Input {
     /// that discarded ≥1 period). Paired with `catchup_resync_frames` so
     /// STATUS shows both how often and how much.
     pub catchup_events: Arc<AtomicU64>,
-    /// OPTIONAL per-input adaptive resampler (DEFAULT-OFF). `Some` only on the
-    /// USB DIRECT lane (see [`Config::lane_wants_resampler`]). When `Some`,
-    /// this lane is rate-reconciled to the DAC clock (drop-free) instead of
-    /// catch-up-drained.
+    /// USB capture crosses the host/DAC clock boundary; aloop lanes do not.
     resampler: Option<LaneResampler>,
     /// Per-lane MIX MUTE, shared with the state-server thread. The control
     /// endpoint (`MUTE`/`UNMUTE <label>`) flips it; the work loop reads it at
@@ -572,46 +559,28 @@ impl Mixer {
     pub fn new(config: &Config, tts: Option<TtsInput>) -> Result<Self> {
         let period_samples = (config.period_frames as usize) * (CHANNELS as usize);
 
-        let mut inputs = Vec::with_capacity(config.input_renderers.len());
-        // The USB lane takes no aloop PCM (config pins the list one shorter), so
-        // the remaining labels consume `input_pcms` in order.
-        let mut aloop_pcms = config.input_pcms.iter();
-        for label in &config.input_renderers {
-            // The USB lane is the only clock-crossing lane, and it owns a
-            // resampler whenever it has a device to read: direct capture has no
-            // aloop catch-up fallback. A construction failure degrades to `None`
-            // with a warning rather than failing the daemon.
-            let resampler = if config.lane_wants_resampler(label) {
+        let mut inputs = Vec::with_capacity(INPUT_LANES.len());
+        for (label, pcm_name) in INPUT_LANES {
+            let source = planned_lane_source(config, pcm_name);
+            let resampler = if source == LaneSource::Direct {
                 build_lane_resampler(label, config)
             } else {
                 None
             };
-            let input = match planned_lane_source(config, label) {
-                // USB DIRECT: reads hw:UAC2Gadget. Best-effort — a gadget-absent
-                // lane starts `DirectCapture::Absent` and renders silence with a
-                // bounded reopen retry. The fail-hard "every input required" contract is
-                // exempted ONLY here.
+            let input = match source {
                 LaneSource::Direct => open_direct_input(label, config, resampler),
                 LaneSource::Disabled => disabled_input(label, config, resampler),
-                LaneSource::Lane => {
-                    let Some(pcm_name) = aloop_pcms.next() else {
+                LaneSource::Lane => match open_input(pcm_name, label, config, resampler) {
+                    Ok(input) => input,
+                    Err(e) => {
                         anyhow::bail!(
-                            "fan-in input '{}' has no JASPER_FANIN_INPUT_PCMS entry",
+                            "required fan-in input '{}' ({}) failed to open: {:#}",
                             label,
+                            pcm_name,
+                            e,
                         );
-                    };
-                    match open_input(pcm_name, label, config, resampler) {
-                        Ok(input) => input,
-                        Err(e) => {
-                            anyhow::bail!(
-                                "required fan-in input '{}' ({}) failed to open: {:#}",
-                                label,
-                                pcm_name,
-                                e,
-                            );
-                        }
                     }
-                }
+                },
             };
             info!(
                 "event=fanin.input.opened label={} pcm={} period_frames={} buffer_frames={} source={}",
@@ -622,15 +591,6 @@ impl Mixer {
                 input.lane_source().as_str(),
             );
             inputs.push(input);
-        }
-
-        if inputs.is_empty() {
-            anyhow::bail!(
-                "no input PCMs opened successfully — daemon has nothing to mix. \
-                 Check /etc/asound.conf for the per-renderer substream aliases \
-                 (librespot_substream / shairport_substream / etc.) and snd-aloop \
-                 module status (lsmod | grep snd_aloop)."
-            );
         }
 
         // Ring A — the only final-output transport (ADR-0100). Slot is pinned to
@@ -709,7 +669,7 @@ impl Mixer {
         if config.usb_direct_enabled {
             info!(
                 "event=fanin.usb_direct.armed lane={} device={} (bridge hop + aloop cable removed on this lane)",
-                config.input_resampler_lane_label, config.usb_direct_device,
+                USB_DIRECT_LANE, config.usb_direct_device,
             );
         }
         // Impulse-tap channel. Default-disarmed: the tap state starts unarmed so
@@ -1280,7 +1240,7 @@ enum PcmIoFate {
 fn classify_pcm_errno(errno: i32) -> PcmIoFate {
     if errno == libc::EAGAIN {
         PcmIoFate::WouldBlock
-    } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+    } else if is_xrun_errno(errno) {
         PcmIoFate::Xrun
     } else {
         PcmIoFate::Fatal
@@ -2209,10 +2169,10 @@ mod tests {
 
     use jasper_ring::{RingReader, SlotRead};
     use jasper_tts_protocol::loudness::{gain_db_to_linear, AssistantLoudnessConfig};
-    use jasper_tts_protocol::{QueuedTtsCommand, TtsCommand};
+    use jasper_tts_protocol::{flush::QueuedFlush, QueuedTtsCommand, TtsCommand};
     use std::sync::atomic::AtomicU64 as TestAtomicU64;
 
-    use crate::tts::{tts_channels, QueuedFlush};
+    use crate::tts::tts_channels;
 
     static RING_MIXER_TEST_SEQ: TestAtomicU64 = TestAtomicU64::new(0);
 
@@ -2274,8 +2234,7 @@ mod tests {
         }
     }
 
-    /// Returns it with its senders, which the caller must keep alive for the
-    /// mixer's whole life.
+    /// Keep the returned senders alive for the mixer's whole life.
     fn ducking_tts_mixer(
         payload: &[i32],
         program_duck_db: f32,

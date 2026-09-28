@@ -67,7 +67,7 @@ def _walk(angles, candidates=("fp-a",)):
 
 
 def _analysis(_record, _record_id):
-    return ProgramAnalysis(phase="verify", program_id="test", locations=(_loc("sweep"),))
+    return ProgramAnalysis(phase="verify", stimulus_id="test", locations=(_loc("sweep"),))
 
 
 def fake_program_baselines(monkeypatch):
@@ -563,15 +563,15 @@ def test_real_assessor_sees_glitch_and_retries_once():
 
 
 @pytest.mark.parametrize("changed", [
-    {}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"program_id": "other"},
-    {"level_db": -12.0}, {"stimulus_dbfs": -24.0}, {"loudness_volume_db": -30.0},
+    {}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"stimulus_id": "other"},
+    {"level_db": -12.0}, {"stimulus_dbfs": -24.0},
     {"capture_calibration": {"applied": True, "calibration_id": "other", "curve_fingerprint": "curve"}},
     {"regime": "other"}, {"side": "right"}, {"role": "tweeter"},
 ])
 def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     manifest = RunManifest("run", _Store(FakeSeams().records))
-    record = {"candidate_id": "", "graph_fingerprint": "graph", "program_id": "program",
-              "level_db": -20.0, "stimulus_dbfs": -18.0, "loudness_volume_db": -20.0,
+    record = {"candidate_id": "", "graph_fingerprint": "graph", "stimulus_id": "program",
+              "level_db": -20.0, "stimulus_dbfs": -18.0,
               "regime": "summed", "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
@@ -1035,7 +1035,7 @@ async def test_room_uses_its_first_seat_take_as_the_level_reference():
         assert (capture.spec.program_phase, capture.stop.kind) == ("lateral", "seat")
         manifest.begin({"index": index, "pose": {"kind": "seat", "seat_offset_m": capture.stop.seat_offset_m},
                         "candidate_id": capture.stop.candidate_id}, attempt=1, pose_index=index - 1)
-        record = {"take_id": str(index), "level_db": -20, "program_id": "room", "phase": "lateral",
+        record = {"take_id": str(index), "level_db": -20, "stimulus_id": "room", "phase": "lateral",
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed}}}
         verdict = capture_dispatch.level_drift_verdict(**manifest.level_observation(record))
         assert (verdict.ok, verdict.next, verdict.evidence.get("level_delta_db")) == (accepted, action, delta)
@@ -1121,7 +1121,7 @@ def rung_spl(monkeypatch):
             record["capture_integrity"] = {"spl": measurements.get(round(level, 2), {
                 "loudest_half_second_db_spl": 93 + level, "max_window_db_spl": 93 + level,
                 "ceiling_db_spl": 85})}
-            record["program_id"] = "bass-sweep"
+            record["stimulus_id"] = "bass-sweep"
         return await bank(self, record)
 
     monkeypatch.setattr(_Store, "bank", measured_bank)
@@ -1229,8 +1229,8 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
-    facts = ready_facts(request, commissioning_stop_db_spl=stop, program_ids_for=lambda _: ("bass-sweep",))
-    anchor_stimulus = {"program_id": "broadband-sweep", "wav_sha256": "anchor-wav"}
+    facts = ready_facts(request, commissioning_stop_db_spl=stop, stimulus_ids_for=lambda _: ("bass-sweep",))
+    anchor_stimulus = {"stimulus_id": "broadband-sweep", "wav_sha256": "anchor-wav"}
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23,
         "target": {"target_db_spl": 75, "tolerance_db": tolerance},
         "stimulus": anchor_stimulus}))
@@ -1258,7 +1258,7 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
     assert [row["requested_db_spl"] for row in (first, second, third)] == [65, 75, 82]
     assert first["basis"] == "unmeasured_stimulus_opener"
     observation, = first["observations"]
-    assert observation["run_stimulus"]["program_id"] == "bass-sweep"
+    assert observation["run_stimulus"]["stimulus_id"] == "bass-sweep"
     assert observation["stimulus_mismatch"] is True
     assert observation["measured_offset_db"] == pytest.approx(1.22)
     assert second["basis"] == third["basis"] == "measured_window"
@@ -1275,7 +1275,7 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = ac.AngleCaptureRequest(tuple(ac.AngleStop(angle, ac.REGIME_SUMMED, purpose="bass") for angle in (0, 20)))
-    facts = ready_facts(request, program_ids_for=lambda _: ("bass-sweep",))
+    facts = ready_facts(request, stimulus_ids_for=lambda _: ("bass-sweep",))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
     rung_spl[-22.23] = {"loudest_half_second_db_spl": 75, "max_window_db_spl": 80, "ceiling_db_spl": 85}
     preview = preflight_levels(replace(request, levels=(-12.46, -11.46)), facts)
@@ -1407,7 +1407,7 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
     for index, (pose, gain, program, candidate, observed, accepted, delta) in enumerate(cases):
         manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}, "candidate_id": candidate},
                        attempt=1, pose_index=index)
-        record = {"take_id": str(index), "level_db": -99, "provenance": {"session_volume_db": gain}, "phase": "measure", "program_id": program,
+        record = {"take_id": str(index), "level_db": -99, "provenance": {"session_volume_db": gain}, "phase": "measure", "stimulus_id": program,
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
         await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
                               level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)
@@ -1573,7 +1573,7 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
         manifest = RunManifest("run", packet)
         if site == "transaction":
             play = AsyncMock()
-            prepared = ProgramForStimulus(SimpleNamespace(program_id="verify", phase="verify"), {
+            prepared = ProgramForStimulus(SimpleNamespace(stimulus_id="verify", phase="verify"), {
                 "readmit": AsyncMock(return_value=admission), "play_wav": play, "writer_lock": Mock(),
             })
             monkeypatch.setattr(fakes.play, "run", ProgramPlaybackTransaction(

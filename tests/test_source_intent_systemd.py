@@ -527,7 +527,7 @@ def test_source_http_routes_outlast_two_bounded_broker_passes() -> None:
         2
         * (
             units.RECONCILE_BROKER_TIMEOUT_SECONDS
-            + restart_broker._CLIENT_SOCKET_MARGIN_SEC
+            + units._CLIENT_SOCKET_MARGIN_SEC
         )
     )
     handler_margin = 60

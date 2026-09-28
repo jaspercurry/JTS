@@ -290,9 +290,7 @@ class Pass:
         ``(False, reason)`` and every caller fails closed.
         """
         try:
-            # lazy: import cost — 5k lines of contract a single-DAC install
-            # pass never needs (a declared composite does reach it here).
-            from jasper.active_speaker.runtime_contract import (
+            from jasper.outputd_active_lane import (  # lazy: graph proof import cost on active-endpoint paths
                 outputd_active_lane_decision,
             )
 

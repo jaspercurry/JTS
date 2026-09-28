@@ -31,16 +31,18 @@ from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
 from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
-from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
+from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY, EVIDENCE_NOT_BANKED
 from jasper.cli import crossover_prescriber
-from jasper.cli.round_views import main as round_views_main
+from jasper.cli.round_views import EXIT_UNREADABLE, main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
     read_position_cycle,
     takes_by_position,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME, RoundSetRefused, resolve_set, round_artifact_dir, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, resolve_set, round_artifact_dir, round_inputs,
+)
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
@@ -322,7 +324,8 @@ def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -
         (positions / f"{take_id}.json").write_text(json.dumps({
             "kind": POSITION_EVIDENCE_KIND, MEASURE_KIND_KEY: "verify",
             "take_id": take_id, "phase": phase, "captured_at": captured_at,
-            "session_id": "capture-id", "wav_path": str(wav.relative_to(bundle)),
+            "run_id": "capture-id-level-2", "capture_session_id": "capture-id",
+            "wav_path": str(wav.relative_to(bundle)),
             "wav_sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
             "diagnostic": {"epsilon_ppm": 1.0 + index},
             "capture_integrity": {"capture_chain": "alsa_s32le"},
@@ -635,17 +638,24 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     assert positions == sorted(positions)
 
 
-@pytest.mark.parametrize("stored_evidence", [True, False], ids=["stored", "banked-before-stored"])
-def test_a_round_answers_with_the_fingerprint_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
-    """A round banked beside it later moves what a rebuild reads (ADR-0371)."""
+@pytest.mark.parametrize("stored_evidence", [True, False], ids=["stored", "not-stored"])
+def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
+    """A round banked beside it later moves what a rebuild would read, so
+    nothing rebuilds a banked round's packet (ADR-0371): one whose packet.json
+    holds no evidence refuses by that key (ADR-0383), in the round views too."""
     session, state = _live_session(tmp_path)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
     path = banked.path / "packet.json"
     packet = json.loads(path.read_text())
-    if stored_evidence:
-        monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", Mock(side_effect=AssertionError))
-    else:
+    monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", Mock(side_effect=AssertionError))
+    if not stored_evidence:
         path.write_text(json.dumps({key: value for key, value in packet.items() if key != EVIDENCE_KEY}))
+        with pytest.raises(RoundViewsError) as refused:
+            evidence_packet.round_evidence(round_inputs(banked.path))
+        assert refused.value.code == EVIDENCE_NOT_BANKED
+        assert round_views_main(["entry", str(banked.path)]) == EXIT_UNREADABLE
+        assert json.loads(capsys.readouterr().out)["code"] == EVIDENCE_NOT_BANKED
+        return
     later = bank_measure_round(tmp_path / "campaigns", name="r2-later")
     artifacts, _ = round_artifact_dir(round_inputs(later).session_dir)
     (artifacts / "candidate.json").write_text(json.dumps({"alignment": {"delay_us": 125.0}}))
@@ -653,8 +663,7 @@ def test_a_round_answers_with_the_fingerprint_its_bank_stored(tmp_path, monkeypa
     assert crossover_prescriber.main(["status", str(banked.path)]) == 0
     status = json.loads(capsys.readouterr().out)
     assert status["packet_fingerprint"] == packet["packet_fingerprint"] is not None
-    if stored_evidence:
-        assert status["contracts"] == packet[EVIDENCE_KEY]["contracts"]
+    assert status["contracts"] == packet[EVIDENCE_KEY]["contracts"]
 
 
 @pytest.mark.parametrize("named_by", ["bank", "bundle"])
@@ -832,7 +841,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
                 capture_gain_db=6.0 if candidate == "candidate-b" else 0.0,
             ))
             record = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())
-            assert "curves" not in record
+            assert [curve["window"] for curve in record["curves"]] == ["ungated"]
             records.append((record_id, record))
         group = manifest_set(records)
         group["base"] = candidate == candidates[0]

@@ -42,6 +42,7 @@ from jasper.output_topology import (
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import fake_measurement_mic
+from tests.active_speaker_fixtures import current_research
 from tests.test_active_speaker_crossover_preview import _research as preview_research
 from tests.test_active_speaker_profile import _three_way_preset
 from tests.test_rear_output_foundation import _rear_pair
@@ -285,7 +286,7 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
     draft = {"status": "ready_for_review", "topology": topo.to_dict(),
-             "driver_research": preview_research()}
+             "driver_research": current_research(topo, preview_research())[0]}
     draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = 3200
     preview = build_crossover_preview(draft)
     monkeypatch.setattr(v2ctx, "ensure_crossover_preview_ready", lambda design_draft=None: preview)
@@ -357,52 +358,6 @@ def test_explicit_env_playback_device_is_honored(monkeypatch):
     context = v2ctx.resolve_conductor_context(_status())
 
     assert context.playback_device == "hw:Lab"
-
-
-# --------------------------------------------------------------------------- #
-# driver_class_by_role resolver seam (#1668 PR-D)
-# --------------------------------------------------------------------------- #
-
-
-def test_driver_class_by_role_resolver_default_pins_todays_empty_behavior(monkeypatch):
-    """The REAL (unstubbed) _resolve_driver_class_by_role — a #1665 stub —
-    must return {} today, so context.driver_class_by_role is empty and
-    CrossoverV2Session's own ``.get(role, "unknown")`` read falls back to
-    "unknown" for every role, exactly as it did before this resolver
-    existed (test_crossover_v2_conductor.py's own
-    test_happy_path_..._driver_class == "unknown" assertions)."""
-    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
-    _patch_topology(monkeypatch, topo)
-
-    context = v2ctx.resolve_conductor_context(_status())
-
-    assert context.driver_class_by_role == {}
-    assert v2ctx._resolve_driver_class_by_role(context.preset) == {}
-
-
-def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkeypatch):
-    """A fake resolver (simulating #1665's future component-entry-backed
-    implementation) proves the WIRING is real, not dead code: whatever
-    _resolve_driver_class_by_role returns lands unchanged on
-    context.driver_class_by_role, which is the exact value both conductor
-    construction sites (prepare_v2_session's .hydrate(...) and
-    the verify-only prepare's CrossoverV2Session(...)) pass straight through as
-    the ctor's driver_class_by_role= — and
-    test_driver_class_by_role_ctor_param_threads_into_the_fit
-    (tests/test_crossover_v2_conductor.py) independently proves THAT ctor
-    param reaches compose_envelope's driver_class= argument. Together the
-    two tests cover the full resolver -> context -> conductor ->
-    compose_envelope chain without one end-to-end test spanning both
-    modules' heavy session-open seams."""
-    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
-    _patch_topology(monkeypatch, topo)
-    injected = {"tweeter": "compression_horn", "woofer": "unknown"}
-    monkeypatch.setattr(v2ctx, "_resolve_driver_class_by_role", lambda preset: injected)
-
-    context = v2ctx.resolve_conductor_context(_status())
-
-    assert context.driver_class_by_role == injected
-    assert context.driver_class_by_role is injected
 
 
 def test_driver_spacing_m_resolver_default_pins_todays_unknown_behavior(monkeypatch):
@@ -485,11 +440,12 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
 
-    def _driver(role, peak, filters, diameter, **extra):
+    def _driver(role, peak, filters, sensitivity, **extra):
         return {
             "target_id": f"mono:{role}",
             "role": role,
             "model": f"model-{role}",
+            "sensitivity_db_2v83_1m": sensitivity,
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             # #2603: the tweeter declares its low limit once, and its hard
@@ -500,26 +456,21 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
                 "max_sweep_duration_s": 6,
             },
             "required_protection_filters": filters,
-            "cabinet": {
-                "enclosure_kind": "sealed",
-                "radiator_count": 1,
-                "effective_radiating_diameter_mm": diameter,
-                **extra,
-            },
+            "cabinet": {"enclosure_kind": "sealed", "radiator_count": 1, **extra},
         }
 
-    # JTS3 shape: woofer cap -8; tweeter cap left at the -65 class-default seed.
+    # JTS3 shape: woofer cap -8; the tweeter declares no level limit.
     settings = {
         "drivers": [
             _driver(
                 "woofer", -8,
                 [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
-                132, baffle_width_mm=210,
+                83.3, baffle_width_mm=210,
             ),
             _driver(
-                "tweeter", -65,
+                "tweeter", None,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
-                25,
+                108.5,
             ),
         ],
         "crossover_candidates": [],
@@ -540,18 +491,7 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             ],
         },
     }
-    # The declaration section as it lives on JTS3's persisted design draft:
-    # sensitivities under manual_settings.drivers (83.3 / 108.5).
-    draft = {
-        "driver_safety_profile": profile,
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {"role": "tweeter", "sensitivity_db_2v83_1m": 108.5},
-            ],
-            "crossover_candidates": [],
-        },
-    }
+    draft = {"topology": topo.to_dict(), "driver_safety_profile": profile, "manual_settings": settings}
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
     # Restore the REAL derivation functions over the autouse stubs.
     monkeypatch.setattr(
@@ -579,7 +519,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         "woofer": -8.0,
         "tweeter": pytest.approx(-33.2),
     }
-    assert context.declared_sensitivities == {"woofer": 83.3, "tweeter": 108.5}
     assert context.session_volume_db == -20.0
     # Probe: context caps == admission caps, per role, from the same inputs.
     for role, fingerprint in targets.items():
@@ -587,7 +526,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
             profile,
             fingerprint,
             program_admission=True,
-            declared_sensitivities=context.declared_sensitivities,
         )
         assert context.driver_caps_dbfs[role] == pytest.approx(admission_cap)
     # Flat-linearization plan PR-4: the tweeter's confirmed measurement_band_hz
@@ -635,21 +573,11 @@ def test_a_role_with_no_resolvable_measurement_band_is_simply_absent(monkeypatch
     assert "tweeter" not in context.measurement_band_hz_by_role
 
 
-def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
-    """#1665 component entry, closing the seam #1668 PR-C left data-untested.
-
-    PR-C's own conductor-level test
-    (test_driver_class_by_role_ctor_param_threads_into_the_fit in
-    test_crossover_v2_conductor.py) already proved "IF the ctor param is
-    populated, it reaches compose_envelope." What it could NOT prove yet —
-    because #1665 hadn't landed — is that a REAL design draft's declared
-    driver_class actually reaches that ctor param. This test closes that
-    half: runs the real resolver against a real confirmed safety profile
-    plus a declaration-shaped draft (the same JTS3 shape as the sibling test
-    above) and asserts driver_class_by_role is derived correctly. It also
-    confirms declared_sensitivities now reads the PAD-FOLDED effective
-    figure, not the naked one — the other half of #1665's resolver swap.
-    """
+def test_a_declared_pad_and_diameter_reach_the_conductor_context(monkeypatch):
+    """The real resolvers against a real confirmed safety profile and the JTS3
+    declaration shape: the tweeter's cap derives from its PAD-FOLDED effective
+    sensitivity, not the naked one, and each declared diameter arrives keyed
+    by its measurement target (ADR-0384)."""
     from jasper.active_speaker.driver_safety import compute_driver_safety_profile
     from jasper.active_speaker.measurement import active_driver_targets
 
@@ -661,6 +589,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             "target_id": f"mono:{role}",
             "role": role,
             "model": f"model-{role}",
+            "radiating_diameter_mm": diameter,
             "hard_excitation_band_hz": [500, 20_000],
             "measurement_band_hz": [500, 10_000],
             # #2603: the tweeter declares its low limit once, and its hard
@@ -671,26 +600,21 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
                 "max_sweep_duration_s": 6,
             },
             "required_protection_filters": filters,
-            "cabinet": {
-                "enclosure_kind": "sealed",
-                "radiator_count": 1,
-                "effective_radiating_diameter_mm": diameter,
-                **extra,
-            },
+            "cabinet": {"enclosure_kind": "sealed", "radiator_count": 1, **extra},
         }
 
     settings = {
         "drivers": [
-            _driver(
+            {**_driver(
                 "woofer", -8,
                 [{"kind": "lowpass", "cutoff_hz": 3000, "minimum_slope_db_per_octave": 24}],
                 132, baffle_width_mm=210,
-            ),
-            _driver(
-                "tweeter", -65,
+            ), "sensitivity_db_2v83_1m": 83.3},
+            {**_driver(
+                "tweeter", None,
                 [{"kind": "highpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}],
                 25,
-            ),
+            ), "sensitivity_db_2v83_1m": 108.5, "pad": {"kind": "direct_db", "attenuation_db": -14.4}},
         ],
         "crossover_candidates": [],
     }
@@ -710,21 +634,7 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
             ],
         },
     }
-    draft = {
-        "driver_safety_profile": profile,
-        "manual_settings": {
-            "drivers": [
-                {"role": "woofer", "sensitivity_db_2v83_1m": 83.3},
-                {
-                    "role": "tweeter",
-                    "sensitivity_db_2v83_1m": 108.5,
-                    "driver_class": "compression_horn",
-                    "pad": {"kind": "direct_db", "attenuation_db": -14.4},
-                },
-            ],
-            "crossover_candidates": [],
-        },
-    }
+    draft = {"topology": topo.to_dict(), "driver_safety_profile": profile, "manual_settings": settings}
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: draft)
     monkeypatch.setattr(
         excitation_safety_plan_mod,
@@ -744,12 +654,10 @@ def test_declared_driver_class_and_pad_reach_the_conductor_context(monkeypatch):
 
     context = v2ctx.resolve_conductor_context(status)
 
-    assert context.driver_class_by_role == {"tweeter": "compression_horn"}
-    # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5.
-    assert context.declared_sensitivities == {
-        "woofer": 83.3,
-        "tweeter": pytest.approx(94.1),
-    }
+    assert context.radiating_diameter_mm_by_target == {"woofer": 132, "tweeter": 25}
+    # 108.5 naked minus the declared -14.4 dB pad = 94.1 effective, not 108.5:
+    # the woofer's -8 less a 10.8 dB delta.
+    assert context.driver_caps_dbfs["tweeter"] == pytest.approx(-18.8)
 
 
 # --------------------------------------------------------------------------- #

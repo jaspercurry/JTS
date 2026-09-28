@@ -51,7 +51,7 @@ from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired
 from tests.test_correction_crossover_v2_wired import _device
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, research_design_draft
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
@@ -2597,10 +2597,11 @@ def _seed_baseline_apply_environment(monkeypatch, tmp_path):
     tweeter = manual["drivers"][1]
     tweeter["hard_excitation_band_hz"][0] = 2000
     tweeter["measurement_band_hz"][0] = 2000
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000
+    tweeter["recommended_highpass_hz"] = 2000
     manual["drivers"][0]["required_protection_filters"] = []
-    draft = build_design_draft(topology, driver_research=_draft(topology)["driver_research"], manual_settings=manual,
-                               created_at="2026-06-14T12:00:00Z")
+    seed = _draft(topology)
+    draft = build_design_draft(topology, driver_research=seed["driver_research"], manual_settings=manual,
+                               operator_inputs=seed["operator_inputs"], created_at="2026-06-14T12:00:00Z")
     draft_path = tmp_path / "design_draft.json"
     draft_path.write_text(json.dumps(draft), encoding="utf-8")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE", str(draft_path))
@@ -2721,7 +2722,7 @@ def _seed_alternative_apply(
     original = _draft(topology)
     manual_candidate = dict(original["driver_research"]["crossover_candidates"][0])
     draft = build_design_draft(
-        topology, driver_research=original["driver_research"],
+        topology, driver_research=original["driver_research"], operator_inputs=original["operator_inputs"],
         manual_settings={**json.loads((tmp_path / "design_draft.json").read_text())["manual_settings"], "crossover_candidates": [manual_candidate]},
         created_at="2026-08-09T12:00:00Z",
     )
@@ -3095,8 +3096,6 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     """An apply the seam refused changed no graph, so there is no move to
     declare — and the probe seam must keep reporting "nothing known" (0.0)
     rather than an offset from a transaction that never landed."""
-    from jasper.active_speaker.design_draft import build_design_draft
-
     from tests.test_active_speaker_baseline_profile import _research
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -3116,11 +3115,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     moved_research["crossover_candidates"][0]["frequency_hz"] = 3000
     (tmp_path / "design_draft.json").write_text(
         json.dumps(
-            build_design_draft(
-                topology,
-                driver_research=moved_research,
-                created_at="2026-07-18T12:30:00Z",
-            )
+            research_design_draft(topology, moved_research, created_at="2026-07-18T12:30:00Z")
         ),
         encoding="utf-8",
     )
@@ -3129,7 +3124,7 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
     with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:
         _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()},
                _bg_run_async, _FakeApplyAndVolumeCam)
-    assert refused.value.code == "tweeter:required_highpass_missing"
+    assert refused.value.code == "measurement_candidate_speaker_mismatch"
     assert "expected_post_apply_offset_db" not in v2state.load_v2_state()
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
@@ -4406,19 +4401,21 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
         draft = json.loads(path.read_text())
         tweeter = draft["manual_settings"]["drivers"][1]
         if fault == "live_floor":
-            tweeter["required_protection_filters"][0]["cutoff_hz"] = 3000.0
+            tweeter["recommended_highpass_hz"] = 3000.0
             tweeter["hard_excitation_band_hz"][0] = 3000.0
             tweeter["measurement_band_hz"][0] = 3000.0
             draft["manual_settings"]["crossover_candidates"][0]["frequency_hz"] = 3500.0
         else:
             tweeter["model"] = "different-driver"
-        draft = build_design_draft(v2apply.load_output_topology(), driver_research=draft["driver_research"], manual_settings=draft["manual_settings"])
+        draft = build_design_draft(v2apply.load_output_topology(), driver_research=draft["driver_research"],
+                                   manual_settings=draft["manual_settings"], operator_inputs=draft["operator_inputs"])
         path.write_text(json.dumps(draft))
     if fault == "declaration":
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
-        draft["manual_settings"]["drivers"][1].pop("required_protection_filters")
-        draft["manual_settings"]["drivers"][1].pop("recommended_highpass_hz", None)
+        for driver in (draft["manual_settings"]["drivers"][1], *draft["driver_research"]["drivers"]):
+            driver.pop("recommended_highpass_hz", None)
+            driver.pop("recommended_highpass_slope_db_per_octave", None)
         path.write_text(json.dumps(draft))
     elif fault == "graph":
         compile_graph = v2apply.compile_tuning_graph

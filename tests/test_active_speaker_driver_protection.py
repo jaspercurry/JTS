@@ -123,45 +123,26 @@ def test_undeclared_tweeter_style_keeps_conservative_floor_when_hardware_ceiling
 # --- derive_hf_measurement_ceiling_dbfs (W6.5 two-invariant protection model) -
 
 
-def test_shipped_jts3_preset_numbers_derive_the_operative_ceiling() -> None:
-    """JTS3's own commissioned numbers, hand-computed, with no hedge left.
-
-    ``bc_de250_dayton_e150he44_v1`` as commissioned on JTS3. The woofer's
-    admitted cap is 0.0 dBFS (its declared peak, clamped by the low-frequency
-    class default ``MAX_TEST_LEVEL_DBFS``). The sensitivities are 108.5 dB
-    (B&C DE250) against 83.3 dB (Dayton Epique E150HE-44) — note where each
-    comes from, because it is NOT one artifact: 83.3 is in the preset
-    JSON, while the preset declares no tweeter ``sensitivity_db`` at all and
-    108.5 rides JTS3's persisted design draft ``manual_settings``, which is the
-    one owner of declared sensitivity (``declared_driver_sensitivities``).
-
-        108.5 - 83.3 = 25.2 dB delta
-        0.0 - 25.2   = -25.2 dBFS
-
-    The retired -35.0 dBFS absolute hedge would have clamped this to -35, which
-    is the 9.8 dB of unvalidated conservatism that capped the 2026-08-19
-    leveling session at 68.07 dB SPL. Mutation guard: restore that hedge and
-    this fails.
-    """
-
+# See ADR-0227 §9: no absolute dBFS hedge sits above the derivation. A
+# -35.0 cap fails every case but sensitivity_relative_ceiling.
+@pytest.mark.parametrize(
+    ("lf_cap_dbfs", "sens_hf_db", "sens_lf_db", "expected_ceiling_dbfs"),
+    (
+        pytest.param(0.0, 108.5, 83.3, -25.2, id="datasheet_pair_full_scale_woofer"),
+        pytest.param(-8.0, 108.5, 83.3, -33.2, id="operator_worked_example"),
+        pytest.param(-30.0, 100.0, 84.0, -46.0, id="sensitivity_relative_ceiling"),
+        pytest.param(-20.0, 90.0, 90.0, -20.0, id="zero_sensitivity_delta"),
+    ),
+)
+def test_hf_measurement_ceiling_matches_worked_examples(
+    lf_cap_dbfs, sens_hf_db, sens_lf_db, expected_ceiling_dbfs
+) -> None:
     ceiling = derive_hf_measurement_ceiling_dbfs(
-        declared_lf_driver_cap_dbfs=0.0,
-        sens_hf_db=108.5,
-        sens_lf_db=83.3,
+        declared_lf_driver_cap_dbfs=lf_cap_dbfs,
+        sens_hf_db=sens_hf_db,
+        sens_lf_db=sens_lf_db,
     )
-    assert ceiling == pytest.approx(-25.2)
-
-
-def test_operator_worked_example_derives_without_the_retired_hedge() -> None:
-    # The operator's own worked example (2026-07-19 ruling), woofer cap -8 with
-    # the same 25.2 dB delta: -8 - 25.2 = -33.2. The retired -35 hedge clamped
-    # even this, 1.8 dB below the sensitivity arithmetic.
-    ceiling = derive_hf_measurement_ceiling_dbfs(
-        declared_lf_driver_cap_dbfs=-8.0,
-        sens_hf_db=108.5,
-        sens_lf_db=83.3,
-    )
-    assert ceiling == pytest.approx(-33.2)
+    assert ceiling == pytest.approx(expected_ceiling_dbfs)
 
 
 def test_ceiling_never_exceeds_the_lf_cap_less_the_sensitivity_delta() -> None:
@@ -189,32 +170,6 @@ def test_ceiling_never_exceeds_the_lf_cap_less_the_sensitivity_delta() -> None:
             # A real pair has the more sensitive driver on top, so the ceiling
             # also stays at or below the sibling's own cap.
             assert ceiling <= lf_cap + 1e-9
-
-
-def test_sensitivity_relative_ceiling_is_the_operative_one() -> None:
-    # A quieter LF cap (-30) with a 16 dB sensitivity delta: -30 - 16 = -46.
-    # Under the retired hedge this was the interesting case only because it
-    # fell BELOW -35; it is now simply what the derivation returns.
-    ceiling = derive_hf_measurement_ceiling_dbfs(
-        declared_lf_driver_cap_dbfs=-30.0,
-        sens_hf_db=100.0,
-        sens_lf_db=84.0,
-    )
-    assert ceiling == pytest.approx(-46.0)
-
-
-def test_zero_sensitivity_delta_lands_on_the_lf_cap_itself() -> None:
-    # Equal sensitivities: the derivation returns the LF cap outright, because
-    # equal-sensitivity drivers reach the same acoustic level at the same
-    # digital level. The retired -35 hedge overrode this by 15 dB; nothing
-    # does now, which is the point -- the LF driver's own admitted cap is the
-    # bound, not a constant.
-    ceiling = derive_hf_measurement_ceiling_dbfs(
-        declared_lf_driver_cap_dbfs=-20.0,
-        sens_hf_db=90.0,
-        sens_lf_db=90.0,
-    )
-    assert ceiling == pytest.approx(-20.0)
 
 
 def test_negative_delta_runs_out_of_headroom_at_the_global_test_ceiling() -> None:
@@ -434,12 +389,6 @@ _BAND = {"measurement_band_hz": [40.0, 15000.0]}
     [
         pytest.param(
             {"recommended_highpass_hz": 80.0, **_BAND}, 80.0, id="declared_owner",
-        ),
-        pytest.param(
-            {"required_protection_filters": [
-                {"kind": "highpass", "cutoff_hz": 90.0},
-            ], **_BAND},
-            90.0, id="a_stored_protective_highpass",
         ),
         pytest.param(
             {"measurement_band_hz": [60.0, 15000.0]}, 60.0, id="the_band_low_edge",

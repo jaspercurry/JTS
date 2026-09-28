@@ -290,7 +290,7 @@ class CapturedRecordStore:
                 if value := getattr(answer, attr, None):
                     payload[key] = value
             payload.update(wav_path=answer.wav_path, wav_sha256=answer.wav_sha256, wav_bytes=len(answer.wav))
-        payload["program_id"] = (payload.get("program") or {}).get("program_id")
+        payload["stimulus_id"] = (payload.get("program") or {}).get("stimulus_id")
         record_id = await self.inner.bank(payload)
         if self.after_bank:
             await asyncio.to_thread(self.after_bank, payload, record_id)

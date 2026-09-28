@@ -17,6 +17,8 @@ was written to avoid, and this one is fifteen lines.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
@@ -28,6 +30,7 @@ from jasper.active_speaker.crossover_v2.volume_claim import (
 from jasper.active_speaker.session_volume_plan import RestoreOutcome
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
 
+from tests._log_events import event_fields
 from tests.engine_twin import FakeSeams, open_session
 
 HOUSEHOLD_DB = -21.5
@@ -220,20 +223,29 @@ async def test_another_holders_same_kind_claim_still_conflicts():
     assert "session_measurement" in str(caught.value)
 
 
-async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(caplog):
+@pytest.mark.parametrize(
+    ("case", "expected_reason"),
+    [
+        ("conflict", "VolumeClaimConflict"),
+        ("unconfirmed_write", "VolumeClaimRefused"),
+    ],
+)
+async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(
+    case, expected_reason, caplog,
+):
     """F2's honest surfacing: a reasoned refusal, never a bare failure.
 
     "CamillaDSP would not confirm" and "another wizard never gave the fader
-    back" have opposite fixes, so the disclosure has to tell them apart. What
-    it reports is the claim KIND, not which of the three same-kind takers holds
-    it — the owner keeps no holder identity, and this pin asserts only what is
-    actually knowable.
+    back" have opposite fixes, so ``reason=`` has to tell them apart. Both
+    paths report the same ``kind=`` — the owner keeps no holder identity
+    beyond the kind of claim this door tried to take.
     """
-    import logging
-
     fader = _Fader(HOUSEHOLD_DB)
     owner = _owner_over(fader)
-    await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -9.0)
+    if case == "conflict":
+        await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -9.0)
+    else:
+        fader.accept = False
     door = OwnerVolumeDoor(
         owner, read_fader=fader.get, claim=MeasurementVolumeClaim(owner),
     )
@@ -242,8 +254,9 @@ async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(caplog):
         established = await door.establish_measurement_level_db(MEASUREMENT_DB)
 
     assert established is False, "a refused claim is not an established level"
-    assert "session_volume_claim_refused" in caplog.text
-    assert "session_measurement" in caplog.text, "the claim KIND is named"
+    fields = event_fields(caplog, "correction.session_volume_claim_refused")
+    assert fields["reason"] == expected_reason
+    assert fields["kind"] == "session_measurement"
 
 
 async def test_a_door_with_no_claim_cannot_establish_and_says_so():

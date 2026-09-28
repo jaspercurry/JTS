@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper import source_intent_units as units
 from jasper.control import restart_broker
 from jasper.local_sources import (
     local_source_audio_refresh_units,
@@ -1531,13 +1532,12 @@ def test_camilla_start_exemption_mirrors_its_callers_derived_bound():
     bound back to the ordinary 120 s ceiling would re-create the same false
     timeout that bound removes.
     """
-    from jasper.fanin.coupling_reconcile import _CAMILLA_START_TIMEOUT_SEC
-
     assert (
-        restart_broker._CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
-        == _CAMILLA_START_TIMEOUT_SEC
+        restart_broker._EXTENDED_EXEC_TIMEOUT_CEILING_SEC[
+            (restart_broker._CAMILLA_UNIT, "start")
+        ] == units._CAMILLA_START_TIMEOUT_SEC
     )
-    assert _CAMILLA_START_TIMEOUT_SEC > restart_broker._EXEC_TIMEOUT_CEILING_SEC
+    assert units._CAMILLA_START_TIMEOUT_SEC > restart_broker._EXEC_TIMEOUT_CEILING_SEC
 
 
 def test_extended_exec_ceilings_are_per_unit_and_per_verb():
@@ -1561,7 +1561,7 @@ def test_extended_exec_ceilings_are_per_unit_and_per_verb():
     camilla = restart_broker._CAMILLA_UNIT
     # The exempt shape passes through; every neighbouring shape does not.
     assert clamp(camilla, "start") == (
-        restart_broker._CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
+        units._CAMILLA_START_TIMEOUT_SEC
     )
     assert clamp(camilla, "restart") == ordinary
     assert clamp(camilla, "stop") == ordinary
@@ -1749,11 +1749,11 @@ def test_manage_units_empty_units_is_noop():
 def test_operation_ceiling_preserves_reconciler_budgets(
     timeout, reset_failed, live_bound, dead_bound,
 ):
-    assert restart_broker.operation_ceiling_sec(
+    assert units.operation_ceiling_sec(
         timeout, reset_failed=reset_failed,
     ) == live_bound
     if dead_bound is not None:
-        assert restart_broker.operation_ceiling_sec(
+        assert units.operation_ceiling_sec(
             timeout, reset_failed=reset_failed, broker_dead=True,
         ) == dead_bound
 
@@ -1788,7 +1788,7 @@ def test_reset_then_manage_runs_the_action_whatever_the_reset_did(
     }
     assert calls == [
         ("jasper-fanin.service", "reset-failed", False,
-         restart_broker._RESET_TIMEOUT_SEC),
+         units._RESET_TIMEOUT_SEC),
         ("jasper-fanin.service", "restart", True, 8.0),
     ]
 
@@ -2001,7 +2001,7 @@ def test_restart_unit_routes_through_broker(
         else reconcile_mod._SYSTEMCTL_BLOCKING_TIMEOUT_SEC
     )
     assert calls == [
-        (unit, "reset-failed", False, rb._RESET_TIMEOUT_SEC),
+        (unit, "reset-failed", False, units._RESET_TIMEOUT_SEC),
         (unit, expected_verb, no_block, expected_timeout),
     ]
 

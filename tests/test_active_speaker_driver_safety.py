@@ -15,7 +15,6 @@ import pytest
 from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.design_draft import (
     build_design_draft,
-    declared_effective_driver_sensitivities,
     design_draft_view,
     normalise_driver_research,
     load_design_draft,
@@ -50,21 +49,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_excitation_safety_plan import _requested
 
 
-def _blocked_codes(
-    topology: OutputTopology,
-    manual: dict,
-    *,
-    driver_research: dict | None = None,
-) -> set[str]:
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=manual,
-        driver_research=driver_research,
-    )
-    assert any(i["severity"] == "blocker" for i in profile["issues"])
-    return {issue["code"] for issue in profile["issues"]}
-
-
 def _operator_inputs() -> dict[str, str]:
     return {
         "woofer": "Example W6",
@@ -96,7 +80,6 @@ def _manual_settings() -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
             },
@@ -105,13 +88,8 @@ def _manual_settings() -> dict:
                 "role": "tweeter",
                 "model": "Example T1",
                 "hard_excitation_band_hz": [5000, 22000],
-                "required_protection_filters": [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 5000,
-                        "minimum_slope_db_per_octave": 24,
-                    }
-                ],
+                "recommended_highpass_hz": 5000,
+                "recommended_highpass_slope_db_per_octave": 24,
                 "measurement_band_hz": [5000, 20000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
@@ -120,7 +98,6 @@ def _manual_settings() -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 25,
                 },
             },
         ],
@@ -154,20 +131,14 @@ def _research_result(request: dict) -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 132,
                     "baffle_width_mm": 210,
                 },
             }
         else:
             safety = {
                 "hard_excitation_band_hz": [5000, 22000],
-                "required_protection_filters": [
-                    {
-                        "kind": "highpass",
-                        "cutoff_hz": 5000,
-                        "minimum_slope_db_per_octave": 24,
-                    }
-                ],
+                "recommended_highpass_hz": 5000,
+                "recommended_highpass_slope_db_per_octave": 24,
                 "measurement_band_hz": [5000, 20000],
                 "level_duration_limits": {
                     "max_effective_peak_dbfs": -65,
@@ -176,7 +147,6 @@ def _research_result(request: dict) -> dict:
                 "cabinet": {
                     "enclosure_kind": "sealed",
                     "radiator_count": 1,
-                    "effective_radiating_diameter_mm": 25,
                 },
             }
         safety_fields = (
@@ -432,11 +402,7 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
     for dropped in (
         "recommended_lowpass_hz",
         "gain_offset_db",
-        # #2872: DELETED, not merely unasked or retired. It was a horn's
-        # nominal coverage angle, collected for a Bessel beamwidth matcher
-        # that was never built; nothing ever read it. Tolerated on load and
-        # dropped, never stored --
-        # test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped.
+        # #2872: deleted; a reply that still carries it is refused (#2902).
         "horn_coverage_deg",
         # #2603: retired, not merely unasked. It was an optional SECOND
         # declaration of the driver's low limit; the owner
@@ -637,44 +603,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
         assert driver["gain_offset_db_provenance"] == "research_estimate"
 
 
-def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
-
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_context(
-        topology,
-        _operator_inputs(),
-    )
-    research = _research_result(request)
-    for driver in research["drivers"]:
-        driver["horn_coverage_deg"] = 90
-    manual_settings = _manual_settings()
-    for driver in manual_settings["drivers"]:
-        driver["horn_coverage_deg"] = 90
-
-    draft = build_design_draft(
-        topology,
-        driver_research=research,
-        manual_settings=manual_settings,
-        operator_inputs=_operator_inputs(),
-    )
-
-    for driver in draft["driver_research"]["drivers"]:
-        assert "horn_coverage_deg" not in driver
-    for driver in draft["manual_settings"]["drivers"]:
-        assert "horn_coverage_deg" not in driver
-    assert design_draft_view(draft)["driver_safety_profile"] is not None
-
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=manual_settings,
-        driver_research=None,
-    )
-    assert profile["issues"] == []
-    assert all(
-        "horn_coverage_deg" not in target for target in profile["targets"]
-    )
-
-
 def test_pasted_reply_and_edited_visible_value_both_survive_save(tmp_path: Path) -> None:
     topology = mono_output_topology(card_id=None)
     research = _research_result(build_driver_research_context(topology, _operator_inputs()))
@@ -711,16 +639,15 @@ def test_computed_profile_uses_visible_values_and_never_authorizes_audio() -> No
     assert not any(i["severity"] == "blocker" for i in profile["issues"])
     assert profile["authority"] == "operator_visible_values"
     assert profile["targets"][1]["hard_excitation_band_hz"] == [5000.0, 22000.0]
-    assert profile["targets"][1]["unknowns"] == [
-        "thermal compression limit not published"
-    ]
+    assert "thermal compression limit not published" in profile["targets"][1]["unknowns"]
     assert draft["permissions"]["may_not_emit_audio"] is True
 
 
 def test_missing_floor_and_duration_are_computed_issues() -> None:
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
-    manual["drivers"][1].pop("required_protection_filters")
+    manual["drivers"][1].pop("recommended_highpass_hz")
+    manual["drivers"][1].pop("recommended_highpass_slope_db_per_octave")
 
     saved = compute_driver_safety_profile(
         topology,
@@ -745,7 +672,7 @@ def test_missing_floor_and_duration_are_computed_issues() -> None:
     )
 
 @pytest.mark.parametrize("patch,code", [
-    ({"artifact_schema_version": True}, "invalid_design_draft"),
+    ({"artifact_schema_version": True}, "research_version_unsupported"),
     ({"kind": "other"}, "invalid_design_draft"),
     ({"drivers": [False]}, "field_not_object"),
     ({"drivers": {}}, "field_not_list"),
@@ -779,10 +706,9 @@ def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None
     tweeter = manual["drivers"][1]
     tweeter["recommended_highpass_hz"] = 5000.0
     # Typed TIGHTER than the declaration on both fields.
-    for entry in tweeter["required_protection_filters"]:
-        if entry.get("kind") == "highpass":
-            entry["cutoff_hz"] = 6500.0
-            entry["minimum_slope_db_per_octave"] = 48.0
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 6500.0, "minimum_slope_db_per_octave": 48.0},
+    ]
 
     profile = compute_driver_safety_profile(
         topology, manual_settings=manual, driver_research=None,
@@ -802,14 +728,13 @@ def test_a_typed_protection_value_the_derivation_replaced_is_disclosed() -> None
 def test_an_untouched_typed_high_pass_discloses_no_replacement() -> None:
     """The control: the disclosure is a signal, not a line on every save.
 
-    A declaration whose typed high-pass already equals its derivation — the
-    ordinary case, including every profile whose low limit was INFERRED from
-    that same filter — must not claim anything was replaced.
+    A declaration whose typed high-pass already equals its derivation must not
+    claim anything was replaced.
     """
 
     topology = mono_output_topology(card_id=None)
     profile = compute_driver_safety_profile(
-        topology, manual_settings=_manual_settings(), driver_research=None,
+        topology, manual_settings=_de250_manual(), driver_research=None,
     )
 
     for target in profile["targets"]:
@@ -867,102 +792,6 @@ def test_a_computed_target_carries_the_declared_pair_beside_its_projections(
     assert highpass["minimum_slope_db_per_octave"] == 24.0
 
 
-def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
-    """Provenance is not laundered by persistence.
-
-    ``_manual_settings``'s tweeter declares a protective high-pass and no owner
-    field, so its limit is INFERRED. ``apply_driver_low_limit`` fills the owner
-    pair on that projection too — storing it would turn "we read this off your
-    filter" into "the manufacturer published this", on the one field whose
-    entire meaning is the second sentence.
-    """
-
-    topology = mono_output_topology(card_id=None)
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=_manual_settings(),
-        driver_research=None,
-    )
-    tweeter = profile["targets"][1]
-    assert "recommended_highpass_hz" not in tweeter
-    assert "recommended_highpass_slope_db_per_octave" not in tweeter
-    # …and the projection it WAS inferred from is untouched.
-    highpass = next(
-        item
-        for item in tweeter["required_protection_filters"]
-        if item["kind"] == "highpass"
-    )
-    assert highpass["cutoff_hz"] == 5000.0
-
-
-#: A REAL pre-#2870 box's saved draft, kept verbatim under
-#: ``tests/fixtures/active_speaker_protection_floor_20260814/``. All four of its
-#: drivers carry ``crossover_search_band_hz``, because origin/main REQUIRED the
-#: field -- ``crossover_search_band_missing`` blocked confirmation -- so this is
-#: what every box confirmed before the ruling actually looks like on disk. It is
-#: the specimen, not a hand-built approximation of one.
-_PRE_2870_REAL_BOX_DRAFT = (
-    Path(__file__).parent / "fixtures" / "active_speaker_protection_floor_20260814"
-    / "design-draft-2000hz-below-floor.json"
-)
-
-
-def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> None:
-    """#2870 hazard 1's other half, and the one that would have bricked boxes.
-
-    Deleting the field from ``_MANUAL_DRIVER_FIELDS`` made every gate that
-    RE-VALIDATES a stored driver record raise on it. Two of those gates sit on
-    paths a household cannot avoid: the crossover-preview SAVE
-    (``design_draft.normalise_manual_settings``) and the crossover ACCEPT
-    (``compute_driver_safety_profile``'s own manual gate, which
-    ``apply_measured_crossover_geometry`` runs with ``durable=True`` --
-    mid-measurement, after the round has already been paid for).
-
-    So the field joins :data:`LEGACY_DROPPED_DRIVER_FIELDS`: TOLERATED at every
-    re-validating gate and DROPPED by every normaliser, exactly as
-    ``horn_coverage_deg`` is (#2872/#2877). One vocabulary, one set -- a second
-    tolerance list would be a second answer to "which keys may a stored record
-    still carry".
-
-    Tolerated is not stored: the normalisers' explicit output dicts never emit
-    it again, so a box that saves once is clean afterwards. That is what makes
-    the re-save the whole migration.
-    """
-
-    draft = json.loads(_PRE_2870_REAL_BOX_DRAFT.read_text())
-    manual = draft["manual_settings"]
-    carriers = [
-        driver for driver in manual["drivers"]
-        if "crossover_search_band_hz" in driver
-    ]
-    # The premise, asserted rather than assumed: if the specimen ever stops
-    # carrying the field this test would silently prove nothing.
-    assert carriers, "the specimen no longer carries the retired field"
-
-    # SAVE: the crossover-preview seam.
-    saved = normalise_manual_settings(manual)
-    assert saved is not None
-    assert all(
-        "crossover_search_band_hz" not in driver for driver in saved["drivers"]
-    ), "tolerated on the way in, but it must never be stored again"
-
-    # ACCEPT: the seam a measured crossover adopts through.
-    topology = mono_output_topology(card_id=None)
-    accept_manual = deepcopy(_manual_settings())
-    for driver in accept_manual["drivers"]:
-        driver["crossover_search_band_hz"] = [1200.0, 3500.0]
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=accept_manual,
-        driver_research=None,
-    )
-    assert not any(i["severity"] == "blocker" for i in profile["issues"])
-    assert all(
-        "crossover_search_band_hz" not in target for target in profile["targets"]
-    )
-    # …and the rebuilt profile is immediately usable, which is the point of
-    # tolerating rather than refusing.
-
 def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
@@ -985,69 +814,23 @@ def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     )
 
 
-def test_legacy_research_remains_readable_but_advisory() -> None:
-    topology = mono_output_topology(card_id=None)
-    legacy = {
-        "artifact_schema_version": 1,
-        "kind": DRIVER_RESEARCH_KIND,
-        "drivers": [
-            {"role": "woofer", "model": "Legacy W6"},
-            {"role": "tweeter", "model": "Legacy T1"},
-        ],
-        "crossover_candidates": [],
-    }
-
-    draft = build_design_draft(topology, driver_research=legacy)
-
-    assert draft["driver_research"]["artifact_schema_version"] == 1
-    assert any(i["severity"] == "blocker" for i in design_draft_view(draft)["driver_safety_profile"]["issues"])
-    assert draft["safety"]["research_is_advisory"] is True
+def test_a_style_default_low_limit_stores_no_declared_pair() -> None:
+    """Only a declared limit is stored as the owner pair; the style default is a code figure."""
+    manual = _manual_settings()
+    for key in ("recommended_highpass_hz", "recommended_highpass_slope_db_per_octave"):
+        manual["drivers"][1].pop(key)
+    profile = compute_driver_safety_profile(mono_output_topology(card_id=None), manual_settings=manual, driver_research=None)
+    tweeter = profile["targets"][1]
+    assert "recommended_highpass_hz" not in tweeter
+    assert "recommended_highpass_slope_db_per_octave" not in tweeter
 
 
-def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() -> None:
+def test_stereo_targets_preserve_their_asymmetry() -> None:
     topology = _stereo_topology()
-    legacy = _manual_settings()
-    for driver in legacy["drivers"]:
-        driver.pop("target_id", None)
-        driver.pop("source", None)
-
-    incomplete = compute_driver_safety_profile(
-        topology,
-        manual_settings=legacy,
-        driver_research=None,
-    )
-    assert any(i["severity"] == "blocker" for i in incomplete["issues"])
-    assert [target["target_values_binding"] for target in incomplete["targets"]] == [
-        "missing",
-        "missing",
-        "missing",
-        "missing",
-    ]
-    assert {issue["code"] for issue in incomplete["issues"]}.issuperset(
-        {
-            "left:woofer:target_specific_values_missing",
-            "left:tweeter:target_specific_values_missing",
-            "right:woofer:target_specific_values_missing",
-            "right:tweeter:target_specific_values_missing",
-        }
-    )
-    assert _blocked_codes(topology, legacy).issuperset(
-        {
-            "left:woofer:target_specific_values_missing",
-            "left:tweeter:target_specific_values_missing",
-            "right:woofer:target_specific_values_missing",
-            "right:tweeter:target_specific_values_missing",
-        }
-    )
-    placeholders = {"drivers": [{"target_id": target["target_id"], "role": target["role"]}
-                                 for target in active_driver_targets(topology)]}
-    advisory = compute_driver_safety_profile(topology, placeholders, {"drivers": legacy["drivers"]})
-    assert any(issue["severity"] == "blocker" for issue in advisory["issues"])
-    assert all(target.get("measurement_band_hz") is None for target in advisory["targets"])
-
+    manual = _stereo_manual_settings()
     explicit = compute_driver_safety_profile(
         topology,
-        manual_settings=_stereo_manual_settings(),
+        manual_settings=manual,
         driver_research=None,
     )
     assert not any(i["severity"] == "blocker" for i in explicit["issues"])
@@ -1057,6 +840,15 @@ def test_stereo_targets_require_physical_target_values_and_preserve_asymmetry() 
         "right:woofer": "Right Example W6",
         "right:tweeter": "Right Example T1",
     }
+
+    manual["drivers"] = [driver for driver in manual["drivers"] if driver["target_id"].startswith("left:")]
+    left_only = compute_driver_safety_profile(topology, manual_settings=manual, driver_research=None)
+    assert {target["target_id"]: target["target_values_binding"] for target in left_only["targets"]} == {
+        "left:woofer": "explicit_target", "left:tweeter": "explicit_target",
+        "right:woofer": "missing", "right:tweeter": "missing",
+    }
+    assert {"right:woofer:target_specific_values_missing", "right:tweeter:target_specific_values_missing"} <= {
+        issue["code"] for issue in left_only["issues"] if issue["severity"] == "blocker"}
 
 
 def test_stereo_research_request_uses_exact_target_models() -> None:
@@ -1155,7 +947,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 1800.0
     tweeter["hard_excitation_band_hz"] = [1800.0, 22000.0]
     tweeter["measurement_band_hz"] = [1800.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 1800.0
     accepted = compute_driver_safety_profile(
         compression,
         manual_settings=below_default,
@@ -1174,7 +965,6 @@ def test_code_policy_refuses_unsafe_peak_and_highpass() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
     warned = compute_driver_safety_profile(
         compression,
         manual_settings=unsafe_highpass,
@@ -1247,7 +1037,6 @@ def test_an_implausible_low_limit_refuses_the_research_reply_and_warns_the_typis
     tweeter["recommended_highpass_hz"] = 700.0
     tweeter["hard_excitation_band_hz"] = [700.0, 22000.0]
     tweeter["measurement_band_hz"] = [700.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 700.0
     profile = compute_driver_safety_profile(
         topology,
         manual_settings=typed,
@@ -1271,7 +1060,6 @@ def test_an_unknown_driver_type_is_disclosed_on_the_computed_profile() -> None:
     tweeter["recommended_highpass_hz"] = 200.0
     tweeter["hard_excitation_band_hz"] = [200.0, 22000.0]
     tweeter["measurement_band_hz"] = [200.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 200.0
 
     profile = compute_driver_safety_profile(
         topology,
@@ -1313,7 +1101,9 @@ def test_declared_compression_driver_style_clears_jts3_shaped_plan() -> None:
     tweeter["recommended_highpass_hz"] = 1600.0
     tweeter["hard_excitation_band_hz"] = [1500.0, 22000.0]
     tweeter["measurement_band_hz"] = [1700.0, 20000.0]
-    tweeter["required_protection_filters"][0]["cutoff_hz"] = 2000.0
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 2000.0, "minimum_slope_db_per_octave": 24.0},
+    ]
 
     # Undeclared style is no longer a deadlock: the plausibility band for an
     # unknown-style tweeter is [1250, 20000], and a published 1600 sits inside
@@ -1372,21 +1162,28 @@ def test_driver_style_changes_computed_policy_not_measurement_identity() -> None
     assert recomputed["targets"][1]["driver_style"] == "ribbon_tweeter"
 
 
-def test_sealed_cabinet_without_baffle_width_has_typed_refusal() -> None:
+@pytest.mark.parametrize("drop,research_mm,capability", [
+    (lambda woofer: None, None, "sealed_single_radiator_supported"),
+    (lambda woofer: woofer.pop("radiating_diameter_mm"), 132.0, "sealed_single_radiator_supported"),
+    (lambda woofer: woofer.pop("radiating_diameter_mm"), None, "refused_geometry_incomplete"),
+    (lambda woofer: woofer["cabinet"].pop("baffle_width_mm"), None, "refused_geometry_incomplete"),
+], ids=["complete", "diameter_only_in_research", "no_driver_diameter", "no_baffle_width"])
+def test_a_sealed_cabinet_reads_its_drivers_own_diameter(drop, research_mm, capability) -> None:
+    topology = mono_output_topology(card_id=None)
     manual = _manual_settings()
-    manual["drivers"][0]["cabinet"].pop("baffle_width_mm")
-    manual = normalise_manual_settings(manual)
-    assert manual is not None
+    manual["drivers"][0]["radiating_diameter_mm"] = 132.0
+    drop(manual["drivers"][0])
+    research = None
+    if research_mm is not None:
+        research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+        research["drivers"][0]["radiating_diameter_mm"] = research_mm
+        research = normalise_driver_research(research)
 
     profile = compute_driver_safety_profile(
-        mono_output_topology(card_id=None),
-        manual_settings=manual,
-        driver_research=None,
+        topology, manual_settings=normalise_manual_settings(manual), driver_research=research,
     )
 
-    assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == (
-        "refused_geometry_incomplete"
-    )
+    assert profile["targets"][0]["cabinet"]["lf_reconstruction_capability"] == capability
 
 
 def test_operator_override_drops_research_provenance_for_changed_field() -> None:
@@ -1424,10 +1221,9 @@ def test_operator_override_drops_research_provenance_for_changed_field() -> None
     )
 
 
-def _legacy_duplicate_role(manual: dict) -> None:
+def _role_only_rows(manual: dict) -> None:
     for driver in manual["drivers"]:
         driver.pop("target_id", None)
-    manual["drivers"].append(deepcopy(manual["drivers"][0]))
 
 
 _mono_topology = partial(mono_output_topology, card_id=None)
@@ -1451,18 +1247,22 @@ _mono_topology = partial(mono_output_topology, card_id=None)
             id="target_id_not_in_topology",
         ),
         pytest.param(
-            lambda manual: manual["drivers"].append(
-                {**deepcopy(manual["drivers"][1]), "target_id": None}
-            ),
+            lambda manual: manual["drivers"].append(dict(manual["drivers"][0])),
             _mono_topology,
             "manual_target_bound_twice",
-            id="legacy_role_row_rebinds_a_bound_target",
+            id="two_rows_name_one_output",
         ),
         pytest.param(
-            _legacy_duplicate_role,
+            _role_only_rows,
+            _mono_topology,
+            "manual_target_missing",
+            id="role_only_row_on_a_one_output_role",
+        ),
+        pytest.param(
+            _role_only_rows,
             _stereo_topology,
-            "manual_duplicate_legacy_role",
-            id="two_legacy_rows_for_one_role",
+            "manual_target_missing",
+            id="role_only_row_fits_several_outputs",
         ),
     ],
 )
@@ -2096,7 +1896,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
             "cabinet": {
                 "enclosure_kind": "sealed",
                 "radiator_count": 1,
-                "effective_radiating_diameter_mm": 120,
                 "baffle_width_mm": 200,
             },
         }
@@ -2104,11 +1903,8 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
         "hard_excitation_band_hz": [4500, 20000],
         # Estimated from a 25 mm dome with no published Fs. Clears the
         # dome_tweeter code-policy floor of 3000 Hz with room to spare.
-        "required_protection_filters": [{
-            "kind": "highpass",
-            "cutoff_hz": 4500,
-            "minimum_slope_db_per_octave": 24,
-        }],
+        "recommended_highpass_hz": 4500,
+        "recommended_highpass_slope_db_per_octave": 24,
         "measurement_band_hz": [4500, 18000],
         "level_duration_limits": {
             # ``None`` omits the key entirely -- the ordinary reply since the
@@ -2123,7 +1919,6 @@ def _cx120_safety(role: str, *, tweeter_peak_dbfs: float = -65) -> dict:
         "cabinet": {
             "enclosure_kind": "sealed",
             "radiator_count": 1,
-            "effective_radiating_diameter_mm": 25,
         },
     }
 
@@ -2270,8 +2065,9 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert profile["authority"] == "operator_visible_values"
 
     tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
+    woofer = next(t for t in profile["targets"] if t["role"] == "woofer")
     # The estimate survived as an estimate: low confidence, derivation stated.
-    filter_provenance = tweeter["field_provenance"]["required_protection_filters"]
+    filter_provenance = woofer["field_provenance"]["required_protection_filters"]
     assert filter_provenance["confidence"] == "low"
     assert filter_provenance["basis"].startswith("estimated:")
     # A published field is still distinguishable from an estimated one.
@@ -2281,7 +2077,7 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert tweeter["code_owned_policy"]["max_auto_level_dbfs"] == -65.0
 
 
-def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
+def _cx120_profile(*, tweeter_peak_dbfs: float | None) -> dict:
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
     draft = build_design_draft(
@@ -2293,7 +2089,7 @@ def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> tuple[dict, dict]:
     )
     profile = design_draft_view(draft)["driver_safety_profile"]
     assert profile["issues"] == []
-    return profile, declared_effective_driver_sensitivities(draft)
+    return profile
 
 
 def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
@@ -2324,7 +2120,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     assert "send exactly the ceiling" not in prompt
 
     # Absence delegates, through the real resolver.
-    undeclared, sensitivities = _cx120_profile(tweeter_peak_dbfs=None)
+    undeclared = _cx120_profile(tweeter_peak_dbfs=None)
     tweeter_fp = next(
         t["target_fingerprint"] for t in undeclared["targets"] if t["role"] == "tweeter"
     )
@@ -2332,7 +2128,6 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
         undeclared,
         tweeter_fp,
         program_admission=True,
-        declared_sensitivities=sensitivities,
     )
     assert derived == pytest.approx(-20.7)
     assert derived != policy.max_auto_level_dbfs
@@ -2341,7 +2136,7 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
     # figure. Louder used to be clamped back to it (and refused at save); that
     # was a code figure overruling a declaration, and it is gone.
     for declared in (policy.max_auto_level_dbfs - 1, policy.max_auto_level_dbfs + 1):
-        profile, sens = _cx120_profile(tweeter_peak_dbfs=declared)
+        profile = _cx120_profile(tweeter_peak_dbfs=declared)
         _band, literal = resolve_driver_excitation_ceilings(
             profile,
             next(
@@ -2350,64 +2145,8 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
                 if t["role"] == "tweeter"
             ),
             program_admission=True,
-            declared_sensitivities=sens,
         )
         assert literal == pytest.approx(declared)
-
-
-def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> None:
-    """The field case, through the real resolver, with the numbers named.
-
-    The CX120 reply declares the tweeter at -65 because it has no published
-    level limit. On the proven-high-pass path that delegates the choice: the
-    derived ceiling is -20.7 dBFS, forty-four decibels louder than the declared
-    number. Declaring -66 instead — a deliberate quieter limit — is honoured
-    literally. Both are intended; the discontinuity is documented at the
-    equality site in excitation_safety_plan and in the research ask itself.
-
-    This fixture is also the second real-hardware case that motivated retiring
-    the provisional -35 dBFS hedge on 2026-08-20: a 0.7 dB sensitivity delta
-    puts the honest ceiling at -20.7, so the constant bound 14.3 dB below the
-    physics on an ordinary coax.
-    """
-
-    profile, sensitivities = _cx120_profile()
-    # Pad-free declaration, so the effective sensitivities are the datasheet
-    # ones the reply reported.
-    assert sensitivities == pytest.approx({"woofer": 88.5, "tweeter": 89.2})
-
-    tweeter_fp = next(
-        t["target_fingerprint"] for t in profile["targets"] if t["role"] == "tweeter"
-    )
-    _band, ceiling = resolve_driver_excitation_ceilings(
-        profile,
-        tweeter_fp,
-        program_admission=True,
-        declared_sensitivities=sensitivities,
-    )
-    # woofer cap -20, sensitivity delta 0.7 dB -> -20.7: the sensitivity
-    # arithmetic IS the ceiling. Mutation guard: restore the -35 hedge and this
-    # fails, because -35 would clamp a real coax 14.3 dB below its own physics.
-    assert ceiling == pytest.approx(-20.7)
-
-    # Without the proven-high-pass path the declared number stands. Delegation
-    # is what the protective high-pass buys; it is not unconditional.
-    _band, naked = resolve_driver_excitation_ceilings(
-        profile, tweeter_fp, declared_sensitivities=sensitivities
-    )
-    assert naked == pytest.approx(-65.0)
-
-    # One dB quieter is a deliberate choice and is never raised.
-    quieter, quieter_sens = _cx120_profile(tweeter_peak_dbfs=-66)
-    _band, quieter_ceiling = resolve_driver_excitation_ceilings(
-        quieter,
-        next(
-            t["target_fingerprint"] for t in quieter["targets"] if t["role"] == "tweeter"
-        ),
-        program_admission=True,
-        declared_sensitivities=quieter_sens,
-    )
-    assert quieter_ceiling == pytest.approx(-66.0)
 
 
 def test_prompt_asks_for_a_published_level_limit_or_none_at_all() -> None:
@@ -2522,9 +2261,7 @@ def test_estimate_provenance_never_buys_past_a_code_policy_clamp(
 
     # Nothing was rewritten behind the operator's back: the refused value is
     # still exactly what was entered.
-    tweeter = next(t for t in profile["targets"] if t["role"] == "tweeter")
-    if field == "required_protection_filters":
-        assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 700.0
+    assert next(t for t in profile["targets"] if t["role"] == "tweeter")[field] == mutation
 
 
 @pytest.mark.parametrize("budget,accepted", [
@@ -2555,7 +2292,8 @@ def test_apply_requires_only_the_floor_but_measurement_requires_its_inputs(missi
     manual = _manual_settings()
     manual["crossover_candidates"] = [{"between_roles": ["woofer", "tweeter"],
         "frequency_hz": 5500, "filter_type": "Linkwitz-Riley", "slope_db_per_octave": 24}]
-    manual["drivers"][1].pop("required_protection_filters")
+    manual["drivers"][1].pop("recommended_highpass_hz")
+    manual["drivers"][1].pop("recommended_highpass_slope_db_per_octave")
     manual["drivers"][1].pop(missing)
     draft = build_design_draft(topology, manual_settings=manual)
     with pytest.raises(MeasurementGraphRefused) as refused:
@@ -2580,10 +2318,12 @@ def test_apply_names_the_mid_target_when_a_required_corner_is_missing(missing):
 
     topology = mono_output_topology(mode="active_3_way", card_id=None)
     manual = _manual_settings()
-    manual["drivers"].append({"target_id": "mono:mid", "role": "mid", "model": "Mid",
-        "required_protection_filters": [{"kind": kind, "cutoff_hz": cutoff,
-            "minimum_slope_db_per_octave": 24}
-            for kind, cutoff in (("highpass", 300), ("lowpass", 5000)) if kind != missing]})
+    mid = {"target_id": "mono:mid", "role": "mid", "model": "Mid"}
+    if missing != "highpass":
+        mid["recommended_highpass_hz"] = 300
+    if missing != "lowpass":
+        mid["required_protection_filters"] = [{"kind": "lowpass", "cutoff_hz": 5000, "minimum_slope_db_per_octave": 24}]
+    manual["drivers"].append(mid)
     with pytest.raises(MeasurementGraphRefused) as refused:
         load_tuning_declaration(topology, design_draft=build_design_draft(topology, manual_settings=manual))
     assert refused.value.code == f"mid:required_{missing}_missing"

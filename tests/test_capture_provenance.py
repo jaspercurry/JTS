@@ -47,7 +47,7 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_verify_program,
 )
-from tests._log_events import event_field_maps, event_fields
+from tests._log_events import event_field_maps, event_fields, event_records
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
 
@@ -224,7 +224,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
     assert block["graph"]["config"]["pipeline"] == [{"type": "Mixer", "name": "program_routing"}]
     assert cam.reads.count("active_raw") == 1
-    assert block["stimulus"]["program_id"] == program.program_id
+    assert block["stimulus"]["stimulus_id"] == program.stimulus_id
     assert block["stimulus"]["phase"] == PHASE_CHECK
     assert block["stimulus"]["wav_sha256"] == "a" * 64
     # The composer's own declared digital peak for the loudest stimulus
@@ -297,7 +297,7 @@ def test_a_closed_session_volume_is_an_answer_not_an_unreadable_field(caplog) ->
         )
 
     assert observed.session_volume_db is None
-    assert "session_volume_db" not in caplog.text
+    assert event_records(caplog, "active_speaker.capture_provenance") == []
 
 
 def test_a_raising_surface_cannot_escape_into_the_capture(caplog) -> None:
@@ -373,7 +373,7 @@ def test_no_recorder_is_a_silent_no_op_not_a_provenance_failure(caplog) -> None:
         )
 
     assert opened == []  # not even the controller was constructed
-    assert caplog.text == ""
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize("failing", ["open_cam", "read_volume_plan"])

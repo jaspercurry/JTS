@@ -13,11 +13,11 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.active_speaker.design_draft import design_draft_view
+from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_yaml import boost_headroom_by_role
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
-from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
@@ -174,7 +174,7 @@ def speaker_fit(
     program = ExcitationProgram.from_dict(record["program"])
     if program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
-    if program.program_id != selected.capture_basis["program_id"] or record["take_id"] != take_id:
+    if program.stimulus_id != selected.capture_basis["stimulus_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")
     directory, _ = round_artifact_dir(inputs.session_dir)
     assert directory is not None
@@ -184,17 +184,17 @@ def speaker_fit(
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc)) from exc
     analysis = take.get("analysis") or candidate["analysis"]
-    if analysis["program_id"] != program.program_id:
+    if analysis["stimulus_id"] != program.stimulus_id:
         raise RoundViewsError("banked analysis does not match the selected program")
     matching_takes = {take["take_id"] for group in manifest["sets"]
-                      if group["capture_basis"].get("program_id") == program.program_id
+                      if group["capture_basis"].get("stimulus_id") == program.stimulus_id
                       for take in group["takes"] if take["selected"]}
     if not take.get("analysis") and matching_takes != {take_id}:
         raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
     draft = sources.get("draft") or {}
-    classes = _resolve_driver_class_by_role(draft)
+    classes = declared_by_target(draft, "driver_class")
     budgets = fit_budgets_by_role(design_draft_view(draft).get("driver_safety_profile") or {})
     overrides = normalise_fit_budget(budget or {})
     calibration = (record.get("capture_setup") or {}).get("calibration") or {}

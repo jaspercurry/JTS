@@ -32,13 +32,15 @@ from jasper.active_speaker.crossover_v2.gate_sweep import REFUSE_SINGLE_POSE
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, REFUSE_NO_CAPTURES
 from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
+from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import bank_capture_round
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
 from tests.test_crossover_v2_gate_sweep import _pose_ir
@@ -92,6 +94,7 @@ def _make_round_dir(tmp_path: Path, name: str, *, baseline: bool = False) -> Pat
     if baseline:
         _bank_entry_baseline_take(round_dir, magnitude_db=_flat_curve())
     write_manifest(round_dir)
+    store_banked_evidence(round_dir)
     return round_dir
 
 
@@ -164,8 +167,9 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
 
 
 def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
-    """The side file reaches the packet exactly as applied-profile.json does:
-    present, the accuracy budget's repeat-floor component is available."""
+    """The side file reaches the packet the bank builds exactly as
+    applied-profile.json does: present, the accuracy budget's repeat-floor
+    component is available."""
     round_dir = _make_round_dir(tmp_path, "r1")
     component = "in_capture_repeat_floor"
     absent = load_banked_round(round_dir)
@@ -174,6 +178,7 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     # The record the REAL deriver banks from two repeats, never a hand-typed one.
     floor = derive_repeat_floor(samples={"residual_db": [0.0, 0.2]}, rounds=[{}, {}])
     (round_dir / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual_db"}))
+    store_banked_evidence(round_dir)
     present = load_banked_round(round_dir)
     assert present.packet["accuracy_budget"]["components"][component]["available"] is True
 
@@ -253,7 +258,7 @@ def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
-    assert payload["schema"] == "jts_frequency_view/1"
+    assert payload["schema"] == "jts_frequency_view/2"
     assert payload["runs"][0]["series"][0]["kind"] == "entry_baseline"
 
 
@@ -434,7 +439,7 @@ def _bank_entry_baseline_take(
     (positions / f"{ENTRY_TAKE_ID}.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_position_evidence",
         "schema_version": 1,
-        "session_id": "cap1",
+        "run_id": "cap1",
         "measure_kind": "baseline",
         "phase": "entry_baseline",
         "take_id": ENTRY_TAKE_ID,
@@ -443,7 +448,7 @@ def _bank_entry_baseline_take(
         "attempt": 1,
         "position_deg": 0,
         "role": "onax",
-        "program_id": "prog-entry",
+        "stimulus_id": "prog-entry",
         "reference_mark": "design_axis",
         "graph_fingerprint": graph_fingerprint,
         "captured_at": "2026-08-30T00:00:00Z",
@@ -457,6 +462,7 @@ def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
     round_dir = _make_round_dir(tmp_path, "r1")
     _bank_entry_baseline_take(round_dir, **kwargs)
     write_manifest(round_dir)
+    store_banked_evidence(round_dir)
     return round_dir
 
 
@@ -473,9 +479,10 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     the report says so on its face: there is no span in this round for a
     before to be made comparable with.
     """
-    banked = load_banked_round(bank_measure_round(tmp_path))
+    round_dir = bank_measure_round(tmp_path)
+    store_banked_evidence(round_dir)
 
-    grade = entry_state_grade(banked)
+    grade = entry_state_grade(load_banked_round(round_dir))
 
     assert grade.available is True
     assert grade.reason == ""
@@ -483,7 +490,7 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     assert len(grade.report.bands) == len(flat_spec.SPEC_BANDS)
     assert grade.report.trusted_floor_hz is None
     assert grade.report.trusted_ceiling_hz is None
-    assert grade.program_id == "prog-entry"
+    assert grade.stimulus_id == "prog-entry"
 
 
 def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
@@ -492,6 +499,7 @@ def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, caps
     from jasper.cli import round_views as cli
 
     round_dir = bank_measure_round(tmp_path)
+    store_banked_evidence(round_dir)
 
     assert cli.main(["entry", str(round_dir)]) == 0
     grade = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
@@ -616,7 +624,7 @@ def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
     grade = entry_state_grade(banked)
 
     assert grade.graph_fingerprint == "fresh0000beef"
-    assert grade.program_id == "prog-entry"
+    assert grade.stimulus_id == "prog-entry"
     assert grade.reference_mark == "design_axis"
     assert grade.artifact_ref == ENTRY_TAKE_ID
     assert grade.to_dict()["graph_fingerprint"] == "fresh0000beef"
@@ -824,12 +832,9 @@ def _bank_lateral_pose(
     curves: list[dict[str, Any]], vertical_deg: int = 0,
     capture: str = "wired-TEST", candidate_id: str = "",
 ) -> None:
-    """Directly write a banked ``positions/<take_id>.json`` lateral-pose
-    take — the exact shape :func:`~jasper.active_speaker.crossover_v2.record_index.bundle_measurements`
-    and :func:`~jasper.active_speaker.crossover_v2.position_cycle.read_take_curves`
-    read, real-shaped without going through the retention engine. Mirrors
-    ``test_crossover_v2_feature_classifier.py``'s own fixture builder for
-    the same take shape.
+    """Directly write a banked lateral speaker take's ``positions/<take_id>.json``,
+    real-shaped without going through the retention engine, and a run
+    manifest keeping every take banked so far.
     """
     positions_dir = (
         session_dir / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
@@ -838,11 +843,13 @@ def _bank_lateral_pose(
     (positions_dir / f"{take_id}.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND,
         "phase": PHASE_LATERAL,
+        "measurement_purpose": PURPOSE_SPEAKER,
         "position_deg": position_deg,
         "vertical_deg": vertical_deg,
         "candidate_id": candidate_id,
         "curves": curves,
     }))
+    write_bundle_manifest(session_dir)
 
 
 def _summed_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict[str, Any]:

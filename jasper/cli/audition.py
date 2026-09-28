@@ -54,6 +54,7 @@ from jasper.active_speaker.audition import (
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
+from jasper.volume_process import install_env_canonical_target_provider
 
 logger = logging.getLogger(__name__)
 
@@ -266,8 +267,6 @@ def main(argv: list[str] | None = None) -> int:
     # own event= lines are the record of which graph the speaker was on.
     configure_logging(level=logging.INFO)
     from jasper.env_load import load_env_files
-    from jasper.volume_process import install_env_canonical_target_provider
-
     load_env_files()
     # Every swap here rides `set_active_config_raw`'s fader duck, and releasing
     # that duck reads the canonical target. Without this the release lands on a

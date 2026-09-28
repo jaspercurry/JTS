@@ -90,7 +90,7 @@ def _take(
     round trip is field-for-field.
     """
     return {
-        "session_id": "engine-session",
+        "run_id": "engine-session",
         "kind": kind,
         "take_id": f"pose_{0 if position_deg is None else position_deg:02d}"
                    f"_a{attempt:02d}",
@@ -307,7 +307,7 @@ async def test_the_record_lands_under_the_capture_id(real_store):
     """P7: the directory keys on the CAPTURE session, not the record's own.
 
     ``round_artifact_dir`` reports that directory's name AS the capture id, so a
-    store minting it from ``record["session_id"]`` files the record where no
+    store minting it from ``record["run_id"]`` files the record where no
     reader looks.
     """
     record_id = await real_store.bank(_take())

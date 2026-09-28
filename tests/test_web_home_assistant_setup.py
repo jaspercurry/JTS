@@ -17,12 +17,9 @@ import pytest
 
 from jasper.web import home_assistant_setup as ha
 from jasper.web._common import RestartOutcome
+from tests._log_events import leaked_lines
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
 
-
-# ---------------------------------------------------------------------------
-# Render-level assertions (call the render fns directly with a fixed token).
-# ---------------------------------------------------------------------------
 
 CSRF = "x" * 43  # passes _common._is_valid_token (32..128 url-safe chars)
 
@@ -376,7 +373,8 @@ def test_post_save_persistence(branch, recent, verify_ssl, write_fails, tmp_path
     else:
         assert list(ha.read_env_file(str(path)).items()) == list(expected.items())
     assert path.stat().st_mode & 0o777 == 0o640
-    assert llat not in h.wfile.getvalue().decode() + str(h.sent_headers) + caplog.text
+    assert llat not in h.wfile.getvalue().decode() + str(h.sent_headers)
+    assert not leaked_lines(caplog, llat)
 
 
 def test_post_disconnect_clears_and_restarts(monkeypatch):

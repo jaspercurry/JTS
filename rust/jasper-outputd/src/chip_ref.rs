@@ -2,9 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The chip-reference leg of the reference taps: the playout thread's
-//! [`ChipRefDownsampler`] and the writer thread [`spawn_chip_ref_writer`]
-//! starts, which owns the chip's reference PCM. A missing or failing device
+//! The chip reference has its own writer thread. A missing or failing device
 //! degrades this leg (background retry, STATUS counters), never the DAC path.
 
 use std::io::Write;
@@ -16,8 +14,9 @@ use std::time::{Duration, Instant};
 
 use alsa::pcm::PCM;
 use anyhow::{Context, Result};
+use jasper_alsa::is_xrun_errno;
 
-use crate::alsa_backend::open_playback_pcm;
+use crate::alsa_backend::{open_playback_pcm, xrun_policy, XrunAction};
 use crate::state::{ChipRefWrite, OutputdState};
 use crate::types::i16_bytes;
 use crate::CHANNELS;
@@ -439,14 +438,14 @@ fn write_playback_period(
                 report.frames_written += n as u64;
                 if n == 0 {
                     recoveries += 1;
-                    if recoveries > 3 {
+                    if xrun_policy(recoveries) == XrunAction::GiveUp {
                         anyhow::bail!("outputd chip-ref writei returned 0 frames repeatedly");
                     }
                 }
             }
             Err(e) => {
                 let errno = e.errno();
-                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
+                if is_xrun_errno(errno) {
                     report.xruns += 1;
                     if errno == libc::EPIPE {
                         report.underruns += 1;
@@ -455,7 +454,7 @@ fn write_playback_period(
                     pcm.try_recover(e, true)
                         .context("recovering outputd chip-ref xrun")?;
                     recoveries += 1;
-                    if recoveries > 3 {
+                    if xrun_policy(recoveries) == XrunAction::GiveUp {
                         anyhow::bail!("outputd chip-ref xrun recovery exceeded retries");
                     }
                 } else {

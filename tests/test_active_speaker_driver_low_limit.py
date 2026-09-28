@@ -14,17 +14,18 @@ that was legal under ``hard_excitation_band_hz[0] = 1600`` and illegal under
 
 The pins below are deliberately ordered as the argument runs: the owner is read
 first, every derived field follows it (proved by MUTATION, not by re-asserting
-a literal), the two backwards-compatible reads never loosen an already-deployed
-box, and the one place a code default is allowed to speak is bounded.
+a literal), a stored high-pass never stands in for the owner, and the one place
+a code default is allowed to speak is bounded.
 """
 
 from __future__ import annotations
 
+import json
 import pytest
 
+from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
 from jasper.active_speaker.driver_protection import (
     LOW_LIMIT_DECLARED,
-    LOW_LIMIT_LEGACY_PROTECTION_FILTER,
     LOW_LIMIT_PLAUSIBILITY_FACTOR,
     LOW_LIMIT_STYLE_DEFAULT,
     PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE,
@@ -35,6 +36,9 @@ from jasper.active_speaker.driver_protection import (
     driver_protection_profile,
     resolve_driver_low_limit,
 )
+from jasper.active_speaker.driver_safety import DriverSafetyProfileError, build_driver_research_context
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_active_speaker_driver_safety import _manual_settings, _operator_inputs, _research_result
 
 # The B&C DE250 exactly as the owner attested it on 2026-08-17: a published
 # Recommended Crossover of 1.6 kHz footnoted "12 dB/oct. or higher slope
@@ -195,66 +199,31 @@ def test_an_unpublished_slope_is_not_invented_on_the_declaration() -> None:
     )
 
 
-# --- backwards compatibility: never loosen an already-deployed box ----------
+# --- values stored beside the owner -----------------------------------------
 
 
-def test_a_legacy_declaration_infers_the_owner_from_its_stored_highpass() -> None:
-    """A draft or profile written before the owner existed still loads. jts3's
-    stored shape carries BOTH 1600 and 2000 for one fact; the inference takes
-    the protective number, so the box gets STRICTER, never looser, and the
-    operator re-enters the published 1600 deliberately."""
+@pytest.mark.parametrize("source", ["manual_settings", "driver_research"])
+def test_a_stored_high_pass_without_its_owner_refuses(tmp_path, source: str) -> None:
+    """A protective high-pass stored without its owner refuses by name, in a manual row or in research (#2902).
 
-    legacy = {
-        "role": "tweeter",
-        "hard_excitation_band_hz": [1600.0, 20000.0],
-        "measurement_band_hz": [2000.0, 18000.0],
-        "required_protection_filters": [
-            {
-                "kind": "highpass",
-                "cutoff_hz": 2000.0,
-                "minimum_slope_db_per_octave": 24.0,
-                "family_or_equivalent": "equivalent_or_steeper",
-            }
-        ],
-    }
-    limit = resolve_driver_low_limit(
-        legacy, role="tweeter", driver_style="compression_driver"
-    )
-    assert limit is not None
-    assert limit.provenance == LOW_LIMIT_LEGACY_PROTECTION_FILTER
-    assert limit.frequency_hz == 2000.0
-    assert _derived(legacy)["hard_excitation_band_hz"][0] == 2000.0
+    The stored high-pass never stands in for the owner, so the load refuses rather than let
+    another declaration or the style default bind in its place.
+    """
+    topology = mono_output_topology(card_id=None)
+    path = tmp_path / "draft.json"
+    save_design_draft(topology, manual_settings=_manual_settings(), operator_inputs=_operator_inputs(), path=path,
+                      driver_research=_research_result(build_driver_research_context(topology, _operator_inputs())))
+    stored = json.loads(path.read_text())
+    tweeter = stored[source]["drivers"][1]
+    del tweeter["recommended_highpass_hz"], tweeter["recommended_highpass_slope_db_per_octave"]
+    tweeter["required_protection_filters"] = [
+        {"kind": "highpass", "cutoff_hz": 5000.0, "minimum_slope_db_per_octave": 24.0},
+    ]
+    path.write_text(json.dumps(stored))
 
-
-def test_an_internally_consistent_legacy_declaration_is_a_no_op() -> None:
-    """The backwards-compatibility promise, stated as a test: a stored artifact
-    whose three low-limit numbers already agree derives to itself, so deploying
-    this change does not un-confirm every profile in the field -- only the
-    drifted ones."""
-
-    consistent = {
-        "role": "tweeter",
-        "hard_excitation_band_hz": [5000.0, 20000.0],
-        "measurement_band_hz": [5000.0, 20000.0],
-        "required_protection_filters": [
-            {
-                "kind": "highpass",
-                "cutoff_hz": 5000.0,
-                "minimum_slope_db_per_octave": 24.0,
-                "family_or_equivalent": "equivalent_or_steeper",
-            }
-        ],
-    }
-    derived = apply_driver_low_limit(consistent, role="tweeter", driver_style=None)
-    # Every value the stored artifact ALREADY carried is unchanged. That is the
-    # property the safety profile's canonical re-derive depends on, and it is
-    # what keeps this change from un-confirming the field.
-    for field, value in consistent.items():
-        assert derived[field] == value, field
-    # The derivation does write the OWNER back, so a pre-owner artifact gains
-    # the one field it was missing. That is the collapse, not a drift: the
-    # value is read straight out of the artifact's own stored high-pass.
-    assert derived["recommended_highpass_hz"] == 5000.0
+    with pytest.raises(DriverSafetyProfileError) as caught:
+        load_design_draft(path, topology=topology)
+    assert caught.value.code == "recommended_highpass_missing"
 
 
 def test_do_not_test_below_hz_is_retired_rather_than_derived() -> None:

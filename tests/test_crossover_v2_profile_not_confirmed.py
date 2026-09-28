@@ -50,7 +50,7 @@ from jasper.web.correction_runtime import refusal_envelope
 
 def _admission(*refusals: ProgramAdmissionRefusal) -> ProgramAdmission:
     return ProgramAdmission(
-        program_id="prog-1",
+        stimulus_id="prog-1",
         phase="check",
         session_volume_db=-20.0,
         segments=(),
@@ -413,13 +413,15 @@ def test_graph_refusal_retains_its_classifier_code():
     assert classify_program_failure(exc) == (exc.reason, ())
 
 
-@pytest.mark.parametrize("missing", ["level_duration_limits", "measurement_band_hz", "hard_excitation_band_hz", "required_protection_filters"])
+@pytest.mark.parametrize("missing", ["level_duration_limits", "measurement_band_hz", "hard_excitation_band_hz", "recommended_highpass_hz"])
 def test_missing_measurement_inputs_refuse_before_capture(session_open, missing):
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     env = session_open
     manual = _manual_settings()
     manual["drivers"][1].pop(missing)
+    if missing == "recommended_highpass_hz":
+        manual["drivers"][1].pop("recommended_highpass_slope_db_per_octave")
     profile = compute_driver_safety_profile(env.topology, manual, None)
     env.install(profile)
     with pytest.raises(refusal_copy.CrossoverV2Refused) as refused:

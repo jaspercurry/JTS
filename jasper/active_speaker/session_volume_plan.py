@@ -147,8 +147,6 @@ def measurement_reference_volume_db(
 def _driver_caps_dbfs(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
-    *,
-    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> list[float]:
     """Every active driver's admitted effective-peak cap, one derivation path.
 
@@ -161,7 +159,6 @@ def _driver_caps_dbfs(
             safety_profile,
             target_fingerprint,
             program_admission=True,
-            declared_sensitivities=declared_sensitivities,
         )
         caps.append(float(maximum_peak))
     if not caps:
@@ -174,8 +171,6 @@ def _driver_caps_dbfs(
 def loudest_driver_cap_dbfs(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
-    *,
-    declared_sensitivities: Mapping[str, float] | None = None,
 ) -> float:
     """``max(caps)`` — the cap of the LOUDEST-permitted driver. Read the warning.
 
@@ -186,20 +181,13 @@ def loudest_driver_cap_dbfs(
     ``0.0`` dB while the tweeter's cap sits at −65. One signal through the whole
     graph still needs admission against every driver cap.
     """
-    return max(
-        _driver_caps_dbfs(
-            safety_profile,
-            target_fingerprints,
-            declared_sensitivities=declared_sensitivities,
-        )
-    )
+    return max(_driver_caps_dbfs(safety_profile, target_fingerprints))
 
 
 def session_measurement_volume_db(
     safety_profile: Mapping[str, Any],
     target_fingerprints: Iterable[str],
     *,
-    declared_sensitivities: Mapping[str, float] | None = None,
     reference_state_path: str | Path | None = None,
 ) -> float:
     """The fixed session measurement volume DERIVED from the profile's ceilings.
@@ -223,13 +211,7 @@ def session_measurement_volume_db(
     refuses to open. Raises if no targets are given or a ceiling cannot be
     resolved — an underivable session volume is a refusal, never a default.
     """
-    # ``declared_sensitivities`` rides into the caps derivation so the caps
-    # entering max(caps) are the SAME derived caps admission enforces.
-    ceiling = loudest_driver_cap_dbfs(
-        safety_profile,
-        target_fingerprints,
-        declared_sensitivities=declared_sensitivities,
-    )
+    ceiling = loudest_driver_cap_dbfs(safety_profile, target_fingerprints)
     volume = min(
         measurement_reference_volume_db(reference_state_path=reference_state_path),
         ceiling,

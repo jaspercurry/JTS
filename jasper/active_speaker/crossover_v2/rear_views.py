@@ -25,7 +25,6 @@ filled-in figure, and nothing here reads which mover placed the microphone.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -83,7 +82,7 @@ PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
-LEVEL_FIELDS = ("level_db", "program_id", "calibration_applied", "calibration_reference")
+LEVEL_FIELDS = ("level_db", "stimulus_id", "calibration_applied", "calibration_reference")
 
 
 def _shared(values: Sequence[Any]) -> Any:
@@ -210,7 +209,7 @@ def _position_rows(
 
 
 def rear_document(
-    inputs: RoundInputs, *, manifest: Mapping[str, Any], calibration_root: Path | None = None,
+    inputs: RoundInputs, *, manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     """The rear comparison one finished ``rear`` round carries in its packet.
 
@@ -232,9 +231,7 @@ def rear_document(
     bases: dict[str, list[Mapping[str, Any]]] = {}
     on_axis: set[str] = set()
     bearing: set[str] = set()
-    for row, record, take in analyzed_purpose_takes(
-        inputs.session_dir, purpose=PURPOSE_REAR, calibration_root=calibration_root,
-    ):
+    for row, record, take in analyzed_purpose_takes(inputs.session_dir, purpose=PURPOSE_REAR):
         if take is None:
             continue
         candidate = _candidate_key(record.get("candidate_id"))

@@ -13,11 +13,11 @@ from jasper.active_speaker import (
     CROSSOVER_PREVIEW_KIND,
     build_crossover_preview,
 )
-from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND
 from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossover_preview_ready
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.output_topology import OutputTopology
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, research_design_draft
 
 
 def _topology(*, mode: str = "active_2_way", with_subwoofer: bool = False) -> OutputTopology:
@@ -30,7 +30,6 @@ def _topology(*, mode: str = "active_2_way", with_subwoofer: bool = False) -> Ou
 
 def _research() -> dict:
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [
             {
@@ -68,9 +67,9 @@ def _draft(
     topology: OutputTopology | None = None,
     research: dict | None | object = _DEFAULT_RESEARCH,
 ) -> dict:
-    return build_design_draft(
+    return research_design_draft(
         topology or _topology(),
-        driver_research=_research() if research is _DEFAULT_RESEARCH else research,
+        _research() if research is _DEFAULT_RESEARCH else research,
         created_at="2026-06-10T12:00:00Z",
     )
 
@@ -93,9 +92,9 @@ def test_crossover_preview_builds_no_audio_filter_intent() -> None:
 
 
 def test_crossover_preview_does_not_require_optional_subwoofer_research() -> None:
-    draft = build_design_draft(
+    draft = research_design_draft(
         _topology(with_subwoofer=True),
-        driver_research=_research(),
+        _research(),
         created_at="2026-06-10T12:00:00Z",
     )
 
@@ -121,9 +120,9 @@ def test_crossover_preview_blocks_missing_research() -> None:
 
 def test_crossover_preview_carries_polarity_and_delay_from_candidate() -> None:
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_research(),
+            _research(),
             manual_settings={
                 "drivers": [],
                 "crossover_candidates": [{
@@ -156,9 +155,9 @@ def test_crossover_preview_reversed_candidate_between_roles_realigns_polarity() 
     # the emitted preview always describes the woofer, not whichever role
     # happened to be listed first in the candidate.
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_research(),
+            _research(),
             manual_settings={
                 "drivers": [],
                 "crossover_candidates": [{
@@ -195,9 +194,9 @@ def test_crossover_preview_omits_polarity_and_delay_when_candidate_lacks_them() 
 
 def test_crossover_preview_no_audio_invariant_holds_with_polarity_and_delay() -> None:
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_research(),
+            _research(),
             manual_settings={
                 "drivers": [],
                 "crossover_candidates": [{
@@ -223,14 +222,15 @@ def test_crossover_preview_no_audio_invariant_holds_with_polarity_and_delay() ->
 
 def test_crossover_preview_prefers_manual_settings_over_imported_research() -> None:
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_research(),
+            _research(),
             manual_settings={
                 "drivers": [
-                    {"role": "woofer", "model": "Manual woofer"},
+                    {"role": "woofer", "target_id": "mono:woofer", "model": "Manual woofer"},
                     {
                         "role": "tweeter",
+                        "target_id": "mono:tweeter",
                         "model": "Manual tweeter",
                         "do_not_test_below_hz": 1800,
                     },
@@ -323,7 +323,6 @@ def test_crossover_preview_blocks_incomplete_active_three_way() -> None:
 
 def test_crossover_preview_is_not_applicable_to_passive_full_range() -> None:
     research = {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [{"role": "full_range", "model": "Example full range"}],
         "crossover_candidates": [],
@@ -381,7 +380,6 @@ def _de250_research(
     if do_not_test_below_hz is not None:
         tweeter["do_not_test_below_hz"] = do_not_test_below_hz
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [
             {
@@ -415,9 +413,9 @@ def test_crossover_above_the_declared_low_limit_is_kept_and_emits_filters() -> N
     # `crossover_below_recommended_driver_floor` warning, because a second
     # declaration claimed the minimum was 2000 -- a number B&C never published.
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_de250_research(candidate_hz=1800),
+            _de250_research(candidate_hz=1800),
             created_at="2026-06-19T12:00:00Z",
         ),
     )
@@ -442,9 +440,9 @@ def test_a_corner_exactly_at_the_declared_low_limit_is_legal() -> None:
     """
 
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_de250_research(candidate_hz=1600),
+            _de250_research(candidate_hz=1600),
             created_at="2026-06-19T12:00:00Z",
         ),
     )
@@ -471,9 +469,9 @@ def test_a_stored_do_not_test_below_hz_changes_nothing() -> None:
     """
 
     def draft(**extra: float) -> dict:
-        return build_design_draft(
+        return research_design_draft(
             _topology(),
-            driver_research=_de250_research(candidate_hz=1800, **extra),
+            _de250_research(candidate_hz=1800, **extra),
             created_at="2026-06-19T12:00:00Z",
         )
 
@@ -510,9 +508,9 @@ def test_a_corner_below_the_declared_low_limit_is_disclosed_here_and_refused_at_
     """
 
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_de250_research(candidate_hz=1400),
+            _de250_research(candidate_hz=1400),
             created_at="2026-06-19T12:00:00Z",
         ),
     )
@@ -529,9 +527,9 @@ def test_an_undeclared_low_limit_neither_blocks_nor_invents_a_floor() -> None:
     there is no floor, so nothing is refused on a number nobody supplied."""
 
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research=_de250_research(
+            _de250_research(
                 candidate_hz=1400, recommended_highpass_hz=None
             ),
             created_at="2026-06-19T12:00:00Z",
@@ -551,10 +549,9 @@ def test_crossover_persisted_low_value_blocks_instead_of_overriding() -> None:
     # 1600 low]. The preview must not silently replace the persisted manual
     # value with 2000 Hz; it should block until the operator changes the value.
     payload = build_crossover_preview(
-        build_design_draft(
+        research_design_draft(
             _topology(),
-            driver_research={
-                "artifact_schema_version": 1,
+            {
                 "kind": DRIVER_RESEARCH_KIND,
                 "drivers": _de250_research(candidate_hz=2000)["drivers"],
                 "crossover_candidates": [

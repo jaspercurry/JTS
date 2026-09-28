@@ -622,9 +622,8 @@ def test_assemble_args_codec_and_buffer_flow_into_server():
 # ---------- _write_args_file(): atomic, mode 0644, fail-soft ----------
 
 
-def test_write_args_file_round_trips_keys(tmp_path, monkeypatch):
+def test_write_args_file_round_trips_keys(tmp_path):
     target = tmp_path / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     keys = {
         SERVER_KEY: "--stream.source pipe://x",
         CLIENT_KEY: "--host 127.0.0.1 --latency 0",
@@ -635,38 +634,34 @@ def test_write_args_file_round_trips_keys(tmp_path, monkeypatch):
     assert f"{CLIENT_KEY}=--host 127.0.0.1 --latency 0\n" in text
 
 
-def test_write_args_file_empty_values_writes_bare_keys(tmp_path, monkeypatch):
+def test_write_args_file_empty_values_writes_bare_keys(tmp_path):
     """The disabled/invalid case: both keys present but empty — clears
     any stale args rather than leaving the prior value live."""
     target = tmp_path / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     assert _write_args_file({SERVER_KEY: "", CLIENT_KEY: ""}, path=str(target)) is True
     assert target.read_text() == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
 
 
-def test_write_args_file_mode_is_0644(tmp_path, monkeypatch):
+def test_write_args_file_mode_is_0644(tmp_path):
     target = tmp_path / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
     _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}, path=str(target))
     assert (os.stat(target).st_mode & 0o777) == 0o644
 
 
-def test_write_args_file_makedirs_parent(tmp_path, monkeypatch):
+def test_write_args_file_makedirs_parent(tmp_path):
     """The reconciler os.makedirs the dir (it is NOT a unit
     RuntimeDirectory) — a missing parent must be created, not error."""
     sub = tmp_path / "jasper-grouping"
     target = sub / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(sub))
     assert not sub.exists()
     assert _write_args_file({SERVER_KEY: "x", CLIENT_KEY: ""}, path=str(target)) is True
     assert sub.is_dir()
     assert target.exists()
 
 
-def test_write_args_file_is_fail_soft(tmp_path, monkeypatch):
+def test_write_args_file_is_fail_soft(monkeypatch):
     """A write failure (e.g. makedirs raising) returns False and NEVER
     raises — a lost args write must not crash the reconcile."""
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
 
     def _boom(*a, **k):
         raise OSError("disk full")
@@ -682,7 +677,6 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
     """If the write/rename fails after mkstemp, the temp file is cleaned
     up and no target file is published."""
     target = tmp_path / "snapcast-args.env"
-    monkeypatch.setattr(reconcile_mod, "ARGS_DIR", str(tmp_path))
 
     def _boom(*a, **k):
         raise OSError("rename failed")

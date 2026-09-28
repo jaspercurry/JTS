@@ -47,7 +47,7 @@ class CaptureProvenance:
     session_volume_db: float | None = None
     graph_config_path: str | None = None
     graph_fingerprint: str | None = None
-    stimulus_program_id: str | None = None
+    stimulus_id: str | None = None
     stimulus_phase: str | None = None
     stimulus_wav_sha256: str | None = None
     stimulus_peak_dbfs: float | None = None
@@ -65,7 +65,7 @@ class CaptureProvenance:
                 **({"config": dict(self.graph_config)} if self.graph_config is not None else {}),
             },
             "stimulus": {
-                "program_id": self.stimulus_program_id,
+                "stimulus_id": self.stimulus_id,
                 "phase": self.stimulus_phase,
                 "wav_sha256": self.stimulus_wav_sha256,
                 "peak_dbfs": self.stimulus_peak_dbfs,
@@ -208,12 +208,12 @@ async def observe_capture_provenance(
 
     # ``phase`` is the CAPTURE's phase, passed in, never ``program.phase`` (one composed
     # object can answer for several phases).
-    program_id: str | None = None
+    stimulus_id: str | None = None
     peak_dbfs: float | None = None
     try:
-        program_id = str(program.program_id)
+        stimulus_id = str(program.stimulus_id)
     except _READ_ERRORS:
-        unreadable.append("stimulus.program_id")
+        unreadable.append("stimulus.stimulus_id")
     try:
         peak_dbfs = stimulus_peak_dbfs(program)
     except _READ_ERRORS:
@@ -239,7 +239,7 @@ async def observe_capture_provenance(
         graph_config_path=config_path,
         graph_fingerprint=json_fingerprint(graph) if graph is not None else None,
         graph_config=graph,
-        stimulus_program_id=program_id,
+        stimulus_id=stimulus_id,
         stimulus_phase=phase,
         stimulus_wav_sha256=wav_sha256,
         stimulus_peak_dbfs=peak_dbfs,

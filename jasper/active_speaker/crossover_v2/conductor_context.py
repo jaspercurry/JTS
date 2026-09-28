@@ -14,18 +14,26 @@ from jasper.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
+from jasper.active_speaker.excitation_safety_plan import (
+    ExcitationSafetyPlanError,
+    ExcitationSafetyPlanRefusal,
+    driver_cap_dbfs,
+)
 
 from .refusal_copy import (
+    REASON_DRIVER_SENSITIVITY_UNDECLARED,
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_REGISTRY,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     CrossoverV2Refused,
+    driver_sensitivity_undeclared_message,
 )
 from jasper.output_topology import topology_is_subless_passive_mains
-from jasper.speaker_layout import declared_radiating_diameters_mm, measurement_target_id
-from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED, DRIVER_CLASSES
+from jasper.speaker_layout import measurement_target_id
+from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
+from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.audio_measurement.program import RoleBand
 
@@ -36,6 +44,7 @@ __all__ = [
     "V2ConductorContext",
     "ensure_crossover_preview_ready",
     "measurement_role_channels",
+    "published_driver_caps",
     "resolve_conductor_context",
 ]
 
@@ -84,21 +93,13 @@ class V2ConductorContext(Generic[_Level]):
     playback_device: str
     role_channels: dict[str, int]
     sound_design_revision: int
-    # Per-role declared EFFECTIVE sensitivities in dB SPL/2.83V @1m (the
-    # datasheet figure with any declared in-line pad folded in), from the
-    # design draft, which owns that fact. Threaded into every cap resolution
-    # AND the play-time readmission so the composed levels and the admission
-    # gate cannot disagree about a derived HF ceiling.
-    declared_sensitivities: dict[str, float] = field(default_factory=dict)
     #: Per-target permitted excitation band, from the resolver the caps come
     #: from; keyed like :attr:`role_targets`, so a rear woofer has its own.
     driver_bands: dict[str, Any] = field(default_factory=dict)
-    driver_class_by_role: dict[str, str] = field(default_factory=dict)
-    # Per-role declared effective radiating diameter in mm, the ka/beaming
-    # prior, which is DISCLOSURE and never a bound. It reaches the conductor by
-    # the SAME draft path ``driver_class_by_role`` takes. A role absent here
-    # gets no beaming prior, disclosed as such rather than an assumed diameter.
-    radiating_diameter_mm_by_role: dict[str, float] = field(default_factory=dict)
+    # Per-target declared radiating diameter in mm, the ka/beaming prior:
+    # disclosure, never a bound. A target absent here gets no beaming prior,
+    # disclosed as such rather than an assumed diameter.
+    radiating_diameter_mm_by_target: dict[str, float] = field(default_factory=dict)
     # Per-role confirmed ``measurement_band_hz`` in Hz — the contract-derived
     # echo/null analysis band the cloud-group pipeline reads in place of
     # DEFAULT_ECHO_BAND_HZ's flat constant. A role missing here degrades to
@@ -140,38 +141,29 @@ def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None
     return preview
 
 
-def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
-    """Per-role declared driver technology class (#1665 component entry).
+def _cap_refused(target_id: str, exc: ValueError) -> CrossoverV2Refused:
+    """The door's refusal for a driver whose cap cannot be resolved (ADR-0382)."""
+    if isinstance(exc, ExcitationSafetyPlanError) and exc.code == ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value:
+        return CrossoverV2Refused(
+            driver_sensitivity_undeclared_message(exc.detail["undeclared_roles"], exc.detail["disagreeing_roles"]),
+            code=REASON_DRIVER_SENSITIVITY_UNDECLARED,
+        )
+    return CrossoverV2Refused(f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY)
 
-    Mirrors :func:`jasper.active_speaker.design_draft.declared_driver_sensitivities`'s
-    exact shape — role-keyed, a role with disagreeing declarations drops
-    entirely, fails soft on anything malformed rather than raising. This
-    resolver runs inside conductor-context resolution: an unexpected value
-    should fall back to :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`'s
-    own conservative "unknown" default for that one role, never abort the
-    whole session.
-    """
 
-    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
-    if not isinstance(manual, Mapping):
-        return {}
-    drivers = manual.get("drivers")
-    out: dict[str, str] = {}
-    conflicted: set[str] = set()
-    for driver in drivers if isinstance(drivers, list) else []:
-        if not isinstance(driver, Mapping):
-            continue
-        role = str(driver.get("role") or "")
-        value = driver.get("driver_class")
-        if not role or not isinstance(value, str) or value not in DRIVER_CLASSES:
-            continue
-        if role in out and out[role] != value:
-            conflicted.add(role)
-            continue
-        out[role] = value
-    for role in conflicted:
-        out.pop(role, None)
-    return out
+def published_driver_caps(
+    safety_profile: Mapping[str, Any], target_fingerprints: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Each driver's program-path ``cap_dbfs`` and ``cap_source``, or the registry code refusing it."""
+    caps: dict[str, dict[str, Any]] = {}
+    for target_id, fingerprint in target_fingerprints.items():
+        try:
+            cap, source = driver_cap_dbfs(safety_profile, fingerprint, program_admission=True)
+        except (ExcitationSafetyPlanError, ValueError) as exc:
+            caps[target_id] = {"cap_dbfs": None, "cap_source": None, "reason": _cap_refused(target_id, exc).code}
+        else:
+            caps[target_id] = {"cap_dbfs": cap, "cap_source": source}
+    return caps
 
 
 @overload
@@ -194,9 +186,8 @@ def resolve_conductor_context(
     Leveling resolves the speaker inputs before a session level can be banked.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset  # lazy: test_correction_crossover_v2_conductor_context patches commission_wiring
-    from jasper.active_speaker.design_draft import declared_effective_driver_sensitivities, load_design_draft  # lazy: reader boundary is patched by conductor tests
+    from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
-        ExcitationSafetyPlanError,
         require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
@@ -287,13 +278,6 @@ def resolve_conductor_context(
             REASON_REGISTRY[REASON_MEASUREMENT_TARGETS_MISSING].message,
             code=REASON_MEASUREMENT_TARGETS_MISSING,
         )
-    # The declaration's per-role EFFECTIVE datasheet sensitivities -- naked
-    # figure with any declared in-line pad folded in (#1665) -- threaded into
-    # every cap resolution below. This is the one owner of that fact (ADR-0227 §9).
-    declared_sensitivities = declared_effective_driver_sensitivities(draft)
-    driver_class_by_role = _resolve_driver_class_by_role(draft)
-    # #1675: the ka/beaming prior, off the SAME draft path, as disclosure.
-    radiating_diameter_mm_by_role = declared_radiating_diameters_mm(draft)
     roles_bands = []
     caps: dict[str, float] = {}
     bands = {}
@@ -302,15 +286,12 @@ def resolve_conductor_context(
         try:
             bands[target_id], caps[target_id] = resolve_driver_excitation_ceilings(
                 safety_profile, fingerprint, program_admission=True,
-                declared_sensitivities=declared_sensitivities,
             )
             sweep_duration_limits_s[target_id] = effective_sweep_duration_limit_s(
                 safety_profile, fingerprint,
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
-            raise CrossoverV2Refused(
-                f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
-            ) from exc
+            raise _cap_refused(target_id, exc) from exc
     measurement_bands: dict[str, tuple[float, float]] = {}
     for channel, role in enumerate(roles):
         # Flat-linearization plan PR-4: this role's confirmed measurement band.
@@ -334,7 +315,6 @@ def resolve_conductor_context(
         try:
             session_volume_db = session_measurement_volume_db(
                 safety_profile, [role_targets[role] for role in roles],
-                declared_sensitivities=declared_sensitivities,
             )
         except LevelUnresolved as exc:
             raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
@@ -371,8 +351,6 @@ def resolve_conductor_context(
         playback_device=playback_device,
         role_channels=measurement_role_channels(preset),
         sound_design_revision=int(draft.get("revision", 0)),
-        declared_sensitivities=declared_sensitivities,
-        driver_class_by_role=driver_class_by_role,
-        radiating_diameter_mm_by_role=radiating_diameter_mm_by_role,
+        radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
         measurement_band_hz_by_role=measurement_bands,
     )

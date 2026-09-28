@@ -32,7 +32,6 @@ from .measure_spec import (
     inverted_roles_for,
     level_trims_for,
     measurement_delays_for,
-    stubbed_capabilities,
 )
 
 from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
@@ -161,11 +160,10 @@ class MeasureOutcome:
     the ids actually banked — never a second list to keep in step.
 
     ``record_ids`` is shorter than ``stimuli`` whenever a stimulus banked
-    nothing, and each such entry says why in its own ``incident``: a stub
-    stopped the whole call before anything played (``stimuli`` is then empty),
-    the play transaction did not complete ``play``, or it played and the fader
-    could not be proven — refusing to CLAIM (ADR-0231 §4), the one that leaves
-    a played stimulus with no record.
+    nothing, and each such entry says why in its own ``incident``: the play
+    transaction did not complete ``play``, or it played and the fader could not
+    be proven — refusing to CLAIM (ADR-0231 §4), the one that leaves a played
+    stimulus with no record.
     """
 
     spec: MeasureSpec
@@ -333,30 +331,24 @@ class TuningSession:
         One verb for all three kinds. The order is fixed and each step is
         somebody's invariant:
 
-        1. **Stubs first** (ruling S12). A stub whose ``captured`` is ``False``
-           means there is no stimulus to play at all, and ABORTS the call:
-           ``stimuli`` is empty and nothing played.
-        2. **One play transaction per stimulus**, ready → admit → lock → play →
+        1. **One play transaction per stimulus**, ready → admit → lock → play →
            restore, with **the graph proven-or-reinstalled immediately before
            each one** (the idempotent ``install`` IS the health check),
            because between two stimuli another DSP writer may have replaced it.
            The record's ``graph_fingerprint`` is that prove's answer. The unit is
            position × ladder rung: a ladder moves the stimulus level, never the
            claim.
-        3. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
+        2. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
            between two positions of one walk, so a single proof taken before the
            walk would stamp an unverified level into every record after it. An
            unproven fader refuses to BANK that stimulus and nothing else — the
            stimulus still plays, the next rung is still attempted, and the entry
            says :data:`UNPROVEN_LEVEL`.
-        4. **Bank what played.** A transaction that never completed ``play`` has
+        3. **Bank what played.** A transaction that never completed ``play`` has
            no evidence, and banking a record for it would be the dishonest kind
            of completeness.
         """
         self._require_open()
-        if any(not stub.captured for stub in stubbed_capabilities(spec)):
-            return MeasureOutcome(spec=spec, stimuli=())
-
         prompts = spec.pose_prompts
         rungs: tuple[float | None, ...] = spec.level_ladder_dbfs or (None,)
 
@@ -587,7 +579,7 @@ class TuningSession:
     ) -> Mapping[str, Any]:
         """One stimulus, as the facts five blocks are built around.
 
-        The index reads six of these — session, kind, position, candidate,
+        The index reads six of these — run, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it
         knows where it put the record and when. The rest are what a reader needs
         to tell two captures of the same position apart: which regime, which
@@ -613,7 +605,7 @@ class TuningSession:
         # played through rather than a second answer to the same question.
         applied_trims = level_trims_for(spec, self.level_match_trims_db)
         return {
-            "session_id": self.session_id,
+            "run_id": self.session_id,
             "take_id": take_id,
             "kind": spec.kind,
             "measurement_status": "captured" if outcome.wav_path and not outcome.incident else "incomplete",
@@ -625,8 +617,10 @@ class TuningSession:
             "vertical_deg": spec.vertical_deg,
             "prompt": prompt,
             "candidate_id": spec.candidate_id,
-            # The parent's layers this take's graph played emptied, absent when none (ADR-0370).
-            **({"cleared_layers": list(spec.cleared_layers)} if spec.cleared_layers else {}),
+            # Empty when the whole speaker plays.
+            "targets": list(spec.branch_target_ids),
+            # The parent's layers this take's graph played emptied (ADR-0370).
+            "cleared_layers": list(spec.cleared_layers),
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,
@@ -636,14 +630,7 @@ class TuningSession:
             # claim a match its own graph did not carry. Reading it off
             # ``applied_trims`` makes the boolean and the numbers one fact.
             "level_matched": bool(applied_trims),
-            # The numbers only when there ARE numbers: an absent key reads as
-            # the un-matched capture every earlier record was, so no schema
-            # moves.
-            **(
-                {"level_match_trims_db": applied_trims}
-                if applied_trims
-                else {}
-            ),
+            "level_match_trims_db": applied_trims,
             "graph_fingerprint": self._graph_fingerprint,
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,

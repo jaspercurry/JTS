@@ -276,7 +276,6 @@ def prepare_v2_session(
             session_volume_db=context.session_volume_db,
             roles=context.roles_bands,
             protection_sections_by_role=protection_sections,
-            declared_sensitivities=context.declared_sensitivities,
             provenance=capture_provenance,
             program_for_phase=lambda phase: conductor.program_for_phase(phase),
             program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain, context=context),

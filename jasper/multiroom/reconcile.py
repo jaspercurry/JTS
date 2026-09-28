@@ -53,6 +53,7 @@ from ..service_units import (
 )
 from ..source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
+    operation_ceiling_sec,
 )
 from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from ..systemd_probe import state_is_live, unit_query, unit_state
@@ -77,7 +78,6 @@ from .grouping_env import (
     voice_grouping_env,
 )
 from .reconcile_plan import (
-    ARGS_DIR as ARGS_DIR,  # re-exported: tests patch reconcile_mod.ARGS_DIR
     ARGS_FILE,
     SNAPSERVER_UNIT,
     ReconcilePlan,
@@ -124,12 +124,12 @@ _UNIT_CHANGE_PROBE_CALLS = _MAX_PLAN_UNIT_INTENTS
 # generic "N blocking actions" tally, not a per-call enumeration, so every
 # slot in it is priced at the worst any one of them can legally cost.
 _BASE_RECONCILE_BUDGET_SEC = (
-    _MAX_PLAN_UNIT_INTENTS * restart_broker.operation_ceiling_sec(
+    _MAX_PLAN_UNIT_INTENTS * operation_ceiling_sec(
         _SYSTEMCTL_BLOCKING_TIMEOUT_SEC, reset_failed=True
     )
     + _SNAPCAST_PROVISION_BUDGET_SEC
     + _MAX_POST_PLAN_BLOCKING_ACTIONS
-    * restart_broker.operation_ceiling_sec(
+    * operation_ceiling_sec(
         _SYSTEMCTL_BLOCKING_TIMEOUT_SEC, reset_failed=True
     )
     + _UNIT_CHANGE_PROBE_CALLS * _SYSTEMCTL_CONTROL_TIMEOUT_SEC

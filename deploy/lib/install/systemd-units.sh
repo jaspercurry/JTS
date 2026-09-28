@@ -33,13 +33,26 @@ OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
 # lock; a runtime mask cannot, because the unit's /etc fragment outranks /run.
 FANIN_COUPLING_ENTRY_LOCK="/run/jasper-fanin-coupling.lock"
 FANIN_COUPLING_FENCE_DROPIN="/run/systemd/system/jasper-fanin-coupling-auto.service.d/jts-install-window.conf"
-# jasper-fanin-coupling-auto's TimeoutStartSec=767 plus the 5 s client margin
-# jasper/source_intent_units.py also allows it.
-FANIN_COUPLING_PASS_BOUND_SEC=772
+FANIN_COUPLING_PASS_BOUND_SEC=""
 # 1 while descriptor 8 holds the entry lock. A fixed number because macOS bash
 # 3.2 runs these tests without `{var}>` (see jasper-env-file.sh); main()'s step
 # rows own fd 3 and the env-file lock owns fd 9.
 _FANIN_COUPLING_LOCKED=0
+
+# The low-memory park precedes venv installation; use the incoming checkout.
+_load_fanin_coupling_pass_bound() {
+    [[ -z "${FANIN_COUPLING_PASS_BOUND_SEC}" ]] || return 0
+    FANIN_COUPLING_PASS_BOUND_SEC="$(
+        cd "${REPO_DIR}" &&
+        PYTHONPATH="${REPO_DIR}" "${JASPER_SYSTEM_PYTHON:-python3}" - <<'PYTHON'
+from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
+print(f'{unit_action_timeout_sec(USB_COUPLING_UNIT, "start"):g}')
+PYTHON
+    )" || {
+        echo "  ERROR: could not read the fan-in coupling pass bound" >&2
+        return 1
+    }
+}
 
 # Rows use "<mode> <source relative to REPO_DIR> <destination>".
 _install_file_rows() {
@@ -748,6 +761,7 @@ retire_stale_outputd_park_if_active() {
 # restart re-enters it.
 fence_fanin_coupling() {
     [[ "${_FANIN_COUPLING_LOCKED}" == 0 ]] || return 0
+    _load_fanin_coupling_pass_bound || return 1
     # Removal condition: drop the drop-in once jasper-fanin-coupling-auto no
     # longer Wants= the graph daemons; the entry lock alone then fences it.
     install -d -m 0755 "${FANIN_COUPLING_FENCE_DROPIN%/*}"
@@ -1341,6 +1355,7 @@ reconcile_grouping_state() {
 }
 
 resolve_fanin_coupling_default() {
+    _load_fanin_coupling_pass_bound || return 1
     systemctl enable jasper-fanin-coupling-auto.service
     install_run_bounded "${FANIN_COUPLING_PASS_BOUND_SEC}" -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"

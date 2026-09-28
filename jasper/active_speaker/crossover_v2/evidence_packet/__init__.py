@@ -46,6 +46,7 @@ from ..round_inputs import (
     STATE_SESSION_UNKNOWN,
     CrossoverEvidencePacketError,
     RoundInputs,
+    RoundViewsError,
     bank_of,
     banked_packet,
     contract_sources,
@@ -104,6 +105,7 @@ __all__ = [
     "RING_SIDECAR_GLOB",
     "CrossoverEvidencePacketError",
     "EVIDENCE_KEY",
+    "EVIDENCE_NOT_BANKED",
     "build_crossover_evidence_packet",
     "build_round_evidence",
     "contract_currency",
@@ -124,6 +126,9 @@ __all__ = [
 #: ``packet.json``'s copy of the packet its bank built, less the derived views
 #: and the fingerprint, which ``packet.json`` carries beside it.
 EVIDENCE_KEY = "evidence"
+
+#: A banked round's ``packet.json`` holds no :data:`EVIDENCE_KEY`, and nothing rebuilds it (ADR-0383).
+EVIDENCE_NOT_BANKED = "evidence_not_banked"
 
 #: The one block that carries operator prose. Named in ``privacy`` so the
 #: document points at its own quarantine, and asserted to RESOLVE by
@@ -270,8 +275,9 @@ def _entry_baseline_block(
             "the summed capture taken at the design-axis mark immediately "
             "before this round's apply. It is the durable copy: the flow state "
             "file holds the same arrays only until the next persist rewrites "
-            "them. Comparable to a post-apply capture only when program_id, "
-            "reference_mark and graph_fingerprint match on both sides"
+            "them. Comparable to a post-apply capture only when stimulus_id, "
+            "reference_mark and graph_fingerprint match on both sides; an equal "
+            "stimulus_id means the same stimulus, not the same level (#5012)"
         ),
     }
 
@@ -558,7 +564,7 @@ def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:
     """Whether the contract digests a banked round's packet stores are the ones its bank's
     inputs give under the code that runs now.
 
-    ``None`` for a round with no stored packet: it is built by the code that reads it.
+    ``None`` when no bank stored the round's contracts.
     """
     # See ADR-0371
     bank = bank_of(inputs)
@@ -619,15 +625,16 @@ def entry_evidence(session_dir: Path, rows: Sequence[Measurement]) -> dict[str, 
 def round_evidence(inputs: RoundInputs) -> dict[str, Any]:
     """The round's packet as its bank stored it in ``packet.json``, derived views read now.
 
-    A round with no stored packet (a live session, a laptop-banked tree, a
-    round banked before the bank stored one) is built from its inputs, and
-    answers with any fingerprint its bank stored.
+    A live session, which no bank holds, is built from its inputs. A banked
+    round whose ``packet.json`` holds no :data:`EVIDENCE_KEY` refuses
+    :data:`EVIDENCE_NOT_BANKED`.
     """
-    # See ADR-0371
+    # See ADR-0371, ADR-0383
+    bank = bank_of(inputs)
+    if bank is None:
+        return build_round_evidence(inputs)
     stored = banked_packet(inputs)
     evidence = stored.get(EVIDENCE_KEY)
-    if isinstance(evidence, dict):
-        packet = {**evidence, DERIVED_VIEWS: _derived_views_block(inputs)}
-    else:
-        packet = build_round_evidence(inputs)
-    return {**packet, "packet_fingerprint": stored.get("packet_fingerprint") or packet.get("packet_fingerprint")}
+    if not isinstance(evidence, dict):
+        raise RoundViewsError(f"{bank}: packet.json holds no {EVIDENCE_KEY}", code=EVIDENCE_NOT_BANKED)
+    return {**evidence, DERIVED_VIEWS: _derived_views_block(inputs), "packet_fingerprint": stored.get("packet_fingerprint")}

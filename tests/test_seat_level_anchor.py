@@ -170,12 +170,12 @@ def test_the_seat_reference_imports_without_numpy() -> None:
     )
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [2, 3])
 def test_session_schema_requires_leveling_after_upgrade(anchor, version):
     raw = json.loads(anchor.read_text())
     raw["artifact_schema_version"] = version
     anchor.write_text(json.dumps(raw))
-    if version == 1:
+    if version == 2:
         assert slr.load_seat_level_reference() is None
         with pytest.raises(slr.LevelUnresolved) as refused:
             measurement_reference_volume_db()

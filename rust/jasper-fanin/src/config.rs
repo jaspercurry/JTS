@@ -4,8 +4,7 @@
 
 //! Configuration loaded from `JASPER_FANIN_*` environment variables.
 //!
-//! This module owns the defaults. `.env.example` documents the operator-facing
-//! subset as prose rather than seeded literals: install.sh copies that file to
+//! `.env.example` documents defaults as prose, not seeded literals: install.sh copies that file to
 //! `/etc/jasper/jasper.env` once and never re-syncs it, so a literal there
 //! would pin the default on every existing Pi. Where a key appears in both, the
 //! two must agree.
@@ -14,13 +13,14 @@
 //! `/var/lib/jasper/fanin.env` is single-writer, owned by
 //! `jasper.fanin.coupling_reconcile`.
 
+use crate::lane_resampler::LatencyMode;
 use anyhow::Result;
 use jasper_env::{
     env_f32, env_f32_fallback, env_str, env_u32, env_u32_fallback, env_u32_positive_or_bail,
     env_u64,
 };
 
-use jasper_tts_protocol::loudness::AssistantLoudnessConfig;
+use jasper_tts_protocol::{flush::DEFAULT_MAX_PENDING_FRAMES, loudness::AssistantLoudnessConfig};
 
 /// The SHM ring's pinned slot size in frames (Ring A), re-exported from the
 /// crate that owns the ring geometry so fan-in and outputd read one constant.
@@ -75,6 +75,16 @@ pub(crate) const fn periods_for_ms(ms: u64, period_frames: u32, sample_rate: u32
 /// stimuli are never onset-shaped, because the measurement loop deconvolves
 /// against the signal it believes it played (`mixer::lane_fade`).
 pub const MEASUREMENT_LANE: &str = "correction";
+pub const USB_DIRECT_LANE: &str = "usbsink";
+
+/// STATUS order; USB has no aloop pair, and correction keeps pair 4 (ADR-0281).
+pub const INPUT_LANES: [(&str, &str); 5] = [
+    ("spotify", "hw:Loopback,1,0"),
+    ("airplay", "hw:Loopback,1,1"),
+    ("bluealsa", "hw:Loopback,1,2"),
+    (USB_DIRECT_LANE, ""),
+    (MEASUREMENT_LANE, "hw:Loopback,1,4"),
+];
 
 /// The frames the post-lock cushion decay floor keeps ABOVE the base resampler
 /// target — a small working cushion the outer DLL always has to steer within.
@@ -83,17 +93,6 @@ pub const MEASUREMENT_LANE: &str = "correction";
 /// enough for the DLL's ±adjust authority to hold the fill without underrunning,
 /// but the tightest safe reclaim of the standing cushion.
 pub const CUSHION_DECAY_FLOOR_MARGIN_FRAMES: u32 = 32;
-
-/// The SHIPPED decay-floor default: the hardware-VALIDATED floor from the
-/// jts.local combo-armed gate (Apple USB-C dongle, target 512 / period 256 /
-/// ±500 ppm), NOT a bare `target + margin`. The tighter derived minimum
-/// `max(target, minimum_safe_fill) + 32` (= 544 at the default geometry) stays
-/// the HARD floor the armed guard rejects below; this constant is only what an
-/// out-of-box combo box descends TO when it sets no explicit
-/// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`. Clamped into
-/// `[derived_min, ceiling]` at parse time so a small-target geometry (ceiling <
-/// 576) still constructs. MUST agree with `.env.example`'s documented default.
-pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = 576;
 
 /// The jitter headroom the STATIC held target (`target + warm-up cushion`) must
 /// keep above the post-render underfill-unlock threshold. Same 32-frame DLL
@@ -110,20 +109,6 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Per-input PCMs — the capture side of each renderer or internal
-    /// test lane's dedicated snd-aloop substream. Order matters: the STATUS
-    /// endpoint reports inputs in this order, and `input_renderers`
-    /// labels align positionally.
-    ///
-    /// Pipe-delimited in `JASPER_FANIN_INPUT_PCMS` (see [`env_list`] for why
-    /// the delimiter is a pipe).
-    pub input_pcms: Vec<String>,
-
-    /// Human-readable labels for each input PCM, in the same order. Surfaced via
-    /// the STATUS endpoint and the structured `event=` log lines; no effect on
-    /// audio. Pipe-delimited in the env var to match `input_pcms`.
-    pub input_renderers: Vec<String>,
-
     /// PCM sample rate. All inputs and the output use this rate; the
     /// per-renderer plug wrappers in `/etc/asound.conf` convert each renderer's
     /// native rate to 48 kHz before the substream.
@@ -195,15 +180,6 @@ pub struct Config {
     /// backstop. Env: `JASPER_FANIN_RING_SLOTS`.
     pub ring_slots: u32,
 
-    /// The lane LABEL (matched against `input_renderers`) that crosses the
-    /// foreign USB clock: the one lane that reads no aloop substream, gets a
-    /// `LaneResampler` (`src/lane_resampler.rs`), and is either the
-    /// `hw:UAC2Gadget` direct capture (`usb_direct_enabled`) or absent —
-    /// rendered as silence. Only ONE lane crosses a foreign clock, so this is a
-    /// single label, not a set. Env: `JASPER_FANIN_INPUT_RESAMPLER_LANE`
-    /// (default `usbsink`).
-    pub input_resampler_lane_label: String,
-
     /// Target buffered frames the input resampler holds the armed lane's ring
     /// at — the small fixed fill that replaces the catch-up sawtooth. Smaller =
     /// lower latency but less jitter headroom before an underfill→silence.
@@ -237,25 +213,11 @@ pub struct Config {
 
     /// Adaptive USB input buffer. Requires the host-clock DLL.
     pub input_resampler_cushion_decay_enabled: bool,
-    /// The total held-target floor (frames) the decay descends to. Must be at
-    /// least `max(target, minimum_safe_fill_frames)` plus
-    /// [`CUSHION_DECAY_FLOOR_MARGIN_FRAMES`], and at most the acquisition
-    /// ceiling (`target + warmup cushion`); `from_env` validates both fail-loud
-    /// once the decay is armed. Defaults to
-    /// [`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`] clamped into that range. Env:
-    /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES`.
+    /// Held-target floor in frames; armed decay validates the geometry bounds.
     pub input_resampler_cushion_decay_floor_frames: u32,
 
-    /// DEFAULT-OFF USB DIRECT capture. When `true`, the lane labelled
-    /// `input_resampler_lane_label` (the usbsink lane) does NOT read its
-    /// snd-aloop substream; the mixer opens `usb_direct_device`
-    /// (`hw:UAC2Gadget`) as an S32_LE capture and feeds the SAME
-    /// `LaneResampler` the gadget's `i32` untouched. This deletes the usbsink
-    /// bridge hop and the aloop cable — ~25 ms measured — from the USB path.
-    /// Direct mode IMPLIES a resampler on that lane (see
-    /// [`Config::lane_wants_resampler`]); with direct off the lane opens
-    /// nothing at all. Env: `JASPER_FANIN_USB_DIRECT` (only the literal
-    /// `enabled` arms it).
+    /// USB capture crosses the host/DAC clock boundary and needs a resampler.
+    /// Only the literal `enabled` arms `JASPER_FANIN_USB_DIRECT`.
     pub usb_direct_enabled: bool,
 
     /// The ALSA capture device the USB DIRECT lane opens when `usb_direct_enabled`.
@@ -294,15 +256,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// Whether the lane labelled `label` should be constructed with a
-    /// `LaneResampler`. Only the USB DIRECT lane: it has no aloop catch-up
-    /// fallback to reconcile the host↔DAC rate gap, so it MUST own a
-    /// resampler. Off with direct disabled — that lane then opens nothing and
-    /// renders silence.
-    pub fn lane_wants_resampler(&self, label: &str) -> bool {
-        self.usb_direct_enabled && label == self.input_resampler_lane_label
-    }
-
     /// Whether the `fanin-host-clock` servo thread is CONFIGURED to run — the
     /// combo-mode host-slaved USB clock. True only when the host-clock DLL is
     /// armed AND USB direct capture is on, because fan-in must own the gadget
@@ -326,7 +279,6 @@ impl Config {
     }
 
     fn parse_env() -> Result<Self> {
-        let (input_pcms, input_renderers, input_resampler_lane_label) = parse_lanes()?;
         let (sample_rate, period_frames, input_buffer_frames) = parse_capture_geometry()?;
         let (ring_path, ring_slots) = parse_ring(period_frames)?;
         let input_resampler_target_frames =
@@ -337,17 +289,20 @@ impl Config {
             env_u32("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", 2048)?;
         let input_resampler_ring_frames = env_u32("JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES", 0)?;
 
+        let (usb_direct_enabled, usb_direct_device, usb_direct_period_frames) = parse_usb_direct()?;
+        let mode = LatencyMode::parse(&env_str("JASPER_USB_LATENCY_MODE", ""))
+            .map_err(anyhow::Error::msg)?;
         let input_resampler_cushion_decay_enabled =
-            env_enabled("JASPER_FANIN_RESAMPLER_CUSHION_DECAY");
+            usb_direct_enabled && mode.is_some_and(|mode| mode != LatencyMode::High);
         let (input_resampler_cushion_decay_floor_frames, cushion_decay_min_safe_fill) =
             parse_cushion_decay(
                 period_frames,
                 input_resampler_target_frames,
                 input_resampler_max_adjust_ppm,
                 input_resampler_warmup_cushion_frames,
+                mode,
                 input_resampler_cushion_decay_enabled,
             )?;
-        let (usb_direct_enabled, usb_direct_device, usb_direct_period_frames) = parse_usb_direct()?;
         validate_static_cushion(
             usb_direct_enabled,
             cushion_decay_min_safe_fill,
@@ -359,8 +314,6 @@ impl Config {
         let (tts_program_duck_db, tts_cue_duck_db, tts_duck_attack_ms, tts_duck_release_ms) =
             parse_tts_duck()?;
         Ok(Self {
-            input_pcms,
-            input_renderers,
             sample_rate,
             period_frames,
             input_buffer_frames,
@@ -371,7 +324,7 @@ impl Config {
             ),
             tts_max_pending_frames: env_u64(
                 "JASPER_FANIN_TTS_MAX_PENDING_FRAMES",
-                crate::tts::DEFAULT_MAX_PENDING_FRAMES,
+                DEFAULT_MAX_PENDING_FRAMES,
             )?,
             tts_program_duck_db,
             tts_cue_duck_db,
@@ -384,7 +337,6 @@ impl Config {
             ),
             ring_path,
             ring_slots,
-            input_resampler_lane_label,
             input_resampler_target_frames,
             input_resampler_max_adjust_ppm,
             input_resampler_warmup_cushion_frames,
@@ -398,46 +350,6 @@ impl Config {
             host_clock_probe_ppm,
         })
     }
-}
-
-fn parse_lanes() -> Result<(Vec<String>, Vec<String>, String)> {
-    // USB reads the gadget directly, so aloop substream 3 stays unused.
-    let input_pcms = env_list(
-        "JASPER_FANIN_INPUT_PCMS",
-        &[
-            "hw:Loopback,1,0",
-            "hw:Loopback,1,1",
-            "hw:Loopback,1,2",
-            "hw:Loopback,1,4",
-        ],
-    );
-    let input_renderers = env_list(
-        "JASPER_FANIN_INPUT_RENDERERS",
-        &["spotify", "airplay", "bluealsa", "usbsink", "correction"],
-    );
-    let input_resampler_lane_label = env_str("JASPER_FANIN_INPUT_RESAMPLER_LANE", "usbsink");
-    let aloop_lanes = input_renderers
-        .iter()
-        .filter(|label| *label != &input_resampler_lane_label)
-        .count();
-    if input_pcms.len() != aloop_lanes {
-        anyhow::bail!(
-            "JASPER_FANIN_INPUT_PCMS has {} entries but JASPER_FANIN_INPUT_RENDERERS has {} \
-             aloop lanes ({} labels, minus the USB lane '{}', which reads no aloop \
-             substream) — must match positionally",
-            input_pcms.len(),
-            aloop_lanes,
-            input_renderers.len(),
-            input_resampler_lane_label,
-        );
-    }
-    if input_pcms.is_empty() {
-        anyhow::bail!(
-            "JASPER_FANIN_INPUT_PCMS is empty — daemon needs at least \
-             one input substream to mix"
-        );
-    }
-    Ok((input_pcms, input_renderers, input_resampler_lane_label))
 }
 
 fn parse_capture_geometry() -> Result<(u32, u32, u32)> {
@@ -505,6 +417,7 @@ fn parse_cushion_decay(
     input_resampler_target_frames: u32,
     input_resampler_max_adjust_ppm: u32,
     input_resampler_warmup_cushion_frames: u32,
+    mode: Option<LatencyMode>,
     input_resampler_cushion_decay_enabled: bool,
 ) -> Result<(u32, u32)> {
     let cushion_decay_min_safe_fill = jasper_resampler::minimum_safe_fill_frames(
@@ -516,22 +429,20 @@ fn parse_cushion_decay(
         .max(cushion_decay_min_safe_fill + CUSHION_DECAY_FLOOR_MARGIN_FRAMES);
     let cushion_decay_ceiling =
         input_resampler_target_frames + input_resampler_warmup_cushion_frames;
-    // Disabled decay must still parse; clamp panics on an inverted range.
-    let cushion_decay_floor_default = if cushion_decay_floor_min <= cushion_decay_ceiling {
-        DEFAULT_CUSHION_DECAY_FLOOR_FRAMES.clamp(cushion_decay_floor_min, cushion_decay_ceiling)
-    } else {
-        cushion_decay_ceiling
+    let input_resampler_cushion_decay_floor_frames = match mode {
+        Some(mode) => mode.floor_frames(),
+        None if cushion_decay_floor_min <= cushion_decay_ceiling => LatencyMode::Low
+            .floor_frames()
+            .clamp(cushion_decay_floor_min, cushion_decay_ceiling),
+        // Missing mode stays off even when the geometry has an inverted range.
+        None => cushion_decay_ceiling,
     };
-    let input_resampler_cushion_decay_floor_frames = env_u32(
-        "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-        cushion_decay_floor_default,
-    )?;
     if input_resampler_cushion_decay_enabled
         && !(cushion_decay_floor_min..=cushion_decay_ceiling)
             .contains(&input_resampler_cushion_decay_floor_frames)
     {
         anyhow::bail!(
-            "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES={} out of range {}..={} \
+            "USB latency mode floor {} out of range {}..={} \
              (>= max(target {} , minimum_safe_fill {}) + {}-frame DLL margin — a floor \
              at/below minimum_safe_fill would underfill-unlock every period; \
              <= the acquisition ceiling target+cushion {})",
@@ -712,24 +623,10 @@ fn env_optional_with_default(name: &str, default: &str) -> Option<String> {
     }
 }
 
-/// Parse a pipe-delimited list env var. Pipe rather than comma
-/// because ALSA hw PCM names contain commas (`hw:Loopback,1,0`);
-/// a comma-delimited shape would silently split one PCM name into
-/// three entries.
-fn env_list(name: &str, default: &[&str]) -> Vec<String> {
-    match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => s
-            .split('|')
-            .map(|e| e.trim().to_string())
-            .filter(|e| !e.is_empty())
-            .collect(),
-        _ => default.iter().map(|s| s.to_string()).collect(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mixer::{planned_lane_source, LaneSource};
 
     use std::sync::Mutex;
 
@@ -766,6 +663,7 @@ mod tests {
                     || k.starts_with("JASPER_OUTPUTD_ASSISTANT_")
                     || k == "JASPER_OUTPUTD_CONTENT_SILENCE_LUFS"
                     || k == "JASPER_DUCK_DB"
+                    || k == "JASPER_USB_LATENCY_MODE"
             })
             .collect();
         for (k, _) in &snapshot {
@@ -802,8 +700,6 @@ mod tests {
     fn from_env_uses_documented_defaults() {
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_PCMS", None),
-                ("JASPER_FANIN_INPUT_RENDERERS", None),
                 ("JASPER_FANIN_SAMPLE_RATE", None),
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
@@ -824,16 +720,16 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
-                // FOUR aloop PCMs for FIVE labels: the usbsink lane reads the
-                // gadget capture or nothing, never an aloop substream, and the
-                // surviving pairs do not renumber around the gap.
-                assert_eq!(cfg.input_pcms.len(), 4);
-                assert!(!cfg.input_pcms.iter().any(|p| p == "hw:Loopback,1,3"));
-                assert_eq!(cfg.input_pcms[3], "hw:Loopback,1,4");
-                assert_eq!(cfg.input_renderers.len(), 5);
-                assert_eq!(cfg.input_renderers[0], "spotify");
-                assert_eq!(cfg.input_renderers[3], "usbsink");
-                assert_eq!(cfg.input_renderers[4], MEASUREMENT_LANE);
+                assert_eq!(
+                    INPUT_LANES,
+                    [
+                        ("spotify", "hw:Loopback,1,0"),
+                        ("airplay", "hw:Loopback,1,1"),
+                        ("bluealsa", "hw:Loopback,1,2"),
+                        ("usbsink", ""),
+                        ("correction", "hw:Loopback,1,4"),
+                    ]
+                );
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
@@ -856,7 +752,6 @@ mod tests {
                     cfg.assistant_reference_path,
                     "/var/lib/jasper/assistant_volume_reference.json"
                 );
-                assert_eq!(cfg.input_resampler_lane_label, "usbsink");
                 assert_eq!(cfg.input_resampler_target_frames, 512);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 500);
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 2048);
@@ -867,7 +762,7 @@ mod tests {
                 );
                 assert_eq!(
                     cfg.input_resampler_cushion_decay_floor_frames,
-                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES
+                    LatencyMode::Low.floor_frames()
                 );
                 assert!(!cfg.usb_direct_enabled, "usb-direct must default OFF");
                 assert_eq!(cfg.usb_direct_device, "hw:UAC2Gadget");
@@ -963,7 +858,6 @@ mod tests {
             &[
                 ("JASPER_FANIN_USB_DIRECT", Some("on")),
                 ("JASPER_FANIN_HOST_CLOCK", Some("on")),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("on")),
             ],
             || {
                 let cfg = Config::from_env().expect("an ignored switch value must parse");
@@ -999,7 +893,7 @@ mod tests {
             let cfg = Config::from_env().unwrap();
             assert!(!cfg.usb_direct_enabled);
             assert!(
-                !cfg.lane_wants_resampler("usbsink"),
+                planned_lane_source(&cfg, "") != LaneSource::Direct,
                 "no resampler on any lane with direct off"
             );
         });
@@ -1013,36 +907,27 @@ mod tests {
             let cfg = Config::from_env().unwrap();
             assert!(cfg.usb_direct_enabled);
             assert!(
-                cfg.lane_wants_resampler("usbsink"),
+                planned_lane_source(&cfg, "") == LaneSource::Direct,
                 "direct mode must imply a resampler on the usbsink lane"
             );
             assert!(
-                !cfg.lane_wants_resampler("airplay"),
-                "only the resampler lane label gets one"
+                planned_lane_source(&cfg, "hw:Loopback,1,1") != LaneSource::Direct,
+                "only direct capture needs a resampler"
             );
         });
     }
 
     #[test]
-    fn planned_lane_source_follows_the_resampler_predicate() {
-        use crate::mixer::{planned_lane_source, LaneSource};
-
-        // The three transports a lane can be planned with. Pinned here rather
-        // than in mixer.rs: the decision reads a `Config`, which only these
-        // env-backed tests can build.
-        for (direct, label, expected) in [
-            (None, "usbsink", LaneSource::Disabled),
-            (Some("enabled"), "usbsink", LaneSource::Direct),
-            (None, "airplay", LaneSource::Lane),
-            (Some("enabled"), "airplay", LaneSource::Lane),
+    fn planned_lane_source_follows_pcm_and_direct_enablement() {
+        for (direct, pcm, expected) in [
+            (None, "", LaneSource::Disabled),
+            (Some("enabled"), "", LaneSource::Direct),
+            (None, "hw:Loopback,1,1", LaneSource::Lane),
+            (Some("enabled"), "hw:Loopback,1,1", LaneSource::Lane),
         ] {
             with_env(&[("JASPER_FANIN_USB_DIRECT", direct)], || {
                 let cfg = Config::from_env().unwrap();
-                assert_eq!(
-                    planned_lane_source(&cfg, label),
-                    expected,
-                    "lane {label} with JASPER_FANIN_USB_DIRECT={direct:?}"
-                );
+                assert_eq!(planned_lane_source(&cfg, pcm), expected);
             });
         }
     }
@@ -1051,11 +936,6 @@ mod tests {
     fn input_resampler_knobs_parse_overrides() {
         with_env(
             &[
-                // The lane label picks WHICH label reads no aloop substream, so
-                // the roster moves with it.
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("spotify|usbsink2")),
-                ("JASPER_FANIN_INPUT_PCMS", Some("hw:Loopback,1,0")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_LANE", Some("usbsink2")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("768")),
                 ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("300")),
                 (
@@ -1066,7 +946,6 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("parses");
-                assert_eq!(cfg.input_resampler_lane_label, "usbsink2");
                 assert_eq!(cfg.input_resampler_target_frames, 768);
                 assert_eq!(cfg.input_resampler_max_adjust_ppm, 300);
                 assert_eq!(cfg.input_resampler_warmup_cushion_frames, 384);
@@ -1289,74 +1168,6 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_pcm_and_renderer_lengths_error() {
-        with_env(
-            &[
-                (
-                    "JASPER_FANIN_INPUT_PCMS",
-                    Some("hw:Loopback,1,0|hw:Loopback,1,1"),
-                ),
-                (
-                    "JASPER_FANIN_INPUT_RENDERERS",
-                    Some("spotify|airplay|bluealsa"),
-                ),
-            ],
-            || {
-                let err = Config::from_env().expect_err("mismatched lengths must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("must match"),
-                    "expected length-mismatch error, got: {}",
-                    msg,
-                );
-            },
-        );
-    }
-
-    /// hw PCM names contain commas (`hw:Loopback,1,0`), which a comma-delimited
-    /// parser splits into three entries; the pipe delimiter avoids the collision.
-    #[test]
-    fn pipe_delimiter_preserves_commas_inside_hw_pcm_names() {
-        with_env(
-            &[
-                (
-                    "JASPER_FANIN_INPUT_PCMS",
-                    Some("hw:Loopback,1,5|hw:Loopback,1,6"),
-                ),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("test_a|test_b")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("pipe-delimited hw names must parse");
-                assert_eq!(cfg.input_pcms.len(), 2);
-                assert_eq!(cfg.input_pcms[0], "hw:Loopback,1,5");
-                assert_eq!(cfg.input_pcms[1], "hw:Loopback,1,6");
-                assert_eq!(cfg.input_renderers.len(), 2);
-            },
-        );
-    }
-
-    #[test]
-    fn whitespace_only_input_pcms_errors() {
-        // `env_list` drops empty/whitespace entries, so a string of only
-        // delimiters parses to an empty Vec.
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
-            ],
-            || {
-                let err = Config::from_env().expect_err("whitespace-only PCM list must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("empty") || msg.contains("at least one"),
-                    "expected empty-list error, got: {}",
-                    msg,
-                );
-            },
-        );
-    }
-
-    #[test]
     fn input_buffer_must_be_at_least_twice_period() {
         with_env(
             &[
@@ -1404,240 +1215,63 @@ mod tests {
     }
 
     #[test]
-    fn cushion_decay_floor_defaults_to_validated_floor() {
-        // The SHIPPED default is the hardware-validated 576, not the tighter
-        // derived `target + margin` (544 at the default geometry).
-        with_env(
-            &[
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
-                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_floor_frames,
-                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
-                    "default floor is the validated 576, not target+margin",
-                );
-                // Inside the hard bounds: >= derived min 544, <= ceiling 2560.
-                assert!(
-                    cfg.input_resampler_cushion_decay_floor_frames
-                        >= cfg.input_resampler_target_frames + CUSHION_DECAY_FLOOR_MARGIN_FRAMES,
-                );
-                assert!(
-                    cfg.input_resampler_cushion_decay_floor_frames
-                        <= cfg.input_resampler_target_frames
-                            + cfg.input_resampler_warmup_cushion_frames,
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn combo_armed_default_config_constructs() {
-        // A gadget box's auto pass arms the USB combo (USB_DIRECT + HOST_CLOCK +
-        // CUSHION_DECAY, all `enabled`) with NO explicit floor / target / cushion,
-        // so the shipped 576 default must sit in range for the armed guard or such
-        // a box cannot construct a Config at all.
-        with_env(
-            &[
-                ("JASPER_FANIN_USB_DIRECT", Some("enabled")),
-                ("JASPER_FANIN_HOST_CLOCK", Some("enabled")),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                // Everything geometry-related left at its default.
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", None),
-                ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-                ("JASPER_FANIN_PERIOD_FRAMES", None),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", None),
-            ],
-            || {
-                let cfg = Config::from_env()
-                    .expect("combo-armed default config must construct (P3 floor coherence)");
-                assert!(cfg.usb_direct_enabled, "combo arms USB direct");
-                assert!(cfg.host_clock_enabled, "combo arms host clock");
-                assert!(
-                    cfg.input_resampler_cushion_decay_enabled,
-                    "combo arms cushion decay"
-                );
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_floor_frames,
-                    DEFAULT_CUSHION_DECAY_FLOOR_FRAMES,
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_floor_fails_loud_below_margin_when_armed() {
-        // target 512 + 32 = 544, so 543 is one under the minimum.
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-                    Some("543"),
-                ),
-            ],
-            || {
-                Config::from_env().expect_err("floor below margin must error");
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_floor_fails_loud_above_ceiling_when_armed() {
-        // Above the acquisition ceiling (target + cushion) there is nothing to
-        // decay.
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
-                (
-                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
-                    Some("2048"),
-                ),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-                    Some("2561"), // ceiling is 512+2048=2560
-                ),
-            ],
-            || {
-                Config::from_env().expect_err("floor above ceiling must error");
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_floor_fails_loud_below_minimum_safe_fill_when_armed() {
-        // A small base target makes `target + margin` land BELOW the physical
-        // minimum-safe-fill floor, where a floor is churn-by-construction: it sits
-        // on the underfill-unlock threshold.
-        //
-        // target 200, period 256, max_ppm 500 → min_safe = ceil(256*1.0005)+16+1
-        // = 274. floor_min = max(200+32, 274+32) = 306. A floor of 240 is above
-        // target+margin (232) but below floor_min (306).
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-                    Some("240"),
-                ),
-            ],
-            || {
-                Config::from_env().expect_err(
-                    "floor below minimum-safe-fill must error even above target+margin",
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_floor_default_respects_minimum_safe_fill() {
-        for (period, expected_floor) in [("256", 576), ("1024", 1076)] {
+    fn usb_latency_mode_preserves_defaults_and_geometry_bounds() {
+        // (mode, direct, target, cushion, period, expected enabled/floor).
+        for (mode, direct, target, cushion, period, expected) in [
+            (None, false, 512, 2048, 256, Some((false, 576))),
+            (None, true, 512, 1536, 256, Some((false, 576))),
+            (Some("  "), true, 512, 2048, 256, Some((false, 576))),
+            (Some("low"), true, 512, 2048, 256, Some((true, 576))),
+            (Some("low"), true, 512, 1536, 256, Some((true, 576))),
+            (Some(" MeDiUm "), true, 512, 1536, 256, Some((true, 1024))),
+            (Some("high"), true, 512, 1536, 256, Some((false, 2560))),
+            (Some("low"), false, 512, 0, 256, Some((false, 576))),
+            (Some("medium"), false, 512, 0, 256, Some((false, 1024))),
+            (Some("high"), false, 512, 0, 256, Some((false, 2560))),
+            (None, false, 200, 2048, 1024, Some((false, 1076))),
+            (None, false, 512, 40, 256, Some((false, 552))),
+            (None, false, 512, 0, 256, Some((false, 512))),
+            (Some("low"), true, 544, 2048, 256, Some((true, 576))),
+            (Some("low"), true, 545, 2048, 256, None),
+            (Some("low"), true, 200, 2048, 1024, None),
+            (Some("medium"), true, 512, 512, 256, Some((true, 1024))),
+            (Some("medium"), true, 512, 511, 256, None),
+            (Some("low"), true, 512, 0, 256, None),
+            (Some("high"), true, 512, 0, 256, None),
+            (Some("disabled"), false, 512, 2048, 256, None),
+        ] {
             with_env(
                 &[
-                    ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("200")),
-                    ("JASPER_FANIN_PERIOD_FRAMES", Some(period)),
-                    ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-                    ("JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES", None),
-                    ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
+                    ("JASPER_USB_LATENCY_MODE", mode),
+                    (
+                        "JASPER_FANIN_USB_DIRECT",
+                        Some(if direct { "enabled" } else { "disabled" }),
+                    ),
+                    (
+                        "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES",
+                        Some(&target.to_string()),
+                    ),
+                    (
+                        "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
+                        Some(&cushion.to_string()),
+                    ),
+                    ("JASPER_FANIN_PERIOD_FRAMES", Some(&period.to_string())),
                 ],
-                || {
-                    let cfg = Config::from_env().expect("defaults must parse");
-                    assert_eq!(
-                        cfg.input_resampler_cushion_decay_floor_frames,
-                        expected_floor
-                    );
+                || match expected {
+                    Some(expected) => {
+                        let cfg = Config::from_env().unwrap();
+                        assert_eq!(
+                            (
+                                cfg.input_resampler_cushion_decay_enabled,
+                                cfg.input_resampler_cushion_decay_floor_frames
+                            ),
+                            expected
+                        );
+                    }
+                    None => assert!(parks_the_unit(&Config::from_env().unwrap_err())),
                 },
             );
         }
-    }
-
-    #[test]
-    fn cushion_decay_floor_default_clamps_under_ceiling_for_small_cushion() {
-        // target 512 + cushion 40 = 552 ceiling < 576, derived_min = 544: the
-        // default clamps down to the ceiling so the armed guard still passes.
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES", Some("512")),
-                (
-                    "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
-                    Some("40"),
-                ),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("256")),
-                ("JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM", Some("500")),
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-            ],
-            || {
-                let cfg = Config::from_env()
-                    .expect("small-ceiling geometry must construct (default clamps to ceiling)");
-                assert_eq!(
-                    cfg.input_resampler_cushion_decay_floor_frames,
-                    512 + 40,
-                    "default clamps to the acquisition ceiling when it is below 576",
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn cushion_decay_floor_out_of_range_ignored_when_disabled() {
-        with_env(
-            &[
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", None),
-                (
-                    "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES",
-                    Some("1"),
-                ),
-            ],
-            || {
-                let cfg = Config::from_env().expect("disabled decay must ignore a bad floor");
-                assert!(!cfg.input_resampler_cushion_decay_enabled);
-                assert_eq!(cfg.input_resampler_cushion_decay_floor_frames, 1);
-            },
-        );
-    }
-
-    #[test]
-    fn inverted_decay_default_range_never_panics() {
-        // A cushion smaller than the 32-frame working margin makes
-        // derived_min > acquisition ceiling — an inverted range `u32::clamp`
-        // would panic on.
-        let geometry = [
-            (
-                "JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",
-                Some("0"),
-            ),
-            ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", None),
-        ];
-        with_env(&geometry, || {
-            let cfg = Config::from_env().expect("disabled inverted geometry stays parseable");
-            assert!(!cfg.input_resampler_cushion_decay_enabled);
-            assert_eq!(
-                cfg.input_resampler_cushion_decay_floor_frames,
-                cfg.input_resampler_target_frames,
-            );
-        });
-
-        with_env(
-            &[
-                geometry[0],
-                geometry[1],
-                ("JASPER_FANIN_RESAMPLER_CUSHION_DECAY", Some("enabled")),
-            ],
-            || {
-                Config::from_env()
-                    .expect_err("armed inverted geometry must fail through validation");
-            },
-        );
     }
 
     #[test]
@@ -1885,10 +1519,6 @@ mod tests {
             vec![("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", Some("1025"))],
             vec![("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", Some("3.0"))],
             vec![("JASPER_OUTPUTD_ASSISTANT_OFFSET_LU", Some("invalid"))],
-            vec![
-                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
-            ],
             vec![
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),

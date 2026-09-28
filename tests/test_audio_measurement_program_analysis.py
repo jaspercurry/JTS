@@ -476,14 +476,9 @@ def test_conditioning_binds_on_candidate_required_bins_not_the_driven_band():
 # green through the exact change it promised to catch, because the literal WAS
 # the input. It is now an expectation checked against the live derivation.
 _CHECKPOINT_FC_HZ = 2000.0
-# jts3's declaration, in the shape the resolver reads.
-# ``max_effective_peak_dbfs`` is NOT a recorded jts3 value on either role, and
-# since 2026-08-23 the resolver does not require the field at all (absence is
-# the ordinary shape); the band derivation never reads it either, so -65.0 is
-# filler kept only because it matches what jts3 has on disk. It is the class-default seed for the TWEETER only
-# (``driver_protection``'s high-frequency branch); the woofer's low-frequency
-# class default is ``MAX_TEST_LEVEL_DBFS`` = 0.0, and -65.0 there is just the
-# conservative value matching its sibling.
+# jts3's declaration, in the shape the resolver reads. ``max_effective_peak_dbfs``
+# is NOT a recorded jts3 value on either role: -65.0 is filler, which the band
+# derivation never reads.
 _CHECKPOINT_DECLARED_TARGETS = {
     "woofer": {
         "target_id": "mono:woofer",
@@ -1075,7 +1070,7 @@ def test_diagnostic_summary_names_the_band_behind_each_driver_snr_pair():
     assert worst["band_id"] == "mid"
 
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, stimulus_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["woofer_snr_band"] == worst["band_id"]
@@ -1101,7 +1096,7 @@ def test_diagnostic_summary_snr_band_is_none_not_a_stand_in_label():
         validity_floor_hz=None,
     )
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, stimulus_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["tweeter_snr_band"] is None
@@ -1128,7 +1123,7 @@ def test_diagnostic_summary_alignment_snr_trio_is_none_when_the_block_predates_i
         validity_floor_hz=None,
     )
     summary = analysis_diagnostic_summary(program_analysis.ProgramAnalysis(
-        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(),
+        phase=PROGRAM_PHASE_MEASURE, stimulus_id="test", locations=(),
         driver_responses=(resp,),
     ))
     assert summary["tweeter_alignment_snr_db"] is None
@@ -1877,7 +1872,7 @@ def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
         discontinuity_after_segment="",
     )
     analysis = program_analysis.ProgramAnalysis(
-        phase=PROGRAM_PHASE_MEASURE, program_id="test", locations=(), drift=drift,
+        phase=PROGRAM_PHASE_MEASURE, stimulus_id="test", locations=(), drift=drift,
     )
     summary = analysis_diagnostic_summary(analysis)
     assert summary["discontinuity_samples"] == program_analysis.DISCONTINUITY_UNRESOLVED
@@ -2087,7 +2082,7 @@ def test_adjacent_alignment_cancels_clock_drift(sweep_count, eps):
         assert result.delay_us == pytest.approx(expected_delay_us, abs=2.0)
         expected_residual = -eps * (sweeps[2].start_sample - sweeps[0].start_sample) / SR * 1e6
         assert result.alignment_drift_residual_us == pytest.approx(expected_residual, abs=3.0)
-    analysis = program_analysis.ProgramAnalysis(prog.phase, prog.program_id, (), alignment=result)
+    analysis = program_analysis.ProgramAnalysis(prog.phase, prog.stimulus_id, (), alignment=result)
     for fields in (analysis_diagnostic_summary(analysis), analysis_json(analysis)):
         assert fields["alignment_pair_count"] == sweep_count - 1
         assert fields["alignment_pair_spread_us"] == pytest.approx(result.alignment_pair_spread_us, abs=.0005)
@@ -2349,7 +2344,7 @@ def test_build_candidate_banks_the_seed_it_scored(snapped):
     )
 
     seed = -physical_gap_us if snapped is None else snapped
-    evidence = analysis_json(program_analysis.ProgramAnalysis(phase="measure", program_id="seed", locations=(), candidate=candidate,
+    evidence = analysis_json(program_analysis.ProgramAnalysis(phase="measure", stimulus_id="seed", locations=(), candidate=candidate,
         alignment=dataclasses.replace(alignment, delay_us=candidate.delay_us, seed_delay_us=alignment.delay_us)))
     assert evidence["alignment_seed_delay_us"] == seed
     assert evidence["gcc_delay_us"] == -650.0

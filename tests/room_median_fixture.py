@@ -23,7 +23,7 @@ from jasper.audio_measurement.room_limits import spatial_support
 
 @pytest.fixture(autouse=True)
 def analyzed_room_documents(monkeypatch):
-    def analyze(bundle_dir, *, calibration_root=None, paths=None):
+    def analyze(bundle_dir, *, paths=None):
         for row, record in measurement_documents(bundle_dir):
             if paths is None or record_path(row) in paths:
                 yield SimpleNamespace(record_path=record_path(row), document=lambda record=record: record)

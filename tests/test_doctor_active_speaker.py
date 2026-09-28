@@ -22,6 +22,7 @@ from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_ca
 from .test_doctor_audio_runtime_camilla import _point_at_config
 from jasper.output_topology_store import save_output_topology
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.sound.profile import SimpleEq
 
 
 # ------------------------------------------------- active speaker runtime graph
@@ -349,7 +350,7 @@ def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path)
 _SAVED_SOUND_PROFILE = {
     "enabled": True,
     "curve_id": "harman",
-    "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+    "simple_eq": SimpleEq(bass_db=1.0).to_dict(),
 }
 
 
@@ -415,9 +416,10 @@ def test_check_sound_profile_accepts_every_jts_generated_active_name(
     assert r.reason == ""
 
 
-def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
+@pytest.mark.parametrize("content", ["{not json", json.dumps({"simple_eq": {"bass_db": 1.0}})])
+def test_check_sound_profile_fails_on_an_unreadable_profile(monkeypatch, tmp_path, content):
     profile = tmp_path / "sound_profile.json"
-    profile.write_text("{not json")
+    profile.write_text(content)
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
 
     r = active_speaker.check_sound_profile()

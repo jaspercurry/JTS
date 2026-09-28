@@ -16,19 +16,24 @@ handoffs:
 * ``stamp_boot_ns`` — boot-local ordering bound to snapshot acquisition.
 
 The message is absolute and idempotent. It intentionally contains no source
-name or measured-content loudness: source policy and the product's quiet-room
-TTS envelope stay in ``VolumeCoordinator``, while content measurement stays in
-fan-in.
+name or measured-content loudness: the active source stays
+``VolumeCoordinator``'s, and content measurement stays in fan-in.
+``VolumeContextPublication`` builds and publishes the message from the
+coordinator's doors.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Awaitable, Callable, Mapping
 
+from .assistant_loudness import tts_envelope_lufs_for_level
 from .env_load import VOICE_GROUPING_ENV_FILE
+from .log_event import log_event
+from .music_sources import Source, VolumeMode, volume_mode
 from .platform import wire
 from .tts_routing import (
     FANIN_TTS_SOCKET,
@@ -37,6 +42,13 @@ from .tts_routing import (
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
 )
+from .volume_curve import canonical_target_db, percent_to_db
+from .volume_state import VolumeState
+
+if TYPE_CHECKING:
+    from .volume_persistence import VolumeRecord
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -131,3 +143,216 @@ def volume_context_publisher_for_runtime(
         return True
 
     return publish
+
+
+class VolumeContextPublication:
+    """The coordinator's fan-in context: the snapshot, the intent message
+    published ahead of a slow actuator, and the publish-and-log around both.
+
+    Its inputs are the coordinator's own doors; it caches no volume intent.
+    ``lock`` is the coordinator's ``_lock``, without the file lease.
+    ``cached`` is the coordinator's in-memory ``(level, pre_mute_level)``,
+    which a snapshot falls back to when there is no record.
+    """
+
+    def __init__(
+        self,
+        *,
+        publisher: VolumeContextPublisher | None,
+        lock: asyncio.Lock,
+        load: Callable[[], VolumeRecord | None],
+        cached: Callable[[], tuple[int, int | None]],
+        read_carrier: Callable[[], Awaitable[tuple[float | None, bool | None]]],
+        active_source: Callable[[], Awaitable[Source]],
+    ) -> None:
+        self._publisher = publisher
+        self._lock = lock
+        self._load = load
+        self._cached = cached
+        self._read_carrier = read_carrier
+        self._active_source = active_source
+
+    def _state(self, record: VolumeRecord | None) -> VolumeState:
+        if record is None:
+            return VolumeState(*self._cached())
+        return VolumeState.from_record(record)
+
+    async def snapshot(self) -> EffectiveVolumeContext:
+        """Return the absolute volume facts consumed by fan-in, as one
+        mutation-coherent snapshot without holding IPC open.
+
+        The canonical dB value represents user intent. ``downstream_db`` is
+        Camilla's actual gain when readable, with ``canonical_target_db`` as a
+        fail-soft fallback.
+        """
+        for _attempt in range(3):
+            # The short lock sections serialize this process's mutations. Slow
+            # Camilla/source probes remain outside the lock; the second read
+            # detects a mutation and retries the whole absolute snapshot.
+            async with self._lock:
+                # This is the snapshot's ordering point. Keep it with the
+                # immutable context so delayed IPC cannot make old truth look
+                # newer than a later snapshot.
+                stamp_boot_ns = volume_context_stamp_boot_ns()
+                before = self._load()
+                state = self._state(before)
+            canonical_db = percent_to_db(state.listening_level)
+            # The canonical state interpretation must win over a lagging or
+            # unreadable Camilla observation. A false hardware read may never
+            # lower an already-known mute assertion.
+            muted = state.muted
+            current_db, current_mute = await self._read_carrier()
+            if current_db is None:
+                source = await self._active_source()
+                downstream_db = canonical_target_db(
+                    state.effective_percent,
+                    volume_mode(source),
+                    before.main_volume_db if before is not None else None,
+                )
+            else:
+                downstream_db = current_db
+            if current_mute is not None:
+                muted = muted or current_mute
+
+            async with self._lock:
+                after = self._load()
+            if _record_key(before) == _record_key(after):
+                return EffectiveVolumeContext(
+                    canonical_db=float(canonical_db),
+                    downstream_db=float(downstream_db),
+                    tts_envelope_lufs=tts_envelope_lufs_for_level(
+                        state.listening_level,
+                    ),
+                    muted=bool(muted),
+                    stamp_boot_ns=stamp_boot_ns,
+                )
+        async with self._lock:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            latest = self._load()
+            state = self._state(latest)
+        downstream_db = (
+            latest.main_volume_db
+            if latest is not None
+            else percent_to_db(state.effective_percent)
+        )
+        log_event(
+            logger,
+            "volume.context_snapshot_degraded",
+            reason="intent_churn",
+            attempts=3,
+            level=logging.WARNING,
+        )
+        return EffectiveVolumeContext(
+            canonical_db=float(percent_to_db(state.listening_level)),
+            downstream_db=float(downstream_db),
+            tts_envelope_lufs=tts_envelope_lufs_for_level(
+                state.listening_level,
+            ),
+            muted=state.muted,
+            stamp_boot_ns=stamp_boot_ns,
+        )
+
+    async def publish_intent(
+        self,
+        source: Source,
+        level: int,
+        *,
+        muted: bool,
+    ) -> None:
+        """Publish known intent before a slow or safety-critical actuator.
+
+        Caller holds ``lock``. This deliberately does not call
+        :meth:`snapshot` (which would re-enter that lock). Non-muted
+        Camilla-master paths skip the provisional message because their local
+        write is already fast and publishing against the old downstream gain
+        would create a needless two-ramp transient. Mute always publishes first
+        so a wedged Camilla cannot delay the immediate TTS stop.
+        """
+        publisher = self._publisher
+        if (
+            publisher is None
+            or (not muted and volume_mode(source) != VolumeMode.PUSH)
+        ):
+            return
+        try:
+            stamp_boot_ns = volume_context_stamp_boot_ns()
+            current_mute: bool | None = None
+            current_db: float | None
+            if muted:
+                current_db = None
+            else:
+                current_db, current_mute = await self._read_carrier()
+            if current_db is None:
+                record = self._load()
+                current_db = (
+                    float(record.main_volume_db)
+                    if record is not None and record.main_volume_db is not None
+                    else 0.0
+                )
+            context = EffectiveVolumeContext(
+                canonical_db=float(percent_to_db(level)),
+                downstream_db=float(current_db),
+                tts_envelope_lufs=tts_envelope_lufs_for_level(level),
+                muted=bool(muted or current_mute is True),
+                stamp_boot_ns=stamp_boot_ns,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            _log_publish_failure(e, phase="intent")
+            return
+        await _publish_context(publisher, context, phase="intent")
+
+    async def publish(self, *, phase: str) -> None:
+        """Best-effort absolute context update; never breaks volume control."""
+        publisher = self._publisher
+        if publisher is None:
+            return
+        try:
+            context = await self.snapshot()
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
+            _log_publish_failure(e, phase=phase)
+            return
+        await _publish_context(publisher, context, phase=phase)
+
+
+def _record_key(
+    record: VolumeRecord | None,
+) -> tuple[int | None, int | None, float | None]:
+    """The record fields a context reads; a write that moves none of them
+    leaves a snapshot valid."""
+    if record is None:
+        return None, None, None
+    return record.listening_level, record.pre_mute_level, record.main_volume_db
+
+
+async def _publish_context(
+    publisher: VolumeContextPublisher,
+    context: EffectiveVolumeContext,
+    *,
+    phase: str,
+) -> None:
+    """Publish one already-snapshotted context without taking the lock."""
+    try:
+        if not await publisher(context):
+            # The active route names no mix stage, so nothing was sent.
+            return
+        log_event(
+            logger,
+            "volume.context_published",
+            canonical_db=f"{context.canonical_db:.1f}",
+            downstream_db=f"{context.downstream_db:.1f}",
+            muted=str(context.muted).lower(),
+            phase=phase,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as e:
+        _log_publish_failure(e, phase=phase)
+
+
+def _log_publish_failure(exc: Exception, *, phase: str) -> None:
+    log_event(
+        logger,
+        "volume.context_publish_failed",
+        exc_type=type(exc).__name__,
+        detail=str(exc),
+        phase=phase,
+        level=logging.WARNING,
+    )

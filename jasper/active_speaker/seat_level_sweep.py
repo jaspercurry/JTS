@@ -64,7 +64,6 @@ class SweepLevelReader:
             capture_session_id=bundle_id, cam_factory=lambda: cam,
             config_dir=config_dir, topology=context.topology,
             safety_profile=context.safety_profile, role_targets=context.role_targets,
-            declared_sensitivities=context.declared_sensitivities,
             graph_yaml=graph.installed_graph_yaml,
             level_reference_yaml=graph.level_reference_yaml, roles=excitation.roles,
             graph_evidence_for_spec=lambda spec: measurement_graph_evidence(scope=spec.graph_scope, candidate=candidate),
@@ -80,7 +79,7 @@ class SweepLevelReader:
         peak = stimulus_peak_dbfs(program)
         assert peak is not None
         self.provenance = StimulusProvenance(
-            program_id=program.program_id, phase=phase, wav_sha256=artifact.sha256,
+            stimulus_id=program.stimulus_id, phase=phase, wav_sha256=artifact.sha256,
             peak_dbfs=peak, bundle_id=self.bundle_id,
         )
 
