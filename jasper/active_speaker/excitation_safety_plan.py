@@ -70,6 +70,7 @@ class ExcitationSafetyPlanRefusal(str, Enum):
     REQUEST_OUTSIDE_LEVEL = "active_excitation_request_outside_level"
     REQUEST_OUTSIDE_DURATION = "active_excitation_request_outside_duration"
     REQUEST_OUTSIDE_REPEATS = "active_excitation_request_outside_repeats"
+    SENSITIVITY_UNDECLARED = "active_excitation_sensitivity_undeclared"
 
 
 def request_limit_rows(
@@ -418,12 +419,12 @@ def _role_sensitivities(targets: list[Any]) -> dict[str, float]:
 def _derived_hf_ceiling_dbfs(
     safety_profile: Mapping[str, Any],
     hf_role: str,
-) -> tuple[float, str, float] | None:
-    """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``, or ``None``.
+) -> tuple[float, str, float]:
+    """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``.
 
-    ``None`` when the declared specs cannot support a derivation (no declared
-    sensitivity on either side, per :func:`_role_sensitivities`) -- the caller
-    then keeps the existing class-default ceiling.
+    Refuses ``SENSITIVITY_UNDECLARED``, naming the roles to declare, when
+    ``hf_role`` or every low-frequency role declares no sensitivity (per
+    :func:`_role_sensitivities`; ADR-0382).
 
     Conservative across multiple low-frequency siblings (a 3-way's woofer AND
     mid): takes the MINIMUM derived candidate across every low-frequency
@@ -439,50 +440,33 @@ def _derived_hf_ceiling_dbfs(
     line rather than leaving an operator to infer the contract shape.
     """
 
-    targets = safety_profile.get("targets")
-    if not isinstance(targets, list):
-        return None
+    targets = [target for target in safety_profile["targets"] if isinstance(target, Mapping)]
     sensitivities = _role_sensitivities(targets)
     sens_hf = sensitivities.get(hf_role)
-    if sens_hf is None:
-        return None
+    siblings = [target for target in targets if target.get("role") in LOW_FREQUENCY_ROLES]
     candidates: list[tuple[float, str, float]] = []
-    for candidate in targets:
-        if not isinstance(candidate, Mapping):
+    for sibling in siblings:
+        sens_lf = sensitivities.get(str(sibling["role"]))
+        if sens_hf is None or sens_lf is None:
             continue
-        candidate_role = str(candidate.get("role") or "")
-        if candidate_role not in LOW_FREQUENCY_ROLES:
-            continue
-        sens_lf = sensitivities.get(candidate_role)
-        if sens_lf is None:
-            continue
-        lf_fingerprint = str(candidate.get("target_fingerprint") or "")
-        if not lf_fingerprint:
-            continue
-        try:
-            # Only the PROVENANCE is read off the second call: for a
-            # low-frequency role both return the same number by construction,
-            # the supersede branch below being high-frequency-only.
-            _lf_band, lf_cap = resolve_driver_excitation_ceilings(
-                safety_profile, lf_fingerprint
-            )
-            _same_cap, lf_anchor = declared_level_ceiling_dbfs(candidate)
-        except ExcitationSafetyPlanError:
-            continue
-        candidates.append(
-            (
-                derive_hf_measurement_ceiling_dbfs(
-                    declared_lf_driver_cap_dbfs=lf_cap,
-                    sens_hf_db=sens_hf,
-                    sens_lf_db=sens_lf,
-                ),
-                lf_anchor,
-                lf_cap,
-            )
+        lf_cap, lf_anchor = declared_level_ceiling_dbfs(sibling)
+        candidates.append((
+            derive_hf_measurement_ceiling_dbfs(
+                declared_lf_driver_cap_dbfs=lf_cap,
+                sens_hf_db=sens_hf,
+                sens_lf_db=sens_lf,
+            ),
+            lf_anchor,
+            lf_cap,
+        ))
+    if not candidates:
+        undeclared = {hf_role} if sens_hf is None else {str(sibling["role"]) for sibling in siblings}
+        raise ExcitationSafetyPlanError(
+            ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value, detail={"roles": sorted(undeclared)},
         )
     # ``min`` on the derived ceiling, with the anchor that PRODUCED it: another
     # sibling's anchor beside the binding number names the wrong cause.
-    return min(candidates, key=lambda item: item[0]) if candidates else None
+    return min(candidates, key=lambda item: item[0])
 
 
 #: How a target's effective-peak ceiling got its number. Provenance is recorded
@@ -490,7 +474,6 @@ def _derived_hf_ceiling_dbfs(
 #: decided this?" is how a magic number ends up steering a derivation.
 LEVEL_CEILING_DECLARED = "declared"
 LEVEL_CEILING_UNDECLARED = "undeclared"
-LEVEL_CEILING_LEGACY_CLASS_SEED = "legacy_class_seed"
 
 
 def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
@@ -498,15 +481,11 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
 
     * **absent** — ``LEVEL_CEILING_UNDECLARED``: no published level limit for
       this driver, exactly the no-level-intent the sensitivity derivation
-      answers. The class default stands as the seed until it does.
-    * **declared** — honoured verbatim, never clamped down to the class figure;
-      the one surviving bound is digital full scale, enforced where the value is
-      parsed (``driver_safety._normalise_level_duration_limits``).
-    * **``LEVEL_CEILING_LEGACY_CLASS_SEED``** — a profile saved under the
-      retired contract carries the class default itself to mean "no level
-      intent", so it is read that way rather than regressing an already
-      commissioned speaker's tweeter. Deletable once no stored profile carries a
-      seed (#2913).
+      answers on the program path. The class default stands everywhere else.
+    * **declared** — honoured verbatim, including a value equal to the class
+      figure, and never clamped down to it; the one surviving bound is digital
+      full scale, enforced where the value is parsed
+      (``driver_safety._normalise_level_duration_limits``).
     """
 
     profile_limits = target.get("level_duration_limits")
@@ -529,10 +508,7 @@ def declared_level_ceiling_dbfs(target: Mapping[str, Any]) -> tuple[float, str]:
         raise ExcitationSafetyPlanError(
             ExcitationSafetyPlanRefusal.MEASUREMENT_INPUTS_INVALID.value
         )
-    peak = float(declared_peak)
-    if peak == float(protection.max_auto_level_dbfs):
-        return peak, LEVEL_CEILING_LEGACY_CLASS_SEED
-    return peak, LEVEL_CEILING_DECLARED
+    return float(declared_peak), LEVEL_CEILING_DECLARED
 
 
 def require_driver_measurement_inputs(safety_profile: Mapping[str, Any]) -> None:
@@ -562,8 +538,8 @@ def resolve_driver_excitation_ceilings(
     crossover high-pass by construction pass ``True``, so a high-frequency
     driver's ceiling derives from a low-frequency sibling's declared cap and the
     two declared sensitivities rather than sitting at the naked-tone class
-    default; without them it keeps the class default and logs the skip. Every
-    other caller defaults to ``False``.
+    default; without them it refuses by name (ADR-0382). Every other caller
+    defaults to ``False``.
 
     All but high-frequency roles start at ``MIN_DRIVER_TEST_FREQUENCY_HZ``; those
     start at ``max(MIN_DRIVER_TEST_FREQUENCY_HZ, hard_band[0], measurement_band[0])``,
@@ -613,41 +589,23 @@ def resolve_driver_excitation_ceilings(
                 else float(hard_band[1]))
     permitted_band = FrequencyBand(lower, upper)
     maximum_peak, level_provenance = declared_level_ceiling_dbfs(target)
-    # Supersede-the-seed rule (ADR-0227 §9): only on the proven-HP path, only for
-    # high-frequency roles, and only when NO driver-specific level was declared
-    # (see :func:`declared_level_ceiling_dbfs`). A declared value is always
-    # respected as-is. The resulting step is real: a delegated ceiling resolves
-    # to the low-frequency sibling's cap less the declared sensitivity delta,
-    # tens of decibels louder than the class seed.
+    # Declared or derived, else refused by name (ADR-0227 §9, ADR-0382): only on
+    # the proven-HP path, and only for a high-frequency role that declares no
+    # level limit. A declared value is always respected as-is.
     if (
         program_admission
         and role in HIGH_FREQUENCY_ROLES
         and level_provenance != LEVEL_CEILING_DECLARED
     ):
-        derived = _derived_hf_ceiling_dbfs(safety_profile, role)
-        if derived is None:
-            # Named skip: the proven-HP path WOULD derive here but a declared
-            # sensitivity is missing on one side, so the usually far too quiet
-            # class default stays in force.
-            log_event(
-                logger,
-                "active_speaker.excitation_ceiling_derivation_skipped",
-                target_id=target_id,
-                role=role,
-                reason="declared_sensitivity_missing",
-                ceiling_dbfs=f"{maximum_peak:.1f}",
-            )
-            return permitted_band, maximum_peak
-        derived_peak, anchor, anchor_cap = derived
+        derived_peak, anchor, anchor_cap = _derived_hf_ceiling_dbfs(safety_profile, role)
         if derived_peak != maximum_peak:
             log_event(
                 logger,
                 "active_speaker.excitation_ceiling_superseded",
                 target_id=target_id,
                 role=role,
-                legacy_ceiling_dbfs=f"{maximum_peak:.1f}",
+                class_default_dbfs=f"{maximum_peak:.1f}",
                 derived_ceiling_dbfs=f"{derived_peak:.1f}",
-                delegation=level_provenance,
                 # The ANCHOR this number is a delta from. A low-frequency
                 # sibling declaring no level limit anchors at ITS class
                 # default, which for that role IS full scale, so the

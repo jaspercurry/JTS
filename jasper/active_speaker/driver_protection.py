@@ -53,7 +53,8 @@ _STYLE_HIGH_PASS_HZ = {
 #: Shared by the ``tweeter`` and ``full_range`` classes: -65 dBFS was sized for
 #: a naked driver tone with no proven protective high-pass, and 100 ms is the
 #: floor-test duration that figure was validated at. On the program-admission
-#: path it is superseded by :func:`derive_hf_measurement_ceiling_dbfs`.
+#: path a tweeter that declares no level limit takes
+#: :func:`derive_hf_measurement_ceiling_dbfs` instead, or refuses (ADR-0382).
 _HIGH_FREQUENCY_FLOOR_TEST_MS = 100
 _HIGH_FREQUENCY_MAX_AUTO_LEVEL_DBFS = -65.0
 
@@ -177,11 +178,11 @@ def driver_protection_profile(
 # ``max_commissioning_level_db_spl``, and the leveling ramp's guards.
 #
 # Residual, named rather than hidden: declared sensitivities carry no
-# plausibility validation, so a household that swaps the two rows empties the
-# derivation for that box's composed tweeter level. Refusing on delta <= 0
-# cannot separate that from the legitimate case — both clamp to
-# MAX_TEST_LEVEL_DBFS — so validating the declaration against the preset's own
-# ``sensitivity_db`` is the fix. Issue #2765.
+# plausibility validation, and refusing on delta <= 0 cannot separate a swapped
+# pair from the legitimate case — both clamp to MAX_TEST_LEVEL_DBFS. Nor does
+# the preset's ``sensitivity_db``: a commissioned speaker's preset copies it
+# from the same declaration. A swap shows as a tweeter cap near full scale
+# (ADR-0382, #2765).
 
 
 def derive_hf_measurement_ceiling_dbfs(

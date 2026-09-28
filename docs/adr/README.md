@@ -14,7 +14,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0101](0101-proven-once-disclose-on-change.md) | Proven once, disclose on change — validity-proof gates stop parking working systems | amended by 0185 |
 | [0199](0199-the-handoff-doc-corpus-is-deleted.md) | The HANDOFF doc corpus is deleted | accepted |
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
-| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | accepted |
+| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | §9 amended by 0382 |
 | [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369; §7's `measure_spec.py` citation superseded by 0380 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
@@ -355,3 +355,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0377](0377-a-retired-preset-id-refuses-as-an-unknown-preset.md) | A retired preset id is not kept: it refuses as an unknown preset, and a layout no preset offers is deleted | accepted |
 | [0379](0379-a-stored-driver-declaration-in-a-retired-shape-refuses-by-its-field.md) | A stored driver declaration in a retired shape refuses by its field and names its fix; every row names its physical output, and nothing binds by role | accepted |
 | [0380](0380-the-capability-stub-table-is-gone.md) | The capability stub table is gone: every mic-only capture regime plays and banks, and an analysis gap is tracked on the ticket that plans its work | accepted |
+| [0382](0382-a-tweeters-cap-is-declared-or-derived-else-the-plan-refuses-by-name.md) | A tweeter's cap is declared or derived, else the plan refuses by name (`driver_sensitivity_undeclared`); a stored class default is a declaration | accepted |

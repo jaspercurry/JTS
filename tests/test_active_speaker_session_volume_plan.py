@@ -213,7 +213,7 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
     and the ``anchor=``/``anchor_cap_dbfs=`` fields vanish from the receipt.
     """
     profile, targets = _profile_and_targets(
-        woofer_peak=woofer_peak, tweeter_peak=-65.0, sensitivities={"woofer": 90.0, "tweeter": 100.8},
+        woofer_peak=woofer_peak, tweeter_peak=None, sensitivities={"woofer": 90.0, "tweeter": 100.8},
     )
 
     def _cap(role):
@@ -252,7 +252,7 @@ def test_the_session_measurement_volume_is_untouched_by_branch_facts():
     per-segment gains. It takes no branch peaks and none of this changes it.
     """
     profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities=_JTS3_PADDED_SENS,
+        woofer_peak=-8.0, tweeter_peak=None, sensitivities=_JTS3_PADDED_SENS,
     )
     assert session_measurement_volume_db(profile, targets.values()) == -20.0
     assert loudest_driver_cap_dbfs(profile, targets.values()) == pytest.approx(-8.0)
@@ -261,14 +261,14 @@ def test_the_session_measurement_volume_is_untouched_by_branch_facts():
 def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
     """W6.5 pin: this module exclusively serves the program-admission v2
     conductor, so it always resolves ceilings on the proven-HP path. With
-    JTS3's DECLARED sensitivities threaded through and the tweeter at its -65
-    seed, the tweeter's OWN resolved cap moves from -65 to -33.2 (derived: the
-    woofer's -8 less the 25.2 dB sensitivity delta) -- but ``max(caps)`` is
+    JTS3's DECLARED sensitivities and a tweeter that declares no level limit,
+    the tweeter's OWN resolved cap is -33.2 (derived: the woofer's -8 less the
+    25.2 dB sensitivity delta) -- but ``max(caps)`` is
     still the woofer's -8, so the derived session volume is unchanged. No
     behavior change expected; this pins that.
     """
     profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=-65.0, sensitivities={"woofer": 83.3, "tweeter": 108.5},
+        woofer_peak=-8.0, tweeter_peak=None, sensitivities={"woofer": 83.3, "tweeter": 108.5},
     )
     assert session_measurement_volume_db(profile, targets.values()) == -20.0
 

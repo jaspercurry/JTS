@@ -2076,7 +2076,7 @@ def test_cx120_estimating_reply_prefills_and_confirms_with_no_issues() -> None:
     assert tweeter["code_owned_policy"]["max_auto_level_dbfs"] == -65.0
 
 
-def _cx120_profile(*, tweeter_peak_dbfs: float = -65) -> dict:
+def _cx120_profile(*, tweeter_peak_dbfs: float | None) -> dict:
     topology = _topology_with_tweeter_style("dome_tweeter")
     manual = _cx120_manual_settings(tweeter_peak_dbfs=tweeter_peak_dbfs)
     draft = build_design_draft(
@@ -2146,58 +2146,6 @@ def test_the_ask_no_longer_writes_a_level_ceiling_it_will_read_back() -> None:
             program_admission=True,
         )
         assert literal == pytest.approx(declared)
-
-
-def test_cx120_declared_ceiling_delegates_but_one_db_quieter_is_literal() -> None:
-    """The field case, through the real resolver, with the numbers named.
-
-    The CX120 reply declares the tweeter at -65 because it has no published
-    level limit. On the proven-high-pass path that delegates the choice: the
-    derived ceiling is -20.7 dBFS, forty-four decibels louder than the declared
-    number. Declaring -66 instead — a deliberate quieter limit — is honoured
-    literally. Both are intended; the discontinuity is documented at the
-    equality site in excitation_safety_plan and in the research ask itself.
-
-    This fixture is also the second real-hardware case that motivated retiring
-    the provisional -35 dBFS hedge on 2026-08-20: a 0.7 dB sensitivity delta
-    puts the honest ceiling at -20.7, so the constant bound 14.3 dB below the
-    physics on an ordinary coax.
-    """
-
-    profile = _cx120_profile()
-    # Pad-free declaration, so the effective sensitivities are the datasheet
-    # ones the reply reported.
-    assert {target["role"]: target["effective_sensitivity_db_2v83_1m"] for target in profile["targets"]} == (
-        pytest.approx({"woofer": 88.5, "tweeter": 89.2}))
-
-    tweeter_fp = next(
-        t["target_fingerprint"] for t in profile["targets"] if t["role"] == "tweeter"
-    )
-    _band, ceiling = resolve_driver_excitation_ceilings(
-        profile,
-        tweeter_fp,
-        program_admission=True,
-    )
-    # woofer cap -20, sensitivity delta 0.7 dB -> -20.7: the sensitivity
-    # arithmetic IS the ceiling. Mutation guard: restore the -35 hedge and this
-    # fails, because -35 would clamp a real coax 14.3 dB below its own physics.
-    assert ceiling == pytest.approx(-20.7)
-
-    # Without the proven-high-pass path the declared number stands. Delegation
-    # is what the protective high-pass buys; it is not unconditional.
-    _band, naked = resolve_driver_excitation_ceilings(profile, tweeter_fp)
-    assert naked == pytest.approx(-65.0)
-
-    # One dB quieter is a deliberate choice and is never raised.
-    quieter = _cx120_profile(tweeter_peak_dbfs=-66)
-    _band, quieter_ceiling = resolve_driver_excitation_ceilings(
-        quieter,
-        next(
-            t["target_fingerprint"] for t in quieter["targets"] if t["role"] == "tweeter"
-        ),
-        program_admission=True,
-    )
-    assert quieter_ceiling == pytest.approx(-66.0)
 
 
 def test_prompt_asks_for_a_published_level_limit_or_none_at_all() -> None:
