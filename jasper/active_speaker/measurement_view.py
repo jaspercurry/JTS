@@ -75,8 +75,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
         choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
                                   "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
-            if plan.regime == REGIME_BRANCHES:
-                # See issue #5321.
+            if plan.regime == REGIME_BRANCHES and plan.purpose != PURPOSE_REAR:
+                # Only a rear pair's candidate is named by the session door (prepare_v2_session).
                 copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
                 choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
             else:

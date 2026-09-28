@@ -25,12 +25,24 @@ from jasper.web import correction_crossover_v2_state as v2state
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.crossover_v2 import coordinator
+from jasper import output_topology_store
+from jasper.active_speaker import candidate_bank, commissioning_coordinator, measurement_view, preflight_live
+from jasper.active_speaker.angle_capture import request_for_preset
+from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.crossover_v2 import coordinator, prescription_document
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_CANDIDATE_NOT_MEASURABLE, CrossoverV2Refused,
+)
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_preset
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_preflight import ready_facts
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
@@ -368,3 +380,54 @@ async def test_a_session_from_the_real_preparer_drives_the_measure_verb(monkeypa
     assert fakes.graph.installs == 2 and fakes.graph.restores == 1
     assert not fakes.volume.held, "the claim went back"
     assert not session.is_open
+
+
+@pytest.fixture
+def applied_tune(monkeypatch, isolated_candidate_bank):
+    applied = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}))
+    monkeypatch.setattr(prescription_document, "load_applied_baseline_profile_state",
+                        lambda: {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint}})
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: _topology())
+    return applied
+
+
+def test_the_pages_rear_pair_choice_starts_a_session_on_the_applied_tune_with_its_rear_cleared(
+    monkeypatch, applied_tune,
+):
+    """Issue #5330: a rear pair measures both woofers with no rear stage."""
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": (), "next_action": {"program": "rear"}})
+    choice = next(c for c in measurement_view.round_choices(_status(), "rear/pair") if c["id"] == "rear/pair")
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan, candidates={
+        name: candidate_bank.find_banked_candidate(name).candidate for name in plan.candidates}))
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda topology: (store, store.session_id))
+
+    prepared = v2host.prepare_v2_session(choice["action"]["body"], status=_status(), run_async=asyncio.run,
+                                         camilla_factory=None)
+
+    plan = next(payload for path, payload in store.published if path.endswith("/plan.json"))
+    measured, = plan["candidates"]
+    composed = candidate_bank.find_banked_candidate(measured).candidate
+    assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
+    assert {stop["candidate_id"] for stop in plan["stops"]} == {measured}
+    assert composed.analysis["resolution"]["rear_calibration"] == "cleared"
+    assert composed.analysis["base"]["fingerprint"] == applied_tune.fingerprint
+
+
+@pytest.mark.parametrize("preset, code", [
+    ("rear/pair", REASON_WALK_CANDIDATE_NOT_MEASURABLE),
+    ("branches/express", REASON_MEASUREMENT_CANDIDATE_REQUIRED),
+    ("front_rear/express", REASON_MEASUREMENT_CANDIDATE_REQUIRED),
+])
+def test_a_pair_naming_no_candidate_the_door_cannot_name_is_refused_by_name(
+    monkeypatch, isolated_candidate_bank, preset, code,
+):
+    monkeypatch.setattr(prescription_document, "load_applied_baseline_profile_state", lambda: {})
+    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: _topology())
+
+    with pytest.raises(CrossoverV2Refused) as refused:
+        v2host.prepare_v2_session({"plan": request_for_preset(run_preset(preset)).to_dict()}, status=_status(),
+                                  run_async=asyncio.run, camilla_factory=None)
+
+    assert refused.value.code == code

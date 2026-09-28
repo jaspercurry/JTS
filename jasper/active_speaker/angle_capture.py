@@ -794,7 +794,8 @@ def request_for_preset(
     (:func:`~.measurement_programs.plan_poses`)."""
     if preset.mover is not None and preset.mover != mover:
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{preset.preset} requires mover={preset.mover}")
-    if preset.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
+    # A pair naming none is left to the session door, which names a rear pair's (prepare_v2_session).
+    if preset.regime == REGIME_BRANCHES and candidates and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
         raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
     room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(

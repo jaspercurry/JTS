@@ -1087,6 +1087,19 @@ def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
         assert geometry.seat_offset_m == pose.seat_offset_m
 
 
+@pytest.mark.parametrize("candidates, measured", [
+    ((), ""), (("fp-a",), "fp-a"), (("base",), None), (("fp-a", "fp-b"), None),
+])
+def test_a_pair_names_one_saved_candidate_or_leaves_it_to_the_session_door(candidates, measured):
+    pair = mp.run_preset("rear/pair")
+    if measured is None:
+        with pytest.raises(contracts.CrossoverV2FlowError):
+            ac.request_for_preset(pair, candidates=candidates)
+        return
+    assert {(stop.regime, stop.candidate_id) for stop in ac.request_for_preset(pair, candidates=candidates).stops} == {
+        (mp.REGIME_BRANCHES, measured)}
+
+
 @pytest.mark.parametrize("elevation", [0, 10])
 def test_position_gate_names_the_behind_pose_without_changing_the_action_body(elevation):
     request = ac.request_for_preset(mp.run_preset("rear/pair", "rear_behind"), candidates=("rear-candidate",))

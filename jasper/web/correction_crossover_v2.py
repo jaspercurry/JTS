@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_VOLUME_UNRESOLVED
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_VOLUME_UNRESOLVED,
+    REASON_WALK_CANDIDATE_NOT_MEASURABLE, refusal_copy_for,
+)
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
@@ -24,9 +27,13 @@ from jasper.active_speaker import preflight_live
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.angle_capture import (
-    AngleCaptureRequest, LateralWalkRefused,
+    AngleCaptureRequest, LateralWalkRefused, REGIME_BRANCHES,
     default_run_level,
 )
+from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
+from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
+from jasper.active_speaker.measurement_programs import PURPOSE_REAR
+from jasper.audio_measurement.bundles import BundleError
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -141,6 +148,20 @@ def _build_wired_run(conductor: Any, **host: Any) -> Callable[[Any], Any]:
     return wired.build_v2_wired_run_and_consume(conductor, **host)
 
 
+def _rear_pair_candidate_named(request: AngleCaptureRequest) -> AngleCaptureRequest:
+    """A rear pair that names no candidate, measured on the applied tune with its
+    rear stage cleared (issue #5330)."""
+    if request.candidates or any(stop.regime != REGIME_BRANCHES or stop.purpose != PURPOSE_REAR
+                                 for stop in request.stops):
+        return request
+    try:
+        fingerprint = publish_authored_candidate(rear_cleared_candidate()).fingerprint
+    except (CandidateBankRefusal, BundleError) as exc:
+        raise CrossoverV2Refused(str(exc), code=REASON_WALK_CANDIDATE_NOT_MEASURABLE) from exc
+    return dataclasses.replace(request, candidates=(fingerprint,), stops=tuple(
+        dataclasses.replace(stop, candidate_id=fingerprint) for stop in request.stops))
+
+
 def prepare_v2_session(
     raw: Mapping[str, Any],
     *,
@@ -179,6 +200,7 @@ def prepare_v2_session(
     level, level_source = default_run_level(request)
     if request.level_source == "program_default":
         request = dataclasses.replace(request, level=level, level_source=level_source)
+    request = _rear_pair_candidate_named(request)
     if v2volume.session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -195,6 +217,9 @@ def prepare_v2_session(
     if issue is not None:
         raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
     request = report.plan
+    if not request.candidates and any(stop.regime == REGIME_BRANCHES and not stop.driver for stop in request.stops):
+        copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
+        raise CrossoverV2Refused(copy, code=REASON_MEASUREMENT_CANDIDATE_REQUIRED)
     assert request.level.resolved is not None
     captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
         request, roles_bands=context.roles_bands,

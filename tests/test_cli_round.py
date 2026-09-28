@@ -30,6 +30,8 @@ from jasper.active_speaker import baseline_apply
 from jasper import output_topology_store
 from jasper.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker import commissioning_coordinator, measurement_view
+from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
@@ -45,7 +47,7 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import run_preset
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_preset
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -54,6 +56,7 @@ from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
+from tests.crossover_v2_fixtures import _roles
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
@@ -959,43 +962,38 @@ def test_a_pose_set_reads_the_same_spaced_or_joined(poses, azimuths):
 
 
 @pytest.mark.parametrize("named", [False, True])
-def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
-    named, monkeypatch, tmp_path, isolated_candidate_bank,
+def test_a_rear_pair_at_custom_bearings_plans_branch_takes_naming_only_a_given_candidate(
+    named, monkeypatch, isolated_candidate_bank,
 ):
-    """The branches regime demands one candidate, and a rear pair take must
-    measure the woofers raw: with no ``--candidates`` the run composes the
-    applied tune with its rear calibration cleared (issue #5330).
-    """
-    from jasper.active_speaker import candidate_bank
-    from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
-
-    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    applied = publish_authored_candidate(
-        candidate_from_design_draft(topology, load_design_draft(topology=topology))
-    )
-    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
-                        lambda: {"status": "applied",
-                                 "source": {"measured_candidate_fingerprint": applied.fingerprint}})
-    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: topology)
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
-        plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
-                          for name in plan.candidates}))
-    argv = ["run", "--program", "rear/pair",
-            *(["--candidates", applied.fingerprint] if named else [])]
+    """#5404 09-20 item 8: a pair run at custom bearings stays a pair, never a
+    summed round. With no ``--candidates`` the session door names its candidate."""
+    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw))
+    argv = ["run", "--program", "rear/pair", "--poses", "0,30", *(["--candidates", "fp-trial"] if named else [])]
 
     plan = _run_request.resolve_run(cli.build_parser().parse_args(argv)).plan
 
-    measured, = plan.candidates
-    assert [stop.candidate_id for stop in plan.stops] == [measured] * len(plan.stops)
-    assert {stop.regime for stop in plan.stops} == {"branches"}
-    if named:
-        assert measured == applied.fingerprint
-        assert [row.fingerprint for row in candidate_bank.banked_candidates()] == [applied.fingerprint]
-        return
-    assert measured != applied.fingerprint
-    composed = candidate_bank.find_banked_candidate(measured).candidate
-    assert composed.analysis["resolution"]["rear_calibration"] == "cleared"
-    assert composed.analysis["base"]["fingerprint"] == applied.fingerprint
+    assert [(capture.spec.positions, capture.spec.graph_scope) for capture in prepare_plan_captures(plan)] == [
+        ((0,), "candidate_branches"), ((30,), "candidate_branches")]
+    assert plan.candidates == (("fp-trial",) if named else ())
+    assert candidate_bank.banked_candidates() == []
+
+
+def test_the_cli_and_the_page_post_one_rear_pair_plan(monkeypatch, capsys, preflight_ready):
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": (), "next_action": {"program": "rear"}})
+    choice = next(c for c in measurement_view.round_choices({}, "rear/pair") if c["id"] == "rear/pair")
+    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+
+    code, _ = _run(["run", "--program", "rear/pair"], opener, monkeypatch, capsys)
+
+    posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
+    # The CLI posts the level its preflight resolved; the door resolves the page's (#5737 A3).
+    assert code == cli.EXIT_OK
+    assert {**posted, "level": None} == {**choice["action"]["body"]["plan"], "level": None}
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
