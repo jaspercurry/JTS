@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The floor-tone audition's ``main_mute`` writes, through the one writer."""
+"""The floor-tone restore's ``main_mute`` writes, through the one writer."""
 
 from __future__ import annotations
 
