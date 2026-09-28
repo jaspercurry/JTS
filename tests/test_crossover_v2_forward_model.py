@@ -17,6 +17,7 @@ import yaml
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2 import record_index, round_captures
 from jasper.active_speaker.crossover_v2.capture_prediction import (
     capture_prediction,
@@ -32,10 +33,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
     predicted_minus_measured_db,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
-from jasper.active_speaker.crossover_v2.round_captures import (
-    REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
-    RoundCapturesRefused,
-)
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CLOSE_REFERENCE_NO_CAPTURE
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import build_verify_program
 from jasper.audio_measurement.program_analysis import (
@@ -373,11 +371,11 @@ def test_phase_error_excludes_the_same_recordings_weak_cancellations(
 @pytest.mark.parametrize(
     "capture_id, window_ms, error",
     [
-        pytest.param("missing", 7.0, RoundCapturesRefused, id="wrong-take"),
+        pytest.param("missing", 7.0, EvidenceUnavailable, id="wrong-take"),
         pytest.param("old", 0.0, ForwardModelError, id="zero-window"),
         pytest.param("old", float("nan"), ForwardModelError, id="nan-window"),
         pytest.param("old", 100.0, ForwardModelError, id="overlong-window"),
-        pytest.param("missing-clock", 7.0, RoundCapturesRefused, id="incomplete-clock"),
+        pytest.param("missing-clock", 7.0, EvidenceUnavailable, id="incomplete-clock"),
     ],
 )
 def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
@@ -391,7 +389,7 @@ def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
         capture_id = "old"
     with pytest.raises(error) as excinfo:
         read_diagnostic(diagnostic_round, capture_id, window_ms)
-    if error is RoundCapturesRefused and capture_id == "old":
+    if error is EvidenceUnavailable and capture_id == "old":
         assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
         assert excinfo.value.detail["role"] == "woofer"
     if capture_id == "missing":
@@ -456,7 +454,7 @@ def test_prediction_reconstructs_selected_physical_branches(diagnostic_round):
     for response in document["branch_diagnostic"]["responses"]:
         response["role"] = identities[response["role"]]
     path.write_text(json.dumps(document))
-    with pytest.raises(RoundCapturesRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         read_diagnostic(diagnostic_round, "old", 7.0)
     assert caught.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
     basis = read_diagnostic(diagnostic_round, "old", 7.0,

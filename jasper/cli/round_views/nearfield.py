@@ -14,7 +14,7 @@ from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.atomic_io import read_json_mapping
-from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS, REFUSE_NO_NEAR_FIELD_TAKES
+from jasper.audio_measurement.evidence_reasons import REFUSE_NO_NEAR_FIELD_TAKES, EvidenceUnavailable
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -28,7 +28,6 @@ from ._common import (
     answer,
     default_out,
     read_run_manifest,
-    refused_by_name,
     round_inputs,
     subject,
 )
@@ -53,7 +52,7 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
     document = nearfield_view(takes, radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
                               room=room, played_graphs=graphs, banked_bands=bands)
     if not document["takes"]:
-        return refused_by_name(REFUSE_NO_NEAR_FIELD_TAKES, EVIDENCE_REASONS[REFUSE_NO_NEAR_FIELD_TAKES])
+        raise EvidenceUnavailable(REFUSE_NO_NEAR_FIELD_TAKES, {"driver_take_ids": [take["take_id"] for take in takes]})
     document["level_mismatches"] = driver_level_mismatches(manifest)
     document["parameters"] = {**document["parameters"], "level_mismatch_db": LEVEL_MISMATCH_DB}
     spec = ARTIFACT_BY_VIEW[args.command]

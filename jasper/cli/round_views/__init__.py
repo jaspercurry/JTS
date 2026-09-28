@@ -12,9 +12,7 @@ from functools import partial
 from importlib import import_module
 from typing import Sequence
 
-from jasper.active_speaker.crossover_v2.harmonic_evidence import (
-    HarmonicEvidenceRefused,
-)
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli._report import output_path
 from jasper.cli._refusal import (
     EXIT_OK,
@@ -99,13 +97,13 @@ def build_parser() -> argparse.ArgumentParser:
             "  reads two (jasper-round show lists them).\n"
             "\n"
             "EXIT CODES\n"
-            "  0  EXIT_OK -- the answer; a view that could not grade what\n"
-            "     it read says why in the answer's reason.\n"
-            "  1  EXIT_REFUSED -- the round read, and the view itself\n"
-            "     declined to grade it (a set with no 0°/0° take, rounds\n"
-            "     that share no driver's mark takes)\n"
-            "  2  EXIT_UNREADABLE -- the round or source could not be\n"
-            "     read into a comparable view\n"
+            "  0  EXIT_OK -- the answer\n"
+            "  1  EXIT_REFUSED -- the round read, and the view cannot grade\n"
+            "     its evidence; the reason names why (a set with no 0°/0°\n"
+            "     take, rounds that share no driver's mark takes, takes\n"
+            "     that banked no curves)\n"
+            "  2  EXIT_UNREADABLE -- the round or source could not be read\n"
+            "     at all\n"
             "  3  EXIT_WRITE_FAILED -- graded, but the destination could\n"
             "     not be written\n"
             "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
@@ -140,10 +138,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return failed(EXIT_REFUSED, refusal.reason, refusal.detail)
     except StageFailed as staged:
         return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged), code=getattr(staged.__cause__, "code", None))
-    except HarmonicEvidenceRefused as refusal:
-        # An instrument that refuses BY NAME publishes its own name here rather
-        # than this tool's stage bucket, and its evidence as the detail.
-        return refused_by_name(refusal.reason, refusal.evidence)
+    except EvidenceUnavailable as refusal:
+        # Its own reason, never this tool's stage bucket.
+        return refused_by_name(refusal.reason, refusal.detail)
     except _ROUND_TOOL_ERRORS as exc:
         # What no stage claimed: the round READ, and the view then declined to
         # grade it. That is the refusal exit, not an unreadable one.

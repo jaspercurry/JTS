@@ -27,6 +27,7 @@ import pytest
 
 from jasper.audio_measurement import excess_phase as ep
 from jasper.audio_measurement.deconv import magnitude_response
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.quality_model import TrustLevel
 
@@ -741,7 +742,7 @@ def test_a_ladder_that_did_not_run_never_vouches_for_a_filter():
 
 def test_a_flat_speaker_refuses_by_name(tmp_path):
     """No features is a finding with a name, never an empty artifact."""
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         _classify(tmp_path, _flat_ir())
     assert caught.value.reason == fx.NO_FEATURES_DETECTED
 
@@ -971,7 +972,7 @@ def test_the_two_ways_to_reach_no_capture_refuse_under_different_names(
         doc.update(rewrite)
         sidecar.write_text(json.dumps(doc))
 
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
 
     assert caught.value.reason == expected_reason
@@ -1024,7 +1025,7 @@ def test_a_ring_that_lost_this_rounds_takes_blames_the_ring_not_the_round_shape(
     assert round_dir is not None
     break_ring(dumps)
 
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
 
     assert caught.value.reason == fx.CAPTURES_UNREADABLE
@@ -1048,7 +1049,7 @@ def test_a_capture_whose_program_is_missing_refuses_the_whole_round(tmp_path):
     # this name, so it shares verify's hash and is invisible in the binding map.
     shutil.copy(round_dir / "verify_program.wav", round_dir / "summed_program.wav")
     (round_dir / "cloud_verify_program.wav").unlink()
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
     detail = caught.value.detail
     assert caught.value.reason == fx.PROGRAM_MISSING
@@ -1113,7 +1114,7 @@ def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
 
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
 
     assert caught.value.reason == expected_reason
@@ -1156,7 +1157,7 @@ def test_every_refusal_this_loader_raises_names_the_captures_the_ring_listed(
     assert round_dir is not None
     break_round(round_dir, dumps)
 
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
 
     assert caught.value.reason == expected_reason
@@ -1663,7 +1664,7 @@ def test_a_requested_frequency_outside_that_band_is_not_classified(tmp_path):
     round_dir, _ = round_artifact_dir(bundle)
     assert round_dir is not None
     captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.classify_round(captures, at=[15500.0])
     assert caught.value.reason == fx.NO_FEATURES_DETECTED
     assert caught.value.detail["requested"] == [15500.0]
@@ -1793,7 +1794,7 @@ def test_a_partially_banked_receipts_round_is_not_rescued_by_the_sibling(tmp_pat
     programs_dir = round_program_dir(bundle, round_dir, fx.ADMISSIBLE_PHASES)
     assert programs_dir == round_dir, "any(...) must win over the sibling"
 
-    with pytest.raises(fx.FeatureClassificationRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         fx.load_round_captures(programs_dir, dumps, session_id=SESSION_ID)
     assert caught.value.reason == fx.PROGRAM_MISSING
     assert caught.value.detail["phases"] == ["cloud_verify"]

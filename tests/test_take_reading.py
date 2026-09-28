@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import capture_prediction
-from jasper.active_speaker.crossover_v2.round_captures import PoseCapture, RoundCapturesRefused
+from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, decay_report,
     group_delay_report, read_preview,
@@ -76,7 +77,7 @@ def test_both_sides_are_read_through_the_shorter_take_window_unless_one_is_named
 
 
 def test_sides_that_share_no_trusted_band_are_refused_by_name():
-    with pytest.raises(RoundCapturesRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         compare_report(_take("t1", band=(100.0, 300.0)), _take("t2", band=(2000.0, 8000.0)))
     assert refused.value.reason == REFUSE_COMPARE_NO_COMMON_BAND
 

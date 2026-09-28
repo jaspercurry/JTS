@@ -17,11 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.candidate_ladder import (
-    REFUSE_NO_LADDER,
-    CandidateLadderRefused,
-    candidate_ladder,
-)
+from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER, candidate_ladder
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key
 from jasper.active_speaker.frequency_view import (
@@ -29,7 +25,7 @@ from jasper.active_speaker.frequency_view import (
 )
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.measurement_programs import run_preset
-from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
+from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, EvidenceUnavailable
 
 from tests.crossover_v2_banked_round import bank_measure_round
 # The banked-take writer the round-views suite already owns, consumed rather
@@ -328,7 +324,7 @@ def test_the_ladder_refuses_a_round_no_pose_of_which_played_two_configs(tmp_path
     The refusal counts what it did see, so a round that walked no ladder is
     told apart from one whose takes named no config at all.
     """
-    with pytest.raises(CandidateLadderRefused) as refusal:
+    with pytest.raises(EvidenceUnavailable) as refusal:
         _ladder(bank_measure_round(tmp_path))
 
     assert refusal.value.reason == REFUSE_NO_LADDER

@@ -34,10 +34,8 @@ from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_p
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 
 from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
-from jasper.active_speaker.crossover_v2.feature_classifier import (
-    FeatureClassificationRefused,
-    load_round_captures,
-)
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     DERIVED_VIEWS,
     HARMONICS_ARTIFACT,
@@ -412,10 +410,10 @@ def test_the_crossover_corner_is_read_from_the_applied_profile_not_a_flag():
     """
     assert he._crossover_fc_hz(_applied_profile(), "") == pytest.approx(1648.7)
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he._crossover_fc_hz({}, "")
     assert excinfo.value.reason == he.STATE_UNREADABLE
-    assert "fc_hz" in excinfo.value.evidence["missing"]
+    assert "fc_hz" in excinfo.value.detail["missing"]
 
 
 def test_the_corner_reports_absent_with_reason_never_a_stash_fallback():
@@ -427,16 +425,16 @@ def test_the_corner_reports_absent_with_reason_never_a_stash_fallback():
     the SSOT (or the reason there is none) directly and has no stash to fall
     back to even if it wanted one.
     """
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he._crossover_fc_hz(None, "no applied baseline profile was supplied")
     assert excinfo.value.reason == he.STATE_UNREADABLE
-    assert excinfo.value.evidence["reason"] == "no applied baseline profile was supplied"
+    assert excinfo.value.detail["reason"] == "no applied baseline profile was supplied"
 
 
 @pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), True, "1648.7", None])
 def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
     """``True`` is an ``int`` in Python and would otherwise pass as 1 Hz."""
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he._crossover_fc_hz({
             "recomposition_snapshot": {
                 "preset": {"crossover_regions": [{"fc_hz": value}]}
@@ -446,7 +444,7 @@ def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
 
 
 def test_a_state_without_a_gain_plan_refuses_by_name():
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.rebuild_measure_program(_state(gain_plan_db={"woofer": -6.0}), he_bands(), {"not-a-real-id"})
     assert excinfo.value.reason == he.STATE_UNREADABLE
 
@@ -460,11 +458,11 @@ def test_a_program_that_cannot_prove_itself_is_refused_not_read():
     refusal is what a wrong band pair produces, rather than a reading taken
     through the wrong sweep L.
     """
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.rebuild_measure_program(_state(), he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["stimulus_ids"] == ["not-a-real-i"]
+    assert excinfo.value.detail["stimulus_ids"] == ["not-a-real-i"]
 
 
 def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_path):
@@ -473,7 +471,7 @@ def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_p
     ring.mkdir(parents=True)
     (ring / "1_verify_x.json").write_text(json.dumps({"phase": "verify"}))
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.read_round_harmonics(
             tmp_path, tmp_path / "dumps", _state(), he_bands(),
             applied_profile_path=_write_applied_profile(tmp_path),
@@ -580,13 +578,13 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     """
     program = _fitted_program_at(-20.0)
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.rebuild_measure_program(_state(), he_bands(), {program.stimulus_id})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
-    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
-    assert excinfo.value.evidence["causes"] == ["sweep_durations_unbanked", "bands_wrong", "not_a_measure_round"]
+    assert excinfo.value.detail["measure_sweep_durations_banked"] is False
+    assert excinfo.value.detail["measure_sweep_durations_usable"] is False
+    assert excinfo.value.detail["causes"] == ["sweep_durations_unbanked", "bands_wrong", "not_a_measure_round"]
 
 
 @pytest.mark.parametrize("raw", [
@@ -680,13 +678,13 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
         measure_sweep_durations_s={"woofer": floor_s * 0.5, "tweeter": 3.0}
     )
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.rebuild_measure_program(state, he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
-    assert excinfo.value.evidence["measure_sweep_durations_usable"] is False
-    assert excinfo.value.evidence["causes"][0] == "sweep_durations_unusable"
+    assert excinfo.value.detail["measure_sweep_durations_banked"] is True
+    assert excinfo.value.detail["measure_sweep_durations_usable"] is False
+    assert excinfo.value.detail["causes"][0] == "sweep_durations_unusable"
 
 
 # --------------------------------------------------------------------------- #
@@ -745,13 +743,13 @@ def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
     assert durations is not None
     state = _state(measure_sweep_durations_s=durations)
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
-    assert excinfo.value.evidence["measure_sweep_durations_usable"] is True
-    assert excinfo.value.evidence["causes"][0] == "banked_sweep_durations_wrong"
+    assert excinfo.value.detail["measure_sweep_durations_banked"] is True
+    assert excinfo.value.detail["measure_sweep_durations_usable"] is True
+    assert excinfo.value.detail["causes"][0] == "banked_sweep_durations_wrong"
 
 
 def test_a_sidecar_carrying_no_gate_field_is_refused_rather_than_read_ungated():
@@ -830,7 +828,7 @@ def test_both_readers_of_the_capture_ring_take_the_same_directory(tmp_path):
     # The classifier refuses this ring — one non-admissible capture is not a
     # round — but its refusal COUNTS what the glob found, which is the half
     # being pinned here.
-    with pytest.raises(FeatureClassificationRefused) as refusal:
+    with pytest.raises(EvidenceUnavailable) as refusal:
         load_round_captures(round_dir, ring, session_id="mine")
     assert refusal.value.detail["phases_seen"] == {"measure": 1}
     assert refusal.value.detail["dumps_dir"] == ring.name
@@ -861,14 +859,14 @@ def test_an_unscoped_ring_holding_several_sessions_refuses_instead_of_pooling(tm
         ("2_measure_b", "bbb", "session-two"),
     ])
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he._scope_captures(he._bind_measure_captures(ring), None)
 
     assert excinfo.value.reason == he.RING_NOT_SCOPED_TO_ONE_SESSION
-    assert excinfo.value.evidence["distinct_session_ids"] == [
+    assert excinfo.value.detail["distinct_session_ids"] == [
         "session-one", "session-two",
     ]
-    assert "amplitude-invariant" in excinfo.value.evidence["note"]
+    assert "amplitude-invariant" in excinfo.value.detail["note"]
 
 
 def test_an_unscoped_ring_holding_an_unattributable_capture_refuses(tmp_path):
@@ -883,11 +881,11 @@ def test_an_unscoped_ring_holding_an_unattributable_capture_refuses(tmp_path):
         ("2_measure_b", "bbb", None),
     ])
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         he._scope_captures(he._bind_measure_captures(ring), None)
 
     assert excinfo.value.reason == he.RING_NOT_SCOPED_TO_ONE_SESSION
-    assert excinfo.value.evidence["n_unattributed"] == 1
+    assert excinfo.value.detail["n_unattributed"] == 1
 
 
 def test_an_unscoped_ring_of_one_session_is_admitted_and_says_so(tmp_path):
@@ -982,7 +980,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     # declares, is REFUSED by name — never composed as a pair nobody measured,
     # and never quietly reduced to the roles that happen to match.
     for state in ({}, {"gain_plan_db": {"woofer": -6.0, "horn": -31.2}}):
-        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        with pytest.raises(EvidenceUnavailable) as excinfo:
             he.round_bands_hz(state, overrides)
         assert excinfo.value.reason == he.STATE_UNREADABLE
     # And the verb publishes that named refusal as the refused exit, rather
@@ -1274,14 +1272,14 @@ def test_harmonic_drive_requires_this_takes_program_and_source(harmonic_capture,
     else:
         document["provenance"]["stimulus"]["wav_sha256"] = "f" * 64
     sidecar.write_text(json.dumps(document))
-    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         read(state)
     if reason is None:
         # A gain plan that cannot rebuild the stimulus the take recorded proves nothing.
         assert refused.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     else:
         assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
-        assert refused.value.evidence["refused"][0]["reason"] == reason
+        assert refused.value.detail["refused"][0]["reason"] == reason
 
 
 @pytest.mark.parametrize("fault,reason", [("changed", "capture_wav_mismatch"), ("missing", "capture_wav_missing")])
@@ -1360,12 +1358,12 @@ def test_a_round_whose_takes_banked_a_superseded_program_schema_names_it(harmoni
     document["provenance"]["stimulus"]["stimulus_id"] = "0" * 64
     sidecar.write_text(json.dumps(document))
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         read()
 
     assert refused.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert refused.value.evidence["causes"] == ["program_schema_superseded"]
-    assert refused.value.evidence["recorded_program_schema_versions"] == [1]
+    assert refused.value.detail["causes"] == ["program_schema_superseded"]
+    assert refused.value.detail["recorded_program_schema_versions"] == [1]
 
 
 def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmonic_capture):
@@ -1373,11 +1371,11 @@ def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmo
     del document["provenance"]["stimulus"]
     sidecar.write_text(json.dumps(document))
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         read()
 
     assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
-    assert [take["reason"] for take in refused.value.evidence["refused"]] == ["stimulus_id_unrecorded"]
+    assert [take["reason"] for take in refused.value.detail["refused"]] == ["stimulus_id_unrecorded"]
 
 
 @pytest.mark.parametrize("old,new_key_takes,readable", [
@@ -1409,9 +1407,9 @@ def test_a_take_banked_under_the_old_key_is_refused_as_superseded(
         refused = captures["refused"]
         assert sorted(take["take_id"] for take in captures["read"]) == readable
     else:
-        with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
+        with pytest.raises(EvidenceUnavailable) as excinfo:
             read()
-        refused = excinfo.value.evidence["refused"]
+        refused = excinfo.value.detail["refused"]
     assert [(take["take_id"], take["reason"]) for take in refused] == [
         (document["take_id"], "program_schema_superseded")]
 

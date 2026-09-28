@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import (
     FEATURE_HALF_OCT,
     NEIGHBOURHOOD_OCT,
@@ -44,7 +45,6 @@ from ..gate_sweep import (
 from ..round_captures import (
     REFUSE_RADIATED_BAND_MISSING,
     PoseCapture,
-    RoundCapturesRefused,
 )
 from .captures import (
     RoundCapture,
@@ -191,7 +191,7 @@ def _sweep_ladder(
         )
     try:
         swept = sweep_features(poses, rungs_ms=rungs, at_hz=list(features))
-    except RoundCapturesRefused as refusal:
+    except EvidenceUnavailable as refusal:
         return {}, frame, banked_poses, {"reason": refusal.reason, **refusal.detail}
     except ValueError as exc:
         # Anything else the engine's own input check refuses -- today only a bin off

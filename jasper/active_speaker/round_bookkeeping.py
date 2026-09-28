@@ -9,11 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
-from .crossover_v2.round_captures import RoundCapturesRefused
 from .crossover_v2.room_prescription import RoomPrescriptionRefused
 from .crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused, default_out, round_inputs
-from .measurement_analysis import MeasurementAnalysisRefused
 from .round_inventory import inventory_payload, inventory_summary
 from .round_view_artifacts import ARTIFACT_BY_VIEW, REASON_UNREADABLE, REASON_UNWRITABLE
 from .round_view_builders import (
@@ -59,14 +58,12 @@ def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
         inputs = round_inputs(target)
         path = default_out(inputs, target, row.artifact, set_id)
         payload, summary = getattr(import_module(f".{module}", __package__), builder)(inputs, target, set_id, incumbent)
-    except (RoundSetRefused, RoundCapturesRefused, RoomPrescriptionRefused) as exc:
+    except (RoundSetRefused, EvidenceUnavailable, RoomPrescriptionRefused) as exc:
         return {"view": view, "status": "unavailable", "reason": exc.reason, "detail": exc.detail}
     except CrossoverV2Refused as exc:
         _, action = refusal_copy_for(exc.code)
         return {"view": view, "status": "unavailable", "reason": exc.code, "code": exc.code,
                 "detail": str(exc), "next_action": action}
-    except MeasurementAnalysisRefused as exc:
-        return {"view": view, "status": "unavailable", "reason": exc.code, "detail": str(exc)}
     except ROUND_INPUT_ERRORS as exc:
         return {"view": view, "status": "unavailable", "reason": REASON_UNREADABLE, "detail": str(exc)}
     try:

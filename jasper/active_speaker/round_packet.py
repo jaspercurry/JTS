@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
@@ -197,7 +198,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:
                 render_frequency_view(view, target / PICTURE_FILENAME)
-    except ROUND_INPUT_ERRORS + (ImportError,) as exc:
+    except ROUND_INPUT_ERRORS + (ImportError, EvidenceUnavailable) as exc:
         errors.append({"artifact": "frequency", "reason": getattr(exc, "reason", "frequency_unavailable")})
     if (target / PICTURE_FILENAME).is_file():
         artifacts["frequency_png"] = str(target / PICTURE_FILENAME)

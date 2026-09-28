@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from .frequency import add_image_args, render_image
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -26,7 +25,6 @@ from ._common import (
     add_rungs_ms_argument,
     add_set_argument, answer,
     omitted_note,
-    refused_by_name,
     resolved_out,
     subject,
 )
@@ -43,16 +41,12 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
     manifest = read_run_manifest(inputs)
     selected = resolve_set(inputs, args.set, manifest=manifest) if args.set else None
     role = selected.role if selected else "summed"
-    try:
-        report = stage(
-            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
-            rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
-            candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids if selected else None,
-            role=role,
-        )
-    except RoundCapturesRefused as exc:
-        # The ladder's own named refusal, never the resolver's coarser bucket.
-        return refused_by_name(exc.reason, exc.detail)
+    report = stage(
+        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, sweep_round, round_dir,
+        rungs_ms=args.rungs_ms, at_hz=args.at_hz or (),
+        candidate_id=args.candidate, graph_fingerprint=args.graph, take_ids=selected.selected_ids if selected else None,
+        role=role,
+    )
     spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
     written = _write(report, args.out, resolved_out(round_dir, spec.artifact, args.set), schema=spec.schema)
     return answer(
@@ -81,10 +75,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
 
 def _cmd_windows(args: argparse.Namespace) -> int:
     take_subject, take_id, role = resolve_set_take(Path(args.round_dir), args.set, args.take, args.role)
-    try:
-        report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=role)
-    except RoundCapturesRefused as exc:
-        return refused_by_name(exc.reason, exc.detail)
+    report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=role)
     spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
     written = _write(report, args.out, resolved_out(Path(args.round_dir), spec.artifact, args.set), schema=spec.schema)
     run, = report["runs"]

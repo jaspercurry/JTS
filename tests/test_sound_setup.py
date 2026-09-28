@@ -6249,7 +6249,7 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
     from unittest.mock import AsyncMock
     from jasper.active_speaker import rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
-    from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+    from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 
     if failure == "rear":
         compare_evidence[1]["recomposition_snapshot"].clear()
@@ -6258,7 +6258,7 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
     elif failure == "range":
         monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
     elif failure == "preview":
-        monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=RoundCapturesRefused("refused", {})))
+        monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=EvidenceUnavailable("refused", {})))
     elif failure == "selector":
         monkeypatch.setattr(readers, "newest_rear_pair_round", Mock(side_effect=LookupError()))
     else:
