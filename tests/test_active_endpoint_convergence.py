@@ -200,7 +200,7 @@ def test_the_width_gate_does_not_refuse_the_graph_it_has_not_moved_yet():
         },
     )
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="", graph=unmoved)
+    ok, detail = ring_edge_width_ready(outputd_text="", graph=unmoved)
 
     assert ok is True, detail
     assert "names no ring PCM" in detail

@@ -800,85 +800,28 @@ _S32_RING_PLAYBACK_CFG = _S16_RING_PLAYBACK_CFG.replace(
 )
 
 
-def _pin_ring_wire_narrow(monkeypatch, tmp_path):
-    """Pin this box's ring wire to the NARROW token via the operator lever.
-
-    ``JASPER_FANIN_RING_WIRE_FORMAT`` is the only way a box declares S16_LE
-    since the resolver's default went WIDE (PR #2601) — nothing else in the
-    repo writes it (``jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR``).
-    Isolated to a tmp ``fanin.env``, the FIRST file the resolver's chain reads,
-    so the pin neither leaks from nor needs the developer host's real
-    ``/var/lib/jasper/fanin.env``.
-    """
-    # Imported BEFORE the patch below: it copies env_load's constants at import
-    # time, so importing it inside the patched window would bake in the tmp path.
-    import jasper.fanin.coupling_reconcile  # noqa: F401
-    import jasper.fanin.ring_readiness as ring_readiness
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
-
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
-    monkeypatch.setattr(ring_readiness, "FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-
-
-def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide_box(
+def test_playback_format_ok_for_the_fixed_wide_ring(
     monkeypatch, tmp_path
 ):
-    """AN ARMED RING IS ``type: Alsa`` — the File split alone does NOT cover it.
-
-    Its width comes from resolve_ring_wire through the coupling's own kwargs (the
-    PR-6 ring ruling), so a ring config at the ring's OWN resolved width is
-    HEALTHY even when the general lane wants something else. Keyed
-    on the ring's playback device, this must be green; keyed only on the File
-    type, it red-lines every armed-ring box — including the certified-latency USB
-    box, whose canary criterion is literally "doctor green" — with a remediation
-    that regenerates the identical config.
-
-    SINCE THE RING-WIRE DEFAULT FLIP, an UNDECLARED box's ring resolves S32_LE
-    too — the same value as ``DEFAULT_PLAYBACK_FORMAT`` — so the two lanes no
-    longer differ for free the way they did when narrow was the resolver's
-    default. ``_pin_ring_wire_narrow`` declares the operator lever
-    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) so the ring resolves narrow
-    while the general (loopback) lane stays wide, recreating the
-    two-lanes-can-legitimately-differ shape this test exists to prove.
-    """
+    """The armed ring uses its fixed S32 program format."""
     from jasper.fanin_coupling import (
         DEFAULT_PLAYBACK_FORMAT,
         RING_PLAYBACK_DEVICE,
         resolve_ring_wire,
     )
 
-    _pin_ring_wire_narrow(monkeypatch, tmp_path)
-    assert resolve_ring_wire().sample_format != DEFAULT_PLAYBACK_FORMAT
-    assert RING_PLAYBACK_DEVICE in _S16_RING_PLAYBACK_CFG
-    res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
+    assert resolve_ring_wire().sample_format == DEFAULT_PLAYBACK_FORMAT
+    assert RING_PLAYBACK_DEVICE in _S32_RING_PLAYBACK_CFG
+    res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
     assert res.status == "ok"
     assert res.reason == ""
 
 
-def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
+def test_playback_format_fails_on_a_ring_config_that_drifted_narrow(
     monkeypatch, tmp_path
 ):
-    """The ring split must not become "any ring device auto-passes": a config
-    declaring a width the box's resolved ring wire does not carry is a genuinely
-    broken box and stays red — even though S32 is what the loopback lane wants
-    (and, since the ring-wire default flip, what an UNDECLARED box's ring
-    resolves to as well), which is exactly the confusion the three-way split
-    has to get right.
-
-    This is the check that has to catch it, because the ring LAYOUT accepts both
-    S16LE and S32LE: a config drifted to the other one is inside the accept-set,
-    so the attach would not refuse it — the ends would simply be built to
-    different widths.
-
-    ``_pin_ring_wire_narrow`` declares this box's ring wire S16_LE (the
-    operator lever) so the S32_LE config below is a genuine drift again — on an
-    undeclared box the same config would simply match the new default and there
-    would be nothing here to catch.
-    """
-    _pin_ring_wire_narrow(monkeypatch, tmp_path)
-    res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
+    """A stale narrow graph must not pass merely because its device is a ring."""
+    res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
     assert res.status == "fail"
     assert res.reason == audio_runtime_camilla.REASON_PLAYBACK_FORMAT_MISMATCH
 
@@ -927,9 +870,7 @@ def test_expected_playback_format_names_one_owner_per_lane(monkeypatch, tmp_path
         resolve_ring_wire,
     )
 
-    _pin_ring_wire_narrow(monkeypatch, tmp_path)
     ring_wire = resolve_ring_wire().sample_format
-    assert ring_wire != DEFAULT_PLAYBACK_FORMAT
 
     assert audio_runtime_camilla._expected_playback_format("File", None) == (
         DEFAULT_PIPE_SINK_FORMAT,

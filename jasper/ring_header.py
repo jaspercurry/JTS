@@ -80,8 +80,7 @@ MAX_RING_CHANNELS = 8
 RING_SAMPLE_FORMAT_S16LE = 1
 RING_SAMPLE_FORMAT_S32LE = 2
 # Header sample_format id -> the ALSA format token the conf.d and the emitters
-# spell. ``jasper.fanin_coupling`` owns that token vocabulary; this map is how a
-# header byte is named in a human-readable mismatch detail.
+# spell. This protocol map also names stale or mismatched narrow headers.
 RING_SAMPLE_FORMAT_NAMES = {
     RING_SAMPLE_FORMAT_S16LE: "S16_LE",
     RING_SAMPLE_FORMAT_S32LE: "S32_LE",

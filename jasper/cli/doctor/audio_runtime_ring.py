@@ -469,17 +469,11 @@ def check_ring_platform_assets() -> CheckResult:
 
 
 def _resolved_ring_wire():
-    """The ring wire an arm would render into the conf.d, or ``None``.
-
-    The same two calls the arm's own capability gate makes
-    (:func:`jasper.fanin.ring_readiness.ring_wire_caps_ready`). ``None`` when
-    the box declares a wire neither language recognizes; that refusal is
-    ``resolve_wire_for_gate``'s to report.
-    """
+    """The ring wire an arm would render, or None when evidence is unavailable."""
     try:
-        from ...fanin.ring_readiness import resolve_wire_for_gate
+        from ...fanin_coupling import resolve_ring_wire
 
-        wire, _problem = resolve_wire_for_gate(evidence.saved_topology_for_wire())
+        wire = resolve_ring_wire(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
         return None
     return wire
@@ -487,34 +481,11 @@ def _resolved_ring_wire():
 
 @doctor_check()
 def check_ring_ioplug_provenance() -> CheckResult:
-    """Is the INSTALLED ioplug the one the installer built, and what can it parse?
+    """Prove that the installed plugin supports the fixed program wire.
 
-    ``check_ring_platform_assets`` reports presence and its open-probe passes on
-    any structurally-valid plugin, so a STALE ``.so`` (the ioplug build degrades
-    to a WARN and leaves the previous one installed) reads ``ok`` there. The
-    installer records the sha and conf.d fields of the plugin it installed, and
-    revokes that record on every path where it did NOT produce the installed
-    file.
-
-    THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that decides whether an
-    unvouched plugin costs anything:
-
-    * a wire that renders no conf.d field beyond the ioplug's own defaults needs
-      nothing from any installed plugin, so "cannot vouch" and "stale" are
-      informational ``ok`` rows carrying their reason;
-    * a wire that declares a non-default sample FORMAT is refused at the arm by
-      ``ring_wire_caps_ready``, which is a ``fail``: a stale/mismatched ioplug
-      otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at ``open()``
-      against the ring, and the manual
-      ``jasper-fanin-coupling-reconcile shm_ring`` remedy skips that gate.
-
-    SCOPE: ``ring_wire_capabilities`` answers which keys the WIRE forces onto the
-    conf.d, not which keys the conf.d on disk declares, so a box pinned narrow
-    resolves an empty capability set while its rendered conf.d still carries a
-    ``format`` line (#2597).
-
-    Skips when the ``.so`` is absent: that is ``check_ring_platform_assets``'s
-    missing-asset verdict.
+    A missing/stale record or missing format capability refuses the arm.
+    If topology evidence cannot be read, report the record alone without
+    claiming wire support. Missing plugins belong to the asset check.
     """
     label = "ring ioplug provenance"
     so_path = ring_assets.ring_ioplug_so_path(plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR)

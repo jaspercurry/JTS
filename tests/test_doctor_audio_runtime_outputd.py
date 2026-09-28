@@ -447,15 +447,7 @@ def test_the_alsa_jitter_floor_applies_to_exactly_the_alsa_class(shape, expect_f
 
 
 def test_buffer_health_passes_when_the_attached_wire_matches():
-    """POSITIVE CONTROL. On the box's default (undeclared) wire the comparison
-    is silent, so the two failure pins below are proving a branch rather than a
-    broken happy path.
-
-    ``fmt="S32_LE"`` because the resolver's default went WIDE
-    (``jasper.fanin_coupling.resolve_ring_wire_format``): an undeclared box —
-    this test stubs neither the wire nor the env chain — now resolves S32_LE,
-    not the C ioplug's compiled-in S16_LE.
-    """
+    """An attached wide ring with matching geometry passes."""
     result = _buffer_health(_outputd_ring_status(fmt="S32_LE"))
     assert isinstance(result, str), result
     assert "shm_ring_wire=S32_LE/2ch" in result

@@ -846,25 +846,6 @@ def _stub_ring_ioplug_wire_supported(monkeypatch) -> None:
     )
 
 
-def _pin_narrow_ring_wire() -> None:
-    """Declare this box's ring wire NARROW via the isolated FANIN_ENV_PATH.
-
-    :data:`~jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR` is the operator's
-    rollback lever — nothing in the repo writes it in production (see its module
-    docstring in ``jasper/fanin_coupling.py``); the only way a box carries it is
-    a human decision. Writing it here reproduces exactly that decision for a test
-    whose SUBJECT is the resolved wire itself, called with no fanin.env of its
-    own to declare it in. Mirrors ``_declared_wire`` in
-    ``tests/test_ring_ioplug_provenance.py``.
-    """
-    import jasper.env_load as env_load
-    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
-
-    Path(env_load.FANIN_ENV_PATH).write_text(
-        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
-    )
-
-
 def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_present):
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
@@ -887,12 +868,7 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
 
 
 def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
-    """Simulate the shm_ring coupling losing its narrow-lane override.
-
-    ``playback_format=None`` drops the key entirely (someone deleted the
-    override, so the emitter falls back to the box-wide default); a string sets
-    it to a width the ring cannot carry. Patches the module attribute
-    ``content_lane_format_for_coupling`` actually calls."""
+    """Simulate an emitted format that differs from the program wire."""
     import jasper.fanin_coupling as coupling
 
     real = coupling.capture_kwargs_for_coupling
@@ -910,52 +886,20 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
     monkeypatch.setattr(coupling, "capture_kwargs_for_coupling", broken)
 
 
-def test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box_because_the_coupling_narrows():
-    """THE RULING (wide-output-path PR-6), re-pointed at its post-flip subject.
+def test_ring_edge_width_ready_passes_on_the_fixed_wide_wire():
+    """The fixed program wire agrees at every declaring end."""
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
 
-    A ring-coupled box can keep its ring at coherent S16 even though the box-wide
-    program lane is S32, because the shm_ring coupling's kwargs FORCE the emitted
-    lane to whatever :func:`resolve_ring_wire` resolves. That resolver's DEFAULT
-    went wide too (PR #2601), so an UNDECLARED box no longer demonstrates the
-    ruling — its ring resolves S32_LE right along with the box-wide lane, and
-    nothing narrows. The one shape left where the two constants are genuinely
-    different is an operator's narrow pin
-    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`` — the rollback lever; nothing in
-    the repo writes it). Pinning it here is what still exercises the ruling: the
-    gate must PASS with ``DEFAULT_PLAYBACK_FORMAT`` and the pinned wire genuinely
-    different, the state the pre-PR-6 constant comparison would have refused on
-    every ring-eligible box, including jts.local and its certified USB-route
-    latency artifact."""
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT
-
-    _pin_narrow_ring_wire()
-    assert DEFAULT_PLAYBACK_FORMAT == "S32_LE"
-    assert RING_WIRE_FORMAT == "S16_LE"
-    assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     ok, detail = ring_edge_width_ready()
     assert ok is True
-    assert "S16_LE" in detail
+    assert RING_WIRE_FORMAT_WIDE in detail
 
 
-@pytest.mark.parametrize("broken_format", [None, "S32_LE"])
-def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
-    monkeypatch, broken_format
+def test_ring_edge_width_ready_refuses_a_narrow_emitted_stanza(
+    monkeypatch
 ):
-    """The invariant the gate now guards: if the coupling ever stops forcing the
-    ring's own wire format — the key dropped, or repointed at a wider one —
-    arming would mis-transcode every sample, so refuse with a reason naming both
-    widths AND the function that must do the forcing.
-
-    Pinned NARROW first (see
-    ``test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box...``):
-    on an undeclared box the coupling's kwargs override and the box-wide default
-    it falls back to are the SAME wide token now, so breaking the override would
-    leave every declaring end agreeing by accident and this test would prove
-    nothing. The pin is what makes "the override stopped forcing narrow" and
-    "the box is wide anyway" two different, distinguishable states again.
-    """
-    _pin_narrow_ring_wire()
-    _break_ring_kwargs_override(monkeypatch, playback_format=broken_format)
+    """An emitted format differing from the fixed wire must refuse arming."""
+    _break_ring_kwargs_override(monkeypatch, playback_format="S16_LE")
     ok, detail = ring_edge_width_ready()
     assert ok is False
     assert "S32_LE" in detail
@@ -976,23 +920,7 @@ def _ring_conf(
     period_frames: int = 128,
     sample_format: str = "S32_LE",
 ):
-    """Write a ring conf.d with a configurable jts_ring_capture n_slots.
-
-    period_frames stays 128 (the Apple-dongle floor) so the SEPARATE period gate
-    passes when outputd's env carries JASPER_OUTPUTD_PERIOD_FRAMES=128; these tests
-    isolate the slot axis.
-
-    ``sample_format`` defaults to ``S32_LE`` — the token the SHIPPED conf.d now
-    spells explicitly in every block (``deploy/alsa/conf.d/60-jts-ring.conf``).
-    Without a ``format`` line here, an UNDECLARED box's ground-truth wire
-    (``resolve_ring_wire_format``, wide by default) would disagree with this
-    hand-rolled conf.d's implicit ioplug-default declaration — an omitted
-    ``format`` key still declares a wire, just the narrow one
-    (``jasper.ring_conf.ring_conf_format``'s absent-means-default contract) —
-    tripping ``ring_edge_width_ready`` for a reason unrelated to whatever axis
-    (slots/period) the calling test actually isolates. Pass ``"S16_LE"`` for a
-    test that means to reproduce an operator's narrow-pinned box instead.
-    """
+    """Render isolated conf.d geometry; omitted format uses the shipped S32 wire."""
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
         f"pcm.jts_ring_capture {{\n    period_frames {period_frames}\n"

@@ -14,7 +14,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     POST_DSP_PLAYBACK_DEVICES,
 )
-from jasper.fanin.ring_readiness import load_topology_for_wire, resolve_wire_for_gate
+from jasper.fanin.ring_readiness import load_topology_for_wire
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
@@ -35,6 +35,7 @@ from jasper.fanin_coupling import (
     outputd_content_is_central_ring,
     resolve_outputd_ring_path,
     resolve_ring_path,
+    resolve_ring_wire,
     ring_active_endpoint_armed,
 )
 from jasper.multiroom.dac_content_ring import (
@@ -90,18 +91,9 @@ def transport_topology_for_coupling(
     # ACTIVE ring's width, which only the ring arm publishes. Every other axis —
     # the format, Ring A's width, Ring B's — is topology-free, so the other
     # arms answer for the shipped geometry without touching the disk.
-    #
-    # Through the GATE resolver, never `resolve_ring_wire` directly. This layer
-    # DESCRIBES a box for read-only surfaces (`jasper-audio-config explain`,
-    # jasper-doctor); a wire token neither language parses would otherwise raise
-    # through them and replace the whole verdict with a traceback. The two wire
-    # axes go UNKNOWN instead, which every comparison in
-    # :func:`transport_coherence_report` already treats as missing evidence, and
-    # the bad declaration keeps its loud owners: fan-in parks at exit 78 and the
-    # doctor's ring-wire check names the token.
     read = read_saved_topology or load_topology_for_wire
-    wire, _ = resolve_wire_for_gate(read() if active_endpoint and on_ring else None)
-    wire_format = wire.sample_format if wire is not None else None
+    wire = resolve_ring_wire(read() if active_endpoint and on_ring else None)
+    wire_format = wire.sample_format
     # Ring A (fan-in -> CamillaDSP, jts_ring_capture). Its wire comes from the
     # one resolver every declaring end reads, so /state reports the geometry the
     # ring is actually built to rather than a literal that can disagree with it.
@@ -111,7 +103,7 @@ def transport_topology_for_coupling(
         "writer": "jasper-fanin",
         "camilla_capture_device": RING_CAPTURE_DEVICE,
         "format": wire_format,
-        "channels": wire.ring_a_channels if wire is not None else None,
+        "channels": wire.ring_a_channels,
         "sample_rate": DEFAULT_SAMPLE_RATE,
     }
     if dac_content_lane:
@@ -144,12 +136,10 @@ def transport_topology_for_coupling(
         )
         if active_endpoint:
             post_dsp_device = RING_ACTIVE_PLAYBACK_DEVICE
-            post_dsp_channels: int | None = (
-                wire.ring_active_channels if wire is not None else None
-            )
+            post_dsp_channels: int | None = wire.ring_active_channels
         else:
             post_dsp_device = RING_PLAYBACK_DEVICE
-            post_dsp_channels = wire.ring_b_channels if wire is not None else None
+            post_dsp_channels = wire.ring_b_channels
         return TransportTopology(
             name=TRANSPORT_SHM_RING_ACTIVE if active_endpoint else COUPLING_SHM_RING,
             fanin_to_camilla=fanin_to_camilla,

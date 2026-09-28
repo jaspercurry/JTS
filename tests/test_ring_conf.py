@@ -335,15 +335,7 @@ def test_render_ring_conf_wire_raises_on_a_missing_conf(tmp_path):
 
 
 def test_shipped_conf_spells_format_and_declares_channels_by_omission(tmp_path):
-    """The shipped file SPELLS the wide format and still omits `channels`.
-
-    The two keys are deliberately asymmetric now. `channels` is omitted because
-    the shipped stereo width IS the ioplug's compiled-in default, so silence
-    declares it. `format` is spelled because the resolver's default went wide
-    (`resolve_ring_wire_format`) while the plugin's own default stayed `S16_LE`
-    — silence there would declare the OPPOSITE of what every other end of the
-    ring resolves, on any box whose conf.d is never re-rendered.
-    """
+    """The shipped wire is S32; omitted channels keep the C stereo default."""
     conf = _shipped_conf_copy(tmp_path)
     text = conf.read_text(encoding="utf-8")
     assert text.count("\n    format S32_LE") == len(ring_conf.RING_CONF_PCMS)

@@ -148,10 +148,8 @@ pub struct OutputdState {
     sched_policy: OnceLock<String>,
     /// The DECLARED wire of the post-DSP content hop — the RING's wire, which
     /// `ShmRingSource` builds its geometry from (`Config::content_format`). The
-    /// reconciler (`jasper-audio-hardware-reconcile`) emits `S32_LE` by
-    /// default, since the ring wire's resolver defaults wide; `S16_LE` means an
-    /// unreconciled box, or one pinned narrow
-    /// (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`).
+    /// reconciler (`jasper-audio-hardware-reconcile`) emits `S32_LE`,
+    /// the fixed program wire; `S16_LE` means an unreconciled box.
     ///
     /// It is the whole answer for `content.format`: nothing here negotiates,
     /// because the ring's own attach is what validates the declaration against
