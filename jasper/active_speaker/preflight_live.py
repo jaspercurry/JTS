@@ -24,13 +24,14 @@ from .anchor_provenance import read_graph, read_pose
 from .movers import MOVER_ARM
 from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
-from .candidate_parts import candidate_from_applied_profile, room_layer_charge_db
+from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
+from .measurement_emit import load_tuning_declaration, room_layer_charge_db
 from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
@@ -67,7 +68,8 @@ def read_preflight_facts(
             state = load_applied_baseline_profile_state() or {}
             applied = candidate_from_applied_profile(context.topology, state)
             applied_bass_extension, applied_room_peqs = applied.bass_extension, candidate_room_peqs(applied)
-            applied_room_charge_db = room_layer_charge_db(applied)
+            if applied_room_peqs:
+                applied_room_charge_db = room_layer_charge_db(load_tuning_declaration(context.topology), applied)
         except (OSError, RuntimeError, ValueError, LookupError):
             # No applied profile has no room layer; one that cannot be read has an unknown one.
             applied_room_peqs = () if state is not None and state.get("status") != "applied" else None
