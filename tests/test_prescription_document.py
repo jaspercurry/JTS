@@ -448,6 +448,42 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     assert len(banked_candidates(root=bank)) == (1 if verb == "judge" else 2)
 
 
+def test_a_section_authored_without_its_envelope_is_judged_and_carries_the_rationale_its_reader_names(
+    base, evidence, bass_packet,
+):
+    evidence = replace(evidence, sources={**deepcopy(dict(evidence.sources)), "receipt": _receipt()})
+    authored = {
+        "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 2}], dict(evidence.packet)),
+        "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
+        "alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
+        "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
+        "room": room_document(), "bass": bass_document(bass_packet),
+    }
+    raw = document(base.fingerprint, {name: {key: value for key, value in section.items()
+                                             if key not in ("kind", "artifact_schema_version", "rationale")}
+                                      for name, section in authored.items()})
+
+    judged = judge_prescription_document(raw, base=base, evidence=evidence).analysis["evidence"]["prescriptions"]
+
+    assert {name: receipt.get("rationale") for name, receipt in judged.items()} == {
+        "driver": raw["rationale"], "blend": raw["rationale"], "room": raw["rationale"],
+        "alignment": None, "topology": None, "bass": None}
+
+
+@pytest.mark.parametrize("clears_room, name", [(False, "bass"), (False, "rear_calibration"), (True, "bass")])
+def test_a_refused_set_names_the_section_it_was_read_for(
+    base, bank, tmp_path, capsys, bass_round, bass_packet, clears_room, name,
+):
+    path = tmp_path / "prescription.json"
+    path.write_text(json.dumps(document(base.fingerprint, {
+        **({"room": None} if clears_room else {}),
+        name: bass_document(bass_packet) if name == "bass" else _rear_document()})))
+    argv = ["judge", str(path), "--root", str(bank), "--round", str(bass_round), "--set", "missing"]
+    assert crossover_prescriber.main(argv) == crossover_prescriber.EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["code"], answer["detail"]["section"]) == ("round_set_unknown", name)
+
+
 def test_bass_below_qualified_floor_is_disclosed_by_judge_and_packet(base, bank, evidence, bass_packet, bass_round, round_bank, tmp_path, capsys):
     for band in bass_packet["bass"][0]["takes"][0]["bands"]:
         band["fundamental_qualified"] = band["band_hz"][0] >= 63
