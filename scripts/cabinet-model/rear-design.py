@@ -63,7 +63,7 @@ def main() -> None:
     ap.add_argument("--wall-gap-m", type=float, default=0.2, help="cabinet back to the wall behind it")
     args = ap.parse_args()
     grid = np.geomspace(30, 1200, 300)
-    cab = Cabinet(args.transfer, args.nearfield, grid)
+    cab = Cabinet(args.transfer, [args.nearfield], grid)
     band = {name: (grid >= lo) & (grid <= hi) for name, (lo, hi) in
             {"lf": (30, 80), "fb": (130, 450), "eff": (60, 400)}.items()}
 
