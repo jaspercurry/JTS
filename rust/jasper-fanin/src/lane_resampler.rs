@@ -147,6 +147,8 @@ pub struct LaneResampler {
     ring: AudioRing,
     sinc_table: SincTable,
     controller: RateController,
+    reopen_checkpoint: Option<(RateController, CushionDecay)>,
+    reopening: bool,
     /// Base configured target. The acquisition CEILING is
     /// `target_fill_frames + warmup_cushion_frames`; the small fixed fill that
     /// replaces the catch-up sawtooth. The LIVE held target
@@ -301,6 +303,8 @@ impl LaneResampler {
                 sample_rate,
                 Some(0.0),
             ),
+            reopen_checkpoint: None,
+            reopening: false,
             target_fill_frames,
             warmup_cushion_frames,
             max_adjust_ppm,
@@ -539,20 +543,38 @@ impl LaneResampler {
         RenderPlan::Emit { ratio }
     }
 
-    /// Discard buffered input and re-prime on the next render (a hard
-    /// discontinuity: a host pause/seek that steps the fill). The mixer calls
-    /// this when the lane goes idle so a fresh play starts clean.
     pub fn reset(&mut self) {
-        self.ring.clear();
+        self.reopen_checkpoint = None;
+        self.reopening = false;
         self.controller.reset();
+        self.snap_decay_back(DecayFrozenReason::Unlocked);
+        self.discard_input();
+        self.publish_ratio();
+    }
+
+    // A dead handle is detected after underfill; recover the clock state from
+    // before that underfill, not its reset state. See #5735.
+    pub fn reopen(&mut self) {
+        if let Some((controller, decay)) = self.reopen_checkpoint.take() {
+            self.controller = controller;
+            self.decay = decay;
+        }
+        self.reopening = true;
+        self.decay.hold_for_reopen();
+        self.discard_input();
+        self.publish_ratio();
+        self.publish_decay_gauges();
+    }
+
+    fn discard_input(&mut self) {
+        self.ring.clear();
         self.next_input_frame = 0.0;
         self.locked = false;
         self.locked_state.store(false, Ordering::Relaxed);
         self.startup_ramp_frames_remaining = 0;
         self.arm_shutdown_ramp();
         self.real_periods_since_lock = 0;
-        self.snap_decay_back(DecayFrozenReason::Unlocked);
-        self.publish_ratio();
+        self.publish_fill(0);
     }
 
     pub fn output_published(&mut self, frames: u32) {
@@ -587,11 +609,16 @@ impl LaneResampler {
         // would decay stale audio into a session that never played.
         self.last_frame.fill(0);
         self.real_periods_since_lock = 0;
-        self.controller.reset();
+        if !self.reopening {
+            self.controller.reset();
+        }
+        self.reopening = false;
+        self.reopen_checkpoint = None;
         self.lock_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn unlock_for_underfill(&mut self) {
+        self.reopen_checkpoint = Some((self.controller.clone(), self.decay.clone()));
         self.locked = false;
         self.locked_state.store(false, Ordering::Relaxed);
         self.unlock_count.fetch_add(1, Ordering::Relaxed);
@@ -721,11 +748,21 @@ impl LaneResampler {
     }
 
     pub fn latency_context(&mut self, connection: u64, failed: bool) {
-        self.decay.context(connection, failed, self.locked);
+        if self.decay.context(connection, failed, self.locked) {
+            self.reopen_checkpoint = None;
+            if self.reopening {
+                self.reset();
+            }
+        } else if let Some((_, decay)) = self.reopen_checkpoint.as_mut() {
+            decay.context(connection, failed, false);
+        }
         self.publish_decay_gauges();
     }
 
     pub fn tick_decay(&mut self, dll_l0_locked: bool) {
+        if self.reopening {
+            return;
+        }
         let was_refilling = self.decay.refilling();
         self.decay.tick(DecaySignals {
             locked: self.locked,
@@ -1004,6 +1041,124 @@ mod tests {
             "re-locks after reset"
         );
         assert_eq!(r.lock_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn confirmed_reopen_restores_underfill_state_unless_a_real_loss_invalidated_it() {
+        for (loss, after_reopen) in [
+            ("none", false),
+            ("direct", false),
+            ("reset", false),
+            ("reset", true),
+            ("output", false),
+            ("output", true),
+            ("connection", false),
+            ("connection", true),
+            ("timing", false),
+            ("timing", true),
+        ] {
+            let mut r = build_with_decay();
+            r.latency_context(1, false);
+            let mut out = vec![0; PERIOD as usize * 2];
+            r.push_input(&tone(deep_prefill()));
+            r.render_period(&mut out);
+            for _ in 0..2000 {
+                r.push_input(&tone(PERIOD as usize));
+                r.render_period(&mut out);
+                r.tick_decay(true);
+            }
+            r.push_input(&tone(PERIOD as usize + 32));
+            r.render_period(&mut out);
+            r.tick_decay(true);
+            assert_eq!(r.hold_fill_frames(), TARGET + 32);
+            let mut saved_controller = r.controller.clone();
+            let held = r.decay.held_exact();
+            if loss != "direct" {
+                for _ in 0..(RING / PERIOD as usize + 1) {
+                    saved_controller = r.controller.clone();
+                    r.render_period(&mut out);
+                    if !r.locked {
+                        break;
+                    }
+                }
+                assert!(!r.locked);
+                assert_eq!(r.controller.ratio_ppm(), 0.0);
+                assert_eq!(r.hold_fill_frames(), TARGET + CUSHION);
+                for _ in 0..(RATE * 2 / PERIOD) {
+                    r.render_period(&mut out);
+                    r.tick_decay(false);
+                }
+            }
+            assert!(saved_controller.ratio_ppm().abs() > 0.001);
+            let counters = (
+                r.controller.clamp_count(),
+                r.controller.anti_windup_count(),
+                r.decay.resumes(),
+                r.decay.backoffs(),
+            );
+            if after_reopen {
+                r.reopen();
+            }
+            match loss {
+                "reset" => r.reset(), // Runtime loss and xrun use this boundary.
+                "output" => r.output_published(0),
+                "connection" => r.latency_context(2, false),
+                "timing" => r.latency_context(1, true),
+                _ => {}
+            }
+            r.reopen();
+            let expected_ppm = if matches!(loss, "none" | "direct") {
+                saved_controller.ratio_ppm()
+            } else {
+                saved_controller.reset();
+                0.0
+            };
+            let expected_held = if matches!(loss, "none" | "direct" | "output") {
+                held
+            } else {
+                (TARGET + CUSHION) as f64
+            };
+            if loss == "direct" {
+                assert_eq!(r.render_period(&mut out), PERIOD as usize);
+                assert!(out.iter().any(|&s| s != 0));
+                assert_eq!(&out[out.len() - 2..], &[0, 0]);
+            }
+            let obs = r.observability();
+            for _ in 0..(RATE * 3 / PERIOD) {
+                r.latency_context(if loss == "connection" { 2 } else { 1 }, loss == "timing");
+                assert_eq!(r.render_period(&mut out), 0);
+                r.tick_decay(false);
+                r.output_published(PERIOD);
+                assert!(out.iter().all(|&s| s == 0));
+                assert_eq!(r.controller.ratio_ppm(), expected_ppm, "{loss}");
+                assert_eq!(r.decay.held_exact(), expected_held, "{loss}");
+                assert_eq!(
+                    obs.ratio_milli_ppm.load(Ordering::Relaxed) as i64,
+                    (expected_ppm * 1000.0).round() as i64,
+                );
+                assert_eq!(
+                    obs.held_target_frames.load(Ordering::Relaxed),
+                    expected_held as u64
+                );
+            }
+            assert_eq!(
+                (
+                    obs.clamp_count.load(Ordering::Relaxed),
+                    obs.anti_windup_count.load(Ordering::Relaxed),
+                    obs.warm_resumes.load(Ordering::Relaxed),
+                    obs.latency_backoffs.load(Ordering::Relaxed)
+                ),
+                counters,
+            );
+            assert_eq!(r.ring.fill_frames(), 0);
+            r.push_input(&vec![0; (r.startup_prefill_frames() - 1) * 2]);
+            assert_eq!(r.render_period(&mut out), 0);
+            r.push_input(&[0, 0]);
+            assert_eq!(r.render_period(&mut out), PERIOD as usize);
+            assert!(out.iter().all(|&s| s == 0));
+            let expected_ratio = saved_controller.next_ratio(expected_held.round() - expected_held);
+            assert!((r.controller.ratio_ppm() - (expected_ratio - 1.0) * 1e6).abs() < 1e-8);
+        }
     }
 
     #[test]
