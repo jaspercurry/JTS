@@ -322,7 +322,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0332](0332-eq-status-checks-inputs-without-building-dsp.md) | EQ status checks inputs without building DSP | accepted |
 | [0333](0333-live-followup-counts-from-audible-playout.md) | Live follow-up counts from audible playout | accepted |
 | [0335](0335-dynamic-bass-reduction-is-common-across-the-cardioid-pair.md) | Dynamic-bass reduction is common across a cardioid pair: one detector on the front lane, one gain on both lanes | accepted |
-| [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | accepted |
+| [0336](0336-the-seat-trial-judges-rear-and-room-from-the-same-seat-takes.md) | The seat trial judges rear and room from the same seat takes | amended by 0383 |
 | [0337](0337-conversation-history-is-local-opt-in-native-text.md) | Conversation history is local, opt-in native text | accepted |
 | [0338](0338-tools-share-one-boundary-and-defer-untrusted-distribution.md) | Tools share one boundary and defer untrusted distribution | accepted |
 | [0339](0339-declared-topology-and-observed-hardware-have-separate-owners.md) | Declared topology and observed hardware have separate owners | accepted |
@@ -351,8 +351,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0374](0374-every-prescribed-filter-sits-inside-the-evaluators-domain.md) | Every prescribed filter, cut or boost, in band or not, sits inside the evaluator's domain (1-23,995.2 Hz) | accepted |
 | [0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) | Each run purpose declares on its program row which applied layers its takes clear; a bass run plays with room off and its base with bass off, the door derives the played graph and banks nothing measurement-only, and preflight folds the room-off rise into the opener | accepted |
 | [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | accepted |
-| [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | accepted |
+| [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | §1-§3 superseded by 0383 |
 | [0377](0377-a-retired-preset-id-refuses-as-an-unknown-preset.md) | A retired preset id is not kept: it refuses as an unknown preset, and a layout no preset offers is deleted | accepted |
 | [0379](0379-a-stored-driver-declaration-in-a-retired-shape-refuses-by-its-field.md) | A stored driver declaration in a retired shape refuses by its field and names its fix; every row names its physical output, and nothing binds by role | accepted |
 | [0380](0380-the-capability-stub-table-is-gone.md) | The capability stub table is gone: every mic-only capture regime plays and banks, and an analysis gap is tracked on the ticket that plans its work | accepted |
 | [0382](0382-a-tweeters-cap-is-declared-or-derived-else-the-plan-refuses-by-name.md) | A tweeter's cap is declared or derived, else the plan refuses by name (`driver_sensitivity_undeclared`); a stored class default is a declaration | accepted |
+| [0383](0383-one-take-record-for-every-purpose.md) | One take record for every purpose: every take banks its curves, each naming its window, and its analysis; the run manifest copies them, and no reader decodes a take for them | accepted |

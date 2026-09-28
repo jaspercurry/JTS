@@ -156,7 +156,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "source_b", nargs="?", metavar="<source-b>",
         help="optional banked round, session bundle, or JSON document for B",
     )
-    frequency.add_argument("--analyze-wavs", action="store_true", help="analyze Room/bass takes on this computer: the curves a take banked, else a decode of its WAV (laptop recommended)")
+    frequency.add_argument("--analyze-wavs", action="store_true", help="analyze Room/bass takes on this computer: the curves each take banked, and a gated overlay decoded from each selected room take's WAV (laptop recommended)")
     frequency.add_argument("--calibration-root", type=Path, help="copied microphone calibration registry for the captures’ recorded calibration IDs; curves a take banked keep the calibration its capture applied")
     frequency.add_argument("--reference-db", type=float, help="display reference from a same-level full-band baseline; requires --analyze-wavs")
     frequency.add_argument("--out", default=None, help="write the result here")

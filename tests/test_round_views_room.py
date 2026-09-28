@@ -249,12 +249,8 @@ def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_
     assert len(set(result["evidence"]["pose_keys"])) == 3
 
 
-@pytest.mark.parametrize("view,copied_calibration", [
-    ("room", False), ("room", True), ("room-grade", True), ("bookkeeping", False),
-])
-def test_room_views_analyze_wired_takes_without_banked_curves(
-    tmp_path, capsys, analyzed_room_documents, view, copied_calibration,
-):
+@pytest.mark.parametrize("view", ["room", "room-grade", "bookkeeping"])
+def test_room_views_analyze_wired_takes_without_banked_curves(tmp_path, capsys, analyzed_room_documents, view):
     root = bank_seat_round(tmp_path, magnitudes_db=_cube()[:3])
     bundle = round_inputs(root).session_dir
     takes = list(analyzed_room_documents.side_effect(bundle))
@@ -266,15 +262,15 @@ def test_room_views_analyze_wired_takes_without_banked_curves(
         (bundle / take.record_path).write_text(json.dumps({**record, "curves": []}))
     write_manifest(root, program="room")
     analyzed_room_documents.side_effect = lambda *args, **kwargs: iter(takes)
-    calibration_root = tmp_path / "calibration" if copied_calibration else None
     if view == "bookkeeping":
         for verb in ("room", "room-grade"):
             result = round_views.run_bookkeeping(verb, root)
             assert result["status"] == "written"
             assert result["n_positions"] == 3
     else:
-        flags = ["--calibration-root", str(calibration_root)] if copied_calibration else []
-        assert _run(capsys, [view, str(root), *flags])["n_positions"] == 3
+        if view == "room-grade":
+            _run(capsys, ["room", str(root)])  # room-grade grades the document the room view writes
+        assert _run(capsys, [view, str(root)])["n_positions"] == 3
     median = json.loads((root / "room.json").read_text())["median"]
     assert median["n_positions"] == 3
     assert set(median["evidence"]["pose_keys"]) == {
@@ -297,7 +293,10 @@ def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_d
         result = round_views.run_bookkeeping("room", root)
         assert (result["status"], result["reason"]) == ("unavailable", code)
     else:
-        assert round_views.main([view, str(root), "--calibration-root", str(tmp_path)]) == round_views.EXIT_UNREADABLE
+        if view == "room-grade":
+            round_views.main(["room", str(root)])  # the room view refuses, so no document is written to grade
+            capsys.readouterr()
+        assert round_views.main([view, str(root)]) == round_views.EXIT_UNREADABLE
         result = json.loads(capsys.readouterr().out)
         assert (result["status"], result["reason"]) == ("unreadable", round_views.REASON_UNREADABLE)
     assert not (root / "room.json").exists()

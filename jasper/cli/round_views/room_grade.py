@@ -50,8 +50,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     directory = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
     try:
-        artifact = room_grade_payload(inputs, directory, args.set,
-                         incumbent_id=args.incumbent, calibration_root=args.calibration_root)
+        artifact = room_grade_payload(inputs, directory, args.set, incumbent_id=args.incumbent)
     except RoundSetRefused:
         raise
     except RoundCapturesRefused as exc:
@@ -103,7 +102,6 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("room-grade", help="grade a room set against its incumbent in this run")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    parser.add_argument("--calibration-root", type=Path, help="rebuild room documents with this microphone calibration registry")
     add_set_argument(parser)
     parser.add_argument("--incumbent", help="override the incumbent with this set from the same run")
     parser.set_defaults(func=_cmd_room_grade)

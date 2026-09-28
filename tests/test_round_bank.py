@@ -832,7 +832,7 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
                 capture_gain_db=6.0 if candidate == "candidate-b" else 0.0,
             ))
             record = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())
-            assert "curves" not in record
+            assert [curve["window"] for curve in record["curves"]] == ["ungated"]
             records.append((record_id, record))
         group = manifest_set(records)
         group["base"] = candidate == candidates[0]

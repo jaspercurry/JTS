@@ -22,6 +22,7 @@ import pytest
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2 import gate_sweep
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, analysis_provenance
 from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
@@ -30,8 +31,11 @@ from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle, analyzed_measurements
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
-from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording
+from jasper.audio_measurement.program_analysis import MeasurementGeometry, analyze_program_capture
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, decode_wav_to_mono
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
@@ -682,7 +686,19 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, **fields):
+    def host_analysis(answer, _record):
+        """The analysis the capture host banks on a take (ADR-0383), read ungated as a seat take is."""
+        if answer.program is None:
+            return {}
+        played = ExcitationProgram.from_dict(answer.program)
+        calibration = resolve_setup_calibration(answer.setup, device=answer.device, root=calibration_root)
+        curve = calibration.curve if calibration is not None else None
+        geometry = MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT)
+        analysis = analyze_program_capture(played, *decode_wav_to_mono(answer.wav), calibration=curve,
+                                           geometry=geometry, capture_report=answer.capture_integrity)
+        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played)}
+
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
         samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         samples *= 10 ** (capture_gain_db / 20)
@@ -708,7 +724,8 @@ def summed_capture_bundle(tmp_path, request):
             WiredMicDevice("UMIK2", 2, "2752:002b", "minidsp_umik2", "miniDSP UMIK-2"),
             bundle, recorder_factory=lambda *_: Recorder(), setup_reference=lambda: setup,
         )
-        records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured)
+        records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured,
+                                      enrich=host_analysis if analyzed else None)
         await configured.around(play, program=program)
         answer = configured.take_answer()
         if not retain_program:
@@ -727,7 +744,7 @@ def summed_capture_bundle(tmp_path, request):
 
 @pytest.mark.parametrize("summed_capture_bundle,reference_db", [(20000, None), (200, -24.0)],
                          indirect=["summed_capture_bundle"])
-def test_frequency_replays_recorded_program_and_calibration_without_changing_level(
+def test_frequency_reads_recorded_program_and_calibration_without_changing_level(
     summed_capture_bundle, reference_db, tmp_path, capsys,
 ):
     bundle, calibration_root, program, bank = summed_capture_bundle
@@ -743,8 +760,6 @@ def test_frequency_replays_recorded_program_and_calibration_without_changing_lev
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
     assert ExcitationProgram.from_dict(record["program"]).stimulus_id == program.stimulus_id
     destination = tmp_path / "frequency.json"
-    assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == EXIT_UNREADABLE
-    assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
     reference_args = [] if reference_db is None else ["--reference-db", str(reference_db)]
     if reference_db is not None:
         assert round_views_main([
@@ -841,7 +856,7 @@ def _refuse_decoding(_wav):
 
 
 def test_a_seat_take_banks_the_curves_a_decode_of_its_recording_reads(tmp_path, monkeypatch):
-    """ADR-0373: the capture host banks a room take's curves as a decode of its
+    """The capture host banks a room take's curves, ungated, as a decode of its
     recording reads them, and the reader then serves them without the recording."""
     program = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     signal = np.concatenate([np.zeros(800), render_program_pcm(program)[:, 0] * 0.4 * 10 ** (-20 / 20), np.zeros(5000)])
@@ -853,23 +868,35 @@ def test_a_seat_take_banks_the_curves_a_decode_of_its_recording_reads(tmp_path, 
     bundle, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     decoded, = measurement_analysis.decoded_measurements(bundle, calibration_root=tmp_path / "calibration")
     assert record["curves"] == decoded.document()["curves"] != []
+    assert {curve["window"] for curve in record["curves"]} == {"ungated"}
 
     monkeypatch.setattr(measurement_analysis, "decode_wav_to_mono", _refuse_decoding)
-    banked, = analyzed_measurements(bundle, calibration_root=tmp_path / "calibration")
+    banked, = analyzed_measurements(bundle)
     assert banked.document()["curves"] == record["curves"]
     assert banked.document()["calibration"] == decoded.document()["calibration"]
 
 
-@pytest.mark.parametrize("fields", [
-    {"measurement_purpose": "room"},  # banked before its curves rode on it
-    {"curves": [{"role": "summed", "freqs_hz": [100.0, 1000.0], "magnitude_db": [-20.0, -21.0]}]},  # a gated pre-ADR take
+@pytest.mark.parametrize("fields,read", [
+    ({}, ["take"]),
+    ({"analyzed": False, "analysis_error": {"code": "internal_error", "error_type": "ValueError"}}, []),
+    ({"analyzed": False}, TAKE_CURVES_NOT_BANKED),
 ])
-def test_a_take_without_banked_seat_curves_decodes_its_recording(summed_capture_bundle, monkeypatch, fields):
-    bundle, calibration_root, _, bank = summed_capture_bundle
+def test_a_take_is_read_from_its_record_never_its_recording(summed_capture_bundle, monkeypatch, tmp_path, capsys, fields, read):
+    """A speaker take reads the curves it banked (ADR-0383). A take whose
+    analysis failed has none, so a run of only such takes draws none and says
+    so; a take that banked neither refuses by name."""
+    bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("take", phase="lateral", **fields))
     monkeypatch.setattr(measurement_analysis, "decode_wav_to_mono", _refuse_decoding)
-    with pytest.raises(_Decoded):
-        list(analyzed_measurements(bundle, calibration_root=calibration_root))
+    if read == TAKE_CURVES_NOT_BANKED:
+        with pytest.raises(MeasurementAnalysisRefused) as refused:
+            list(analyzed_measurements(bundle))
+        assert refused.value.code == TAKE_CURVES_NOT_BANKED
+        return
+    assert [take.record["take_id"] for take in analyzed_measurements(bundle)] == read
+    if not read:
+        assert round_views_main(["frequency", str(bundle), "--out", str(tmp_path / "f.json")]) == EXIT_UNREADABLE
+        assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
 
 
 def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bundle, monkeypatch):
@@ -888,10 +915,10 @@ def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bund
 
 
 @pytest.mark.parametrize("banked", [{}, {"gating_applied": True}, {"gating_applied": False}, {"gating_applied": None}])
-def test_analyzed_document_preserves_banked_gating(summed_capture_bundle, banked):
+def test_a_decoded_document_preserves_banked_gating(summed_capture_bundle, banked):
     bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("take", scope="candidate"))
-    take, = analyzed_measurements(bundle)
+    take, = measurement_analysis.decoded_measurements(bundle)
     take.record.update(banked)
     expected = banked.get("gating_applied")
     assert take.document()["gating_applied"] is (False if expected is None else expected)

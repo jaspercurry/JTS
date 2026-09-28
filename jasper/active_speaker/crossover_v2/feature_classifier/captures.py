@@ -42,6 +42,7 @@ from ..evidence_packet.offline_reads import RING_SIDECAR_GLOB
 from ..journey import (
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
+    PHASE_MEASURE,
     PHASE_VERIFY,
 )
 from ..position_cycle import (
@@ -358,7 +359,7 @@ def load_round_captures(
 
 @dataclass(frozen=True)
 class RoundPoseCurve:
-    """One banked lateral-walk pose's one driver-role curve, magnitude only.
+    """One banked speaker take's one driver-role curve at its pose, magnitude only.
 
     Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
     (ruling S3) through the same reader :mod:`.delay_landscape` and
@@ -381,8 +382,8 @@ class RoundPoseCurve:
 
 
 def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
-    """Every pose curve of a lateral speaker take this bundle's round kept,
-    magnitude only.
+    """Every pose curve of a MEASURE or lateral speaker take this bundle's
+    round kept, magnitude only.
 
     ``bundle_dir`` is the commissioning bundle, not the round's own artifact
     directory. Reused, not re-walked:
@@ -394,13 +395,13 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     One entry per (kept take, role). The run manifest keeps one take per
     stop: a retake's superseded attempts stay banked as the honest walk record
     but never speak for their stop, so a pooling read never averages a retake
-    with the noise it replaced. Empty when this round kept no lateral speaker
-    take, which is what lets :func:`classify_round` tell "no lateral walk"
-    from a directory error.
+    with the noise it replaced. Empty when this round kept no such take,
+    which is what lets :func:`classify_round` tell "no pose" from a
+    directory error.
     """
 
     out: list[RoundPoseCurve] = []
-    for row, record in kept_measurements(bundle_dir, phases=(PHASE_LATERAL,), purposes=(PURPOSE_SPEAKER,)):
+    for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
         pose_id = Path(row.path).stem
         for curve in take_curves(record) or ():
             role = curve.get("role")
