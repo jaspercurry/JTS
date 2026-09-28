@@ -112,13 +112,9 @@ from .gates import (
     preset_target_ids as preset_target_ids,
 )
 from .ledger import (
-    BASELINE_HEADROOM_DB as BASELINE_HEADROOM_DB,
     MAX_PROGRAM_HEADROOM_DB as MAX_PROGRAM_HEADROOM_DB,
-    _branch_context as _branch_context,
     _correction_bool as _correction_bool,
     _correction_value as _correction_value,
-    linearization_headroom_db as linearization_headroom_db,
-    program_headroom_db as program_headroom_db,
 )
 from .pipeline import (
     _commissioning_driver_filter_chain as _commissioning_driver_filter_chain,

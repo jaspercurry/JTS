@@ -104,7 +104,7 @@ def _print_status(payload: dict[str, Any]) -> None:
             # without restoring. Nothing will now: say so instead of counting
             # down to a zero that never arrives.
             _say("  STALE: the owner is gone; run `jasper-audition stop`")
-    if payload.get("louder_than_full_db"):
+    if (payload.get("louder_than_full_db") or 0.0) > 0.0:
         _say(
             "  NOT level-matched: dropping the measured correction hands back "
             f"up to {float(payload['louder_than_full_db']):.1f} dB where it "

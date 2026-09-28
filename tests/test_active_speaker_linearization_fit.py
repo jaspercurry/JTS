@@ -2383,10 +2383,8 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
     The fit core computes no charge — a correction's cost depends on the
     crossover and trim it is emitted into, which the topology-agnostic core
     does not know — so this asserts the contract at the seam that DOES know:
-    ``branch_chain``, which the emitter charges with.
+    ``branch_chain``, which the fit's own per-branch budget reads.
     """
-    from jasper.active_speaker.camilla_yaml import linearization_headroom_db
-
     resp, envelope = _two_dip_response()
     fit = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
@@ -2405,14 +2403,6 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
     # contract holds, so no separate `charge < sum` restatement is needed.)
     charge_db = branch_headroom_db(emitted)
     assert charge_db == pytest.approx(cascade_peak_db + HEADROOM_MARGIN_DB, abs=0.05)
-
-    # It is literally the emitter's own charge for this fit — one function,
-    # two readers — and it survives the JSON round-trip a candidate takes.
-    # (A branch with no crossover and no trim: this fit was not composed into
-    # one, so the honest context for it is empty.)
-    assert charge_db == pytest.approx(
-        linearization_headroom_db({fit.role: emitted}, branch_context={})
-    )
 
     # And the crossover the branch runs through is part of the charge: put
     # this fit behind a low-pass an octave under its boosts and the same

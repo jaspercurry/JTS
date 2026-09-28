@@ -213,33 +213,34 @@ def test_the_household_layers_survive_the_reduction(
     assert all(filters[name] == full[name] for name in bass_names)
 
 
-def test_the_level_disclosure_counts_the_cuts_it_gives_back() -> None:
-    """The A/B is not level-matched, and the number that says so must be the
-    LEVEL one, not just the headroom charge.
+@pytest.mark.parametrize("anchor_charge_db", [0.0, 3.0])
+def test_the_level_disclosure_is_the_charge_move_plus_the_deepest_cut(
+    audition_box, anchor_charge_db: float,
+) -> None:
+    """The A/B is not level-matched, and the record says by how much.
 
-    Removing a cut filter hands its depth back in that filter's own band, and
-    the headroom charge is separately ``0.0`` whenever the branch's crossover
-    and trim already swallowed the linearization's boost — which is the common
-    case. A disclosure built only from the headroom would read ``0.0`` for a
-    profile whose deepest cut is 4 dB, and tell the owner the two layers play
-    at the same level when they do not.
+    Two terms come back: the anchor's written charge less the reduced graph's,
+    broadband, and the deepest cut the reduction drops, in that cut's band. The
+    first is ``0.0`` whenever the graph nets the dropped boost, the common case,
+    so a disclosure built from it alone would call the layers level-matched.
+    The charge is read off the anchor that plays, which keeps an older charge
+    until it is re-emitted (ADR-0385).
     """
 
-    from jasper.active_speaker.audition import level_give_back_db
-    from jasper.active_speaker.baseline_profile import profile_program_headroom_db
-
-    applied = _applied_profile(_active_topology("mono", "active_2_way"))
-    deepest_cut = max(
-        -f["gain"]
-        for filters in LINEARIZATION.values()
-        for f in filters
-        if f["gain"] < 0
+    cam, anchor, full_text, _state = audition_box
+    headroom = "  active_baseline_headroom:\n    type: Gain\n    parameters: { gain: "
+    anchor.write_text(
+        full_text.replace(f"{headroom}0.0000,", f"{headroom}{-anchor_charge_db:.4f},"), encoding="utf-8",
     )
+    assert -_filters(anchor.read_text(encoding="utf-8"))["active_baseline_headroom"]["parameters"]["gain"] == (
+        anchor_charge_db
+    )
+    deepest_cut = max(-f["gain"] for stage in (*LINEARIZATION.values(), BLEND) for f in stage if f["gain"] < 0)
 
-    assert profile_program_headroom_db(applied) == 0.0
-    assert level_give_back_db(applied) == pytest.approx(deepest_cut)
-    # A speaker carrying neither stage gives nothing back.
-    assert level_give_back_db({"recomposition_snapshot": {}}) == 0.0
+    started = _arm(cam, full_text)
+
+    reduced_charge = -_filters(cam.running)["active_baseline_headroom"]["parameters"]["gain"]
+    assert started["louder_than_full_db"] == pytest.approx(anchor_charge_db - reduced_charge + deepest_cut, abs=1e-4)
 
 
 def test_the_audition_asks_for_a_reduced_graph_and_never_a_written_one(

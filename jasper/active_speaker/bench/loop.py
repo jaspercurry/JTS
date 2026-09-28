@@ -525,7 +525,7 @@ def plan_emit_loop(
         stimulus_path=stimulus_path,
         stimulus_seconds=stimulus_seconds,
         expected_offset_db=(
-            candidates["treated"].program_headroom_db - candidates["control"].program_headroom_db
+            candidates["treated"].headroom_gain_db - candidates["control"].headroom_gain_db
         ),
     )
 

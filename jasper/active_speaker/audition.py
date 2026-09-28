@@ -211,19 +211,18 @@ def build_reduced_yaml(
         return None, [{"severity": "blocker", "code": getattr(exc, "code", "audition_compile_failed"), "message": str(exc)}]
 
 
-def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
+def level_give_back_db(full_text: str, reduced_text: str, applied_profile: Mapping[str, Any]) -> float:
     """How much LOUDER the baseline layer can play than the full graph, dB.
 
-    Two terms, and both are read off the profile's own emitter inputs rather
-    than modelled:
+    Two terms, and neither is modelled:
 
-    * the pre-split attenuation the linearization stage charged
-      (:func:`~.baseline_profile.profile_program_headroom_db`), which comes
-      back broadband when the stage goes — often ``0.0``, because a boost the
-      branch's own crossover and trim already swallow is charged nothing; and
-    * the DEEPEST single cut the two dropped stages carry, which comes back in
-      that filter's own band. This is the larger term in practice, and the one
-      a "give back the headroom" reading of this reduction would miss.
+    * the full graph's written charge less the reduced graph's, which comes
+      back broadband when the stages go — often ``0.0``, because a boost the
+      rest of the graph already nets is charged nothing (ADR-0385); and
+    * the DEEPEST single cut the two dropped stages carry, read off the
+      profile, which comes back in that filter's own band. This is the larger
+      term in practice, and the one a "give back the headroom" reading of this
+      reduction would miss.
 
     Not a bound on the sum: two cuts overlapping in one band give back more
     than the deeper of them. It does not need to be a bound — the ceiling is
@@ -237,8 +236,8 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
     from jasper.active_speaker.baseline_profile import (  # lazy: import cost — jasper-control and jasper-web load this module
         profile_blend_correction,
         profile_linearization,
-        profile_program_headroom_db,
     )
+    from jasper.active_speaker.program_headroom import written_headroom_db  # lazy: import cost — jasper-control and jasper-web load this module
 
     dropped: list[Any] = []
     for filters in profile_linearization(applied_profile).values():
@@ -252,7 +251,7 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
         and isinstance(entry.get("gain"), (int, float))
         and float(entry["gain"]) < 0.0
     ]
-    return profile_program_headroom_db(applied_profile) + max(cuts, default=0.0)
+    return written_headroom_db(full_text) - written_headroom_db(reduced_text) + max(cuts, default=0.0)
 
 
 async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None:
@@ -406,7 +405,7 @@ async def start_audition(
     ):
         _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
-        anchor_text = Path(anchor).read_text(encoding="utf-8") if compare else ""
+        anchor_text = Path(anchor).read_text(encoding="utf-8")
         live = read_audition_state(state_path)
         if compare and (not live or live["layer"] != AUDITION_LAYER_REAR_COMPARE):
             if (await plan_live_edit_for(cam, anchor_text)).method != "unchanged":
@@ -460,7 +459,7 @@ async def start_audition(
                 "entry_config_path": anchor,
                 # Disclosed, never compensated: compensating would move a trim,
                 # and identical trims are what makes the A/B mean anything.
-                "louder_than_full_db": None if compare else level_give_back_db(applied),
+                "louder_than_full_db": None if compare else level_give_back_db(anchor_text, yaml_text, applied),
             }
             atomic_write_json(audition_state_path(state_path), state)
             armed = True

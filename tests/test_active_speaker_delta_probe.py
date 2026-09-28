@@ -1260,66 +1260,6 @@ def _half_octave_blocks(f, lo_hz, hi_hz, depth_db=-4.0):
     return np.where(in_band & (block % 2 == 0), depth_db, 0.0)
 
 
-def _mirror_profile(peak_gain_db: float) -> dict:
-    """An era-older frozen profile whose linearization is one bell.
-
-    Deliberately the mirror-only shape (no ``recomposition_snapshot``), because
-    that is the path whose charge is the naked cascade's peak plus the 1 dB
-    margin — the one arrangement in which a headroom can be stated exactly
-    rather than quoted to four places off an emitted config.
-    """
-    return {
-        "linearization": {
-            "woofer": [
-                {"type": "Peaking", "freq": 1_000.0, "q": 1.0, "gain": peak_gain_db},
-            ],
-        },
-    }
-
-
-def test_a_declared_common_attenuation_move_is_realized_and_grades_to_zero():
-    """**#2533 (a).** Two profiles differing only by a pre-split common
-    attenuation; a speaker that realizes exactly that move has nothing left over.
-
-    The apply hands 3 dB of headroom BACK (5.00 dB charged before, 2.00 after),
-    so the speaker gets 3 dB louder and the emitter says so. Declared as
-    ``expected_offset_db``, that is the whole of the change — the residual is
-    zero and no level verdict is reached.
-    """
-    from jasper.active_speaker.baseline_profile import (
-        applied_program_level_delta_db,
-        profile_program_headroom_db,
-    )
-
-    previous, applied = _mirror_profile(4.0), _mirror_profile(1.0)
-    assert profile_program_headroom_db(previous) == pytest.approx(5.00, abs=1e-9)
-    assert profile_program_headroom_db(applied) == pytest.approx(2.00, abs=1e-9)
-    declared_db = applied_program_level_delta_db(previous, applied)
-    assert declared_db == pytest.approx(3.00, abs=1e-9)
-
-    # The post-apply capture sits on its prediction plus the declared move,
-    # everywhere.
-    commanded = _commanded_lift()
-    probe = _classify(
-        commanded, realized=commanded + declared_db,
-        expected_offset_db=declared_db,
-    )
-    assert probe.residual_offset_db == pytest.approx(0.0, abs=1e-9)
-    assert probe.verdict != VERDICT_LEVEL_MISMATCH
-    assert probe.verdict == VERDICT_MATCHED
-
-    # In-test control for the mutation the brief names: a profile charged 2.50
-    # instead of 2.00 declares only 2.50 dB, and the half a dB the speaker moved
-    # beyond what was declared is exactly what the residual is for.
-    off_by_half = applied_program_level_delta_db(previous, _mirror_profile(1.5))
-    assert off_by_half == pytest.approx(2.50, abs=1e-9)
-    strayed = _classify(
-        commanded, realized=commanded + declared_db,
-        expected_offset_db=off_by_half,
-    )
-    assert strayed.residual_offset_db == pytest.approx(0.5, abs=1e-9)
-
-
 @pytest.mark.parametrize("grid", _GRID_SHAPES)
 def test_a_level_shift_measured_only_above_the_graded_band_is_not_whole_band(grid):
     """**#2533 (b).** The 2026-08-15 JTS3 shape: the correction commands the
