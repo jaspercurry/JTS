@@ -1483,6 +1483,47 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             local_note = "CLAUDE.local.md"
             self.assertGreater((checkout / local_note).stat().st_size, 0)
 
+    def test_use_keeps_the_identity_record_only_for_the_speaker_it_names(self):
+        """The recorded peer_id describes the speaker `.env.local` names:
+        PI_HOST and JASPER_HOSTNAME together. Re-selecting that speaker
+        keeps it; dropping it would make the next deploy a first contact
+        that compares nothing. Selecting any other speaker drops it.
+
+        Removal condition: delete with the peer_id TOFU guard.
+        """
+        record = f"PI_PEER_ID={fake_peer_id('jts3.local')}"
+        named = "PI_HOST=jts3.local\nPI_USER=pi\nJASPER_HOSTNAME=jts3.local\n"
+        recorded = f"{named}{record}\n"
+        cases = (
+            ("same speaker", recorded, ["jts3.local"], True),
+            ("a login is not an identity", recorded, ["jts3.local", "operator"], True),
+            ("another speaker", recorded, ["jts4.local"], False),
+            (
+                "a new transport is another speaker",
+                recorded,
+                ["192.168.1.92", "pi", "jts3.local"],
+                False,
+            ),
+            ("no record to keep", named, ["jts3.local"], False),
+        )
+        with isolated_checkout(None) as checkout:
+            state = checkout / ".env.local"
+            for rule, before, args, kept in cases:
+                with self.subTest(rule, args=args):
+                    state.write_text(before, encoding="utf-8")
+                    subprocess.run(
+                        ["bash", str(checkout / "scripts" / "use"), *args],
+                        cwd=checkout,
+                        check=True,
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    lines = state.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(
+                        [line for line in lines if line.startswith("PI_PEER_ID=")],
+                        [record] if kept else [],
+                    )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
