@@ -34,6 +34,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.measurement_programs import programs_for_topology
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
@@ -133,6 +134,7 @@ def round_bank(tmp_path, request):
         "persistence": {"ceiling_hz": median["ceiling_hz"], "n_positions": median["n_positions"],
                         "features": [{"kind": "dip", "centre_hz": f} for f in (45.0, 90.0)]},
     }))
+    store_banked_evidence(bank)
     return bank, session
 
 

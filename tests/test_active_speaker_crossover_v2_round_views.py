@@ -34,6 +34,7 @@ from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
@@ -93,6 +94,7 @@ def _make_round_dir(tmp_path: Path, name: str, *, baseline: bool = False) -> Pat
     if baseline:
         _bank_entry_baseline_take(round_dir, magnitude_db=_flat_curve())
     write_manifest(round_dir)
+    store_banked_evidence(round_dir)
     return round_dir
 
 
@@ -165,8 +167,9 @@ def test_load_banked_round_refuses_multiple_bundle_sessions(tmp_path):
 
 
 def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
-    """The side file reaches the packet exactly as applied-profile.json does:
-    present, the accuracy budget's repeat-floor component is available."""
+    """The side file reaches the packet the bank builds exactly as
+    applied-profile.json does: present, the accuracy budget's repeat-floor
+    component is available."""
     round_dir = _make_round_dir(tmp_path, "r1")
     component = "in_capture_repeat_floor"
     absent = load_banked_round(round_dir)
@@ -175,6 +178,7 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     # The record the REAL deriver banks from two repeats, never a hand-typed one.
     floor = derive_repeat_floor(samples={"residual_db": [0.0, 0.2]}, rounds=[{}, {}])
     (round_dir / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual_db"}))
+    store_banked_evidence(round_dir)
     present = load_banked_round(round_dir)
     assert present.packet["accuracy_budget"]["components"][component]["available"] is True
 
@@ -458,6 +462,7 @@ def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
     round_dir = _make_round_dir(tmp_path, "r1")
     _bank_entry_baseline_take(round_dir, **kwargs)
     write_manifest(round_dir)
+    store_banked_evidence(round_dir)
     return round_dir
 
 
@@ -474,9 +479,10 @@ def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path
     the report says so on its face: there is no span in this round for a
     before to be made comparable with.
     """
-    banked = load_banked_round(bank_measure_round(tmp_path))
+    round_dir = bank_measure_round(tmp_path)
+    store_banked_evidence(round_dir)
 
-    grade = entry_state_grade(banked)
+    grade = entry_state_grade(load_banked_round(round_dir))
 
     assert grade.available is True
     assert grade.reason == ""
@@ -493,6 +499,7 @@ def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, caps
     from jasper.cli import round_views as cli
 
     round_dir = bank_measure_round(tmp_path)
+    store_banked_evidence(round_dir)
 
     assert cli.main(["entry", str(round_dir)]) == 0
     grade = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())

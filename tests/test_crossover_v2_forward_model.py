@@ -60,6 +60,7 @@ from tests.test_audio_measurement_program_analysis import (
 from tests.test_crossover_v2_tuning_scope import _trial_candidate
 from tests.test_rear_output_foundation import _rear_pair
 from jasper.active_speaker.candidate_bank import find_banked_candidate
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
 from tests.test_crossover_v2_candidate_republish import _publish
@@ -596,6 +597,7 @@ def emitted_preview(diagnostic_round, tuning_profile, tmp_path):
     inputs = round_inputs(diagnostic_round)
     artifact, _ = round_artifact_dir(inputs.session_dir)
     (artifact / "round_receipt.json").write_text(json.dumps(_receipt()))
+    store_banked_evidence(diagnostic_round)
     path = tmp_path / "document.json"
     argv = ["judge", "--preview", str(path), "--round", str(diagnostic_round), "--set", "old", "--root", str(bank)]
     args = crossover_prescriber.build_parser().parse_args(argv)

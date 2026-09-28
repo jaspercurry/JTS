@@ -7,7 +7,8 @@
 # Bank a named session, or the newest when no session ID is supplied.
 # Usage: bank-crossover-round.sh <dest-dir> [bundle-session-id]
 # Optional state belongs to the captured round; other configuration is bank-time context.
-# Exit 4: nonempty destination. Exit 3: bundle unavailable. Partial evidence is retained.
+# Exit 4: nonempty destination. Exit 3: bundle unavailable. Exit 5: packet not built.
+# Partial evidence is retained.
 
 set -uo pipefail
 
@@ -150,10 +151,9 @@ repeat_floor_status="$(pull_optional repeat-floor /var/lib/jasper/active_speaker
 # --------------------------------------------------------------------- #
 # 3d. Declared rig geometry — the household's own tape measure, the only
 #     viable source for the room's entanglement floor on this rig class.
-#     Frozen HERE because the packet is rebuilt by every reader: a round
-#     read on another machine must report the room the SPEAKER declared,
-#     not that machine's. NOT part of the round's identity — reported,
-#     not gated.
+#     Frozen HERE because the round's packet is built from it (3f): the
+#     packet reports the room the SPEAKER declared, not the banking
+#     machine's. NOT part of the round's identity — reported, not gated.
 # --------------------------------------------------------------------- #
 declared_geometry_status="$(pull_optional declared-geometry /var/lib/jasper/measurement_geometry.json declared-geometry.json)"
 
@@ -164,6 +164,29 @@ declared_geometry_status="$(pull_optional declared-geometry /var/lib/jasper/meas
 #     time. NOT part of the round's identity — reported, not gated.
 # --------------------------------------------------------------------- #
 statefile_status="$(pull_optional camilla-statefile /var/lib/camilladsp/outputd-statefile.yml camilla-statefile.yml)"
+
+# --------------------------------------------------------------------- #
+# 3f. The round's evidence packet, built once from the files above, as
+#     the Pi's bank builds it: readers load it and never rebuild it
+#     (ADR-0383). A failed build or an unreadable round exits 5.
+# --------------------------------------------------------------------- #
+packet_ok=1
+packet_status="not built: no bundle"
+store_packet_py='import sys
+from pathlib import Path
+from jasper.active_speaker.round_packet import store_banked_evidence
+
+error = store_banked_evidence(Path(sys.argv[1]))
+print("ok" if error is None else f"FAILED ({type(error).__name__}: {error})")
+raise SystemExit(error is not None)
+'
+if (( bundle_ok == 1 )); then
+    if ! packet_status="$(PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$python_bin" -c "$store_packet_py" "$DEST")"; then
+        packet_ok=0
+        packet_status="${packet_status:-FAILED (see the error above)}"
+    fi
+fi
+echo "packet: $packet_status" >&2
 
 # --------------------------------------------------------------------- #
 # 4. Journal window — the units that speak during a crossover-v2 round.
@@ -219,12 +242,18 @@ echo "  applied-profile: $applied_profile_status" >&2
 echo "  repeat-floor:    $repeat_floor_status" >&2
 echo "  declared-geom:   $declared_geometry_status" >&2
 echo "  camilla-state:   $statefile_status" >&2
+echo "  packet:          $packet_status" >&2
 echo "  journal:         $journal_status" >&2
 
 if (( bundle_ok == 0 )); then
     echo "" >&2
     echo "bank-crossover-round: INCOMPLETE (exit 3) -- the round bundle could not be pulled. Every pulled file is kept under $DEST for forensics." >&2
     exit 3
+fi
+if (( packet_ok == 0 )); then
+    echo "" >&2
+    echo "bank-crossover-round: INCOMPLETE (exit 5) -- the round's packet could not be built, so packet.json stores evidence: null or was not written, and its views refuse the round. Every pulled file is kept under $DEST." >&2
+    exit 5
 fi
 
 echo "" >&2
