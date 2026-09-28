@@ -244,6 +244,7 @@ async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(caplog):
 
     assert established is False, "a refused claim is not an established level"
     fields = event_fields(caplog, "correction.session_volume_claim_refused")
+    assert fields["reason"] == "VolumeClaimConflict"
     assert "session_measurement" in fields["holder"], "the claim KIND is named"
 
 
