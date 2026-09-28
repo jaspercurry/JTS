@@ -15,6 +15,10 @@ from collections.abc import Coroutine, Iterable, Mapping
 from pathlib import Path
 from typing import Any, assert_never
 
+from jasper.active_speaker.graph_types import (
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+)
 from jasper import camilla, volume_process
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
@@ -41,8 +45,6 @@ from jasper.active_speaker.path_safety import (
 from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
-    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
     parked_muted_exits,
     safe_graph_for_current_topology,

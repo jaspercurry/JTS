@@ -49,7 +49,8 @@ from jasper.active_speaker.output_contract import (
     topology_sink_is_composite,
 )
 from jasper.active_speaker.output_contract import flat_graph_program_dest_map
-from jasper.active_speaker.runtime_contract import _flat_hard_muted_outputs, classify_camilla_graph
+from jasper.active_speaker.runtime_contract import classify_camilla_graph
+from jasper.sound.flat_verifier import _flat_hard_muted_outputs
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
     FlatChannelPlan,

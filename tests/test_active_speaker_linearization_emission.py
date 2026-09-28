@@ -42,8 +42,8 @@ from jasper.active_speaker.camilla_names import (
 )
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )

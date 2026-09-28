@@ -33,6 +33,7 @@ import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
+from jasper.active_speaker import graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
@@ -67,10 +68,10 @@ def _stable_live_graph_authority(monkeypatch):
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         assert await cam.get_config_file_path() == str(expected_config_path)
         assert expected_classification in {
-            runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_PROGRAM_BAKE_PIPE,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         }
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=expected_classification,
             allowed=True,
             config_path=str(expected_config_path),
@@ -429,7 +430,7 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
         return SimpleNamespace(
             allowed=ok,
             classification=(
-                runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 if ok
                 else "unsafe"
             ),
@@ -552,7 +553,7 @@ def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
         assert expected_config_path == alc.LEADER_BAKE_CONFIG_PATH
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE
+            == graph_types.GRAPH_PROGRAM_BAKE_PIPE
         )
         assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
         raise RuntimeError("candidate proof refused")

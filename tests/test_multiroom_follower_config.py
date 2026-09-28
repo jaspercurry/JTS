@@ -31,6 +31,7 @@ from jasper.log_event import log_event
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 import jasper.active_speaker.runtime_contract as runtime_contract_mod
+from jasper.active_speaker import graph_types
 import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
@@ -79,10 +80,10 @@ def _stable_live_graph_authority(monkeypatch):
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         assert await cam.get_config_file_path() == str(expected_config_path)
         assert expected_classification in {
-            runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE,
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_DRIVER_DOMAIN_BASELINE,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         }
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=expected_classification,
             allowed=True,
             config_path=str(expected_config_path),
@@ -205,7 +206,7 @@ def test_apply_live_proof_failure_rolls_back_before_unlock(
         assert expected_config_path == fc.FOLLOWER_CONFIG_PATH
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+            == graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
         )
         assert await cam.get_config_file_path() == fc.FOLLOWER_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
@@ -362,11 +363,11 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
 @pytest.mark.parametrize(
     ("actual_path", "actual_classification"),
     [
-        ("/tmp/wrong.yml", runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
-        (None, runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
+        ("/tmp/wrong.yml", graph_types.GRAPH_DRIVER_DOMAIN_BASELINE),
+        (None, graph_types.GRAPH_DRIVER_DOMAIN_BASELINE),
         (
             "/tmp/expected.yml",
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         ),
     ],
     ids=["wrong-path", "missing-path", "wrong-classification"],
@@ -383,7 +384,7 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
     )
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=actual_classification,
             allowed=True,
             config_path=actual_path,
@@ -401,7 +402,7 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
                 _FakeCamilla(current="/tmp/expected.yml"),
                 expected_config_path="/tmp/expected.yml",
                 expected_classification=(
-                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                    graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 ),
                 settle_timeout_s=0.0,
             )
@@ -410,17 +411,17 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
 
 def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", lambda: object())
-    expected = runtime_contract_mod.GraphSafety(
-        classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+    expected = graph_types.GraphSafety(
+        classification=graph_types.GRAPH_PROGRAM_BAKE_PIPE,
         allowed=True, config_path="/tmp/paired.yml",
     )
     proofs = iter([
-        runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        graph_types.GraphSafety(
+            classification=graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
             allowed=True, config_path="/tmp/solo.yml",
         ),
-        runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE, allowed=False,
+        graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE, allowed=False,
             issues=({"code": "bass_extension_active_snapshot_unstable"},),
         ),
         expected,
@@ -433,7 +434,7 @@ def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
     result = asyncio.run(_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
         _FakeCamilla(current="/tmp/paired.yml"),
         expected_config_path="/tmp/paired.yml",
-        expected_classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+        expected_classification=graph_types.GRAPH_PROGRAM_BAKE_PIPE,
     ))
     assert result == expected
 
@@ -455,8 +456,8 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
     )
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE,
+        return graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE,
             allowed=False,
             issues=(
                 {
@@ -479,7 +480,7 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
                 _FakeCamilla(current="/tmp/expected.yml"),
                 expected_config_path="/tmp/expected.yml",
                 expected_classification=(
-                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                    graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 ),
             )
         )
@@ -525,8 +526,8 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
     reason = "the running CamillaDSP graph does not match the statefile-selected config"
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE,
+        return graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE,
             allowed=False,
             issues=(
                 {
@@ -691,7 +692,7 @@ def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
         assert expected_config_path == str(solo)
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME
+            == graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME
         )
         assert await cam.get_config_file_path() == str(solo)
         raise RuntimeError("restore proof refused")

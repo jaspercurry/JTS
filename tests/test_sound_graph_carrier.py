@@ -32,10 +32,12 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 from jasper.active_speaker import baseline_apply
-from jasper.active_speaker.runtime_contract import (
-    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER
+from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_FLAT_FULL_RANGE,
+)
+from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
@@ -391,7 +393,7 @@ def test_stereo_host_dispatches_refusal_by_contract_code_not_prose(tmp_path):
     from jasper.sound.profile import SoundProfile
 
     with mock.patch(
-        "jasper.active_speaker.runtime_contract.flat_program_graph_block",
+        "jasper.sound.flat_verifier.flat_program_graph_block",
         return_value=(FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, "opaque detail"),
     ):
         carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)

@@ -342,6 +342,7 @@ module = [
     "jasper.output_topology",
     "jasper.outputd_active_lane",
     "jasper.peering.daemon",
+    "jasper.sound.flat_verifier",
     "jasper.spotify_router",
     "jasper.spotify_routing",
     "jasper.transit.subway",

@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
 
+from jasper.active_speaker.graph_types import GRAPH_ALL_MUTED_ACTIVE_STARTUP
 from jasper.control.restart_broker import manage_units
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
@@ -45,7 +46,6 @@ from .path_safety import (
     validate_startup_load_evidence_binding,
 )
 from .runtime_contract import (
-    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     safe_graph_for_current_topology,
     write_camilla_statefile,
 )

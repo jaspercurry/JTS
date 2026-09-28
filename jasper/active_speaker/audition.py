@@ -27,6 +27,7 @@ from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.restore_wait import attempt_graph_restore, resilient_restore
 from jasper.atomic_io import atomic_write_json
 from jasper.camilla import CamillaUnavailable
@@ -375,7 +376,6 @@ async def start_audition(
         load_applied_baseline_profile_state,
     )
     from jasper.active_speaker.runtime_contract import (  # lazy: import cost — jasper-control and jasper-web load this module
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
         desired_graph_approved,
         prove_desired_graph,
     )

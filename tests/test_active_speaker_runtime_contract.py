@@ -50,7 +50,8 @@ from jasper.active_speaker.output_contract import (
     classify_output_contract,
 )
 from jasper.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
-from jasper.active_speaker.runtime_contract import (
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, FLAT_PROGRAM_GRAPH_UNCONFIGURED, flat_program_graph_block, flat_program_graph_blocked_reason
+from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -59,16 +60,14 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
-    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
-    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+)
+from jasper.active_speaker.runtime_contract import (
     PARKED_MUTED_STATUS,
     _normalized_graph_fingerprint,
     active_graph_is_parked,
     build_parked_muted_graph,
     classify_camilla_graph as _classify_camilla_graph,
     apply_safe_graph_decision_to_statefile,
-    flat_program_graph_block,
-    flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_active_bass_extension_graph,
