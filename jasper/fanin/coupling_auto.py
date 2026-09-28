@@ -2,46 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""DEFAULT-RESOLUTION for the USB low-latency combo.
-
-WHY THIS EXISTS — the campaign flipped this feature's shipped default from
-"off, opt-in" to "on where the box is eligible". The combo arms ONLY on a box
-that BOTH (a) has the resolved USB gadget capability available and (b) has USB
-Audio Input turned ON by the household (canonical source intent enabled), local
-sources allowed for this speaker's current role, AND the coordinator-derived
-``jasper-usbsink.service`` enablement confirming lifecycle readiness. The boot
-overlay alone is NOT enough: the same data port may belong to a USB output DAC
-on a Zero-class board. All signals present → arm the fan-in half
-(``JASPER_FANIN_USB_DIRECT`` + ``JASPER_FANIN_HOST_CLOCK`` and the household's
-fixed cushion-decay preset in fanin.env; fan-in owns the gadget capture). Off a
-combo box the feature keys are written to their EXPLICIT off value
-(``disabled``), NOT unset — an unset key lets a stale ``enabled`` in
-``/etc/jasper/jasper.env`` (loaded before the reconciler-owned files) win. There
-is no separate USB bridge process: armed means USB flows through fan-in's DIRECT
-lane, while disarmed means USB audio is unavailable.
-
-This module owns the pure DECISION only. The reconciler
-(:mod:`jasper.fanin.coupling_reconcile`) owns the env I/O and the daemon
-transitions — the single-writer discipline (pattern 3: reconciler is the single
-env writer; daemons read the resolved env). It is import-cheap (stdlib only) so
-the reconciler CLI and any tests can resolve the decision without pulling in the
-heavy topology/ring readers unless a real box asks.
-
-THE COUPLING IS NOT DECIDED HERE: ADR-0100 left one central transport, so there
-is no route to choose between.
-
-FAIL-SAFE DIRECTION = combo-off. A signal that cannot be proved is never read as
-permission: an unreadable config file does not arm a capture lane.
-"""
+"""Resolve and persist the USB combo; the reconciler owns daemon ordering."""
 
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
 from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import env_value
-from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
+from jasper.env_load import FANIN_ENV_PATH
+from jasper.fanin.env_actions import _apply_actions, _write_env_actions
+from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for, read_requested_mode as read_usb_latency_mode
+from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.systemd_probe import unit_state
@@ -159,3 +135,127 @@ def usbsink_effectively_enabled() -> bool:
     if not local_sources_allowed()[0]:
         return False
     return _usbsink_lifecycle_ready()
+
+
+@dataclass(frozen=True)
+class UsbComboResult:
+    gadget_present: bool
+    usb_intent_enabled: bool
+    combo_armed: bool
+    usb_latency_mode: str
+    changed: bool
+    intent_failure: str
+    latency_failure: str
+    write_error: str | None = None
+
+
+def converge_usb_combo(
+    *,
+    reason: str,
+    logger: logging.Logger,
+    env_path: str | Path = FANIN_ENV_PATH,
+    gadget_present: bool | None = None,
+    usb_intent_enabled: bool | None = None,
+) -> UsbComboResult:
+    from jasper.fanin.ring_readiness import read_snapshot  # lazy: import cost; doctor uses the decision helpers without ring readers
+
+    fanin_snapshot = read_snapshot(env_path)
+    gadget = (
+        read_usb_gadget_available() if gadget_present is None else gadget_present
+    )
+    usb_intent_failure = ""
+    if usb_intent_enabled is None:
+        try:
+            usb_intent = usbsink_effectively_enabled()
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            # A previously armed fan-in process retains its DIRECT lane until
+            # this owner writes + applies the explicit-off combo plan. Treat the
+            # unreadable preference as effective False, complete the ordinary
+            # ordered write below, and only then return failure.
+            usb_intent = False
+            usb_intent_failure = f"USB source intent invalid or unreadable: {exc}"[:500]
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result="auto_usb_intent_invalid",
+                reason=reason,
+                usb_intent_enabled=False,
+                detail=usb_intent_failure,
+                level=logging.ERROR,
+            )
+    else:
+        usb_intent = usb_intent_enabled
+    usb_latency_failure = ""
+    try:
+        latency_mode = read_usb_latency_mode()
+    except (OSError, UnicodeError, ValueError) as exc:
+        latency_mode = "high"
+        usb_latency_failure = (
+            f"USB latency preference invalid or unreadable: {exc}"[:500]
+        )
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_latency_invalid",
+            reason=reason,
+            usb_latency_mode=latency_mode,
+            detail=usb_latency_failure,
+            level=logging.ERROR,
+        )
+
+    combo_armed = not usb_intent_failure and combo_is_armed(
+        gadget_present=gadget, usb_intent_enabled=usb_intent
+    )
+    combo_actions = usb_combo_actions(armed=combo_armed, latency_mode=latency_mode)
+
+    _, combo_changed = _apply_actions(fanin_snapshot.text, combo_actions)
+    if combo_changed:
+        try:
+            _write_env_actions(fanin_snapshot.path, lambda _text: combo_actions)
+        except OSError as e:
+            log_event(
+                logger,
+                "fanin.coupling_reconcile",
+                result="auto_usb_combo_write_failed",
+                reason=reason,
+                gadget_present=gadget,
+                error=e,
+                level=logging.ERROR,
+            )
+            return UsbComboResult(
+                gadget_present=gadget,
+                usb_intent_enabled=usb_intent,
+                combo_armed=combo_armed,
+                usb_latency_mode=latency_mode,
+                changed=False,
+                intent_failure=usb_intent_failure,
+                latency_failure=usb_latency_failure,
+                write_error=str(e),
+            )
+        # Keep the live env coherent for the ring convergence's own re-read.
+        for a in combo_actions:
+            if a.action == "set":
+                os.environ[a.key] = a.value
+            else:
+                os.environ.pop(a.key, None)
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_combo_written",
+            reason=reason,
+            gadget_present=gadget,
+            usb_intent_enabled=usb_intent,
+            combo_armed=combo_armed,
+            usb_latency_mode=latency_mode,
+            keys=",".join(a.key for a in combo_actions),
+        )
+
+    return UsbComboResult(
+        gadget_present=gadget,
+        usb_intent_enabled=usb_intent,
+        combo_armed=combo_armed,
+        usb_latency_mode=latency_mode,
+        changed=combo_changed,
+        intent_failure=usb_intent_failure,
+        latency_failure=usb_latency_failure,
+    )

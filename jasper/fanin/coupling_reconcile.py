@@ -40,22 +40,12 @@ from pathlib import Path
 from typing import IO
 
 from jasper.control import camilla_topology_gate_state, restart_broker
-from jasper.atomic_io import (
-    CONFIG_FILE_MODE,
-    env_key_action,
-    flock_held,
-    locked_upsert_env_file,
-)
+from jasper.atomic_io import flock_held
 from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
-from jasper.env_file import env_value, read_value, remove, upsert
-from jasper.fanin.coupling_auto import (
-    combo_is_armed,
-    read_usb_gadget_available,
-    usb_combo_actions,
-    usbsink_effectively_enabled,
-)
-from jasper.fanin.latency_mode import read_requested_mode as read_usb_latency_mode
+from jasper.env_file import env_value, read_value
+from jasper.fanin.coupling_auto import converge_usb_combo
+from jasper.fanin.env_actions import _apply_action, _apply_actions, _write_env_actions
 from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
@@ -897,96 +887,30 @@ def reconcile_auto(
     Every ``DaemonOp`` argument plus ``gadget_present`` / ``usb_intent_enabled``
     is injectable for tests.
     """
-    fanin_snapshot = read_snapshot(env_path)
-    gadget = (
-        read_usb_gadget_available() if gadget_present is None else gadget_present
+    usb = converge_usb_combo(
+        reason=reason,
+        logger=logger,
+        env_path=env_path,
+        gadget_present=gadget_present,
+        usb_intent_enabled=usb_intent_enabled,
     )
-    usb_intent_failure = ""
-    if usb_intent_enabled is None:
-        try:
-            usb_intent = usbsink_effectively_enabled()
-        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
-            # A previously armed fan-in process retains its DIRECT lane until
-            # this owner writes + applies the explicit-off combo plan. Treat the
-            # unreadable preference as effective False, complete the ordinary
-            # ordered write below, and only then return failure.
-            usb_intent = False
-            usb_intent_failure = f"USB source intent invalid or unreadable: {exc}"[:500]
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result="auto_usb_intent_invalid",
-                reason=reason,
-                usb_intent_enabled=False,
-                detail=usb_intent_failure,
-                level=logging.ERROR,
-            )
-    else:
-        usb_intent = usb_intent_enabled
-    usb_latency_failure = ""
-    try:
-        latency_mode = read_usb_latency_mode()
-    except (OSError, UnicodeError, ValueError) as exc:
-        latency_mode = "high"
-        usb_latency_failure = (
-            f"USB latency preference invalid or unreadable: {exc}"[:500]
-        )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="auto_usb_latency_invalid",
-            reason=reason,
-            usb_latency_mode=latency_mode,
-            detail=usb_latency_failure,
-            level=logging.ERROR,
-        )
-
-    combo_armed = not usb_intent_failure and combo_is_armed(
-        gadget_present=gadget, usb_intent_enabled=usb_intent
-    )
-    combo_actions = usb_combo_actions(armed=combo_armed, latency_mode=latency_mode)
-
-    # Step 1 — fan-in combo keys (reconciler = single writer). Write only on change.
-    _, combo_changed = _apply_actions(fanin_snapshot.text, combo_actions)
-    if combo_changed:
-        try:
-            _write_env_actions(fanin_snapshot.path, lambda _text: combo_actions)
-        except OSError as e:
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result="auto_usb_combo_write_failed",
-                reason=reason,
-                gadget_present=gadget,
-                error=e,
-                level=logging.ERROR,
-            )
-            return AutoResult(
-                ok=False,
-                gadget_present=gadget,
-                usb_intent_enabled=usb_intent,
-                combo_armed=combo_armed,
-                usb_latency_mode=latency_mode,
-                usb_combo_changed=False,
-                reason="USB combo write failed",
-                detail="; ".join(part for part in (usb_intent_failure, str(e)) if part),
-            )
-        # Keep the live env coherent for the ring convergence's own re-read.
-        for a in combo_actions:
-            if a.action == "set":
-                os.environ[a.key] = a.value
-            else:
-                os.environ.pop(a.key, None)
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="auto_usb_combo_written",
-            reason=reason,
+    gadget = usb.gadget_present
+    usb_intent = usb.usb_intent_enabled
+    combo_armed = usb.combo_armed
+    latency_mode = usb.usb_latency_mode
+    combo_changed = usb.changed
+    usb_intent_failure = usb.intent_failure
+    usb_latency_failure = usb.latency_failure
+    if usb.write_error is not None:
+        return AutoResult(
+            ok=False,
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
             combo_armed=combo_armed,
             usb_latency_mode=latency_mode,
-            keys=",".join(a.key for a in combo_actions),
+            usb_combo_changed=False,
+            reason="USB combo write failed",
+            detail="; ".join(part for part in (usb_intent_failure, usb.write_error) if part),
         )
 
     # Step 2 — the ring. The reconciler re-reads fanin.env fresh (it snapshots
@@ -1303,31 +1227,6 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     return deleted
 
 
-def _write_env_actions(
-    path: Path,
-    build_actions: Callable[[str], tuple[RuntimeEnvAction, ...]],
-) -> tuple[str, bool]:
-    """Fold ``build_actions`` onto ``path`` under its per-file advisory lock.
-
-    The shared text-preserving writer, in this module's ``RuntimeEnvAction``
-    vocabulary. Returns ``(text, changed)``; an empty result deletes the file
-    instead of publishing zero bytes. Raises ``OSError`` on a write failure or
-    a lock-acquire timeout (``TimeoutError`` is one).
-    """
-    return locked_upsert_env_file(
-        path,
-        lambda text: [env_key_action(action) for action in build_actions(text)],
-        mode=CONFIG_FILE_MODE,
-        delete_when_empty=True,
-    )
-
-
-def _apply_action(text: str, action: RuntimeEnvAction) -> tuple[str, bool]:
-    if action.action == "set":
-        return upsert(text, action.key, action.value)
-    return remove(text, action.key)
-
-
 def outputd_ring_path_for(outputd_env: str | Mapping[str, str]) -> str:
     """The ring file outputd must read, derived from the endpoint marker.
 
@@ -1405,17 +1304,6 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
             outputd_ring_path_for(outputd_text),
         ),
     )
-
-
-def _apply_actions(
-    text: str, actions: tuple[RuntimeEnvAction, ...]
-) -> tuple[str, bool]:
-    """Fold a sequence of env actions onto ``text``; changed = any moved the file."""
-    changed = False
-    for action in actions:
-        text, moved = _apply_action(text, action)
-        changed = changed or moved
-    return text, changed
 
 
 def _sync_process_env_for_emit(outputd_text: str) -> None:
