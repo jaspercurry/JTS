@@ -864,8 +864,10 @@ def _normalise_profile_manual_settings(
                 include_research_evidence=False,
             )
         )
-        # Validated where the declaration is saved; the tweeter cap derivation reads them (ADR-0227 §9).
-        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad") if raw.get(key) is not None})
+        # Validated where the declaration is saved; the tweeter cap derivation and the sealed-cabinet
+        # check read them (ADR-0227 §9, ADR-0384).
+        driver.update({key: raw[key] for key in ("sensitivity_db_2v83_1m", "pad", "radiating_diameter_mm")
+                       if raw.get(key) is not None})
         drivers.append(driver)
     for index, raw_candidate in enumerate(
         _sequence(
@@ -1104,13 +1106,9 @@ def compute_driver_safety_profile(
                 finite_float(visible.get("sensitivity_db_2v83_1m")), visible.get("pad"),
             ),
             "fit_budget": visible.get("fit_budget"),
-            "cabinet": visible.get(
-                "cabinet",
-                {
-                    "enclosure_kind": "unknown",
-                    "lf_reconstruction_capability": "refused_unknown_enclosure",
-                },
-            ),
+            # Judged on the merged declaration: each value manual over research (ADR-0384).
+            "cabinet": _normalise_cabinet(visible.get("cabinet") or {}, f"{target_id}.cabinet",
+                                          visible.get("radiating_diameter_mm"), REIMPORT_RESEARCH),
             "unknowns": unknowns,
             "field_provenance": provenance,
             "authority": "operator_visible_values",
