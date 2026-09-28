@@ -22,6 +22,7 @@ from jasper.active_speaker.level_trim import declared_driver_gains
 from jasper.active_speaker.measurement_programs import program_entries
 from jasper.output_topology_store import load_output_topology
 from jasper.active_speaker.layout import build_speaker_layout, layout_choices
+from jasper.json_fields import CodedFieldError, issue
 
 
 class SpeakerSetupView(TypedDict):
@@ -68,12 +69,29 @@ def preview_layout(raw: Mapping[str, Any]) -> dict[str, Any]:
     return layout_view(build_speaker_layout(load_output_topology(), raw))
 
 
+def _research_refuses(research: Any) -> bool:
+    try:
+        design_draft.normalise_driver_research(research)
+    except CodedFieldError:
+        return True
+    return False
+
+
 def load_setup_view() -> SpeakerSetupView:
     from jasper.active_speaker.baseline_profile import applied_layers, load_applied_baseline_profile_state  # lazy: graph domain
     from jasper.active_speaker.crossover_preview import build_crossover_preview  # lazy: graph domain
 
     topology = load_output_topology()
-    draft = design_draft.load_design_draft(topology=topology)
+    draft = design_draft.load_design_draft(computed=False)
+    refused: list[dict[str, Any]] = []
+    try:
+        coordinator = commissioning_coordinator.load_commissioning_view(topology)
+    except CodedFieldError as exc:
+        # A stored shape this build refuses still opens here, where it is fixed (#2902).
+        declared = getattr(exc, "declared", None)
+        refused = [{**issue("blocker", getattr(exc, "code", "invalid_design_draft"), str(exc)),
+                    **({"declared": declared} if declared else {})}]
+        coordinator = {"applied_profile": {}, "programs": ()}
     resolved = resolve_design_inputs(topology, draft.get("manual_settings"), draft.get("driver_research"))
     manual = resolve_design_inputs(topology, draft.get("manual_settings"), None)
     bindings = manual.pop("bindings")
@@ -84,8 +102,7 @@ def load_setup_view() -> SpeakerSetupView:
         driver for driver in (draft.get("manual_settings") or {}).get("drivers", [])
         if not driver.get("target_id") and driver["role"] in ambiguous_roles
     ]
-    coordinator = commissioning_coordinator.load_commissioning_view(topology)
-    preview = build_crossover_preview(draft)
+    preview = {} if refused else build_crossover_preview(draft)
     applied = coordinator["applied_profile"]
     layers = applied_layers(load_applied_baseline_profile_state())
     models = (draft.get("operator_inputs") or {}).get("target_models") or {}
@@ -104,7 +121,10 @@ def load_setup_view() -> SpeakerSetupView:
                             "values": values})
     has_models = bool(targets) and all(target["model"] for target in targets)
     passive = "speaker" not in coordinator["programs"]
-    stage = ("layout" if not topology.speaker_groups else "tune" if applied["stands"] or passive else
+    # A refused draft opens where its fix lives: a new import, or the driver cards (#2902).
+    stage = ("layout" if not topology.speaker_groups else
+             ("research" if _research_refuses(draft.get("driver_research")) else "details") if refused else
+             "tune" if applied["stands"] or passive else
              "details" if not has_models else "apply" if coordinator["driver_values"]["complete"] or draft.get("driver_research") or manual.get("crossover_candidates") else "research")
     action = {"layout": ("save_layout", "Save layout"), "details": ("save_details", "Save details"),
               "research": ("copy_research", "Copy prompt"), "apply": ("apply", "Save to speaker"),
@@ -130,7 +150,7 @@ def load_setup_view() -> SpeakerSetupView:
                          "rear_muted": "rear" in coordinator["programs"]},
         "applied": {**applied, "layers": layers}, "next_action": {"id": action[0], "label": action[1]},
         "programs": [{**entry, "applied": layers[entry["id"]]} for entry in program_entries(topology)],
-        "issues": list(coordinator["review"]["issues"]) if stage == "apply" else [],
+        "issues": refused or (list(coordinator["review"]["issues"]) if stage == "apply" else []),
     }
 
 
@@ -138,7 +158,7 @@ def save_details(raw: Mapping[str, Any]) -> dict[str, Any]:
     from .sound_active_speaker import _save_output_topology_payload  # lazy: existing topology operation owner
 
     topology = load_output_topology()
-    prior = design_draft.load_design_draft(topology=topology)
+    prior = design_draft.load_design_draft(computed=False)
     inputs = design_draft.normalise_operator_inputs(raw.get("operator_inputs"))
     styles = raw.get("driver_styles") or {}
     changed = topology.to_dict()
@@ -154,7 +174,9 @@ def save_details(raw: Mapping[str, Any]) -> dict[str, Any]:
         return {(group.id, channel.role, channel.output_variant):
                 (values.get("target_models") or {}).get(channel.target_id(group.id)) or values.get(channel.role)
                 for group in topology.speaker_groups for channel in group.channels}
-    research = prior.get("driver_research") if not style_changed and models(inputs) == models(prior.get("operator_inputs") or {}) else None
+    same_drivers = not style_changed and models(inputs) == models(prior.get("operator_inputs") or {})
+    # Refused research is not in effect, and its refusal already asks for a new import (#2902).
+    research = prior.get("driver_research") if same_drivers and not _research_refuses(prior.get("driver_research")) else None
     design_draft.save_design_draft(topology, driver_research=research,
                                   manual_settings=raw.get("manual_settings"), operator_inputs=raw.get("operator_inputs"))
     return result if (result.get("save") or {}).get("status") == "needs_attention" else {}
@@ -172,7 +194,7 @@ def import_research(raw: Mapping[str, Any]) -> None:
     if not isinstance(research, dict) or research.get("artifact_schema_version") != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
         raise ValueError("Use the current research prompt so the result matches each driver in this speaker.")
     topology = load_output_topology()
-    prior = design_draft.load_design_draft(topology=topology)
+    prior = design_draft.load_design_draft(computed=False)
     design_draft.save_design_draft(topology, driver_research=research,
                                   manual_settings=prior.get("manual_settings"), operator_inputs=prior.get("operator_inputs"))
 

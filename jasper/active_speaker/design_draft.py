@@ -26,7 +26,6 @@ from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
 from jasper.paths import resolve_state_path
 from ._common import (
     DRIVER_CLASSES,
-    LEGACY_DROPPED_DRIVER_FIELDS,
     MANUAL_CANDIDATE_FIELDS,
     DRIVER_RESEARCH_FIELDS,
     DriverFields,
@@ -58,6 +57,7 @@ from .declaration_vocabulary import (
 SCHEMA_VERSION = 1
 DESIGN_DRAFT_KIND = "jts_active_speaker_design_draft"
 DRIVER_RESEARCH_KIND = "jts_active_crossover_driver_research"
+_REIMPORT_RESEARCH = "; import the research again at /sound/speaker/ with the current prompt"
 DEFAULT_DESIGN_DRAFT_PATH = Path("/var/lib/jasper/active_speaker_design_draft.json")
 DESIGN_DRAFT_PATH_ENV = "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"
 _DESIGN_DRAFT_WRITE_LOCK = threading.RLock()
@@ -482,7 +482,8 @@ def normalise_driver_research(
         _reject_unknown_keys(
             _mapping(item, f"driver_research.drivers[{index}]"),
             f"driver_research.drivers[{index}]",
-            DRIVER_RESEARCH_FIELDS | LEGACY_DROPPED_DRIVER_FIELDS,
+            DRIVER_RESEARCH_FIELDS,
+            _REIMPORT_RESEARCH,
         )
         drivers.append(_normalise_driver(
             item,
@@ -1035,7 +1036,7 @@ def build_design_draft(
 def design_draft_view(
     draft: Mapping[str, Any], *, topology: OutputTopology | None = None,
 ) -> dict[str, Any]:
-    """Add computed driver data to a live or banked declaration (ADR-0323 §2)."""
+    """Add computed driver data to a live or banked declaration (ADR-0323 §2, #2902)."""
     out = {key: value for key, value in draft.items()
            if key not in _COMPUTED_DRAFT_FIELDS}
     if topology is None and draft.get("topology"):
@@ -1044,11 +1045,12 @@ def design_draft_view(
         except ValueError:
             return out
     if topology is not None:
+        research = normalise_driver_research(draft.get("driver_research"))
         out["driver_safety_profile"] = compute_driver_safety_profile(
-            topology, draft.get("manual_settings"), draft.get("driver_research"),
+            topology, draft.get("manual_settings"), research,
         )
         out["driver_protection_policy_view"] = driver_protection_policy_view(
-            topology, draft.get("manual_settings"), draft.get("driver_research"),
+            topology, draft.get("manual_settings"), research,
         )
     return out
 
@@ -1057,8 +1059,9 @@ def load_design_draft(
     path: str | Path | None = None,
     *,
     topology: OutputTopology | None = None,
+    computed: bool = True,
 ) -> dict[str, Any]:
-    """Load declared values and compute the safety profile for the supplied topology."""
+    """Load declared values and compute the safety profile, which ``computed=False`` skips."""
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
         return raw
@@ -1069,9 +1072,6 @@ def load_design_draft(
     if isinstance(research, dict):
         research.pop("request_fingerprint", None)
         research.pop("result_fingerprint", None)
-        for driver in research.get("drivers", []):
-            if isinstance(driver, dict):
-                driver.pop("target_fingerprint", None)
     # Same rule for the deleted per-channel ``protection_status``: this draft's
     # topology is stored verbatim and reaches ``crossover_preview_fingerprint``,
     # so a file written before the delete would move the declaration fingerprint
@@ -1080,7 +1080,7 @@ def load_design_draft(
     for group in _stored_items(stored_topology, "speaker_groups"):
         for channel in _stored_items(group, "channels"):
             channel.pop("protection_status", None)
-    return design_draft_view(raw, topology=topology)
+    return design_draft_view(raw, topology=topology) if computed else raw
 
 
 def _stored_items(container: Any, key: str) -> list[dict[str, Any]]:

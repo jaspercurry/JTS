@@ -32,13 +32,6 @@ DRIVER_CLASSES: tuple[str, ...] = (
     "unknown",
 )
 
-# Tolerate retired fields in older research packets.
-LEGACY_DROPPED_DRIVER_FIELDS: frozenset[str] = frozenset({
-    "horn_coverage_deg",
-    "crossover_search_band_hz",
-    "target_fingerprint",
-})
-
 MANUAL_DRIVER_FIELDS = (
     "target_id", "role", "model", "manufacturer",
     "sensitivity_db_2v83_1m",
@@ -141,12 +134,12 @@ class DriverFields(JsonFields):
         return out
 
     def _reject_unknown_keys(
-        self, raw: Mapping[str, Any], field_name: str, allowed: Collection[str],
+        self, raw: Mapping[str, Any], field_name: str, allowed: Collection[str], remedy: str = "",
     ) -> None:
         unknown = sorted(str(key) for key in raw if key not in allowed)
         if unknown:
             raise self.error_type(
-                f"{field_name} has unknown fields: {', '.join(unknown)}",
+                f"{field_name} has unknown fields: {', '.join(unknown)}{remedy}",
                 code="unknown_driver_fields",
             )
 

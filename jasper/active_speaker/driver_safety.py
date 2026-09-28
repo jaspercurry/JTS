@@ -63,6 +63,9 @@ MAX_PROVENANCE_SOURCE_CHARS = 320
 class DriverSafetyProfileError(CodedFieldError):
     """Raised when research or safety-profile input is malformed."""
 
+    #: A refused manual row's own values, which a save from /sound/speaker/ would drop (#2902).
+    declared: dict[str, Any] | None = None
+
 
 _fields = DriverFields(DriverSafetyProfileError, length_limit_separator=" ")
 _text = partial(_fields._text, max_chars=320)
@@ -800,6 +803,30 @@ def _research_by_target(
     }
 
 
+# What a refused manual row lists, in declaration order; the stamps no driver card enters are left out.
+_LISTED_ROW_FIELDS = tuple(key for key in MANUAL_DRIVER_FIELDS
+                           if key not in ("target_id", "role", "source", "gain_offset_db_provenance"))
+
+
+def _unplaced_row(
+    index: int, row: Mapping[str, Any], role: str, outputs: Sequence[str], problem: str, code: str,
+) -> DriverSafetyProfileError:
+    """A row the page cannot place; its refusal carries the row's values so none is lost unseen (#2902)."""
+    declared = {key: row[key] for key in _LISTED_ROW_FIELDS if row.get(key) is not None}
+    listed = ", ".join(f"{key} {value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool)
+                       else f"{key} {json.dumps(value)}" for key, value in declared.items())
+    card = (f"the {role} output's driver card" if len(outputs) == 1 else f"each {role} output's driver card"
+            if outputs else "the driver card they belong to")
+    error = DriverSafetyProfileError(
+        f"manual_settings.drivers[{index}] ({role}{'; ' + listed if listed else ''}) {problem}: "
+        + (f"enter these values in {card} at /sound/speaker/, then save details" if listed
+           else "save details at /sound/speaker/ to drop it"),
+        code=code,
+    )
+    error.declared = declared
+    return error
+
+
 def validate_manual_target_bindings(
     topology: OutputTopology,
     manual_settings: Mapping[str, Any] | None,
@@ -817,59 +844,49 @@ def validate_manual_target_bindings(
         )
     resolved_targets: set[str] = set()
     legacy_roles: set[str] = set()
-    for index, driver in enumerate(manual_settings.get("drivers", [])):
+    for index, driver in enumerate(manual_settings.get("drivers") or []):
         if not isinstance(driver, Mapping):
             raise DriverSafetyProfileError(
                 f"manual_settings.drivers[{index}] must be an object"
             )
-        role = _text(
+        role = str(_text(
             driver.get("role"),
             f"manual_settings.drivers[{index}].role",
             required=True,
             max_chars=40,
-        )
+        ))
         target_id = _text(
             driver.get("target_id"),
             f"manual_settings.drivers[{index}].target_id",
             max_chars=160,
         )
+        matches = by_role.get(role, [])
         if target_id:
             target = by_id.get(target_id)
             if target is None:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers[{index}].target_id is not a current physical target",
-                    code="manual_target_unknown",
-                )
+                raise _unplaced_row(index, driver, role, matches, f"names output {target_id}, which this layout does not have",
+                                    "manual_target_unknown")
             if role != target.get("role"):
                 raise DriverSafetyProfileError(
                     f"manual_settings.drivers[{index}] role does not match target_id",
                     code="manual_target_role_mismatch",
                 )
             if target_id in resolved_targets:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {target_id} more than once",
-                    code="manual_target_bound_twice",
-                )
+                raise _unplaced_row(index, driver, role, [target_id], f"names output {target_id} a second time",
+                                    "manual_target_bound_twice")
             resolved_targets.add(target_id)
             continue
         if role in legacy_roles:
-            raise DriverSafetyProfileError(
-                f"manual_settings.drivers contains duplicate legacy role {role}",
-                code="manual_duplicate_legacy_role",
-            )
-        legacy_roles.add(str(role))
-        matches = by_role.get(str(role), [])
+            raise _unplaced_row(index, driver, role, matches, f"repeats the {role} row", "manual_duplicate_legacy_role")
+        legacy_roles.add(role)
         if not matches:
-            raise DriverSafetyProfileError(
-                f"manual_settings.drivers[{index}].role is not a current driver role"
-            )
+            raise _unplaced_row(index, driver, role, matches, f"names no output, and this layout has no {role} output",
+                                "manual_role_unknown")
         if len(matches) == 1:
             resolved = matches[0]
             if resolved in resolved_targets:
-                raise DriverSafetyProfileError(
-                    f"manual_settings.drivers resolves target {resolved} more than once",
-                    code="manual_target_bound_twice",
-                )
+                raise _unplaced_row(index, driver, role, matches, f"is a second row for output {resolved}",
+                                    "manual_target_bound_twice")
             resolved_targets.add(resolved)
 
 
@@ -926,9 +943,9 @@ def _normalise_profile_manual_settings(
             raise DriverSafetyProfileError(f"{field_name} must be an object")
         _reject_unknown_keys(raw_candidate, field_name, MANUAL_CANDIDATE_FIELDS)
         _reject_bool_tree(raw_candidate, field_name)
-    normalised = {"drivers": drivers, "crossover_candidates": []}
-    validate_manual_target_bindings(topology, normalised)
-    return normalised
+    # The raw rows, so a refusal lists every value the row declares.
+    validate_manual_target_bindings(topology, manual_settings)
+    return {"drivers": drivers, "crossover_candidates": []}
 
 
 def _manual_by_role(

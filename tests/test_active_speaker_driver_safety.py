@@ -432,11 +432,7 @@ def test_prompt_asks_only_for_fields_with_a_consumer() -> None:
     for dropped in (
         "recommended_lowpass_hz",
         "gain_offset_db",
-        # #2872: DELETED, not merely unasked or retired. It was a horn's
-        # nominal coverage angle, collected for a Bessel beamwidth matcher
-        # that was never built; nothing ever read it. Tolerated on load and
-        # dropped, never stored --
-        # test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped.
+        # #2872: deleted; a reply that still carries it is refused (#2902).
         "horn_coverage_deg",
         # #2603: retired, not merely unasked. It was an optional SECOND
         # declaration of the driver's low limit; the owner
@@ -635,44 +631,6 @@ def test_dropped_ask_fields_are_still_accepted_and_normalised() -> None:
         assert driver["recommended_lowpass_hz"] == 3000.0
         assert driver["gain_offset_db"] == -6.0
         assert driver["gain_offset_db_provenance"] == "research_estimate"
-
-
-def test_legacy_research_horn_coverage_deg_is_tolerated_and_dropped() -> None:
-
-    topology = mono_output_topology(card_id=None)
-    request = build_driver_research_context(
-        topology,
-        _operator_inputs(),
-    )
-    research = _research_result(request)
-    for driver in research["drivers"]:
-        driver["horn_coverage_deg"] = 90
-    manual_settings = _manual_settings()
-    for driver in manual_settings["drivers"]:
-        driver["horn_coverage_deg"] = 90
-
-    draft = build_design_draft(
-        topology,
-        driver_research=research,
-        manual_settings=manual_settings,
-        operator_inputs=_operator_inputs(),
-    )
-
-    for driver in draft["driver_research"]["drivers"]:
-        assert "horn_coverage_deg" not in driver
-    for driver in draft["manual_settings"]["drivers"]:
-        assert "horn_coverage_deg" not in driver
-    assert design_draft_view(draft)["driver_safety_profile"] is not None
-
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=manual_settings,
-        driver_research=None,
-    )
-    assert profile["issues"] == []
-    assert all(
-        "horn_coverage_deg" not in target for target in profile["targets"]
-    )
 
 
 def test_pasted_reply_and_edited_visible_value_both_survive_save(tmp_path: Path) -> None:
@@ -894,74 +852,6 @@ def test_an_inferred_low_limit_stores_no_declared_pair() -> None:
     )
     assert highpass["cutoff_hz"] == 5000.0
 
-
-#: A REAL pre-#2870 box's saved draft, kept verbatim under
-#: ``tests/fixtures/active_speaker_protection_floor_20260814/``. All four of its
-#: drivers carry ``crossover_search_band_hz``, because origin/main REQUIRED the
-#: field -- ``crossover_search_band_missing`` blocked confirmation -- so this is
-#: what every box confirmed before the ruling actually looks like on disk. It is
-#: the specimen, not a hand-built approximation of one.
-_PRE_2870_REAL_BOX_DRAFT = (
-    Path(__file__).parent / "fixtures" / "active_speaker_protection_floor_20260814"
-    / "design-draft-2000hz-below-floor.json"
-)
-
-
-def test_a_pre_2870_box_can_still_save_and_accept_its_stored_declaration() -> None:
-    """#2870 hazard 1's other half, and the one that would have bricked boxes.
-
-    Deleting the field from ``_MANUAL_DRIVER_FIELDS`` made every gate that
-    RE-VALIDATES a stored driver record raise on it. Two of those gates sit on
-    paths a household cannot avoid: the crossover-preview SAVE
-    (``design_draft.normalise_manual_settings``) and the crossover ACCEPT
-    (``compute_driver_safety_profile``'s own manual gate, which
-    ``apply_measured_crossover_geometry`` runs with ``durable=True`` --
-    mid-measurement, after the round has already been paid for).
-
-    So the field joins :data:`LEGACY_DROPPED_DRIVER_FIELDS`: TOLERATED at every
-    re-validating gate and DROPPED by every normaliser, exactly as
-    ``horn_coverage_deg`` is (#2872/#2877). One vocabulary, one set -- a second
-    tolerance list would be a second answer to "which keys may a stored record
-    still carry".
-
-    Tolerated is not stored: the normalisers' explicit output dicts never emit
-    it again, so a box that saves once is clean afterwards. That is what makes
-    the re-save the whole migration.
-    """
-
-    draft = json.loads(_PRE_2870_REAL_BOX_DRAFT.read_text())
-    manual = draft["manual_settings"]
-    carriers = [
-        driver for driver in manual["drivers"]
-        if "crossover_search_band_hz" in driver
-    ]
-    # The premise, asserted rather than assumed: if the specimen ever stops
-    # carrying the field this test would silently prove nothing.
-    assert carriers, "the specimen no longer carries the retired field"
-
-    # SAVE: the crossover-preview seam.
-    saved = normalise_manual_settings(manual)
-    assert saved is not None
-    assert all(
-        "crossover_search_band_hz" not in driver for driver in saved["drivers"]
-    ), "tolerated on the way in, but it must never be stored again"
-
-    # ACCEPT: the seam a measured crossover adopts through.
-    topology = mono_output_topology(card_id=None)
-    accept_manual = deepcopy(_manual_settings())
-    for driver in accept_manual["drivers"]:
-        driver["crossover_search_band_hz"] = [1200.0, 3500.0]
-    profile = compute_driver_safety_profile(
-        topology,
-        manual_settings=accept_manual,
-        driver_research=None,
-    )
-    assert not any(i["severity"] == "blocker" for i in profile["issues"])
-    assert all(
-        "crossover_search_band_hz" not in target for target in profile["targets"]
-    )
-    # …and the rebuilt profile is immediately usable, which is the point of
-    # tolerating rather than refusing.
 
 def test_cabinet_reconstruction_is_explicit_and_fail_closed() -> None:
     topology = mono_output_topology(card_id=None)

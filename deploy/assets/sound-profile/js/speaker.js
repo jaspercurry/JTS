@@ -161,8 +161,11 @@ function driverCard(target) {
       }, { type: 'number', placeholder: target.values[key] == null ? 'Not specified' : `Researched: ${target.values[key]}` }))));
 }
 
+const issueLines = () => view.issues.map(issue => h('p.form-hint', {}, issue.message));
+
 function detailsCard() {
   const card = section('2. Driver details', view.stage === 'details',
+    view.stage === 'details' && issueLines(),
     view.draft.targets.map(driverCard),
     field('Build notes (optional)', inputs.notes, value => { inputs.notes = value; }),
     button('Save details', () => run(() => postJSON('./setup/details', { operator_inputs: inputs, manual_settings: manual, driver_styles: driverStyles }), 'Details saved.'), true));
@@ -227,7 +230,7 @@ function startingCard() {
     !view.draft.prompt ? h('p', {}, 'Save the driver model names to prepare the research prompt.') :
       view.stage === 'research' ? researchForm() : h('details', {}, h('summary', {}, 'Research driver values'), researchForm()),
     ['apply', 'tune'].includes(view.stage) && baseSummary(),
-    view.issues.map(issue => h('p.form-hint', {}, issue.message)),
+    view.stage !== 'details' && issueLines(),
     advancedSettings(),
     ['apply', 'tune'].includes(view.stage) && button('Save to speaker', () => run(async () => {
       const response = await postJSON('./setup/apply', {});
