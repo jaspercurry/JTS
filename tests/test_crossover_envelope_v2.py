@@ -275,7 +275,6 @@ def test_measure_phase_is_phone_driven():
 def _candidate_summary(**overrides) -> dict:
     base = {
         "fingerprint": "fp-123",
-        "program_id": "prog-9",
         "trims_db": {"woofer": -3.1, "tweeter": 0.0},
         "alignment": {"delay_us": 250.0, "delay_role": "woofer", "polarity": "invert"},
         "alignment_confidence": 0.82,

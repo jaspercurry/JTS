@@ -384,7 +384,6 @@ def candidate_summary(
     octaves = _candidate_octave_summary(candidate.linearization)
     return {
         "fingerprint": candidate.fingerprint,
-        "program_id": candidate.program_id,
         "trims_db": dict(candidate.role_attenuations_db),
         "trims_pinned": _candidate_pinned_trims(candidate),
         "crossover": candidate_topology(candidate),
