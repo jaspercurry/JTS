@@ -102,7 +102,8 @@ class _FakeCamilla:
 
 
 class _FakeBackend:
-    """Renderer answers; an exception as ``active`` is a probe that raises."""
+    """Renderer answers; an exception as ``active`` is a probe that raises.
+    Mux reports no handoff, so every observer transition applies."""
 
     def __init__(
         self,
@@ -121,6 +122,9 @@ class _FakeBackend:
 
     async def selected_source(self) -> str | None:
         return self._selected
+
+    async def last_handoff(self) -> dict | None:
+        return None
 
 
 class _Pushes:

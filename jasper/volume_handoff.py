@@ -70,6 +70,7 @@ class VolumeHandoff:
         write_level: Callable[[int], Awaitable[bool]],
         voice_session_active: Callable[[], bool],
         active_source: Callable[[], Awaitable[Source]],
+        mux_last_handoff: Callable[[], Awaitable[dict[str, Any] | None]],
         refresh: Callable[[], None],
         mutation: Callable[[], AbstractAsyncContextManager[Any]],
         publish: Callable[[], Awaitable[None]],
@@ -84,6 +85,10 @@ class VolumeHandoff:
         self._set_camilla = write_level
         self._voice_session_active = voice_session_active
         self._active_source = active_source
+        self._mux_last_handoff = mux_last_handoff
+        # Mux's handoff id at the observer's previous transition. Mux restarts
+        # its ids at 1, so only a change, never an order, means a new handoff.
+        self._seen_handoff_id: int | None = None
         self._refresh_from_disk = refresh
         self._mutation = mutation
         self._publish_volume_context = publish
@@ -563,6 +568,26 @@ class VolumeHandoff:
             return await self._set_camilla(effective_level)
         return True
 
+    async def _mux_delivered(self, current_source: Source) -> bool:
+        """Whether mux's own handoff already carried the level to
+        ``current_source`` (ADR-0150: mux performs every source handoff).
+
+        That handoff is not the one read at the previous transition, went to
+        ``current_source``, and ended ``ok``. A degraded or failed handoff is
+        no delivery: the observer's own push is its retry. An unreadable
+        STATUS, and the first transition after start, prove nothing.
+        """
+        handoff = await self._mux_last_handoff()
+        if handoff is None:
+            return False
+        seen, self._seen_handoff_id = self._seen_handoff_id, handoff.get("id")
+        return (
+            seen is not None
+            and handoff.get("id") != seen
+            and handoff.get("to") == current_source.value
+            and handoff.get("result") == "ok"
+        )
+
     async def apply_transition(
         self, prev_source: Source, current_source: Source,
     ) -> None:
@@ -580,7 +605,8 @@ class VolumeHandoff:
           volume handoff is needed; camilla already carries the level.
 
         It stands down while a voice session is active
-        (`VolumeCoordinator.note_voice_session`).
+        (`VolumeCoordinator.note_voice_session`), and writes nothing for a
+        transition mux's own handoff delivered (`_mux_delivered`).
         """
         if self._voice_session_active():
             logger.debug(
@@ -614,7 +640,12 @@ class VolumeHandoff:
             # remote twist that lands between voice operations would be
             # silently ignored when the next source-state transition fires.
             level = self._effective_level()
-            if prev_carries and not curr_carries:
+            if await self._mux_delivered(current_source):
+                logger.debug(
+                    "active source: %s → %s; mux's handoff already carried it",
+                    prev_source.value, current_source.value,
+                )
+            elif prev_carries and not curr_carries:
                 # Camilla-master → push-mode renderer. Push the new
                 # source first, then clear Camilla only after the
                 # source-side write succeeds. If the push fails,

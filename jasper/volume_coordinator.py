@@ -186,6 +186,7 @@ class VolumeCoordinator:
             write_level=lambda level: self._set_camilla(level),
             voice_session_active=lambda: self._voice_session_active,
             active_source=lambda: self.active_source(),
+            mux_last_handoff=lambda: self._backend.last_handoff(),
             refresh=lambda: self._refresh_from_disk(),
             mutation=lambda: self._mutation(),
             publish=lambda: self.publish_volume_context(),

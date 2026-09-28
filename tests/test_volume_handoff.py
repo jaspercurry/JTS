@@ -44,6 +44,7 @@ def carrier(tmp_path):
         write_level=AsyncMock(side_effect=write_level),
         voice_session_active=lambda: False,
         active_source=AsyncMock(return_value=Source.IDLE),
+        mux_last_handoff=AsyncMock(return_value=None),
         refresh=lambda: None,
         mutation=nullcontext,
         publish=AsyncMock(),

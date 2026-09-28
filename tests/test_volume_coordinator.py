@@ -551,6 +551,61 @@ async def test_transition_suppressed_during_voice_session(tmp_path, pushes):
 
 
 @pytest.mark.parametrize(
+    ("prev", "current", "status", "pushed", "written"),
+    [
+        pytest.param(
+            Source.AIRPLAY, Source.SPOTIFY,
+            {"active_source": "spotify",
+             "last_handoff": {"id": 8, "to": "spotify", "result": "ok"}},
+            [], [], id="mux_handed_it_off",
+        ),
+        pytest.param(
+            Source.SPOTIFY, Source.IDLE,
+            {"active_source": "idle",
+             "last_handoff": {"id": 7, "to": "spotify", "result": "ok"}},
+            [], [percent_to_db(50)], id="to_idle_without_a_handoff",
+        ),
+        pytest.param(
+            Source.AIRPLAY, Source.SPOTIFY, OSError("mux down"),
+            [50], [0.0], id="mux_status_unreadable",
+        ),
+    ],
+)
+async def test_the_observer_carries_only_transitions_mux_did_not_hand_off(
+    tmp_path, monkeypatch, pushes, prev, current, status, pushed, written,
+):
+    """Mux performs each source handoff (ADR-0150). The observer sees the
+    same switch about 1 s later and must not push or write it again, but it
+    still carries a switch mux made with no handoff, or cannot tell it about."""
+    answers = [{
+        "active_source": prev.value,
+        "last_handoff": {"id": 7, "to": prev.value, "result": "ok"},
+    }]
+
+    async def mux_status(_command, *, timeout):
+        if isinstance(answers[-1], Exception):
+            raise answers[-1]
+        return answers[-1]
+
+    monkeypatch.setattr(renderer, "mux_socket_command", mux_status)
+    backend = renderer.RendererClient(librespot_state_path=str(tmp_path / "none"))
+    backend.active_renderers = AsyncMock(return_value={"spotactive": True})
+    coord, cam, persistence = _coord(
+        tmp_path, backend=backend, db=percent_to_db(50), level=50,
+    )
+    persistence.save_now(percent_to_db(50))
+    # The observer's previous transition, which read mux's handoff 7.
+    await coord.apply_active_source_transition(Source.IDLE, prev)
+    answers.append(status)
+    pushes_before, writes_before = len(pushes.spotify), len(cam.set_calls)
+
+    await coord.apply_active_source_transition(prev, current)
+
+    assert pushes.spotify[pushes_before:] == pushed
+    assert cam.set_calls[writes_before:] == [pytest.approx(db) for db in written]
+
+
+@pytest.mark.parametrize(
     ("active", "level"),
     [
         pytest.param(

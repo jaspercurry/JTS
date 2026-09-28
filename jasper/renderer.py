@@ -99,6 +99,15 @@ class RendererClient:
             SOURCE_TO_ACTIVE_KEY[Source.USBSINK]: usb,
         }
 
+    async def _mux_status(self) -> dict[str, Any]:
+        try:
+            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
+            # mux STATUS is a synchronous snapshot on the daemon's side.
+            return await mux_socket_command(wire.STATUS, timeout=1.0)
+        except (OSError, RuntimeError, ValueError) as e:
+            logger.debug("mux STATUS unavailable: %s", e)
+            return {}
+
     async def selected_source(self) -> str | None:
         """Return mux's effective audible source, or None if unknown.
 
@@ -110,15 +119,14 @@ class RendererClient:
         Fail-soft: an unreachable mux, an unparseable reply, or a STATUS
         without the field all return ``None``.
         """
-        try:
-            # Seconds, TOTAL deadline. One bounded exchange per observer tick;
-            # mux STATUS is a synchronous snapshot on the daemon's side.
-            payload = await mux_socket_command(wire.STATUS, timeout=1.0)
-        except (OSError, RuntimeError, ValueError) as e:
-            logger.debug("mux STATUS unavailable: %s", e)
-            return None
-        effective = payload.get("active_source")
+        effective = (await self._mux_status()).get("active_source")
         return effective if isinstance(effective, str) else None
+
+    async def last_handoff(self) -> dict[str, Any] | None:
+        """Mux's record of its latest source handoff (``id``, ``to``,
+        ``result``, ...), or None when it has made none or cannot say."""
+        handoff = (await self._mux_status()).get("last_handoff")
+        return handoff if isinstance(handoff, dict) else None
 
     async def get_currentsong(self) -> dict[str, Any]:
         """The :func:`audible_source`'s track: AirPlay's title/album/artist,
