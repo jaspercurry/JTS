@@ -7,8 +7,9 @@
 Harmonic images precede the linear IR by L·ln(order), so the distortion
 kernel uses a wider pre-guard than the normal response analysis. Legacy
 captures without stimulus identity retain conditional ratios, with drive
-unknown, wherever their program is recorded or proved; timing agreement alone
-cannot prove the played program's level. The id leaves the fader out (#5012),
+unknown, wherever their program is recorded or proved by the stimulus id
+another take recorded; timing agreement alone cannot prove the played
+program's level. The id leaves the fader out (#5012),
 so a MEASURE take's drive rests on the session volume it recorded, labelled so
 and checked against the fader readback it banked.
 """
@@ -177,10 +178,10 @@ _PERCENT_DECIMALS = 3
 #: The round banks no MEASURE capture this instrument can read.
 NO_ADMISSIBLE_CAPTURES = "no_admissible_captures"
 
-#: The MEASURE program could not be rebuilt to the id the session recorded.
+#: The MEASURE program could not be rebuilt to the stimulus id its takes recorded.
 PROGRAM_NOT_REPRODUCIBLE = "program_not_reproducible"
 
-#: The flow state carries neither the program id nor the gain plan.
+#: The round's flow state or applied profile lacks what the rebuild reads.
 STATE_UNREADABLE = "state_unreadable"
 
 #: Captures were found and every one of them failed a gate.
@@ -327,10 +328,10 @@ def _measure_program_at(state: Mapping[str, Any], bands: Mapping[str, tuple[floa
 
 
 def rebuild_measure_program(
-    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]],
+    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]], stimulus_id: str,
     recorded_schema_versions: Collection[int] = (),
 ) -> tuple[ExcitationProgram, bool]:
-    """Return (program, prelude), proved by the banked id.
+    """Return (program, prelude), proved by the stimulus id its MEASURE takes recorded.
 
     The id leaves the fader out (#5012), so one composition per prelude proves
     it, and each take is read at the volume it recorded. Use banked sweep
@@ -342,20 +343,6 @@ def rebuild_measure_program(
     roles = banked_roles(state)
     raw_gains = state.get("gain_plan_db")
     gains = raw_gains if isinstance(raw_gains, Mapping) else {}
-    candidate = state.get("candidate") or {}
-    want = candidate.get("program_id") if isinstance(candidate, Mapping) else None
-    if not isinstance(want, str) or not want:
-        raise HarmonicEvidenceRefused(
-            STATE_UNREADABLE,
-            {
-                "missing": "candidate.program_id",
-                "note": (
-                    "the flow state records the id of the program that played; "
-                    "without it a rebuilt program cannot be proved to be that "
-                    "one, and an unproved program cannot be read for harmonics"
-                ),
-            },
-        )
     if not roles or set(bands) != set(roles):
         raise HarmonicEvidenceRefused(
             STATE_UNREADABLE,
@@ -363,7 +350,7 @@ def rebuild_measure_program(
                 "missing": "a gain plan naming one shape's roles, and a band each",
                 "gain_plan_roles": sorted(gains),
                 "bands_supplied": sorted(bands),
-                "program_id": want[:12],
+                "program_id": stimulus_id[:12],
             },
         )
     # WHETHER the state carries a banking attempt at all, independent of whether
@@ -377,7 +364,7 @@ def rebuild_measure_program(
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
     for prelude in (shipped, not shipped):
         program = _measure_program_at(state, bands, 0.0, prelude)
-        if program.program_id == want:
+        if program.program_id == stimulus_id:
             return program, bool(prelude)
     recorded = sorted(set(recorded_schema_versions))
     superseded = [version for version in recorded if version < PROGRAM_SCHEMA_VERSION]
@@ -417,7 +404,7 @@ def rebuild_measure_program(
     raise HarmonicEvidenceRefused(
         PROGRAM_NOT_REPRODUCIBLE,
         {
-            "program_id": want[:12],
+            "program_id": stimulus_id[:12],
             "causes": causes,
             "recorded_program_schema_versions": recorded,
             "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
@@ -434,12 +421,12 @@ def rebuild_measure_program(
                 f"{PROGRAM_SCHEMA_VERSION} superseded: no current composition reproduces "
                 "their id (#5012), so the round cannot be read, only re-measured"
             ) if superseded else (
-                "the banked program id does not reproduce with the courtesy prelude "
-                f"either on or off. Three causes: (1) {duration_cause}; (2) the driver "
-                "bands supplied are wrong for this round; (3) this state does not "
-                "describe a MEASURE round. Only (2) and (3) are fixable by "
-                "re-invoking — (1) needs the round to bank its sweep durations "
-                "(#2923) when it has not already"
+                "the rebuilt program does not reproduce the stimulus id the MEASURE "
+                "takes recorded, with the courtesy prelude either on or off. Three "
+                f"causes: (1) {duration_cause}; (2) the driver bands supplied are wrong "
+                "for this round; (3) this state does not describe a MEASURE round. "
+                "Only (2) and (3) are fixable by re-invoking — (1) needs the round "
+                "to bank its sweep durations (#2923) when it has not already"
             ),
         },
     )
@@ -883,6 +870,13 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     }
 
 
+def _recorded_stimulus(sidecar: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The stimulus a capture's provenance recorded, or an empty mapping."""
+    provenance = sidecar.get("provenance")
+    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
+    return stimulus if isinstance(stimulus, Mapping) else {}
+
+
 def _capture_program_identity(
     sidecar: Mapping[str, Any], program: Any, state: Mapping[str, Any],
     program_sha256: str | None,
@@ -892,9 +886,7 @@ def _capture_program_identity(
     recorded_session = (
         aliases.get(ALIAS_CAPTURE_SESSION_ID) if isinstance(aliases, Mapping) else None
     ) or sidecar.get("capture_session_id")
-    provenance = sidecar.get("provenance")
-    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-    stimulus = stimulus if isinstance(stimulus, Mapping) else {}
+    stimulus = _recorded_stimulus(sidecar)
     recorded_program = stimulus.get("program_id")
     recorded_sha = stimulus.get("wav_sha256")
     state_session = _state_capture_session_id(state)
@@ -978,10 +970,16 @@ def read_round_harmonics(
                        if capture["sidecar"].get("graph_scope") != "candidate_branches"
                        and isinstance(recorded := capture["sidecar"].get("program"), Mapping)
                        and type(version := recorded.get("schema_version")) is int}
+    stimulus_ids = {stimulus_id for capture in captures
+                    if capture["sidecar"].get("graph_scope") != "candidate_branches"
+                    and (stimulus_id := _recorded_stimulus(capture["sidecar"]).get("program_id"))}
+    # One stimulus shares one id at every fader (#5012), so the MEASURE takes must agree on it.
+    unprovable = (None if len(stimulus_ids) == 1
+                  else "stimulus_ids_disagree" if stimulus_ids else "stimulus_id_unrecorded")
     measure = None
 
     def program_for(sidecar):
-        """(program, session volume, prelude, rendered-WAV key)."""
+        """(program, session volume, prelude, rendered-WAV key) for a take that can be proved."""
         nonlocal measure
         if sidecar.get("graph_scope") == "candidate_branches":
             program = ExcitationProgram.from_dict(sidecar["program"])
@@ -990,7 +988,7 @@ def read_round_harmonics(
             return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude, program.program_id
         if measure is None:
             round_bands = round_bands_hz(state, bands)
-            proven, prelude = rebuild_measure_program(state, round_bands, schema_versions)
+            proven, prelude = rebuild_measure_program(state, round_bands, next(iter(stimulus_ids)), schema_versions)
             measure = proven, prelude, round_bands, {0.0: proven}
         proven, prelude, round_bands, composed = measure
         volume_db = _session_volume_db(sidecar)
@@ -1019,10 +1017,13 @@ def read_round_harmonics(
             "position_deg": capture["sidecar"].get("position_deg"),
         }
         sidecar = capture["sidecar"]
+        stimulus = _recorded_stimulus(sidecar)
+        if unprovable and sidecar.get("graph_scope") != "candidate_branches":
+            refused.append({**take, "reason": unprovable, "program_id": stimulus.get("program_id"),
+                            "fidelity_fields_compared": 0, "failures": [unprovable]})
+            continue
         program, volume_db, prelude, wav_key = program_for(sidecar)
-        provenance = sidecar.get("provenance")
-        stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-        if isinstance(stimulus, Mapping) and stimulus.get("wav_sha256"):
+        if stimulus.get("wav_sha256"):
             if wav_key not in program_hashes:
                 with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
                     rendered = Path(temporary) / "program.wav"
