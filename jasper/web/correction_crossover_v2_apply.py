@@ -9,7 +9,8 @@ from jasper.web import correction_crossover_v2_state as v2state
 import logging
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record, runtime_contract
+from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
 from jasper.active_speaker.crossover_declaration import (
@@ -63,9 +64,9 @@ async def apply_candidate(
             text = compile_tuning_graph(declaration, candidate=selected,
                 preference_filters=preference_filters, output_trim_db=trim_db)
             sha = sha256_text(text)
-            proof = runtime_contract.prove_desired_graph(topology, text, snapshot=baseline_record.recomposition_snapshot_for(
+            proof = bass_extension.prove_desired_graph(topology, text, snapshot=baseline_record.recomposition_snapshot_for(
                 selected, declaration=declaration, design_draft=draft))
-            if not runtime_contract.desired_graph_approved(proof):
+            if not bass_extension.desired_graph_approved(proof):
                 raise CrossoverV2Refused("graph safety proof failed", code="baseline_graph_safety_proof_failed",
                                          issues=proof.issues)
             target = baseline_candidate_config_path(text)

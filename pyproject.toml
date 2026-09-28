@@ -306,6 +306,7 @@ module = [
     "jasper.active_speaker.commissioning_coordinator",
     "jasper.active_speaker.crossover_preview",
     "jasper.active_speaker.graph.active_verifier",
+    "jasper.active_speaker.graph.bass_extension",
     "jasper.active_speaker.graph_selector",
     "jasper.active_speaker.path_safety",
     "jasper.active_speaker.runtime_contract",

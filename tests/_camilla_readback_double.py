@@ -14,7 +14,7 @@ present and explicit. JTS's emitters leave those keys out.
 
 A fake that echoes the file hides that asymmetry completely — and it did. Every
 test of the live-graph boundary in
-:func:`jasper.active_speaker.runtime_contract.classify_active_bass_extension_graph`
+:func:`jasper.active_speaker.graph.bass_extension.classify_active_bass_extension_graph`
 used an echoing fake, so the boundary looked proven while on real hardware it
 compared JTS-authored text against a default-filled readback and refused
 everything it was asked to prove. That gate silently blocked commissioning,

@@ -18,7 +18,8 @@ import yaml
 
 from pathlib import Path
 
-from jasper.active_speaker import graph_selector, runtime_contract
+from jasper.active_speaker import graph_selector
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
@@ -68,12 +69,14 @@ from jasper.active_speaker.graph_selector import (
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,
 )
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph.bass_extension import (
     _normalized_graph_fingerprint,
-    classify_camilla_graph as _classify_camilla_graph,
-    NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_active_bass_extension_graph,
     classify_bass_extension_graph,
+)
+from jasper.active_speaker.runtime_contract import (
+    classify_camilla_graph as _classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
 )
 from jasper.biquad import FilterSpec, PeqFilter
 from jasper.sound.profile import SimpleEq, SoundProfile
@@ -403,7 +406,7 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     paths = [authority[key] for key in ("config", "statefile_path", "applied_baseline_path", "staged_metadata_path")]
     before = [path.read_bytes() for path in paths]
     proof = Mock(side_effect=AssertionError("live compare reached durable proof"))
-    monkeypatch.setattr(runtime_contract, "_classify_bass_extension_snapshot", proof)
+    monkeypatch.setattr(bass_extension, "_classify_bass_extension_snapshot", proof)
     async def active():
         return camilla_default_filled(compare)
     graph = await classify_active_bass_extension_graph(
@@ -792,7 +795,7 @@ def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
     changing_path = authority[authority_key]
     calls = 0
 
-    from jasper.active_speaker import runtime_contract as contract_module
+    from jasper.active_speaker.graph import bass_extension as contract_module
 
     real_read = contract_module._read_optional_bytes
 
@@ -914,7 +917,7 @@ def test_persisted_candidate_boundary_refuses_each_mutating_seam(
 
         monkeypatch.setattr(Path, "read_bytes", alternating_read)
     else:
-        from jasper.active_speaker import runtime_contract as contract_module
+        from jasper.active_speaker.graph import bass_extension as contract_module
 
         def alternating_locator(*_args, **_kwargs):
             nonlocal calls
@@ -987,7 +990,7 @@ def test_persisted_candidate_refuses_each_authority_mutation(
     )
     calls = 0
 
-    from jasper.active_speaker import runtime_contract as contract_module
+    from jasper.active_speaker.graph import bass_extension as contract_module
 
     real_read = contract_module._read_optional_bytes
 

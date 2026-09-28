@@ -1201,7 +1201,7 @@ async def test_cancelled_connect_queued_on_global_lock_never_runs_mutation(
 def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     """The canonicalizer must stay lock-free, or live commissioning times out.
 
-    ``runtime_contract.classify_active_bass_extension_graph`` calls
+    ``graph.bass_extension.classify_active_bass_extension_graph`` calls
     ``normalize_config_raw`` from INSIDE the DSP writer lock — among them
     ``multiroom.follower_config``'s
     ``apply_prebuilt_follower_config`` / ``restore_active_camilla_solo``; those

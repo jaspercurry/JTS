@@ -2143,7 +2143,7 @@ def _derived_marker(graph_yaml, topology, *, cap=8):
     ``baseline-reemit`` re-proves with, so the graph this test derives a marker
     from is the graph that command would have agreed to write.
     """
-    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
+    from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 
     graph = classify_bass_extension_graph(
         topology,
@@ -2760,7 +2760,7 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         return yaml_text
     monkeypatch.setattr("jasper.active_speaker.measurement_emit.compile_tuning_graph", compile_graph)
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        "jasper.active_speaker.graph.bass_extension.classify_bass_extension_graph",
         lambda *a, **k: GraphSafety(
             classification=classification or GRAPH_APPROVED_ACTIVE_RUNTIME,
             allowed=classification is None,

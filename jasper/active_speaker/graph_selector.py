@@ -43,12 +43,12 @@ from .output_contract import (
 )
 from .playback_route import ActiveLaneCapabilityGap, active_lane_capability_gap
 from .profile import ActiveSpeakerConfigError
+from .graph.bass_extension import classify_bass_extension_graph
 from .runtime_contract import (
     _path_matches,
     _required_output_width,
     _unsafe_boundary,
     classify_camilla_graph,
-    classify_bass_extension_graph,
 )
 from .state_paths import baseline_profile_state_path
 

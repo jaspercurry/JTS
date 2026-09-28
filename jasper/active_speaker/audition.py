@@ -375,7 +375,7 @@ async def start_audition(
         applied_profile_displacement,
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost — jasper-control and jasper-web load this module
+    from jasper.active_speaker.graph.bass_extension import (  # lazy: import cost — jasper-control and jasper-web load this module
         desired_graph_approved,
         prove_desired_graph,
     )

@@ -49,7 +49,7 @@ from .graph_safety import (
 )
 from .measurement import active_driver_targets
 from .test_signal_plan import MIN_DRIVER_TEST_FREQUENCY_HZ
-from .runtime_contract import desired_graph_approved, prove_desired_graph
+from .graph.bass_extension import desired_graph_approved, prove_desired_graph
 from .excitation_safety_plan import (
     DriverSweepGeneratorPlan,
     ExcitationSafetyPlanError,
