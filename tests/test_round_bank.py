@@ -324,7 +324,8 @@ def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -
         (positions / f"{take_id}.json").write_text(json.dumps({
             "kind": POSITION_EVIDENCE_KIND, MEASURE_KIND_KEY: "verify",
             "take_id": take_id, "phase": phase, "captured_at": captured_at,
-            "session_id": "capture-id", "wav_path": str(wav.relative_to(bundle)),
+            "run_id": "capture-id-level-2", "capture_session_id": "capture-id",
+            "wav_path": str(wav.relative_to(bundle)),
             "wav_sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
             "diagnostic": {"epsilon_ppm": 1.0 + index},
             "capture_integrity": {"capture_chain": "alsa_s32le"},

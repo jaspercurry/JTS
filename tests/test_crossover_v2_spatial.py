@@ -90,18 +90,18 @@ def test_every_take_builder_states_one_identity_under_one_vocabulary():
     here rather than pinned apart: the promise this docstring made was empty
     for as long as the tuple below listed only three.
     """
-    core = {"phase", "index", "attempt", "take_id", "session_id", "wav_sha256"}
+    core = {"phase", "index", "attempt", "take_id", "run_id", "wav_sha256"}
     cloud = _cloud_record()
     pose = _pose_record()
-    entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
+    entry = _entry_record(index=3, attempt=7, run_id="sess", wav_sha256="abc")
     unprompted = _phase_record(
-        index=3, attempt=7, session_id="sess", wav_sha256="abc",
+        index=3, attempt=7, run_id="sess", wav_sha256="abc",
     )
 
     for record in (cloud, pose, entry, unprompted):
         assert core <= set(record)
         assert record["attempt"] == 7
-        assert record["session_id"] == "sess"
+        assert record["run_id"] == "sess"
         assert record["wav_sha256"] == "abc"
         # The verifier is not the index: a take id is derivable from the id and
         # the attempt, and never from the digest.
@@ -117,7 +117,7 @@ def _pose_record(**overrides):
     """One retained lateral pose, with only the field under test named."""
     fields = {
         "lateral_consumer": "fc_selector",
-        "session_id": "sess", "graph_fingerprint": "fp-applied",
+        "run_id": "sess", "graph_fingerprint": "fp-applied",
         "captured_at": "2026-08-26T00:00:00Z", "wav_sha256": "abc",
     }
     geometry = spatial.PositionGeometry(
@@ -137,7 +137,7 @@ def _pose_record(**overrides):
 def _entry_record(**overrides):
     """One retained entry-baseline take, with only the field under test named."""
     fields = {
-        "index": 9, "attempt": 1, "session_id": "sess", "stimulus_id": "prog",
+        "index": 9, "attempt": 1, "run_id": "sess", "stimulus_id": "prog",
         "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
@@ -157,7 +157,7 @@ def _phase_record(**overrides):
     separately is how the shapes drift apart.
     """
     fields = {
-        "phase": PHASE_VERIFY, "index": 3, "attempt": 1, "session_id": "sess",
+        "phase": PHASE_VERIFY, "index": 3, "attempt": 1, "run_id": "sess",
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "wav_sha256": "abc",
     }
@@ -206,7 +206,7 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 #: a published take is this package's document-type discriminator. See
 #: ``crossover_v2_banked_round._take_identity``.
 _ENGINE_RECORD_FIELDS = (
-    "session_id", "measure_kind", "baseline_record_id", "position_deg",
+    "run_id", "measure_kind", "baseline_record_id", "position_deg",
     "position_axis", "vertical_deg", "prompt", "candidate_id", "regime",
     "polarity", "level_matched", "graph_fingerprint", "level_db",
     "stimulus_dbfs", "incident", "wav_path",
@@ -412,7 +412,7 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
         geometry=spatial.PositionGeometry(
             spatial.POSITION_AXIS_HORIZONTAL, -22, spatial.MARK_DISTANCE_M,
         ),
-        lateral_consumer="fc_selector", session_id="sess",
+        lateral_consumer="fc_selector", run_id="sess",
         graph_fingerprint="fp-applied", captured_at="2026-08-26T00:00:00Z",
         wav_sha256="abc",
     )
@@ -622,31 +622,6 @@ def test_the_carry_adds_curves_and_changes_nothing_else(builder):
 
 
 @pytest.mark.parametrize(
-    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
-)
-def test_an_unmatched_take_states_no_level_match_trims_at_all(builder):
-    """Additive at the builder, on ``vertical_deg``'s terms: the numbers key
-    is ABSENT on a take that declared no level match, so a record banked before
-    this existed and one banked by an unmatched take are the same shape. An
-    empty mapping would be a third state a reader has to interpret.
-    """
-    without = builder()
-    carrying = builder(claim=TakeClaim(
-        level_matched=True, level_match_trims_db={"tweeter": -9.5},
-    ))
-
-    assert without["level_matched"] is False
-    assert "level_match_trims_db" not in without
-    assert carrying["level_match_trims_db"] == {"tweeter": -9.5}
-    assert {
-        k: v for k, v in without.items() if k != "level_matched"
-    } == {
-        k: v for k, v in carrying.items()
-        if k not in ("level_matched", "level_match_trims_db")
-    }
-
-
-@pytest.mark.parametrize(
     "analysis_phase, composed, protection_emitted, stamped",
     [
         (program.PROGRAM_PHASE_MEASURE, True, True, "crossover_composed"),
@@ -668,10 +643,10 @@ def test_a_take_states_which_phase_composition_its_curves_carry(
     compose. So the fact is read off the analysis and stamped, and the delay
     proposal echoes it instead of the operator stating it by hand.
 
-    Three-valued on purpose, and ABSENT on ``level_match_trims_db``'s terms for
-    the third: a capture whose analyzer never composes and a box that emitted
-    no protection would both otherwise read as ``protection_retained``, which
-    is a contamination claim that is untrue of either.
+    Three-valued on purpose, and ABSENT for the third: a capture whose
+    analyzer never composes and a box that emitted no protection would both
+    otherwise read as ``protection_retained``, which is a contamination claim
+    that is untrue of either.
     """
     record = _phase_record(
         phase=analysis_phase,

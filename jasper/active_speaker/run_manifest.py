@@ -227,9 +227,10 @@ class RunManifest:
     def capture_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         pose = self._context["pose"]
         planned = {
+            "preset": self.program, "layout": self.layout,
+            "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
-            "seat_offset_m": pose.get("seat_offset_m"),
-            **({"pose_driver": pose["driver"]} if pose.get("driver") else {}),
+            "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
         }
         if "measurement_purpose" not in record:
             planned["measurement_purpose"] = resolved_measurement_purpose(

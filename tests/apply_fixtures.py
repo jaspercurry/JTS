@@ -40,7 +40,7 @@ async def bank_trial_async(candidate, profile, topology, *, record_fields=None, 
                                recomputable=False, generated_by="test")
     store = BankedRecordStore(CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"]), "trial")
     graph = str((profile.get("config") or {}).get("sha256") or "")[:16]
-    record = {"kind": POSITION_EVIDENCE_KIND, "measure_kind": "candidate", "session_id": "trial",
+    record = {"kind": POSITION_EVIDENCE_KIND, "measure_kind": "candidate", "run_id": "trial",
               "candidate_id": candidate.fingerprint, "role": "summed",
               "graph_scope": "candidate", "graph_fingerprint": graph, "measurement_status": "captured",
               "incident": "", "level_db": -25., "wav_path": wav.name, "wav_sha256": identity["sha256"],

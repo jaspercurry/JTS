@@ -439,7 +439,7 @@ def _bank_entry_baseline_take(
     (positions / f"{ENTRY_TAKE_ID}.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_position_evidence",
         "schema_version": 1,
-        "session_id": "cap1",
+        "run_id": "cap1",
         "measure_kind": "baseline",
         "phase": "entry_baseline",
         "take_id": ENTRY_TAKE_ID,

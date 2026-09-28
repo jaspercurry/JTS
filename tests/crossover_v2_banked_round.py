@@ -54,18 +54,19 @@ import numpy as np
 
 from jasper.audio_measurement.bundles import record_artifact
 from jasper.audio_measurement.calibration import store_calibration
-from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, mint_wired_answer
 from jasper.active_speaker.capture_provenance import CaptureProvenance, CaptureProvenanceRecorder
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, place_wired_answer
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.plan_run import PlanCapture, run_plan
+from jasper.active_speaker.round_packet import RoundPacket
+from jasper.active_speaker.run_levels import LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
-from jasper.active_speaker.crossover_v2.session import MeasureOutcome, StimulusOutcome
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
 from jasper.web.correction_run_host import bind_plan_analysis
-from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _verify_analysis
-from tests.engine_twin import open_session
+from tests.crossover_v2_fixtures import FakeSeams, _check_analysis, _conductor, _measure_analysis, _verify_analysis
+from tests.engine_twin import FakePlay, FakeSeams as TwinSeams, open_session
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
@@ -381,7 +382,7 @@ def _take_identity(
     phase: str,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     wav_sha256: str | None,
     graph_fingerprint: str = "",
     claim: TakeClaim = TakeClaim(),
@@ -402,7 +403,7 @@ def _take_identity(
         "index": index,
         "attempt": attempt,
         "take_id": take_id_for(position_id, attempt),
-        "session_id": session_id,
+        "run_id": run_id,
         "wav_sha256": wav_sha256,
         "measure_kind": claim.measure_kind,
         "graph_fingerprint": graph_fingerprint,
@@ -410,13 +411,7 @@ def _take_identity(
         "candidate_id": claim.candidate_id,
         "polarity": claim.polarity,
         "level_matched": claim.level_matched,
-        # The numbers only when there ARE numbers: an absent key reads as an
-        # un-matched take, so no schema version moves.
-        **(
-            {"level_match_trims_db": dict(claim.level_match_trims_db)}
-            if claim.level_matched and claim.level_match_trims_db
-            else {}
-        ),
+        "level_match_trims_db": dict(claim.level_match_trims_db or {}) if claim.level_matched else {},
         # Stated or absent, never a guessed default: see TakeClaim.
         **(
             {"phase_composition": claim.phase_composition}
@@ -507,7 +502,7 @@ def cloud_position_record(
         "position_id": position_id,
         **_take_identity(
             position_id=position_id, phase=phase, index=index, attempt=attempt,
-            session_id=session_id, wav_sha256=wav_sha256,
+            run_id=session_id, wav_sha256=wav_sha256,
             graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": prompt,
@@ -547,7 +542,7 @@ def lateral_pose_record(
     *,
     geometry: spatial.PositionGeometry,
     lateral_consumer: str,
-    session_id: str,
+    run_id: str,
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
@@ -561,7 +556,7 @@ def lateral_pose_record(
         "pose_id": pose.pose_id,
         **_take_identity(
             position_id=pose.pose_id, phase=PHASE_LATERAL, index=pose.index,
-            attempt=pose.attempt, session_id=session_id, wav_sha256=wav_sha256,
+            attempt=pose.attempt, run_id=run_id, wav_sha256=wav_sha256,
             graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": pose.prompt,
@@ -584,7 +579,7 @@ def phase_capture_record(
     phase: str,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
@@ -619,7 +614,7 @@ def phase_capture_record(
     identity = _take_identity(
         position_id=f"{phase}_{index:02d}",
         phase=phase, index=index, attempt=attempt,
-        session_id=session_id, wav_sha256=wav_sha256,
+        run_id=run_id, wav_sha256=wav_sha256,
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
@@ -640,7 +635,7 @@ def entry_baseline_record(
     *,
     index: int,
     attempt: int,
-    session_id: str,
+    run_id: str,
     stimulus_id: str,
     reference_mark: str,
     graph_fingerprint: str,
@@ -686,7 +681,7 @@ def entry_baseline_record(
     identity = _take_identity(
         position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
         phase=PHASE_ENTRY_BASELINE, index=index, attempt=attempt,
-        session_id=session_id, wav_sha256=wav_sha256,
+        run_id=run_id, wav_sha256=wav_sha256,
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
@@ -758,7 +753,7 @@ def bank_measure_round(
         if entry_excluded is None else [bool(flag) for flag in entry_excluded]
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-entry-graph",
         "captured_at": "2026-08-31T22:00:00Z",
         "wav_sha256": "a" * 64,
@@ -835,7 +830,7 @@ def bank_verify_round(
         if measured_db is None else np.asarray(measured_db, dtype=float)
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-applied-graph",
         "captured_at": "2026-08-31T23:00:00Z",
         "wav_sha256": "c" * 64,
@@ -910,7 +905,7 @@ def bank_seat_round(
         else [np.asarray(magnitude, dtype=float) for magnitude in magnitudes_db]
     )
     stamp = {
-        "session_id": session_id,
+        "run_id": session_id,
         "graph_fingerprint": "fp-applied-graph",
         "captured_at": "2026-09-01T00:00:00Z",
         "wav_sha256": "d" * 64,
@@ -967,10 +962,15 @@ def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None,
-                       analysis_fields=None, recording=None):
-    """One take through the capture host. ``recording`` is int32 samples the
-    host analyses for real at the stop's own lateral pose, as a walk plays it;
-    without one the take records 32 zeros under a stand-in analysis."""
+                       analysis_fields=None, recording=None, request=None, planned=None,
+                       ladder=None, door=None, gate=None):
+    """One take through the engine and the capture host: ``planned``, one of
+    ``request``'s captures, or else a candidate take at the stop ``pose`` names.
+    With a ``ladder``, ``request`` plays each rung as the web host does, one
+    child manifest per rung on ``door(manifest, seams, records)`` behind
+    ``gate``, and every rung's take comes back in order. ``recording`` is int32
+    samples the host analyses for real at the stop's own lateral pose, as a walk
+    plays it; without one the take records 32 zeros under a stand-in analysis."""
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -979,8 +979,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
     with monkeypatch.context() as patch:
         patch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(calibration_root))
         if recording is None:
-            analysis = replace(_measure_analysis(program) if program.phase == "measure" else _verify_analysis(program),
-                               **(analysis_fields or {}))
+            analysis = replace({"measure": _measure_analysis, "check": _check_analysis}.get(
+                program.phase, _verify_analysis)(program), **(analysis_fields or {}))
             def analyzed(*args, **kwargs):
                 if analysis_error is not None:
                     raise analysis_error
@@ -989,44 +989,68 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
-        stop = angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
-                                      candidate_id="speaker-candidate", **(pose or {}))
-        request = angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
-        spec = MeasureSpec(kind="candidate", graph_scope="candidate", candidate_id=stop.candidate_id,
-                           program_phase=program.phase)
-        wav, _ = encode_wav_s32(np.zeros(32, dtype=np.int32) if recording is None else recording, sample_rate_hz=48000)
-        answer = WiredCaptureAnswer(wav=wav, program=program.to_dict(),
-            device={"card": "UMIK2", "usb_id": "2752:002b", "model_key": "minidsp_umik2",
-                    "pcm": "hw:CARD=UMIK2,DEV=0", "channel_selected": 0},
+        stop = planned.stop if planned else angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
+                                                                    candidate_id="speaker-candidate", **(pose or {}))
+        request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
+        spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
+                                                        candidate_id=stop.candidate_id, program_phase=program.phase)
+        samples = np.zeros(32, dtype=np.int32) if recording is None else recording
+        answer = replace(mint_wired_answer(
+            WiredRecording(chunks=(np.column_stack((samples, np.zeros_like(samples))).astype("<i4").tobytes(),),
+                           frames=len(samples), gap_count=0, gap_frames=0, truncated=False,
+                           sample_rate_hz=48000, channels=2),
+            device=WiredMicDevice(card_id="UMIK2", card_index=2, usb_id="2752:002b",
+                                  model_key="minidsp_umik2", model_label="miniDSP UMIK-2"),
             setup={"calibration": {"mode": "stored", "calibration_id": calibration.calibration_id,
-                                    "model": calibration.model}})
+                                    "model": calibration.model}}), program=program.to_dict())
         answer = place_wired_answer(store.bundle_dir, answer, phase=program.phase, group=program.phase)
-        capture = SimpleNamespace(take_answer=lambda: answer, bundle_dir=store.bundle_dir)
-        records = CapturedRecordStore(manifest, capture)
+        provenance = CaptureProvenanceRecorder()
+
+        def take_answer():
+            provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
+                session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
+            return answer
+        capture = SimpleNamespace(take_answer=take_answer, bundle_dir=store.bundle_dir)
         conductor = (_conductor(FakeSeams(), index_phase_map={1: program.phase}) if recording is None else
                      _conductor(FakeSeams(), index_phase_map={1: PHASE_LATERAL},
                                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                                 lateral_prompts=(angle_capture.resolve_request(request)[0].prompt,)))
         refs: dict[str, Any] = {}
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))
-        provenance = CaptureProvenanceRecorder()
-        provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
-            session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
-        analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
-        async def measure(session, spec):
-            record_id = await records.bank({"take_id": "executor-take", "kind": "candidate",
-                "graph_scope": "candidate", "candidate_id": "speaker-candidate", "graph_fingerprint": "submitted",
-                "program_phase": program.phase, "position_axis": "horizontal", "position_deg": 0,
-                "level_db": -20.0, "stimulus_dbfs": None, **raw_record})
-            return MeasureOutcome(spec, (StimulusOutcome(0, None, -20.0, record_id),))
+        seams = TwinSeams(play=FakePlay(wav_path=answer.wav_path))
+
+        def assessor(*_args, **_kwargs):
+            return TakeVerdict(True)
+
+        def bound(run):
+            records = CapturedRecordStore(run, capture)
+            analyze, _ = bind_plan_analysis(conductor, records, manifest=run, evidence=refs, provenance=provenance)
+            return SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})), analyze
+
         async def bank():
-            async with open_session() as (session, _):
-                await run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                    captures=(PlanCapture(stop, spec),), measure=measure,
-                    assessor=lambda *_a, **_k: TakeVerdict(True), aborts={Exception: "internal_error"})
-            assert manifest.status == ("partial" if analysis_error is not None else "complete")
-            _, record_id = manifest.pending_records[0]
-            return json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+            runs = [manifest]
+            if ladder is None:
+                records, analyze = bound(manifest)
+                async with open_session(replace(seams, records=records), session_id=manifest.run_id,
+                                        allocate_take_id=manifest.allocate_take_id) as (session, _):
+                    await run_plan(request, session=session, manifest=manifest, analyze=analyze,
+                                   captures=(PlanCapture(stop, spec),), assessor=assessor,
+                                   aborts={Exception: "internal_error"})
+            else:
+                packet, runs = RoundPacket(manifest, ladder.to_dict()), []
+
+                def prepare(plan):
+                    runs.append(RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet))
+                    records, analyze = bound(runs[-1])
+                    return LevelRun(runs[-1], door(runs[-1], seams, records), analyze, assessor,
+                                    prepare_level_captures(plan, roles_bands=conductor.roles_bands))
+                await run_levels(ladder, hold=door(manifest, seams, None).hold, prepare=prepare, gate=gate,
+                                 aborts={Exception: "internal_error"}, save_ladder=packet.update_schedule)
+                await packet.finish()
+            assert {run.status for run in runs} == {"partial" if analysis_error is not None else "complete"}
+            takes = tuple(json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+                          for run in runs for _, record_id in run.pending_records)
+            return takes if ladder is not None else takes[0]
         return asyncio.run(bank())
 
 

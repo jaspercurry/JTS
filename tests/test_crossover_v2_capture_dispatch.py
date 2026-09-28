@@ -284,8 +284,7 @@ def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
         {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "measure",
          "program": program.to_dict()},
     )
-    assert banked.get("branch_diagnostic") == diagnostic
-    assert ("branch_diagnostic" in banked) is (diagnostic is not None)
+    assert banked["branch_diagnostic"] == diagnostic
 
 
 @pytest.mark.parametrize("phase", PHASES)

@@ -579,7 +579,7 @@ class TuningSession:
     ) -> Mapping[str, Any]:
         """One stimulus, as the facts five blocks are built around.
 
-        The index reads six of these — session, kind, position, candidate,
+        The index reads six of these — run, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it
         knows where it put the record and when. The rest are what a reader needs
         to tell two captures of the same position apart: which regime, which
@@ -605,7 +605,7 @@ class TuningSession:
         # played through rather than a second answer to the same question.
         applied_trims = level_trims_for(spec, self.level_match_trims_db)
         return {
-            "session_id": self.session_id,
+            "run_id": self.session_id,
             "take_id": take_id,
             "kind": spec.kind,
             "measurement_status": "captured" if outcome.wav_path and not outcome.incident else "incomplete",
@@ -617,8 +617,10 @@ class TuningSession:
             "vertical_deg": spec.vertical_deg,
             "prompt": prompt,
             "candidate_id": spec.candidate_id,
-            # The parent's layers this take's graph played emptied, absent when none (ADR-0370).
-            **({"cleared_layers": list(spec.cleared_layers)} if spec.cleared_layers else {}),
+            # Empty when the whole speaker plays.
+            "targets": list(spec.branch_target_ids),
+            # The parent's layers this take's graph played emptied (ADR-0370).
+            "cleared_layers": list(spec.cleared_layers),
             "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,
@@ -628,14 +630,7 @@ class TuningSession:
             # claim a match its own graph did not carry. Reading it off
             # ``applied_trims`` makes the boolean and the numbers one fact.
             "level_matched": bool(applied_trims),
-            # The numbers only when there ARE numbers: an absent key reads as
-            # the un-matched capture every earlier record was, so no schema
-            # moves.
-            **(
-                {"level_match_trims_db": applied_trims}
-                if applied_trims
-                else {}
-            ),
+            "level_match_trims_db": applied_trims,
             "graph_fingerprint": self._graph_fingerprint,
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,

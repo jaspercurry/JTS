@@ -308,7 +308,7 @@ def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]
             pose,
             geometry=PositionGeometry(POSITION_AXIS_HORIZONTAL, angle, MARK_DISTANCE_M),
             lateral_consumer="forward_model",
-            session_id="capture-1", graph_fingerprint="fp-applied",
+            run_id="capture-1", graph_fingerprint="fp-applied",
             captured_at="2026-08-26T00:00:00Z",
             wav_sha256=f"pose-sha-{index}",
         )
@@ -475,7 +475,7 @@ def _bank_entry_baseline(session: Path, *, attempt: int = 1) -> dict[str, Any]:
     positions = round_dir / "positions"
     positions.mkdir(exist_ok=True)
     record = entry_baseline_record(
-        index=9, attempt=attempt, session_id="capture-1", stimulus_id="prog-entry",
+        index=9, attempt=attempt, run_id="capture-1", stimulus_id="prog-entry",
         reference_mark="design_axis", graph_fingerprint="fp-entry",
         captured_at="2026-08-11T00:00:00Z",
         freqs_hz=(200.0, 400.0, 800.0), magnitude_db=(-1.5, 0.0, 1.5),

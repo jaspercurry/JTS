@@ -303,7 +303,7 @@ def _bank_one_round(root: Path, session_id: str) -> Path:
     positions.mkdir(parents=True)
     (positions / "t1.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND,
-        "session_id": session_id,
+        "run_id": session_id,
         "take_id": "t1",
         "phase": "measure",
         "position_deg": 0,

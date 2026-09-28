@@ -65,7 +65,7 @@ def _bank_canonical(root: Path) -> tuple[Path, dict]:
     sidecar = bundle / "summed" / "summed_cloud_verify_00.json"
     doc = json.loads(sidecar.read_text())
     doc.update({
-        "kind": POSITION_EVIDENCE_KIND, "session_id": "wired-test",
+        "kind": POSITION_EVIDENCE_KIND, "run_id": "wired-test",
         "candidate_id": "reviewed-candidate", "graph_scope": "candidate",
         "take_id": "cloud_verify_00_a02", "wav_sha256": sha256_file(sidecar.with_suffix(".wav")),
     })

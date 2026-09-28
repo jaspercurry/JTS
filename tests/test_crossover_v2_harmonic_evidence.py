@@ -1212,7 +1212,7 @@ def bank_measure_capture(harmonic_capture, tmp_path: Path) -> Path:
     captured = session / "summed/measure.wav"
     captured.parent.mkdir()
     shutil.copyfile(wav, captured)
-    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+    document.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id,
                     captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
     (positions / "measure.json").write_text(json.dumps(document))
     program, state = compose(-16.0)
@@ -1561,7 +1561,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     captured = session / "summed" / "measure.wav"
     captured.parent.mkdir()
     shutil.copyfile(wav, captured)
-    document.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id,
+    document.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id,
                     captured_at="2026-08-31T00:19:52Z", wav_path="summed/measure.wav")
     (positions / "measure.json").write_text(json.dumps(document))
     program, state = compose(-16.0)
@@ -1571,7 +1571,7 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     feature_program = next(feature.glob("evidence/v1/artifacts/**/lateral_program.wav"))
     shutil.copyfile(feature_program, artifacts / "lateral_program.wav")
     feature_doc = json.loads(next((ring / "sidecar").glob("*.json")).read_text())
-    feature_doc.update(kind=POSITION_EVIDENCE_KIND, session_id=capture_id, take_id="lateral",
+    feature_doc.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id, take_id="lateral",
                        captured_at=1788135641.4, wav_path="summed/lateral.wav", position_deg=15)
     (positions / "lateral.json").write_text(json.dumps(feature_doc))
     shutil.copyfile(next((ring / "wav").glob("*.wav")), captured.with_name("lateral.wav"))

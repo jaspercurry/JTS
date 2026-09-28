@@ -221,7 +221,7 @@ async def test_uc3_two_sessions_can_share_one_record_store():
         await second.measure(MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
 
     assert shared.kinds() == [MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE]
-    assert {r["session_id"] for r in shared.banked} == {
+    assert {r["run_id"] for r in shared.banked} == {
         decl.SESSION_ID, "twin-session-2",
     }
 

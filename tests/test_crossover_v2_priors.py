@@ -476,7 +476,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
                   "graph_scope": "timing", "graph_fingerprint": "submitted", "provenance": {"graph": {"fingerprint": "played"}}})
                  for i in range(repeats)]
     documents += [(replace(row, graph_scope="candidate"), {**documents[0][1], "take_id": "room"}),
-                  (replace(row, session_id="other"), {**documents[0][1], "take_id": "other"}),
+                  (replace(row, run_id="other"), {**documents[0][1], "take_id": "other"}),
                   (replace(row, phase="lateral"), {**documents[0][1], "take_id": "later"}),
                   (row, {**documents[0][1], "take_id": "louder", "level_db": -15}),
                   (row, {**documents[0][1], "take_id": "graph", "provenance": {"graph": {"fingerprint": "other"}}})]

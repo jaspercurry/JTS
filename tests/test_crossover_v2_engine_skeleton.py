@@ -541,7 +541,7 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
     # A take names its parent candidate and the layers its graph played cleared (ADR-0370).
     assert parts["graph"].cleared_layers == [("room_correction", "bass_extension"), (), (), ()]
     records = parts["records"].banked
-    assert [record.get("cleared_layers") for record in records] == [["room_correction", "bass_extension"], None, None, None]
+    assert [record["cleared_layers"] for record in records] == [["room_correction", "bass_extension"], [], [], []]
     assert [record["graph_scope"] for record in records] == ["candidate", "candidate", "candidate", "drivers"]
     assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
     assert len({record["graph_fingerprint"] for record in records}) == 3
@@ -1399,7 +1399,7 @@ async def test_a_record_states_the_level_match_that_installed_not_the_one_asked(
 
     record, = parts["records"].banked
     assert record["level_matched"] is False
-    assert "level_match_trims_db" not in record
+    assert record["level_match_trims_db"] == {}
 
 
 async def test_a_banked_level_matched_record_says_what_levelled_it():
@@ -1417,8 +1417,7 @@ async def test_a_banked_level_matched_record_says_what_levelled_it():
 
     plain, matched = parts["records"].banked
     assert plain["level_matched"] is False
-    # Absent, not empty: a record banked before this existed reads the same way.
-    assert "level_match_trims_db" not in plain
+    assert plain["level_match_trims_db"] == {}
     assert matched["level_matched"] is True
     assert matched["level_match_trims_db"] == {DRIVER_ROLE_TWEETER: -9.5}
     assert plain["graph_fingerprint"] != matched["graph_fingerprint"]
