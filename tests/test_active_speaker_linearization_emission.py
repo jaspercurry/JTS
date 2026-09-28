@@ -42,7 +42,7 @@ from jasper.active_speaker.camilla_names import (
 )
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
-from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME, PEAK_EPS_DB
 from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
@@ -525,7 +525,7 @@ def test_one_epsilon_decides_what_is_uncharged_and_what_proves(trim_db, charged)
     )
     peak = program_headroom.program_peak(yaml.safe_load(text)).db
     assert 0.0 < peak <= 0.01, "premise: a peak over unity by less than 0.01 dB"
-    assert (peak > program_headroom.PEAK_EPS_DB) is charged
+    assert (peak > PEAK_EPS_DB) is charged
     assert -_headroom_gain_db(text) == pytest.approx(peak + 1.0 if charged else 0.0, abs=1e-4)
     graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=text)
     assert graph.allowed is True, graph.issues

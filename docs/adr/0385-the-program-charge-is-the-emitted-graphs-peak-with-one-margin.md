@@ -33,7 +33,7 @@
   2. **What nets.** Every series stage and mixer sum ahead of an output: room, blend, the rear stage,
      crossovers, protection and bass-management high-passes, linearization and trims. Preference EQ
      (ADR-0121), dynamic bass (ADR-0359), the limiters and the fader do not net.
-  3. **One ε.** `PEAK_EPS_DB` is both the uncharged threshold and the verifier's slack.
+  3. **One ε.** `graph_types.PEAK_EPS_DB` is both the uncharged threshold and the verifier's slack.
   4. **Timing.** The timing take folds its candidate graph's whole charge into its trims, so it never
      plays louder than its candidate.
   5. **The room-off rise.** It is what the applied room layer adds to the played graph's charge

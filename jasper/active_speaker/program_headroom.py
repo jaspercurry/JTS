@@ -29,15 +29,10 @@ from jasper.json_fields import finite_float
 
 from .graph_safety import GraphView
 from .graph_transfer import GraphTransferError, complex_channel_transfer, mixer_mapping
+from .graph_types import PEAK_EPS_DB
 from .profile import ActiveSpeakerConfigError
 
 PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
-
-# A program peak at or under this is unity, dB: it is left uncharged, and it is
-# the verifier's slack on a charged peak. The emitter spells every gain,
-# frequency and q to 4 decimals, so a graph charged exactly can read a hair
-# above unity after the YAML round-trip; an analytic 0 dB reads about 1e-4.
-PEAK_EPS_DB: float = 1e-3
 
 # The Butterworth q as the emitter spells it; a shelf, low- or high-pass at or
 # under it overshoots unity by less than 1e-8 dB.
@@ -124,7 +119,7 @@ def charge_db(graph: Mapping[str, Any], *, output_trim_db: float = 0.0) -> float
 
     Its :func:`program_peak` with its own headroom gain held at 0 dB, plus one
     :data:`~.branch_chain.HEADROOM_MARGIN_DB` when that peak is over
-    :data:`PEAK_EPS_DB`, plus the household's output trim, which is never netted.
+    :data:`~.graph_types.PEAK_EPS_DB`, plus the household's output trim, which is never netted.
     """
     try:
         peak = program_peak(graph).db

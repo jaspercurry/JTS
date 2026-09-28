@@ -27,7 +27,7 @@ from jasper.biquad import (
 )
 
 from .crossover_section import CrossoverSection
-from .program_headroom import PEAK_EPS_DB
+from .graph_types import PEAK_EPS_DB
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB

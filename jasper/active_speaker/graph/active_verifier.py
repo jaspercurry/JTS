@@ -73,7 +73,8 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
-from ..program_headroom import PEAK_EPS_DB, PROGRAM_HEADROOM_FILTER, program_peak
+from ..graph_types import PEAK_EPS_DB
+from ..program_headroom import PROGRAM_HEADROOM_FILTER, program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
 logger = logging.getLogger(__name__)
