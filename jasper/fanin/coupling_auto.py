@@ -16,7 +16,10 @@ from jasper.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import env_value
 from jasper.env_load import FANIN_ENV_PATH
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
-from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for, read_requested_mode as read_usb_latency_mode
+from jasper.fanin.latency_mode import (
+    DEFAULT_MODE, STATE_ENV_KEY, normalize_mode,
+    read_requested_mode as read_usb_latency_mode,
+)
 from jasper.log_event import log_event
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
@@ -36,8 +39,6 @@ logger = logging.getLogger(__name__)
 # any non-``enabled`` value as off).
 USB_DIRECT_ENV_VAR = "JASPER_FANIN_USB_DIRECT"
 HOST_CLOCK_ENV_VAR = "JASPER_FANIN_HOST_CLOCK"
-CUSHION_DECAY_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY"
-CUSHION_DECAY_FLOOR_ENV_VAR = "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"
 USB_COMBO_ENABLED_VALUE = "enabled"
 USB_COMBO_DISABLED_VALUE = "disabled"
 
@@ -72,27 +73,15 @@ def combo_armed_from_env(env: str | Mapping[str, str]) -> bool:
 def usb_combo_actions(
     *, armed: bool, latency_mode: str = DEFAULT_MODE,
 ) -> tuple[RuntimeEnvAction, ...]:
-    """The reconciler-owned ``fanin.env`` actions for the USB fan-in keys.
-
-    Direct capture and host clock follow ``armed``. Cushion decay additionally
-    follows the preset; High keeps direct capture but pins the stable ceiling.
-    Feature keys use explicit ``disabled`` rather than unset, so a stale earlier
-    environment value cannot win. Deterministic order keeps writes idempotent.
-    """
-    preset = preset_for(latency_mode)
+    # Explicit off values override stale enabled keys in the earlier jasper.env.
+    mode = normalize_mode(latency_mode)
     feature_value = USB_COMBO_ENABLED_VALUE if armed else USB_COMBO_DISABLED_VALUE
-    decay_value = (
-        USB_COMBO_ENABLED_VALUE
-        if armed and preset.decay_enabled
-        else USB_COMBO_DISABLED_VALUE
-    )
     return (
         RuntimeEnvAction("set", USB_DIRECT_ENV_VAR, feature_value),
         RuntimeEnvAction("set", HOST_CLOCK_ENV_VAR, feature_value),
-        RuntimeEnvAction("set", CUSHION_DECAY_ENV_VAR, decay_value),
-        RuntimeEnvAction(
-            "set", CUSHION_DECAY_FLOOR_ENV_VAR, str(preset.floor_frames)
-        ),
+        RuntimeEnvAction("set", STATE_ENV_KEY, mode),
+        RuntimeEnvAction("unset", "JASPER_FANIN_RESAMPLER_CUSHION_DECAY"),
+        RuntimeEnvAction("unset", "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES"),
     )
 
 

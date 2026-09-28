@@ -21,7 +21,6 @@ resolving a second route.
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -162,31 +161,17 @@ def test_combo_armed_from_env_reads_the_resolved_value(text, expected):
     assert ca.combo_armed_from_env(text) is expected
 
 
-@pytest.mark.parametrize(
-    "mode,decay,floor",
-    [
-        ("low", "enabled", "576"),
-        ("medium", "enabled", "1024"),
-        ("high", "disabled", "2560"),
-    ],
-)
-def test_usb_combo_actions_map_fixed_latency_presets(mode, decay, floor):
-    acts = ca.usb_combo_actions(armed=True, latency_mode=mode)
-    values = {action.key: action.value for action in acts}
-    assert all(action.action == "set" for action in acts)
-    assert values[ca.USB_DIRECT_ENV_VAR] == "enabled"
-    assert values[ca.HOST_CLOCK_ENV_VAR] == "enabled"
-    assert values[ca.CUSHION_DECAY_ENV_VAR] == decay
-    assert values[ca.CUSHION_DECAY_FLOOR_ENV_VAR] == floor
-
-
-def test_usb_combo_actions_explicit_disabled_when_not_armed():
-    # F5: explicit `disabled` (NOT unset) so a stale jasper.env `enabled` can't win.
-    acts = ca.usb_combo_actions(armed=False)
-    assert all(a.action == "set" for a in acts)
-    assert [a.value for a in acts[:3]] == ["disabled"] * 3
-    assert acts[3].value == "576"
-    assert {a.key for a in acts} == {ca.USB_DIRECT_ENV_VAR, ca.HOST_CLOCK_ENV_VAR, ca.CUSHION_DECAY_ENV_VAR, ca.CUSHION_DECAY_FLOOR_ENV_VAR}
+@pytest.mark.parametrize("mode", ["low", "medium", "high"])
+@pytest.mark.parametrize("armed", [True, False])
+def test_usb_combo_actions_write_mode_and_retire_old_knobs(mode, armed):
+    acts = ca.usb_combo_actions(armed=armed, latency_mode=mode)
+    assert [(a.action, a.key, a.value) for a in acts] == [
+        ("set", ca.USB_DIRECT_ENV_VAR, "enabled" if armed else "disabled"),
+        ("set", ca.HOST_CLOCK_ENV_VAR, "enabled" if armed else "disabled"),
+        ("set", lm.STATE_ENV_KEY, mode),
+        ("unset", "JASPER_FANIN_RESAMPLER_CUSHION_DECAY", ""),
+        ("unset", "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES", ""),
+    ]
 
 
 def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
@@ -200,7 +185,7 @@ def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
                         "resampler": {
                             "locked": True,
                             "held_target_frames": 2048,
-                            "decay": {"enabled": True, "floor_frames": 1024},
+                            "decay": {"mode": "medium", "effective_mode": None, "enabled": True, "floor_frames": 1024},
                         },
                     },
                 },
@@ -216,6 +201,10 @@ def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
     assert state["state"] == "recovery"
     assert state["live_buffer_ms"] == 42.7
     assert lm.read_requested_mode(state_path) == "medium"
+    assert state["options"] == [
+        {"mode": mode, "label": label}
+        for mode, label in [("low", "Low"), ("medium", "Medium"), ("high", "High")]
+    ]
 
 
 def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path):
@@ -229,7 +218,7 @@ def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path
                         "resampler": {
                             "locked": True,
                             "held_target_frames": 2560,
-                            "decay": {"enabled": False, "floor_frames": 2560},
+                            "decay": {"mode": "high", "effective_mode": "high", "enabled": False, "floor_frames": 2560},
                         },
                     },
                 },
@@ -264,7 +253,7 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path, held, refill
                         "resampler": {
                             "locked": True,
                             "held_target_frames": held,
-                            "decay": {"enabled": True, "floor_frames": 576, "refilling": refilling},
+                            "decay": {"mode": "low", "effective_mode": effective, "enabled": True, "floor_frames": 576, "refilling": refilling},
                         },
                     },
                 },
@@ -296,7 +285,7 @@ def test_usb_latency_does_not_treat_idle_ceiling_as_effective_high(tmp_path):
                         "resampler": {
                             "locked": False,
                             "held_target_frames": 2560,
-                            "decay": {"enabled": True, "floor_frames": 576},
+                            "decay": {"mode": "low", "effective_mode": "high", "enabled": True, "floor_frames": 576},
                         },
                     },
                 },
@@ -326,7 +315,7 @@ def test_usb_latency_local_fallback_can_recover_in_same_session(tmp_path):
                         "resampler": {
                             "locked": True,
                             "held_target_frames": 2560,
-                            "decay": {"enabled": True, "floor_frames": 576},
+                            "decay": {"mode": "low", "effective_mode": "high", "enabled": True, "floor_frames": 576},
                         },
                     },
                 },
@@ -492,7 +481,7 @@ def test_auto_gadget_box_with_intent_arms_ring_and_combo(
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "enabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "enabled"
-    assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "enabled"
+    assert read_value(text, lm.STATE_ENV_KEY) == "low"
     assert r.restarted_fanin_for_combo is False
 
 
@@ -529,7 +518,8 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     fanin.write_text(
         f"{ca.USB_DIRECT_ENV_VAR}=enabled\n"
         f"{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
+        "JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled\n"
+        "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES=1024\n"
         "JASPER_UNRELATED_SOURCE_SENTINEL=enabled\n"
     )
     outputd.write_text(_armed_shm_ring_outputd())
@@ -562,7 +552,9 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
-    assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
+    assert read_value(text, lm.STATE_ENV_KEY) == "low"
+    assert read_value(text, "JASPER_FANIN_RESAMPLER_CUSHION_DECAY") is None
+    assert read_value(text, "JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES") is None
     assert read_value(text, "JASPER_UNRELATED_SOURCE_SENTINEL") == "enabled"
     assert restarts == ["camilla_stop", "fanin", "camilla_start"]
     assert result.combo_armed is False
@@ -596,7 +588,8 @@ def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
-    assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
+    assert read_value(text, lm.STATE_ENV_KEY) == "low"
+    assert read_value(text, "JASPER_FANIN_RESAMPLER_CUSHION_DECAY") is None
     # fan-in restarts to release the gadget; no second audio owner is involved.
     assert "fanin" in restarts
 
@@ -787,40 +780,9 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
 
-# --------------------------------------------------------------------------
-# Fresh-install low-latency reproduction — pins the measurement doc's claim
-# --------------------------------------------------------------------------
-#
-# The measurement doc §2 ("this is what a fresh install
-# ships") asserts that EVERY low-latency USB value is either a shipped code
-# default or armed automatically by the coupling auto-pass on an eligible gadget
-# box. That is a load-bearing promise (the ~55.5 ms measured number only holds if
-# a fresh flash actually reproduces the measured config with no operator action).
-# These tests PIN that promise, so a silent drift in any of the named values
-# reddens here and the doc's claim is caught rather than becoming stale prose.
-#
-# Two halves, matching the doc's two §2 tables:
-#   1. the host-clock combo the auto-pass ARMS on an eligible gadget box, and
-#   2. the ring-geometry CODE DEFAULTS the doc's table names.
-#
-# ``ring_slots default == 2`` is pinned to config.rs's ``env_u32(…, 2)`` source
-# text in tests/test_fanin_coupling_rust_contract.py
-# (test_shm_ring_env_var_names_and_defaults_agree); here we only reference the
-# Python constant that pin ties the Rust default to, so we do not duplicate the
-# source-text read.
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
-
-
 def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     tmp_path, monkeypatch
 ):
-    """§2 combo table: on a gadget box with usbsink intent enabled the auto-pass
-    writes EXACTLY this block into fanin.env — the three combo flags ``enabled``
-    AND coupling ``shm_ring``. If the auto-pass ever stopped arming one of these,
-    a fresh install would silently ship a slower config than the doc claims.
-    """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
@@ -832,11 +794,10 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
 
     assert r.combo_armed is True
     text = fanin.read_text()
-    # EXACTLY the documented combo env block (measurement doc §2 host-clock table).
     documented_combo = {
         ca.USB_DIRECT_ENV_VAR: "enabled",
         ca.HOST_CLOCK_ENV_VAR: "enabled",
-        ca.CUSHION_DECAY_ENV_VAR: "enabled",
+        lm.STATE_ENV_KEY: "low",
     }
     for key, value in documented_combo.items():
         assert read_value(text, key) == value, (
@@ -883,42 +844,6 @@ def test_fresh_install_ring_geometry_emits_the_doc_table_values():
     assert 'device: "jts_ring_playback"' in text
 
 
-@pytest.mark.parametrize(
-    "mode,pattern",
-    [
-        (
-            "low",
-            r"pub const DEFAULT_CUSHION_DECAY_FLOOR_FRAMES: u32 = (\d+);",
-        ),
-        (
-            "high",
-            r'env_u32\(\s*"JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES",\s*(\d+)\)'
-            r'[\s\S]*?env_u32\(\s*'
-            r'"JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES",\s*(\d+)\)',
-        ),
-    ],
-)
-def test_latency_presets_carry_fanin_s_own_decay_numbers(mode, pattern):
-    """The mode knob renames fan-in's floors; it does not choose new ones.
-
-    Low is config.rs's hardware-validated decay-floor default; High is the
-    acquisition ceiling that same file derives (base target + warm-up cushion),
-    the fill the lane settles at with decay off. Medium is this layer's own
-    middle and has no counterpart to pin. Hardware-free: the crate does not
-    build on macOS, and the CI Linux rust job covers the behaviour.
-    """
-    if not _FANIN_CONFIG_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_CONFIG_RS}")
-    text = _FANIN_CONFIG_RS.read_text(encoding="utf-8")
-    m = re.search(pattern, text)
-    assert m, f"config.rs no longer matches {pattern!r}"
-    assert sum(int(g) for g in m.groups()) == lm.PRESETS[mode].floor_frames, (
-        f"latency_mode.PRESETS[{mode!r}].floor_frames has drifted from "
-        "rust/jasper-fanin/src/config.rs, which owns the decay policy"
-    )
-
-
-
 @pytest.mark.parametrize("reason,ladder,held,expected", [
     ("reused", "probing", 576, "applied"),
     ("", "probing", 1600, "recovery"),
@@ -929,7 +854,7 @@ def test_usb_latency_reports_reuse_and_held_buffer(tmp_path, reason, ladder, hel
         "host_clock": {"ladder": ladder},
         "inputs": {"usbsink": {"resampler": {
             "locked": True, "held_target_frames": held,
-            "decay": {"enabled": True, "floor_frames": 576, "frozen_reason": reason, "active": reason == ""},
+            "decay": {"mode": "low", "effective_mode": "low" if reason == "reused" else None, "enabled": True, "floor_frames": 576, "frozen_reason": reason, "active": reason == ""},
         }}},
     }}}
     state = lm.read_state(airplay, state_path=tmp_path / "usb.env")

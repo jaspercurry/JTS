@@ -59,13 +59,12 @@ use std::sync::Arc;
 
 use jasper_resampler::{clamp_i32, AudioRing, RateController, SincTable, RADIUS_FRAMES};
 
-pub use decay::{CushionDecay, DecayFrozenReason, DecayParams, DecaySignals, BUFFER_ADJUST_PPM};
+pub use decay::{
+    CushionDecay, DecayFrozenReason, DecayParams, DecaySignals, LatencyMode, BUFFER_ADJUST_PPM,
+};
 
-/// Observability counters for one armed lane resampler, cloned into the STATUS
-/// snapshot. Absence of this object means the resampler is disabled.
 #[derive(Clone)]
 pub struct LaneResamplerObservability {
-    /// True only while the lane is rendering real DAC-paced audio.
     pub locked: Arc<AtomicBool>,
     /// Cumulative input frames pushed into the resampler.
     pub input_frames: Arc<AtomicU64>,

@@ -46,7 +46,7 @@ def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason
     usb["resampler"] = {
         "locked": True,
         "held_target_frames": held,
-        "decay": {"enabled": True, "floor_frames": floor, "frozen_reason": reason},
+        "decay": {"mode": mode, "effective_mode": "high" if mode == "medium" else None, "enabled": True, "floor_frames": floor, "frozen_reason": reason},
     }
 
     health = compose_audio_health(
@@ -67,13 +67,6 @@ def test_usb_runtime_preset_outranks_stale_route_label(mode, held, floor, reason
 
 
 def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
-    """A raw ``l2_fallback`` ladder outranks a held recovery-buffer target.
-
-    Pinned on the runtime axes the ladder actually drives (``raw_mode``,
-    ``phase``) rather than the rendered headline/detail sentences: those are
-    household copy owned by :mod:`jasper.control.audio_health`, not a second
-    encoding of this behavior.
-    """
     airplay = _airplay(selected="usbsink", ladder="l2_fallback")
     airplay["current"]["fanin"]["host_clock"]["fallback_reason"] = (
         "probe_noncompliant"
@@ -82,7 +75,7 @@ def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
     usb["resampler"] = {
         "locked": True,
         "held_target_frames": 2560,
-        "decay": {"enabled": True, "floor_frames": 576},
+        "decay": {"mode": "low", "effective_mode": "high", "enabled": True, "floor_frames": 576},
     }
 
     health = compose_audio_health(

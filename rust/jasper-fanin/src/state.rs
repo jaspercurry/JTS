@@ -63,6 +63,7 @@ use jasper_daemon::uds::{CommandLimits, UdsCommandServer};
 
 use crate::impulse_tap::{TapConfig, TapState};
 use crate::lane_resampler::LaneResamplerObservability;
+use crate::lane_resampler::LatencyMode;
 use crate::mixer::ring_output::RingObservability;
 use crate::mixer::{event_stamp_ms, DirectObservability, LaneSource, Mixer};
 use crate::tts::TtsMetrics;
@@ -595,17 +596,18 @@ impl StateServer {
                 "catchup_events",
                 input.catchup_events.load(Ordering::Relaxed),
             );
-            // OPTIONAL per-input adaptive resampler (DEFAULT-OFF). Rendered as a
-            // nested object only when armed on this lane — absent for every lane
-            // when the feature is off, so the default STATUS shape is unchanged.
             if let Some(r) = &input.resampler {
+                let locked = r.locked.load(Ordering::Relaxed);
+                let held = r.held_target_frames.load(Ordering::Relaxed);
+                let (mode, effective_mode) =
+                    LatencyMode::observed(r.decay_enabled, r.decay_floor_frames, held, locked);
                 buf.push(',');
                 buf.push_str(r#""resampler":{"#);
                 // Presence of `input.resampler` is the arm state; the wire key
                 // remains explicit for compatibility with existing consumers.
                 push_kv_bool(buf, "armed", true);
                 buf.push(',');
-                push_kv_bool(buf, "locked", r.locked.load(Ordering::Relaxed));
+                push_kv_bool(buf, "locked", locked);
                 buf.push(',');
                 push_kv_u64(buf, "input_frames", r.input_frames.load(Ordering::Relaxed));
                 buf.push(',');
@@ -632,12 +634,6 @@ impl StateServer {
                 let ratio_ppm = (r.ratio_milli_ppm.load(Ordering::Relaxed) as i64) as f64 / 1000.0;
                 push_kv_f64(buf, "ratio_ppm", ratio_ppm, 2);
                 buf.push(',');
-                // The controller's lifetime rail counters (issue #3464): times
-                // the bounded ratio hit ±max_adjust_ppm, and times a clamped
-                // loop wound against the fill error was anti-windup reset. A
-                // growing clamp_count is the "ratio is railing" signal the
-                // ratio_ppm gauge alone only shows if polled at the right
-                // moment.
                 push_kv_u64(buf, "clamp_count", r.clamp_count.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(
@@ -655,18 +651,18 @@ impl StateServer {
                 // snap-back target, unchanged shape for backward compat.
                 push_kv_u64(buf, "target_fill_frames", r.target_fill_frames);
                 buf.push(',');
-                // The LIVE held target the controller (and the outer DLL) hold
-                // the fill toward RIGHT NOW — equal to target_fill_frames unless
-                // the DEFAULT-OFF post-lock cushion decay has lowered it. This is
-                // the single-source-of-truth setpoint; watch it descend from the
-                // ceiling toward the decay floor when decay is engaged.
-                push_kv_u64(
-                    buf,
-                    "held_target_frames",
-                    r.held_target_frames.load(Ordering::Relaxed),
-                );
+                push_kv_u64(buf, "held_target_frames", held);
                 buf.push(',');
                 buf.push_str(r#""decay":{"#);
+                for (key, value) in [("mode", mode), ("effective_mode", effective_mode)] {
+                    buf.push_str(&json_string(key));
+                    buf.push(':');
+                    match value {
+                        Some(mode) => buf.push_str(&json_string(mode.as_str())),
+                        None => buf.push_str("null"),
+                    }
+                    buf.push(',');
+                }
                 push_kv_bool(buf, "enabled", r.decay_enabled);
                 buf.push(',');
                 push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
@@ -1420,7 +1416,7 @@ mod tests {
         // frozen_reason.
         assert!(
             j.contains(
-                r#""decay":{"enabled":false,"active":false,"refilling":false,"demand_ppm":0.00,"floor_frames":0,"learned_floor_frames":0,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
+                r#""decay":{"mode":"high","effective_mode":"high","enabled":false,"active":false,"refilling":false,"demand_ppm":0.00,"floor_frames":0,"learned_floor_frames":0,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
             ),
             "missing inactive decay block on the airplay fixture: {j}"
         );
@@ -1439,7 +1435,7 @@ mod tests {
         // an operator can see the decontamination magnitude on /state.
         assert!(
             j.contains(
-                r#""decay":{"enabled":true,"active":true,"refilling":false,"demand_ppm":125.33,"floor_frames":544,"learned_floor_frames":544,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
+                r#""decay":{"mode":null,"effective_mode":"medium","enabled":true,"active":true,"refilling":false,"demand_ppm":125.33,"floor_frames":544,"learned_floor_frames":544,"warm_resumes":0,"backoffs":0,"frozen_reason":""}"#
             ),
             "missing active decay block (with live demand) on the direct fixture: {j}"
         );
