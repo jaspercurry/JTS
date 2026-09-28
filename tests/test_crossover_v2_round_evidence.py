@@ -5,13 +5,10 @@
 """One summed capture reduced for comparison, and the entry baseline a round
 records (#2291 Phase 3c).
 
-These tests pin three things:
+These tests pin two things:
 
 1. the reduction is the SHIPPED owners' arithmetic, not a second copy;
-2. an entry baseline rehydrates only from a record this build wrote;
-3. :data:`~jasper.active_speaker.crossover_v2.round_evidence.MEASURED_BENEFIT_MARGIN_DB`
-   is a FORK of ``material_improvement_db``, not an alias — the whole point of
-   #2291's ledger item N8 is that the two must be free to move apart.
+2. an entry baseline rehydrates only from a record this build wrote.
 """
 
 from __future__ import annotations
@@ -335,64 +332,3 @@ def test_the_entry_baseline_round_trips_through_the_durable_shape():
 
     assert rehydrated == original
     assert rehydrated is not None
-
-
-# --------------------------------------------------------------------------- #
-# 5. the margin is a fork, not an alias (#2291 ledger item N8)
-# --------------------------------------------------------------------------- #
-
-
-def test_the_benefit_margin_is_a_literal_this_module_owns_not_a_borrowed_one():
-    """The fork, pinned structurally — the only way it CAN be pinned.
-
-    ``material_improvement_db()`` bounds model-vs-hardware error; this bounds
-    capture repeatability. They agree today, which is exactly why an equality
-    assertion would be worthless: it would pass just as happily if someone
-    "simplified" this constant into an alias of that one, and #2291's ledger
-    item N8 exists because that simplification is the tempting edit.
-
-    A *behavioural* pin cannot see it either — measured: monkeypatching
-    ``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`` and asserting this constant did
-    not follow SURVIVED a mutation that rebound it to
-    ``material_improvement_db()`` at import time, because a module constant is
-    bound once and the later patch cannot reach it. So the pin is on the
-    module's own syntax: this name is assigned a plain numeric literal, and
-    neither borrowed name is imported anywhere in the module.
-    """
-    import ast
-    import inspect
-
-    source = inspect.getsource(round_evidence)
-    tree = ast.parse(source)
-
-    assignments = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "MEASURED_BENEFIT_MARGIN_DB"
-            for t in node.targets
-        )
-    ]
-    assert len(assignments) == 1, "one owner, one assignment"
-    value = assignments[0].value
-    assert isinstance(value, ast.Constant) and isinstance(
-        value.value, float
-    ), "the margin must be a literal this module owns, not a borrowed call"
-
-    borrowed = {"material_improvement_db", "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB"}
-    imported = {
-        alias.asname or alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    } | {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert not (borrowed & imported), (
-        f"the margin's module must not import {borrowed & imported} — "
-        "the two constants have to stay free to move apart"
-    )

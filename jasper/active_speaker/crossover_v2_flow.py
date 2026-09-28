@@ -99,10 +99,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-# dB of pooled spec residual; the model's measured tracking error (ADR-0227).
-PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
-
-
 MEASUREMENT_DISTANCE_M = 1.0
 
 

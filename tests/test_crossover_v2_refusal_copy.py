@@ -56,7 +56,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "reason_message",
     ),
     "spatial": ("GEOMETRY_RETRY_POSITIONS",),
-    "crossover_v2_flow": ("PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",),
     "capture_dispatch": (
         "_gate_window_ms",
         "_pilot_transfer_by_role",
@@ -65,13 +64,11 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-FLOW_OWNED: frozenset[str] = frozenset(MOVED_NAMES["crossover_v2_flow"])
-
 
 def test_the_flow_defines_none_of_the_moved_names_itself():
     src = pathlib.Path(flow.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
-    moved = {s for names in MOVED_NAMES.values() for s in names} - FLOW_OWNED
+    moved = {s for names in MOVED_NAMES.values() for s in names}
 
     redefined: list[str] = []
     for node in ast.walk(tree):
@@ -89,47 +86,6 @@ def test_the_flow_defines_none_of_the_moved_names_itself():
     assert redefined == [], (
         "the flow re-declares names the crossover_v2 package owns: "
         f"{sorted(redefined)}"
-    )
-
-
-def test_nothing_but_the_flow_declares_the_names_the_flow_owns():
-    """The single-owner pin for :data:`FLOW_OWNED`, as absence across the tree.
-
-    For a name the PACKAGE owns, "one definition" is pinned by identity against
-    that owner. These three have no package module — the ``attempt_grading``
-    fold put them where the flow applies them — so the same guarantee has to be
-    read the other way round: no OTHER module may declare the name at all.
-    Walked at any nesting depth, over every product module rather than the
-    handful that import them, because the copy this suite exists to prevent
-    would appear in whichever module found it easier to restate 0.5 than to
-    import it.
-    """
-
-    product = pathlib.Path(flow.__file__).parents[1]
-    owner = pathlib.Path(flow.__file__).resolve()
-
-    declared: list[str] = []
-    for path in sorted(product.rglob("*.py")):
-        if path.resolve() == owner:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                names = [node.name]
-            elif isinstance(node, ast.Assign):
-                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                names = [node.target.id]
-            else:
-                continue
-            declared += [
-                f"{path.relative_to(product.parent)}:{node.lineno}:{n}"
-                for n in names if n in FLOW_OWNED
-            ]
-
-    assert declared == [], (
-        "a second declaration of a name crossover_v2_flow owns: "
-        f"{sorted(declared)}"
     )
 
 
