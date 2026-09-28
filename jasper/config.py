@@ -411,17 +411,21 @@ def _parse_volume_env() -> dict[str, Any]:
         # Only old volume outside the safe band is regressed at boot;
         # recent restarts and in-band values retain continuity.
         volume_regress_after_sec=_env_float(
-            "JASPER_VOLUME_REGRESS_AFTER_SEC", 1800.0,
+            "JASPER_VOLUME_REGRESS_AFTER_SEC",
+            _volume_persistence.REGRESS_AFTER_SEC,
         ),
         volume_regress_safe_low_pct=_env_int(
-            "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", 20,
+            "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT",
+            _volume_persistence.REGRESS_SAFE_LOW_PCT,
         ),
         volume_regress_safe_high_pct=_env_int(
-            "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", 70,
+            "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT",
+            _volume_persistence.REGRESS_SAFE_HIGH_PCT,
         ),
         # Used when the persisted record is absent or corrupt.
         volume_first_boot_default_pct=_env_int(
-            "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
+            "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT",
+            _volume_persistence.FIRST_BOOT_DEFAULT_PCT,
         ),
     )
 

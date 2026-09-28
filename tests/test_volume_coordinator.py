@@ -57,9 +57,9 @@ from jasper.volume_owner import (
     VolumeOwner,
     volume_owner,
 )
-from jasper.volume_persistence import VolumePersistence
+from jasper.volume_persistence import FIRST_BOOT_DEFAULT_PCT, VolumePersistence
 from jasper.volume_curve import percent_to_db
-from jasper.volume_state import FIRST_BOOT_DEFAULT_PCT, VolumeState
+from jasper.volume_state import VolumeState
 from jasper.web import sound_profile_apply
 
 

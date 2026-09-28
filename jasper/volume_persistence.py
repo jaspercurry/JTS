@@ -379,6 +379,12 @@ def configured_path() -> str:
     return os.environ.get("JASPER_VOLUME_STATE_PATH") or VolumePersistence.DEFAULT_PATH
 
 
+FIRST_BOOT_DEFAULT_PCT = 50
+REGRESS_AFTER_SEC = 1800.0
+REGRESS_SAFE_LOW_PCT = 20
+REGRESS_SAFE_HIGH_PCT = 70
+
+
 def _regress_percent(
     pct: int | None,
     age_sec: float | None,
@@ -421,10 +427,10 @@ def regress_listening_level_if_stale(
     record: VolumeRecord | None,
     *,
     now: datetime | None = None,
-    stale_after_sec: float = 1800.0,
-    safe_low_pct: int = 20,
-    safe_high_pct: int = 70,
-    first_boot_default_pct: int = 50,
+    stale_after_sec: float = REGRESS_AFTER_SEC,
+    safe_low_pct: int = REGRESS_SAFE_LOW_PCT,
+    safe_high_pct: int = REGRESS_SAFE_HIGH_PCT,
+    first_boot_default_pct: int = FIRST_BOOT_DEFAULT_PCT,
 ) -> tuple[int, str]:
     """Compute the listening_level (0-100) to restore at boot.
 
