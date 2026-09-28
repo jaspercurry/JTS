@@ -21,6 +21,7 @@ import yaml
 from scipy.io import wavfile
 
 from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
+from jasper.active_speaker.camilla_names import driver_baseline_gain_name
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, effective_preset
@@ -1027,6 +1028,24 @@ def test_cardioid_timing_graph_plays_only_the_front_drivers_at_the_candidate_lev
         assert reference is not None and reference.unmodelled_targets == unmodelled
 
 
+def test_a_front_boost_its_candidate_netted_makes_the_timing_take_quieter_never_louder():
+    """ADR-0385: the take folds its candidate's whole charge into the trims, and its own graph charges
+    the front-chain boost the candidate's woofer cut netted, so it plays quieter, never louder."""
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_floor=30, woofer_upper=4000, tweeter_peak=0, max_sweep_duration_s=4)
+    profile = MeasurementGraphProfile(_rear_pair("mono")[0], topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+                                      protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    front = {**_rear_document()["front"], "gain_db": -2.0, "filters": [
+        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 60.0, "q": 1.0, "gain": 3.0}}]}
+    candidate = replace(_trial_candidate(profile), blend_correction=(), rear_calibration=_rear_document(rear_muted=True, front=front),
+                        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 60.0, "q": 1.0, "gain": -3.0}]}})
+    graphs = [yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope)) for scope in ("timing", "candidate")]
+    levels = [[graph["filters"][driver_baseline_gain_name(role)]["parameters"]["gain"]
+               + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"] for role in ("woofer", "tweeter")]
+              for graph in graphs]
+    assert [timing - household for timing, household in zip(*levels)] == [pytest.approx(-2.0, abs=1e-3)] * 2
+
+
 def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     topology, safety, targets = _profile_and_targets(
         rear=True, woofer_peak=-30, tweeter_peak=-30,
@@ -1522,8 +1541,8 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
         spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                            candidate_id=candidate.fingerprint if scope != "drivers" else "")
         gain = scope_gains_db(graphs[scope], graphs["candidate"], excitation.roles, topology=topology)
-        expected = {"drivers": {"woofer": 7.437108 if rear else 1.826408,
-                                "tweeter": 8.738569 if rear else 3.127869},
+        expected = {"drivers": {"woofer": 5.774908 if rear else 1.826408,
+                                "tweeter": 7.076369 if rear else 3.127869},
                     "timing": {"woofer": 0.542875, "tweeter": 0.081768},
                     "candidate": {"woofer": 0.0, "tweeter": 0.0}}[scope]
         if rear and scope != "candidate":

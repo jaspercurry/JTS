@@ -49,10 +49,8 @@ from ..crossover_section import CrossoverSection
 from .devices import _finite_float
 from .ledger import (
     MAX_PROGRAM_HEADROOM_DB,
-    _branch_context,
     _correction_bool,
     _correction_value,
-    program_headroom_db,
 )
 from .topology import _ordered_regions, _output_count
 
@@ -670,15 +668,13 @@ def _emit_sub_baseline_definitions(
 def _emit_baseline_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
-    baseline_headroom_db: float,
+    headroom_db: float,
     limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
-    output_trim_db: float = 0.0,
     linearization: dict[str, list[dict[str, Any]]] | None = None,
     blend_correction: Sequence[Mapping[str, Any]] = (),
-    rear_calibration: Mapping[str, Any] | None = None,
 ) -> str:
     lines: list[str] = []
     room_peqs = tuple(room_peqs)
@@ -692,13 +688,8 @@ def _emit_baseline_filter_definitions(
             )
         )
     # Crossover blend correction — the same Peaking primitive the room PEQs use,
-    # wired beside them pre-split.
-    #
-    # It charges NO headroom because it CANNOT BOOST
-    # (``_validated_blend_correction`` refuses a positive gain), not because the
-    # common attenuation covers it: a boost posture would have to ADD a term to
-    # ``total_headroom_db``, since position above the gain is necessary for
-    # absorption and not sufficient for it.
+    # wired beside them pre-split. Cuts only (``_validated_blend_correction``
+    # refuses a positive gain), netted into the charge like every stage.
     for i, entry in enumerate(blend_correction, start=1):
         lines.extend(
             emit_peaking_biquad(
@@ -708,30 +699,18 @@ def _emit_baseline_filter_definitions(
                 gain=float(entry["gain"]),
             )
         )
-    # The active graph's single place for explicit common attenuation: baseline
-    # headroom, room-correction boost headroom, the Layer-1a linearization
-    # boost, plus the household's manual headroom / loudness-match
-    # output_trim_db. Preference boosts themselves ride at unity, matching the
-    # stereo /sound policy; room-correction and linearization boosts can raise a
-    # band above unity, so their worst case is folded in here instead. It rides
-    # the PRE-SPLIT gain because every branch sees the same program, so absorbing
-    # the worst branch's total covers all of them — the mechanism that lets the
-    # fit engine's boost stay uncapped while the 0 dB ceiling stays a hard rail.
-    # Every judge reads this charge back off the graph (#5909).
+    # The active graph's single place for common attenuation: the charge the
+    # emitter measures on its own final graph (`program_headroom.charge_db`,
+    # ADR-0385), which includes the household's output trim. Preference boosts
+    # ride at unity, matching the stereo /sound policy. It rides the PRE-SPLIT
+    # gain because every branch sees the same program. Every judge reads this
+    # charge back off the graph (#5909).
     #
     # A NUMBER, never a gate: `active_baseline_headroom` is always emitted, so
     # folding the trim into its value keeps a flat-window crossing a parameter
     # write rather than stepping the gain by the whole trim, un-ducked, the
     # moment a band crosses ±0.05 dB. Matches the stereo path's `sound_preamp`.
-    total_headroom_db = program_headroom_db(
-        linearization, baseline_headroom_db=baseline_headroom_db,
-        room_peqs=room_peqs, output_trim_db=output_trim_db,
-        rear_calibration=rear_calibration,
-        branch_context=_branch_context(preset, corrections),
-    )
-    if total_headroom_db > MAX_PROGRAM_HEADROOM_DB:
-        raise ProgramHeadroomExhausted(total_headroom_db)
-    headroom_gain_db = 0.0 if total_headroom_db == 0 else -total_headroom_db
+    headroom_gain_db = 0.0 if headroom_db == 0 else -headroom_db
     lines.extend(
         emit_gain_filter(
             "active_baseline_headroom",

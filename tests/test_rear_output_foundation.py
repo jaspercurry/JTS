@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db
+from jasper.active_speaker.program_headroom import program_peak
 from jasper.active_speaker import camilla_yaml as emit
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
@@ -479,9 +479,8 @@ def test_a_take_that_names_the_rear_lifts_only_its_mute():
             if "as_out2_rear_pending_mute" not in (step.get("names") or [])] == take["pipeline"]
 
 
-def test_the_emitted_baseline_absorbs_exactly_the_stages_peak():
+def test_the_emitted_baseline_absorbs_the_stages_peak_and_one_margin():
     audible = yaml.safe_load(_cardioid_baseline()[2])
-    assert audible["filters"]["active_baseline_headroom"]["parameters"]["gain"] == \
-        pytest.approx(-rear_branch_sum_headroom_db(_rear_document()), abs=0.001)
+    assert program_peak(audible, charged=True).db == pytest.approx(-1.0, abs=0.001)
     muted = yaml.safe_load(_cardioid_baseline(_rear_document(rear_muted=True))[2])
     assert muted["filters"]["active_baseline_headroom"]["parameters"]["gain"] == 0.0

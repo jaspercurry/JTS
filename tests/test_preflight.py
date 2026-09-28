@@ -8,7 +8,9 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -16,7 +18,10 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
+from jasper.active_speaker.graph_transfer import complex_channel_transfer
+from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
+from jasper.active_speaker.measurement_emit import compile_tuning_graph, room_layer_charge_db
 from jasper.active_speaker.measurement_programs import preset, run_preset
 from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
@@ -39,6 +44,7 @@ from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, tuning_profile as tuning_profile,
 )
+from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 
 
 def _boost(boost_db, **changes):
@@ -553,18 +559,35 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
 
 
 _CUT = PeqFilter(50.0, 8.0, -6.0)
-_BOOST = PeqFilter(400.0, 8.0, 3.0)
 
 
-@pytest.mark.parametrize("peqs,band_hz,rise_db", [
-    ((), (20.0, 1100.0), 0.0), ((_CUT,), (20.0, 1100.0), 6.0), ((_BOOST,), (20.0, 1100.0), 3.0),
-    ((_CUT, _BOOST), (20.0, 1100.0), 9.0), ((_CUT, _BOOST), (100.0, 1100.0), 3.0),
+@pytest.mark.parametrize("room,lin,rise_db", [
+    ((), None, 0.0),
+    (({"freq": 50.0, "q": 8.0, "gain": -6.0},), None, 6.0),
+    (({"freq": 120.0, "q": 2.0, "gain": 3.0},), None, 3.88),  # a lone boost pays its peak and the margin
+    (({"freq": 120.0, "q": 2.0, "gain": -3.0},), (120.0, 3.0), 0.0),  # the room cut nets a driver boost
+    (({"freq": 120.0, "q": 2.0, "gain": 3.0},), (28.0, 6.0), 2.96),  # the declared high-pass nets a driver boost
 ])
-def test_the_room_off_rise_is_the_room_charge_less_its_lowest_response_in_band(peqs, band_hz, rise_db):
-    """Clearing the room layer drops its boost charge and its cuts, so a graph
-    without it plays up to the charge less the room's lowest response in the
-    band louder (ADR-0370)."""
-    assert rise_without_room_db(peqs, band_hz) == pytest.approx(rise_db, abs=0.1)
+def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(tuning_profile, room, lin, rise_db):
+    """Clearing the applied room layer moves the program charge by what the layer adds to it and
+    gives back the layer's response, so the room-off take plays at most that much louder across
+    the band, read off the graphs the anchor and the take play (ADR-0385)."""
+    profile = replace(tuning_profile, protection_sections_by_role={
+        "woofer": (CrossoverSection(40, 4, True),), "tweeter": (CrossoverSection(1800, 4, True),)})
+    band_hz, spend = (20.0, 1100.0), sum(entry["gain"] for entry in room if entry["gain"] > 0.0)
+    candidate = replace(
+        _room_candidate(profile), blend_correction=(), role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
+        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": lin[0], "q": 2.0, "gain": lin[1]}]}} if lin else {},
+        room_correction=_room_correction(sides={"mono": list(room)}, boost_db_total=spend, level_cost_db=spend, basis={
+            **_room_correction()["basis"], "admitted_boosts_hz": [e["freq"] for e in room if e["gain"] > 0.0]}) if room else {})
+    rise = rise_without_room_db(candidate_room_peqs(candidate), band_hz, charge_db=room_layer_charge_db(profile, candidate))
+    hz = np.geomspace(*band_hz, 4001)
+    with_room, without = (np.abs(complex_channel_transfer(
+        yaml.safe_load(compile_tuning_graph(profile, candidate, cleared_layers=cleared)),
+        hz, input_weights={0: 1.0}, output_channels={"woofer": 0}, allow_limiter_passthrough=True,
+    )["woofer"]) for cleared in ((), ("room_correction",)))
+    assert rise == pytest.approx(rise_db, abs=0.02)
+    assert rise == pytest.approx(max(0.0, float(np.max(20.0 * np.log10(without / with_room)))), abs=0.01)
 
 
 @pytest.mark.parametrize("purpose,candidate_id,stimulus,room,rise_db", [
@@ -581,7 +604,7 @@ def test_a_take_clearing_the_room_layer_folds_its_rise_into_the_opener_margin(
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose, candidate_id=candidate_id,
                                           stimulus=stimulus),),
                                candidates=tuple(candidates), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, candidates=candidates, applied_room_peqs=(room,)))
+    report = preflight(plan, ready_facts(plan, candidates=candidates, applied_room_peqs=(room,), applied_room_charge_db=0.0))
     row = report.rung_admission
     assert not report.blocking
     assert row.get("room_off_rise_db") == (None if rise_db is None else pytest.approx(rise_db, abs=0.1))
@@ -589,13 +612,13 @@ def test_a_take_clearing_the_room_layer_folds_its_rise_into_the_opener_margin(
     assert report.plan.level.predicted_db_spl == row["admitted_db_spl"] <= row["margin_bound_db_spl"]
 
 
-@pytest.mark.parametrize("purpose,blocked", [("bass", True), ("room", False)])
-def test_an_unreadable_applied_room_layer_refuses_a_take_that_clears_it(purpose, blocked):
-    """With the applied room layer unreadable, a room-off take's rise is
-    unknown, so preflight refuses its plan; a take playing the room layer runs
-    as before (ADR-0370)."""
+@pytest.mark.parametrize("purpose,room,blocked", [("bass", None, True), ("bass", (_CUT,), True), ("room", None, False)])
+def test_an_unreadable_applied_room_layer_refuses_a_take_that_clears_it(purpose, room, blocked):
+    """With the applied room layer or its charge unreadable, a room-off take's
+    rise is unknown, so preflight refuses its plan; a take playing the room
+    layer runs as before (ADR-0370, ADR-0385)."""
     plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose=purpose),), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, applied_room_peqs=None))
+    report = preflight(plan, ready_facts(plan, applied_room_peqs=room))
     assert [issue.code for issue in report.issues if issue.blocking] == (["walk_level_policy_invalid"] if blocked else [])
 
 
@@ -617,7 +640,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert facts.applied_room_peqs == room
+    assert (facts.applied_room_peqs, facts.applied_room_charge_db) == (room, None)
 
 
 def test_margin_clamp_lands_under_the_bound():
@@ -674,6 +697,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state if descriptor is not None else {})
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda name: {applied.fingerprint: SimpleNamespace(candidate=applied)}[name])
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
+    monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda topology: tuning_profile)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},

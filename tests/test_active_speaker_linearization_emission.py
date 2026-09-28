@@ -42,7 +42,7 @@ from jasper.active_speaker.camilla_names import (
 )
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
-from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME, PEAK_EPS_DB
 from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
@@ -515,6 +515,22 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
+@pytest.mark.parametrize(("trim_db", "charged"), [(-3.999, False), (-3.995, True)])
+def test_one_epsilon_decides_what_is_uncharged_and_what_proves(trim_db, charged):
+    """ADR-0385: a netted peak at or under ``PEAK_EPS_DB`` rides uncharged, and one over it pays
+    the whole margin, so no graph the emitter writes lands between the charge and the verifier."""
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM, corrections={"woofer": {"gain_db": trim_db}},
+        linearization={"woofer": [_peak(100.0, 4.0, q=1.0)]},
+    )
+    peak = program_headroom.program_peak(yaml.safe_load(text)).db
+    assert 0.0 < peak <= 0.01, "premise: a peak over unity by less than 0.01 dB"
+    assert (peak > PEAK_EPS_DB) is charged
+    assert -_headroom_gain_db(text) == pytest.approx(peak + 1.0 if charged else 0.0, abs=1e-4)
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=text)
+    assert graph.allowed is True, graph.issues
+
+
 def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
     """**Required, not defaulted.** With no context the charge would silently
     become the naked linearization cascade's peak — a strict over-estimate, so
@@ -938,10 +954,11 @@ def test_a_room_boost_behind_the_headroom_gain_is_refused():
     ]
 
 
-@pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.1, True)])
+@pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.99, False), (1.01, True)])
 def test_a_cardioid_graph_proves_its_rear_stage_by_number(lift_db, refused):
-    """The rear stage's evaluated peak is part of the charge (ADR-0324), so a
-    headroom gain lifted past it refuses with no boost anywhere else."""
+    """The whole graph's peak, rear stage included, is charged with one 1.0 dB
+    margin (ADR-0385), so a headroom gain lifted past the margin refuses with no
+    boost anywhere else."""
     _, topology, text = _cardioid_baseline()
     headroom = yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
     graph = _classify_rear(

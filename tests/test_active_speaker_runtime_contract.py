@@ -3050,7 +3050,7 @@ def test_baseline_room_peqs_pre_split_and_boost_headroom_folds() -> None:
         text,
     )
     assert match is not None
-    assert float(match.group(1)) == -3.0
+    assert float(match.group(1)) == -2.9355
 
     pipeline = text[text.index("\npipeline:"):]
     room_idx = pipeline.index("names: [room_peq_1, room_peq_2, room_peq_3]")

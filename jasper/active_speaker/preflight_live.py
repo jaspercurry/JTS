@@ -31,6 +31,7 @@ from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
+from .measurement_emit import load_tuning_declaration, room_layer_charge_db
 from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
@@ -56,6 +57,7 @@ def read_preflight_facts(
     stop = None
     applied_bass_extension: Mapping[str, Any] = {}
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
+    applied_room_charge_db: float | None = None
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
@@ -66,6 +68,8 @@ def read_preflight_facts(
             state = load_applied_baseline_profile_state() or {}
             applied = candidate_from_applied_profile(context.topology, state)
             applied_bass_extension, applied_room_peqs = applied.bass_extension, candidate_room_peqs(applied)
+            if applied_room_peqs:
+                applied_room_charge_db = room_layer_charge_db(load_tuning_declaration(context.topology), applied)
         except (OSError, RuntimeError, ValueError, LookupError):
             # No applied profile has no room layer; one that cannot be read has an unknown one.
             applied_room_peqs = () if state is not None and state.get("status") != "applied" else None
@@ -123,6 +127,7 @@ def read_preflight_facts(
         anchor=anchor, summed_pilot_band_hz=pilot_band,
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension, applied_room_peqs=applied_room_peqs,
+        applied_room_charge_db=applied_room_charge_db,
         stimulus_ids_for=stimulus_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
         # A near-field pose's driver is offered only when its sweep holds the view's top band whole.

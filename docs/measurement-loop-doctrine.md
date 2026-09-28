@@ -102,7 +102,7 @@ mechanisms are:
    valid microphone sensitivity and capture-gain context; never invent it.
 5. **Firmware hazards:** never call XVF3800 `SAVE_CONFIGURATION`.
 
-The blend door cannot emit boost: its graph stage has no boost headroom term.
+The blend door cannot emit boost: its graph stage admits cuts only.
 Use a supported driver candidate for a boost experiment (plan ruling R8).
 Do not remove an unsupported-candidate refusal until the candidate can be
 rendered, protected, and identified correctly.
