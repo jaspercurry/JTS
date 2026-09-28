@@ -447,7 +447,7 @@ def test_an_unusable_corner_refuses_rather_than_being_coerced(value):
 
 def test_a_state_without_a_gain_plan_refuses_by_name():
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(gain_plan_db={"woofer": -6.0}), he_bands(), "not-a-real-id")
+        he.rebuild_measure_program(_state(gain_plan_db={"woofer": -6.0}), he_bands(), {"not-a-real-id"})
     assert excinfo.value.reason == he.STATE_UNREADABLE
 
 
@@ -461,10 +461,10 @@ def test_a_program_that_cannot_prove_itself_is_refused_not_read():
     through the wrong sweep L.
     """
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(), he_bands(), "not-a-real-id")
+        he.rebuild_measure_program(_state(), he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
-    assert excinfo.value.evidence["program_id"] == "not-a-real-i"[:12]
+    assert excinfo.value.evidence["program_ids"] == ["not-a-real-i"]
 
 
 def test_a_ring_with_no_measure_capture_says_why_a_verify_one_would_not_do(tmp_path):
@@ -501,7 +501,7 @@ def test_a_program_at_any_fader_is_proved_by_the_id_its_takes_recorded(volume):
     """The id leaves the fader out (#5012), so the proof needs no recorded volume."""
     recorded = _program_at(volume).program_id
 
-    program, prelude = he.rebuild_measure_program(_state(), he_bands(), recorded)
+    program, prelude = he.rebuild_measure_program(_state(), he_bands(), {recorded})
 
     assert program.program_id == recorded
     assert prelude is False
@@ -566,7 +566,7 @@ def test_a_banked_duration_fit_reproduces_without_a_search():
 
     state = _state(measure_sweep_durations_s=durations)
 
-    rebuilt, prelude = he.rebuild_measure_program(state, he_bands(), program.program_id)
+    rebuilt, prelude = he.rebuild_measure_program(state, he_bands(), {program.program_id})
 
     assert rebuilt.program_id == program.program_id
     assert prelude is False
@@ -581,7 +581,7 @@ def test_a_duration_fitted_round_that_predates_banking_still_names_its_cause():
     program = _fitted_program_at(-20.0)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(_state(), he_bands(), program.program_id)
+        he.rebuild_measure_program(_state(), he_bands(), {program.program_id})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is False
@@ -681,7 +681,7 @@ def test_a_below_one_cycle_banked_duration_refuses_honestly_instead_of_raising()
     )
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, he_bands(), "not-a-real-id")
+        he.rebuild_measure_program(state, he_bands(), {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
@@ -725,7 +725,7 @@ def test_a_datasheet_wide_declared_band_reproduces_a_fitted_round():
     assert accepted is not None
     assert accepted == pytest.approx(durations)
 
-    rebuilt, prelude = he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, program.program_id)
+    rebuilt, prelude = he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {program.program_id})
 
     assert rebuilt.program_id == program.program_id
     assert prelude is False
@@ -746,7 +746,7 @@ def test_a_datasheet_wide_band_refusal_still_reports_the_bank_honestly():
     state = _state(measure_sweep_durations_s=durations)
 
     with pytest.raises(he.HarmonicEvidenceRefused) as excinfo:
-        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, "not-a-real-id")
+        he.rebuild_measure_program(state, _DATASHEET_WIDE_BANDS, {"not-a-real-id"})
 
     assert excinfo.value.reason == he.PROGRAM_NOT_REPRODUCIBLE
     assert excinfo.value.evidence["measure_sweep_durations_banked"] is True
@@ -1008,7 +1008,7 @@ def test_the_distortion_door_composes_the_shape_the_round_actually_swept(tmp_pat
     bands = he.round_bands_hz(state, overrides)
 
     assert bands == {"full_range": band}
-    rebuilt, _prelude = he.rebuild_measure_program(state, bands, program.program_id)
+    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.program_id})
     assert rebuilt.program_id == program.program_id
 
     # A 1-way round measured on a non-default band gets an operator remedy,
@@ -1386,18 +1386,21 @@ def test_measure_takes_with_no_recorded_stimulus_id_are_refused_one_by_one(harmo
     assert [take["reason"] for take in refused.value.evidence["refused"]] == ["stimulus_id_unrecorded"]
 
 
-def test_measure_takes_that_disagree_on_their_stimulus_are_refused_by_name(harmonic_capture, tmp_path):
-    read, compose, sidecar, _, document = harmonic_capture
-    other, state = compose(-14.0)
-    _write_harmonic_capture(sidecar.parent.parent, tmp_path, "2_measure_b", other, state, take_id="take-b")
+def test_a_stray_stimulus_id_is_refused_on_its_own_take(harmonic_capture, tmp_path):
+    """One take of another stimulus proves nothing and costs the others nothing."""
+    read, compose, sidecar, _, _ = harmonic_capture
+    ring = sidecar.parent.parent
+    program, state = compose(-16.0)
+    for name, scale in (("b", 0.09), ("c", 0.08), ("d", 0.07)):
+        _write_harmonic_capture(ring, tmp_path, f"2_measure_{name}", program, state, take_id=f"take-{name}", scale=scale)
+    stray, _ = compose(-14.0)
+    _write_harmonic_capture(ring, tmp_path, "3_measure_stray", stray, state, take_id="take-stray")
 
-    with pytest.raises(he.HarmonicEvidenceRefused) as refused:
-        read()
+    captures = read()["captures"]
 
-    assert refused.value.reason == he.NO_CAPTURE_PASSED_THE_GATES
-    assert {(take["take_id"], take["reason"], take["program_id"]) for take in refused.value.evidence["refused"]} == {
-        ("take-a", "stimulus_ids_disagree", document["provenance"]["stimulus"]["program_id"]),
-        ("take-b", "stimulus_ids_disagree", other.program_id)}
+    assert sorted(take["take_id"] for take in captures["read"]) == ["take-a", "take-b", "take-c", "take-d"]
+    assert [(take["take_id"], take["reason"]) for take in captures["refused"]] == [
+        ("take-stray", "stimulus_program_mismatch")]
 
 
 def test_a_round_whose_candidate_carries_a_label_reads_its_measure_takes(harmonic_capture):
