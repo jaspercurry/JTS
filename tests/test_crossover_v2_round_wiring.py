@@ -311,7 +311,6 @@ def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
 
     assert set(state["verify_priors"]) == {
         "predicted_sum",
-        "predicted_spec",
         "gate_window_ms",
         "pilot_transfer_reference",
         "commanded_delta",

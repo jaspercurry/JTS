@@ -1019,8 +1019,6 @@ _PILOT_AT = 1_760_000_000.0
 
 _GATE_WINDOW_MS = 6.5
 
-_PREDICTED_SPEC = {"overall_within_target": True, "bands": [{"f_lo_hz": 1000.0, "within_target": True}]}
-
 _COMMANDED_FREQS_HZ = [
     500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0,
     2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
@@ -1074,7 +1072,6 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
                 "freqs_hz": [500.0, 1000.0, 2000.0, 4000.0],
                 "magnitude_db": [-1.0, -0.5, 0.5, 1.0],
             },
-            "predicted_spec": dict(_PREDICTED_SPEC),
             "commanded_delta": {
                 "freqs_hz": list(_COMMANDED_FREQS_HZ),
                 "delta_db": list(_COMMANDED_DELTA_DB),
@@ -1154,7 +1151,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "session_phases",
     "sound_design_revision",
     "updated_at",
-    "verify",
     "verify_priors",
 }
 

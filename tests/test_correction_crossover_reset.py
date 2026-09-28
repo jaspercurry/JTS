@@ -176,7 +176,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
             "accepted_phases": ["check", "measure"],
             "applied": True,
             "candidate": {"fingerprint": "fp-new"},
-            "verify": {"outcome": "fail"},
             "failure": {"code": "verify_crossover_region"},
             "gain_plan_db": {"woofer": -6.0},
             "previous_candidate_fingerprint": "fp-prior",
@@ -195,7 +194,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         # screen (phase derives to the microphone check).
         assert state["accepted_phases"] == []
         assert state["candidate"] is None
-        assert state["verify"] is None
         assert state["failure"] is None
         assert state["gain_plan_db"] is None
         assert state["session_id"] is None
