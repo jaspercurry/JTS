@@ -10,9 +10,9 @@ variants that each change one control family. This module selects those takes,
 freezes the batch's comparison band and per-position reference curve ONCE, and
 hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
 
-A PAIR batch plays ONE candidate the run composed itself — the applied tune
-with its rear calibration cleared, so the two woofers are raw — and banks each
-woofer alone beside their sum at every bearing. It carries no candidate
+A PAIR batch plays ONE candidate, its parent with the rear calibration
+cleared so the two woofers are raw (ADR-0386), and banks each woofer alone
+beside their sum at every bearing. It carries no candidate
 comparison because there is only one played candidate: it says what the two
 woofers do separately and how far their superposition may be trusted, which is
 what the no-sound preview predicts from.
@@ -512,21 +512,6 @@ def _pair_position(
     }, grid
 
 
-def _composed_source(inputs: RoundInputs, candidate: str) -> dict[str, Any]:
-    """Where the played candidate came from: the applied fingerprint the run
-    recorded when it composed the cleared tune, and which section it cleared.
-    A candidate the bank cannot answer carries that refusal code instead."""
-    bank = banked_round_of(inputs.session_dir)
-    try:
-        found = find_banked_candidate(candidate, root=bank.parent if bank else None)
-    except CandidateBankRefusal as exc:
-        return {"candidate_id": None, "resolution": None, "reason": exc.code}
-    analysis = found.candidate.analysis
-    return {"candidate_id": (analysis.get("base") or {}).get("fingerprint"),
-            "resolution": (analysis.get("resolution") or {}).get("rear_calibration"),
-            "reason": ""}
-
-
 def _pair_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any], pair_set: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -608,7 +593,8 @@ def _pair_document(
                               "candidate_id": candidate, "position": None},
         },
         "candidates": [],
-        "pair": {"candidate_id": candidate, "source": _composed_source(inputs, candidate),
+        "pair": {"candidate_id": candidate,
+                 "cleared_layers": _shared([record.get("cleared_layers") for record in every]),
                  "positions": positions},
         "stage": {
             **stage,

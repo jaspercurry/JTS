@@ -150,7 +150,8 @@ def _room_off_rise_db(plan: AngleCaptureRequest, room_peqs: Sequence[PeqFilter] 
     room layer could not be read."""
     bands = [(ROOM_FLOOR_HZ, float((stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ))
              for stop in plan.stops
-             if stop.plays_summed and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id)]
+             if stop.plays_summed
+             and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)]
     if bands and room_peqs is None:
         raise ValueError("the applied room layer could not be read, so a take clearing it has no known rise")
     return max((rise_without_room_db(room_peqs or (), band) for band in bands), default=None)

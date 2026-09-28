@@ -86,9 +86,11 @@ class TuningProgram:
     profile_fallback: bool = True
     graph_evidence: bool = False
     #: Applied layers every take of this purpose plays cleared, and whether its
-    #: base also clears the purpose's own layer (doctrine §1a; ADR-0370).
+    #: base, or its branches take, also clears the purpose's own layer
+    #: (doctrine §1a; ADR-0370, ADR-0386).
     clears: tuple[str, ...] = ()
     base_clears_own: bool = False
+    branches_clear_own: bool = False
 
 
 # Row order is the tuning order; stored documents retain their existing orders.
@@ -112,6 +114,7 @@ _PROGRAM_SECTIONS = (
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
         "Measure the rear woofer", "rear", trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
+        branches_clear_own=True,
     ),
     TuningProgram(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
@@ -166,13 +169,14 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
 
 
-def cleared_layers(purpose: str | None, *, base: bool) -> tuple[str, ...]:
-    """The applied candidate layers a take of ``purpose`` plays cleared, on the
-    run's base or on a candidate it names (ADR-0370)."""
+def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str, ...]:
+    """The applied candidate layers a take of ``purpose`` in ``regime`` plays
+    cleared, on the run's base or on a candidate it names (ADR-0370)."""
     row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
     if row is None:
         return ()
-    return row.clears + ((row.candidate_fields[0].name,) if base and row.base_clears_own else ())
+    own = base and row.base_clears_own or regime == REGIME_BRANCHES and row.branches_clear_own
+    return row.clears + ((row.candidate_fields[0].name,) if own else ())
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:

@@ -77,14 +77,11 @@ _MUTED = "muted-fingerprint"
 _VARIANT = "variant-fingerprint"
 _SAMPLE_RATE_HZ = 48000
 
-#: A pair round's ONE played candidate and how the run composed it: the applied
-#: tune with its rear calibration cleared, which is what the bank records
-#: against the composed fingerprint.
-_COMPOSED = "composed-fingerprint"
-_COMPOSED_ANALYSIS = {"base": {"fingerprint": BASE_CANDIDATE},
-                      "resolution": {"rear_calibration": "cleared"}}
+#: A pair round's ONE played candidate: its parent, which every take played with
+#: its rear calibration cleared (ADR-0386).
+_PARENT = "parent-fingerprint"
 #: A pair round banks one set per captured role; the SUM's is the document's.
-_PAIR_SET_ID = f"{_COMPOSED}-{rear_views.PAIR_ROLES[-1]}"
+_PAIR_SET_ID = f"{_PARENT}-{rear_views.PAIR_ROLES[-1]}"
 
 #: The pair fixture's two woofers: the rear arrives this much later, inverted,
 #: and this much quieter. SHAPE knobs — no real cabinet is claimed.
@@ -151,12 +148,8 @@ _CURVES = {
 
 @pytest.fixture
 def banked_candidates(monkeypatch):
-    """The candidate bank, which answers a fingerprint with its rear section
-    and, for the composed candidate, what the run recorded about composing it."""
+    """The candidate bank, which answers a fingerprint with its rear section."""
     def find(fingerprint, *, root=None):
-        if fingerprint == _COMPOSED:
-            return SimpleNamespace(candidate=SimpleNamespace(
-                rear_calibration={}, analysis=_COMPOSED_ANALYSIS))
         if fingerprint not in _SECTIONS:
             raise CandidateBankRefusal("not_found", fingerprint)
         return SimpleNamespace(candidate=SimpleNamespace(
@@ -299,7 +292,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                swept_hz: Sequence[float] = SEAT_BAND_HZ,
                off_axis_gap_ms: float | None = None,
                behind_gap_ms: float | None = None) -> Path:
-    """One banked ``rear/pair`` round: the composed candidate at every pose,
+    """One banked ``rear/pair`` round: its parent at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
     Every take carries the shape the runner really banks — a two-channel
@@ -321,7 +314,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     branch_program = _branch_program(source["program"])
     records = []
     for degrees, repeat in _poses(repeats):
-        take_id = f"{_COMPOSED}-{degrees}-{repeat}"
+        take_id = f"{_PARENT}-{degrees}-{repeat}"
         curves = source["curves"] if degrees in missing else _pair_curves(swept_hz)
         gap_ms = off_axis_gap_ms if degrees != 0 and off_axis_gap_ms is not None else _PAIR_GAP_MS
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
@@ -329,18 +322,20 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "mark_distance_m": 1.0, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate_branches",
                         "program": branch_program,
-                        "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
+                        "candidate_id": _PARENT, "cleared_layers": ["rear_calibration"],
+                        "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(gap_ms)} if diagnostic else {}),
                         "curves": curves})
     if behind_gap_ms is not None:
-        take_id = f"{_COMPOSED}-behind-1"
+        take_id = f"{_PARENT}-behind-1"
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
                         "pose_kind": POSE_KIND_BEHIND, "position_deg": 0, "vertical_deg": 0,
                         "mark_distance_m": 0.1, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate_branches",
                         "program": branch_program,
-                        "candidate_id": _COMPOSED, "level_db": -30.0, "seat_offset_m": None,
+                        "candidate_id": _PARENT, "cleared_layers": ["rear_calibration"],
+                        "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(behind_gap_ms)}
                            if diagnostic else {}),
@@ -350,8 +345,8 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     # Role order as the runner banks it, the SUM first — so a reader that kept
     # whichever set iterated last would name a solo woofer's instead.
     for role in sorted(rear_views.PAIR_ROLES):
-        group = manifest_set(banked, set_id=f"{_COMPOSED}-{role}")
-        group["capture_basis"].update(role=role, candidate_id=_COMPOSED)
+        group = manifest_set(banked, set_id=f"{_PARENT}-{role}")
+        group["capture_basis"].update(role=role, candidate_id=_PARENT)
         for take, (_, record) in zip(group["takes"], banked):
             take["curve"] = next((curve for curve in record["curves"] if curve["role"] == role), None)
         groups.append(group)
@@ -716,11 +711,9 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # Three role-scoped sets, one candidate: the document names the SUM's set
     # rather than whichever role a candidate-keyed dict iterated last.
     assert (entry["candidates"], entry["set_id"]) == ([], _PAIR_SET_ID)
-    assert entry["pair"]["candidate_id"] == _COMPOSED
-    # The run composed what it played, and the packet says from what.
-    assert entry["pair"]["source"] == {"candidate_id": BASE_CANDIDATE,
-                                       "resolution": "cleared", "reason": ""}
-    assert comparison["reference"] == {"candidate_id": _COMPOSED, "kind": "pair",
+    # The takes played their parent with its rear stage cleared, and the packet says so.
+    assert (entry["pair"]["candidate_id"], entry["pair"]["cleared_layers"]) == (_PARENT, ["rear_calibration"])
+    assert comparison["reference"] == {"candidate_id": _PARENT, "kind": "pair",
                                        "set_id": _PAIR_SET_ID}
     assert comparison["positions"] == sorted(entry["pair"]["positions"])
     assert comparison["positions_unscored"] == {}
@@ -840,7 +833,7 @@ def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incu
 
     assert (row["status"], row["reason"]) == ("unavailable",
                                               rear_views.REFUSE_NO_BRANCH_DIAGNOSTIC)
-    assert row["detail"] == {"candidates": [_COMPOSED], "takes": 4}
+    assert row["detail"] == {"candidates": [_PARENT], "takes": 4}
     assert packet["rear"] == []
 
 

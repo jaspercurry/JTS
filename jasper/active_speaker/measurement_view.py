@@ -47,11 +47,10 @@ def _choice_id(row: Preset, layout: str) -> str:
 
 
 def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict[str, Any]]:
-    from .angle_capture import REGIME_BRANCHES, request_for_preset  # lazy: measurement planning
+    from .angle_capture import LateralWalkRefused, request_for_preset  # lazy: measurement planning
     from .crossover_v2.conductor_context import resolve_conductor_context  # lazy: measurement planning
     from .crossover_v2.refusal_copy import (  # lazy: measurement planning
-        CrossoverV2Refused, REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
-        refusal_copy_for,
+        CrossoverV2Refused, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, refusal_copy_for,
     )
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
 
@@ -75,24 +74,21 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
         choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
                                   "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
-            if plan.regime == REGIME_BRANCHES:
-                # See issue #5321.
-                copy, _ = refusal_copy_for(REASON_MEASUREMENT_CANDIDATE_REQUIRED)
-                choice.update(code=REASON_MEASUREMENT_CANDIDATE_REQUIRED, lines=[copy])
+            try:
+                request = request_for_preset(plan, mover=plan.mover or "human", targets=targets)
+                context = resolve_conductor_context(status, require_banked_level=False)
+            except LateralWalkRefused as exc:
+                choice.update(code=exc.reason, lines=[refusal_copy_for(exc.reason)[0]])
+            except CrossoverV2Refused as exc:
+                # Disclosed the way jasper.web.correction_runtime.refusal_envelope
+                # renders one: ``str(exc)`` is the household sentence its
+                # raisers pass; some carry no code.
+                choice.update(code=exc.code or None, lines=[str(exc)])
             else:
-                try:
-                    context = resolve_conductor_context(status, require_banked_level=False)
-                except CrossoverV2Refused as exc:
-                    # Disclosed the way jasper.web.correction_runtime.refusal_envelope
-                    # renders one: ``str(exc)`` is the household sentence its
-                    # raisers pass; some carry no code.
-                    choice.update(code=exc.code or None, lines=[str(exc)])
-                else:
-                    request = request_for_preset(plan, mover=plan.mover or "human", targets=targets)
-                    captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                    facts = preview_schedule(request, captures, context)
-                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",
-                                  "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
+                captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+                facts = preview_schedule(request, captures, context)
+                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",
+                              "endpoint": "/sound/speaker/crossover/v2/session", "body": {"plan": request.to_dict()}})
         choices.append(choice)
     if refused:
         copy, _ = refusal_copy_for(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED)
