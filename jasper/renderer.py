@@ -81,9 +81,8 @@ class RendererClient:
         """Return raw renderer activity keyed by the stable public names.
 
         ``usbsinkactive`` is fan-in's DIRECT-lane *streaming* edge, the same
-        arbitration predicate mux uses — not the level predicate behind
-        ``/state.renderers.usbsink.playing`` — so a caller falling back to
-        these probes cannot pick a different winner than mux did.
+        arbitration predicate mux uses, so a caller falling back to these
+        probes cannot pick a different winner than mux did.
         """
         spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
