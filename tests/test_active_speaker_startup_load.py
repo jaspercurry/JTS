@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 import jasper.active_speaker.startup_load as startup_load_mod
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.path_safety import (
@@ -18,18 +20,19 @@ from jasper.active_speaker.startup_load import build_startup_load_preflight
 from jasper.output_topology import (
     OutputTopology,
 )
+from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
 )
 
 
-def _record_reconcile_triggers(monkeypatch, *, ok: bool = True) -> list[dict]:
+def _record_reconcile_triggers(monkeypatch, *, response: dict) -> list[dict]:
     calls: list[dict] = []
 
     def fake_manage_units(*units: str, **kwargs):
         calls.append({"units": units, **kwargs})
-        return {"ok": ok, "rc": 0 if ok else 3}
+        return response
 
     monkeypatch.setattr(startup_load_mod, "manage_units", fake_manage_units)
     return calls
@@ -167,11 +170,24 @@ def test_startup_load_preflight_blocks_stale_path_safety_rollback_binding(
     }
 
 
+@pytest.mark.parametrize(
+    ("response", "expected_error"),
+    [
+        ({"ok": False, "rc": 3}, "rc=3"),
+        (
+            {"ok": False, "error": "restart broker unavailable"},
+            "restart broker unavailable",
+        ),
+    ],
+    ids=["rc_only", "multiword_error"],
+)
 def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(
     monkeypatch,
     caplog,
+    response: dict,
+    expected_error: str,
 ) -> None:
-    calls = _record_reconcile_triggers(monkeypatch, ok=False)
+    calls = _record_reconcile_triggers(monkeypatch, response=response)
     caplog.set_level(logging.INFO, logger=startup_load_mod.logger.name)
 
     startup_load_mod._trigger_audio_hardware_reconcile(source="unit_test")
@@ -183,6 +199,13 @@ def test_startup_load_reconcile_trigger_warns_on_failed_broker_start(
         "no_block": False,
         "timeout": 15.0,
     }]
-    assert "event=active_speaker.audio_hardware_reconcile_trigger_failed" in caplog.text
-    assert "error=rc=3" in caplog.text
-    assert "event=active_speaker.audio_hardware_reconcile_triggered" not in caplog.text
+    fields = event_fields(
+        caplog, "active_speaker.audio_hardware_reconcile_trigger_failed"
+    )
+    # The whole free-text error survives — this is the field a hand-rolled,
+    # unquoted `error=%s` would have truncated at its first space.
+    assert fields["error"] == expected_error
+    assert (
+        event_records(caplog, "active_speaker.audio_hardware_reconcile_triggered")
+        == []
+    )

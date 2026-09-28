@@ -886,8 +886,8 @@ def test_setup_reference_mismatch_is_journalled(tmp_path, monkeypatch, caplog):
     v2evidence.resolve_setup_calibration(
         _setup_reference(record), {"label": "iMM-6C", "device_id": "dayton"},
     )
-    assert "event=correction.calibration_device_identity_mismatch" in caplog.text
-    assert "stored_model=minidsp_umik2" in caplog.text
+    fields = event_fields(caplog, "correction.calibration_device_identity_mismatch")
+    assert fields["stored_model"] == "minidsp_umik2"
 
 def test_setup_reference_without_a_calibration_resolves_to_nothing(
     tmp_path, monkeypatch,
