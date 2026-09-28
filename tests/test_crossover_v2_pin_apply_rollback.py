@@ -92,14 +92,16 @@ _DISPLACED_GAIN = "    type: Gain\n    parameters: { gain: -2.5000, inverted: fa
 @pytest.mark.parametrize(("displaced_text", "displaced_db"), [
     pytest.param(f"filters:\n  active_baseline_headroom:\n{_DISPLACED_GAIN}", 2.5, id="charged"),
     pytest.param(f"filters:\n  as_woofer_gain:\n{_DISPLACED_GAIN}", 0.0, id="no-filter"),
+    pytest.param(f"filters:\n  active_baseline_headroom:\n{_DISPLACED_GAIN.replace('-2.5000', 'nan')}", 0.0,
+                 id="malformed"),
     pytest.param(None, 0.0, id="no-file"),
 ])
 def test_the_declared_offset_is_the_move_of_the_two_graphs_written_charges(
     monkeypatch, tmp_path, displaced_text, displaced_db,
 ):
     """#1811 and ADR-0385: the displaced graph's written charge less the new
-    graph's. A displaced graph with no headroom filter, or no file, charged
-    nothing."""
+    graph's. A displaced graph with no readable headroom filter, or no file,
+    charged nothing, and the apply goes ahead."""
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     displaced = tmp_path / "displaced.yml"
     if displaced_text is not None:

@@ -211,25 +211,32 @@ def build_reduced_yaml(
         return None, [{"severity": "blocker", "code": getattr(exc, "code", "audition_compile_failed"), "message": str(exc)}]
 
 
-def level_give_back_db(full_text: str, reduced_text: str, applied_profile: Mapping[str, Any]) -> float:
-    """How much LOUDER the baseline layer can play than the full graph, dB.
+def level_give_back_db(
+    full_text: str, reduced_text: str, applied_profile: Mapping[str, Any],
+) -> tuple[float, float]:
+    """How much LOUDER the baseline layer can play than the full graph, and how
+    much QUIETER it plays elsewhere, dB, each floored at 0.
 
     Two terms, and neither is modelled:
 
     * the full graph's written charge less the reduced graph's, which comes
       back broadband when the stages go — often ``0.0``, because a boost the
-      rest of the graph already nets is charged nothing (ADR-0385); and
+      rest of the graph already nets is charged nothing (ADR-0385), and
+      negative when a dropped cut netted a boost the reduced graph charges; and
     * the DEEPEST single cut the two dropped stages carry, read off the
       profile, which comes back in that filter's own band. This is the larger
       term in practice, and the one a "give back the headroom" reading of this
       reduction would miss.
+
+    Two numbers, because summed into one a negative first term cancels the cut
+    and hides a layer that plays quieter everywhere else.
 
     Not a bound on the sum: two cuts overlapping in one band give back more
     than the deeper of them. It does not need to be a bound — the ceiling is
     structural rather than arithmetic. The reduced graph IS the speaker's
     pre-linearization baseline, the graph it was commissioned and measured
     through, and this reduction changes no trim, no crossover, no protection
-    filter, no limiter and not the 0 dB ``volume_limit``. This number is a
+    filter, no limiter and not the 0 dB ``volume_limit``. These numbers are a
     disclosure so the owner knows the A/B is not level-matched.
     """
 
@@ -251,7 +258,8 @@ def level_give_back_db(full_text: str, reduced_text: str, applied_profile: Mappi
         and isinstance(entry.get("gain"), (int, float))
         and float(entry["gain"]) < 0.0
     ]
-    return written_headroom_db(full_text) - written_headroom_db(reduced_text) + max(cuts, default=0.0)
+    broadband_db = written_headroom_db(full_text) - written_headroom_db(reduced_text)
+    return max(0.0, broadband_db + max(cuts, default=0.0)), max(0.0, -broadband_db)
 
 
 async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None:
@@ -433,6 +441,7 @@ async def start_audition(
                 f"the reduced graph did not re-prove as "
                 f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification})",
             )
+        louder_db, quieter_db = (None, None) if compare else level_give_back_db(anchor_text, yaml_text, applied)
         # A swap that TOOK but was never recorded is the one state nothing
         # would put back: no record means no owner, no deadline, and
         # `jasper-audition status` has nothing to disclose. Undoing it here
@@ -459,7 +468,8 @@ async def start_audition(
                 "entry_config_path": anchor,
                 # Disclosed, never compensated: compensating would move a trim,
                 # and identical trims are what makes the A/B mean anything.
-                "louder_than_full_db": None if compare else level_give_back_db(anchor_text, yaml_text, applied),
+                "louder_than_full_db": louder_db,
+                "quieter_than_full_db": quieter_db,
             }
             atomic_write_json(audition_state_path(state_path), state)
             armed = True
@@ -475,6 +485,7 @@ async def start_audition(
         layer=layer,
         deadline_at=f"{state['deadline_at']:.0f}",
         louder_than_full_db=state["louder_than_full_db"],
+        quieter_than_full_db=state["quieter_than_full_db"],
         entry_config_path=anchor,
     )
     _send_cue(play_cue, AUDITION_REDUCED_CUE_SLUG)

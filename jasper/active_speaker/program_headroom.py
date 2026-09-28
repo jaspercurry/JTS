@@ -60,9 +60,12 @@ def graph_headroom_db(view: GraphView) -> float:
 
 def written_headroom_db(text: str | None) -> float:
     """:func:`graph_headroom_db` of emitted ``text``, or 0.0 when there is no text or it
-    writes no :data:`PROGRAM_HEADROOM_FILTER`, as a driver-domain graph does."""
-    view = view_from_emitted_text(text or "")
-    return graph_headroom_db(view) if PROGRAM_HEADROOM_FILTER in view.filters else 0.0
+    writes no readable :data:`PROGRAM_HEADROOM_FILTER`, as a driver-domain graph does.
+    For disclosed numbers only; a judge reads :func:`graph_headroom_db`, which refuses."""
+    try:
+        return graph_headroom_db(view_from_emitted_text(text or ""))
+    except ProgramHeadroomUnreadable:
+        return 0.0
 
 
 class ProgramPeak(NamedTuple):

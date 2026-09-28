@@ -213,34 +213,41 @@ def test_the_household_layers_survive_the_reduction(
     assert all(filters[name] == full[name] for name in bass_names)
 
 
-@pytest.mark.parametrize("anchor_charge_db", [0.0, 3.0])
-def test_the_level_disclosure_is_the_charge_move_plus_the_deepest_cut(
-    audition_box, anchor_charge_db: float,
-) -> None:
-    """The A/B is not level-matched, and the record says by how much.
+def _charged(text: str, charge_db: float) -> str:
+    """``text`` with its written headroom charge moved from 0 dB to ``charge_db``."""
+    headroom = "  active_baseline_headroom:\n    type: Gain\n    parameters: { gain: "
+    return text.replace(f"{headroom}0.0000,", f"{headroom}{0.0 - charge_db:.4f},")
 
-    Two terms come back: the anchor's written charge less the reduced graph's,
-    broadband, and the deepest cut the reduction drops, in that cut's band. The
-    first is ``0.0`` whenever the graph nets the dropped boost, the common case,
-    so a disclosure built from it alone would call the layers level-matched.
-    The charge is read off the anchor that plays, which keeps an older charge
-    until it is re-emitted (ADR-0385).
+
+@pytest.mark.parametrize(("anchor_db", "reduced_db", "louder_db", "quieter_db"), [
+    pytest.param(0.0, 0.0, 4.0, 0.0, id="deepest-cut"),
+    pytest.param(3.0, 0.0, 7.0, 0.0, id="older-anchor-charge"),
+    pytest.param(0.0, 4.0, 0.0, 4.0, id="dropped-cut-netted-a-boost"),
+])
+def test_the_level_disclosure_names_both_directions(
+    audition_box, monkeypatch: pytest.MonkeyPatch,
+    anchor_db: float, reduced_db: float, louder_db: float, quieter_db: float,
+) -> None:
+    """The A/B is not level-matched, and the record says by how much, both ways.
+
+    The deepest cut the reduction drops, 4 dB here, comes back in its band, and
+    the move of the written charge comes back broadband. The move is read off
+    the anchor that plays, which keeps an older charge until it is re-emitted
+    (ADR-0385). It is negative when the reduced graph charges a boost that a
+    dropped cut netted, and summed into one number it would cancel the cut.
     """
+    from jasper.active_speaker import audition as audition_module
 
     cam, anchor, full_text, _state = audition_box
-    headroom = "  active_baseline_headroom:\n    type: Gain\n    parameters: { gain: "
-    anchor.write_text(
-        full_text.replace(f"{headroom}0.0000,", f"{headroom}{-anchor_charge_db:.4f},"), encoding="utf-8",
-    )
-    assert -_filters(anchor.read_text(encoding="utf-8"))["active_baseline_headroom"]["parameters"]["gain"] == (
-        anchor_charge_db
-    )
-    deepest_cut = max(-f["gain"] for stage in (*LINEARIZATION.values(), BLEND) for f in stage if f["gain"] < 0)
+    anchor.write_text(_charged(full_text, anchor_db), encoding="utf-8")
+    reduced_yaml = audition_module.build_reduced_yaml
+    monkeypatch.setattr(audition_module, "build_reduced_yaml", lambda topology, *, applied_profile: (
+        _charged(reduced_yaml(topology, applied_profile=applied_profile)[0], reduced_db), []))
 
     started = _arm(cam, full_text)
 
-    reduced_charge = -_filters(cam.running)["active_baseline_headroom"]["parameters"]["gain"]
-    assert started["louder_than_full_db"] == pytest.approx(anchor_charge_db - reduced_charge + deepest_cut, abs=1e-4)
+    assert (started["louder_than_full_db"], started["quieter_than_full_db"]) == pytest.approx(
+        (louder_db, quieter_db), abs=1e-4)
 
 
 def test_the_audition_asks_for_a_reduced_graph_and_never_a_written_one(
