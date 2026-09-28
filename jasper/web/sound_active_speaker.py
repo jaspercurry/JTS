@@ -55,7 +55,6 @@ from jasper.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
-    topology_hardware_from_state,
 )
 from jasper.output_topology_observation import (
     clock_domain_report,
@@ -68,6 +67,7 @@ from jasper.output_topology_store import (
     new_topology_draft,
     load_output_topology_snapshot,
     output_topology_mutation,
+    topology_hardware_from_state,
 )
 from jasper.output_hardware import (
     detected_hardware_adoption_precondition,

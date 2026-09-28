@@ -13,13 +13,16 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-from jasper.active_speaker.playback_route import OutputLayout, resolve_output_layout
-from jasper.output_topology import (
+from jasper.active_speaker.playback_route import (
+    OutputLayout,
+    resolve_output_layout,
     ACTIVE_PLAYBACK_DEVICE_ENV,
+    OUTPUTD_ACTIVE_LANE_SOURCE,
     EXPLICIT_SOURCE,
     MISSING_SOURCE,
+)
+from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
-    OUTPUTD_ACTIVE_LANE_SOURCE,
     OutputTopology,
 )
 

@@ -20,7 +20,11 @@ from jasper.active_speaker import excitation_safety_plan as excitation_safety_pl
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
-from jasper.output_topology import ACTIVE_PLAYBACK_DEVICE_ENV, OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.active_speaker.playback_route import ACTIVE_PLAYBACK_DEVICE_ENV
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+)
 from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 
