@@ -48,15 +48,17 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     :func:`~.round_inputs.round_inputs`' answer; they ride on
     :attr:`BankedRound.inputs`. Raises :class:`RoundViewsError` when the
     directory is neither shape, when a banked tree holds more than one session,
-    or when a packet built on read finds no crossover-v2 bundle. It does NOT
-    judge what the round banked — what a view needs, the view says (#3478, #3482).
+    when a packet built on read finds no crossover-v2 bundle, or when a banked
+    tree stored no packet evidence; it keeps the packet reader's ``code``. It
+    does NOT judge what the round banked — what a view needs, the view says
+    (#3478, #3482).
     """
     round_dir = Path(round_dir)
     inputs = round_inputs(round_dir)
     try:
         packet = round_evidence(inputs)
     except CrossoverEvidencePacketError as exc:
-        raise RoundViewsError(f"{round_dir}: {exc}") from exc
+        raise RoundViewsError(f"{round_dir}: {exc}", code=getattr(exc, "code", None)) from exc
     return BankedRound(round_dir=round_dir, inputs=inputs, packet=packet)
 
 

@@ -139,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RoundSetRefused as refusal:
         return failed(EXIT_REFUSED, refusal.reason, refusal.detail)
     except StageFailed as staged:
-        return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged))
+        return failed(staged.code, _REASON_BY_CODE[staged.code], str(staged), code=getattr(staged.__cause__, "code", None))
     except HarmonicEvidenceRefused as refusal:
         # An instrument that refuses BY NAME publishes its own name here rather
         # than this tool's stage bucket, and its evidence as the detail.

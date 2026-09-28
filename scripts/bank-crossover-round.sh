@@ -168,7 +168,7 @@ statefile_status="$(pull_optional camilla-statefile /var/lib/camilladsp/outputd-
 # --------------------------------------------------------------------- #
 # 3f. The round's evidence packet, built once from the files above, as
 #     the Pi's bank builds it: readers load it and never rebuild it
-#     (ADR-0383). A failed build stores `evidence: null` and exits 5.
+#     (ADR-0383). A failed build or an unreadable round exits 5.
 # --------------------------------------------------------------------- #
 packet_ok=1
 packet_status="not built: no bundle"
@@ -252,7 +252,7 @@ if (( bundle_ok == 0 )); then
 fi
 if (( packet_ok == 0 )); then
     echo "" >&2
-    echo "bank-crossover-round: INCOMPLETE (exit 5) -- the round's packet could not be built, so packet.json stores evidence: null and its views refuse it. Every pulled file is kept under $DEST." >&2
+    echo "bank-crossover-round: INCOMPLETE (exit 5) -- the round's packet could not be built, so packet.json stores evidence: null or was not written, and its views refuse the round. Every pulled file is kept under $DEST." >&2
     exit 5
 fi
 
