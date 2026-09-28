@@ -111,8 +111,11 @@ def test_non_empty_dest_dir_refusal_is_distinct_from_a_missing_argument():
     assert missing_arg.returncode == 1
 
 
-@pytest.mark.parametrize("snapshot", [True, False])
-def test_named_bundle_keeps_its_state_after_a_later_round(tmp_path, snapshot):
+@pytest.mark.parametrize("snapshot,builds", [(True, True), (False, True), (False, False)])
+def test_named_bundle_keeps_its_state_after_a_later_round(tmp_path, snapshot, builds):
+    """The bank stores the round's packet as it banks it (ADR-0383); a packet
+    that does not build is stored as `evidence: null`, and the bank exits 5."""
+    from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME
     from jasper.active_speaker.crossover_v2.round_views import load_banked_round
     from tests.crossover_v2_banked_round import bank_measure_round
@@ -121,6 +124,8 @@ def test_named_bundle_keeps_its_state_after_a_later_round(tmp_path, snapshot):
     bundle = next((source / "bundle").iterdir())
     if snapshot:
         (bundle / CAPTURE_STATE_FILENAME).write_text((source / "state.json").read_text())
+    if not builds:
+        (bundle / "info.json").write_text("not json")
     archive = tmp_path / "bundle.tar"
     with tarfile.open(archive, "w") as writer:
         writer.add(bundle, arcname=bundle.name)
@@ -142,6 +147,10 @@ esac
         "PI_HOST": "jts9.invalid", "PYTHON": sys.executable,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
     })
+    if not builds:
+        stored = json.loads((destination / "packet.json").read_text())
+        assert (proc.returncode, stored["packet_fingerprint"], stored[EVIDENCE_KEY]) == (5, None, None)
+        return
     assert proc.returncode == 0, proc.stderr
     packet = load_banked_round(destination).packet
     assert packet["session"]["capture_session_id"] == "capture-1"

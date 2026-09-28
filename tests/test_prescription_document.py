@@ -26,6 +26,7 @@ from tests.test_bass_extension_dynamic import _descriptor as _bass_descriptor
 from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
 from jasper.active_speaker.crossover_v2.topology_prescription import candidate_topology
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
+from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -689,6 +690,7 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     draft = json.loads(draft_path.read_text())
     draft["manual_settings"]["drivers"][0]["radiating_diameter_mm"] = diameter
     draft_path.write_text(json.dumps(draft))
+    store_banked_evidence(round_dir)
     args = crossover_prescriber.build_parser().parse_args(["status", str(round_dir)])
     packet = crossover_prescriber._load_packet(args)
     raw = document(base.fingerprint, {
