@@ -102,9 +102,11 @@ class _FakeCamilla:
 
 
 class _FakeBackend:
+    """Renderer answers; an exception as ``active`` is a probe that raises."""
+
     def __init__(
         self,
-        active: dict[str, bool] | None = None,
+        active: dict[str, bool] | Exception | None = None,
         selected: str | None = None,
     ) -> None:
         self._active = active or {}
@@ -113,6 +115,8 @@ class _FakeBackend:
 
     async def active_renderers(self) -> dict[str, bool]:
         self.active_renderers_calls += 1
+        if isinstance(self._active, Exception):
+            raise self._active
         return dict(self._active)
 
     async def selected_source(self) -> str | None:
@@ -169,7 +173,7 @@ def _use_real_pushes(monkeypatch: pytest.MonkeyPatch) -> None:
 def _build(
     tmp_path,
     *,
-    active: dict[str, bool] | None = None,
+    active: dict[str, bool] | Exception | None = None,
     selected: str | None = None,
     backend: _FakeBackend | None = None,
     db: float = 0.0,

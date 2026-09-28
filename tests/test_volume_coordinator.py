@@ -567,9 +567,9 @@ async def test_airplay_outranks_every_other_active_renderer(
     tmp_path, pushes, active, level,
 ):
     """Several renderers can report active during a mux transition window.
-    The chain is airplay > spotify > bluetooth > usbsink, matching mux's
-    first-source-defined-wins behaviour: a phone-controlled AirPlay session
-    is not silently overridden by a Mac plugged into the USB port."""
+    When mux cannot answer, the raw probes' order is airplay > spotify >
+    bluetooth > usbsink: a phone-controlled AirPlay session is not silently
+    overridden by a Mac plugged into the USB port."""
     coord, cam, _ = _coord(tmp_path, active=active)
 
     await coord.set_listening_level(level)
@@ -2190,24 +2190,26 @@ async def test_observe_usbsink_initial_snapshot_cannot_clear_remote_mute(tmp_pat
 
 
 @pytest.mark.parametrize(
-    ("selected", "expected"),
+    ("active", "selected", "expected"),
     [
-        ("airplay", Source.AIRPLAY),
+        ({"spotactive": True}, "airplay", Source.AIRPLAY),
+        # Mux decides (ADR-0150), even against the probes' own first pick.
+        ({"aplactive": True, "spotactive": True}, "spotify", Source.SPOTIFY),
         # Mux holds its last committed answer across a handoff, so "idle" is
         # true idle and takes the attenuating camilla-master carrier. Only a
         # fan-in test-lease label, which is not a source at all, falls through
         # to the raw probes.
-        ("idle", Source.IDLE),
-        ("correction", Source.SPOTIFY),
-        (None, Source.SPOTIFY),
+        ({"spotactive": True}, "idle", Source.IDLE),
+        ({"spotactive": True}, "correction", Source.SPOTIFY),
+        ({"spotactive": True}, None, Source.SPOTIFY),
+        # Neither mux nor the probes answer: idle, the attenuating carrier.
+        (RuntimeError("probe failed"), None, Source.IDLE),
     ],
 )
 async def test_active_source_honours_mux_over_the_raw_probes(
-    tmp_path, selected, expected,
+    tmp_path, active, selected, expected,
 ):
-    coord, _, _ = _real_coord(
-        tmp_path, active={"spotactive": True}, selected=selected,
-    )
+    coord, _, _ = _real_coord(tmp_path, active=active, selected=selected)
 
     assert await coord.active_source() is expected
 
