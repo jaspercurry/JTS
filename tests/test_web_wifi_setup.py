@@ -146,7 +146,6 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
         lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
     )
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
     def fake_secret(cmd, *, timeout=10):
         calls.append(("secret", list(cmd)))
@@ -333,7 +332,6 @@ def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
         lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
     )
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
     def fake_secret(cmd, *, timeout=10):
         # nmcli echoes the PSK back in its failure text.
