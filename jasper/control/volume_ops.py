@@ -15,6 +15,7 @@ from typing import Any, Callable
 from .. import librespot_state
 from ..accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
+from ..renderer import RendererClient
 from ..spotify_oauth import resolved_spotify_redirect_uri
 from ..volume_owner import volume_owner
 from ..volume_persistence import (
@@ -138,7 +139,6 @@ async def with_coordinator(
     Per-request like `dispatch_transport`, so this stdlib HTTP server never
     holds a long-lived asyncio loop. `op` is an async callable taking the live
     coordinator and returning the request's result."""
-    from ..renderer import RendererClient  # lazy: import cost, see module header
     from ..volume_coordinator import build_volume_coordinator  # lazy: import cost, see module header
 
     coord = build_volume_coordinator(
@@ -165,7 +165,7 @@ async def dispatch_transport(
 
     Rebuilt per request because httpx's AsyncClient is loop-bound; ~50 ms, and
     remote presses are rare. `action` is "toggle", "next" or "previous"."""
-    from ..renderer import RendererClient  # lazy: import cost, see module header; test patch boundary (tests/test_control_server_volume.py)
+    from ..renderer import RendererClient  # lazy: test patch boundary (tests/test_control_server_volume.py)
     from ..tools.transport import make_transport_dispatcher  # lazy: import cost (rapidfuzz), see module header; test patch boundary (tests/test_control_server_volume.py)
 
     renderer = RendererClient(
