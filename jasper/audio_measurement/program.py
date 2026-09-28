@@ -377,7 +377,7 @@ class ExcitationProgram:
         segments = tuple(
             ProgramSegment.from_dict(s) for s in value["segments"]
         )
-        return cls(
+        program = cls(
             program_id=str(value["program_id"]),
             phase=str(value["phase"]),
             sample_rate_hz=int(value["sample_rate_hz"]),
@@ -385,6 +385,14 @@ class ExcitationProgram:
             segments=segments,
             total_samples=int(value["total_samples"]),
         )
+        # The id leaves effective_peak_dbfs out (#5012), so it holds the audible
+        # segments to one downstream gain; 1e-9 dB absorbs float noise only.
+        audible = program.known_audible_segments()
+        fader_db = audible[0].effective_peak_dbfs - audible[0].gain_db if audible else 0.0
+        if any(not math.isclose(s.effective_peak_dbfs, s.gain_db + fader_db, rel_tol=0.0, abs_tol=1e-9)
+               for s in audible):
+            raise ValueError("segment peaks do not share one downstream gain")
+        return program
 
 
 def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:

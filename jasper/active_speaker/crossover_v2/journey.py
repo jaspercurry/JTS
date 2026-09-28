@@ -42,9 +42,9 @@ PHASE_LATERAL = "lateral"
 # as the last thing stage 1 does. Membership in ``SUMMED_SWEEP_PHASES``'s
 # COMPARED pair (not ``GROUP_SUMMED_SWEEP_PHASES``; both live in ``.programs``)
 # routes ``program_for_phase`` to the very same ``_verify_program`` object, so
-# this capture and VERIFY's share a ``program_id`` — a SHA-256 over the whole
-# excitation schedule including every segment's gain — and that equality IS the
-# comparability check. Deliberately NOT a
+# this capture and VERIFY's share a ``program_id``: a SHA-256 over the excitation
+# schedule and every segment's gain, but not the session fader (#5012), so that
+# equality means the same stimulus, not the same level. Deliberately NOT a
 # :data:`GROUP_PHASES` member: one capture at one mark, not a walk.
 PHASE_ENTRY_BASELINE = "entry_baseline"
 # Measured, awaiting an explicit candidate decision; nothing has been applied.

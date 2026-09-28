@@ -235,7 +235,8 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     bass = _bass(bass_fixture)
     if fault == "mismatch":
         bass = _finalize(bass.phase, bass.channels, [
-            replace(s, gain_db=s.gain_db - 1) if s.segment_id == "sweep_verify_repeat_1" else s
+            replace(s, gain_db=s.gain_db - 1, effective_peak_dbfs=s.effective_peak_dbfs - 1)
+            if s.segment_id == "sweep_verify_repeat_1" else s
             for s in bass.segments
         ], bass.total_samples)
     rate, delay = bass.sample_rate_hz, 800

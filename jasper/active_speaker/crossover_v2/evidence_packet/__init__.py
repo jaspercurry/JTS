@@ -271,7 +271,8 @@ def _entry_baseline_block(
             "before this round's apply. It is the durable copy: the flow state "
             "file holds the same arrays only until the next persist rewrites "
             "them. Comparable to a post-apply capture only when program_id, "
-            "reference_mark and graph_fingerprint match on both sides"
+            "reference_mark and graph_fingerprint match on both sides; an equal "
+            "program_id means the same stimulus, not the same level (#5012)"
         ),
     }
 

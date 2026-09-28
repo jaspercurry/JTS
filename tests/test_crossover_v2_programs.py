@@ -4,18 +4,16 @@
 
 """#2291 Phase 5a-ii: what a session plays, how loud, and for which phase.
 
-The extraction that moved level policy and program composition into
-:mod:`jasper.active_speaker.crossover_v2.programs` was a pure re-home, and this
-module is what makes that claim checkable rather than a promise.  Two kinds of
-pin, in the order a reviewer should read them:
+Level policy and program composition live in
+:mod:`jasper.active_speaker.crossover_v2.programs`.  Three kinds of pin, in the
+order a reviewer should read them:
 
-1. **Golden identities.** The composed programs' ``program_id``s and every
-   segment gain, captured from the PRE-extraction conductor and asserted here.
-   A ``program_id`` is a SHA-256 over the whole excitation schedule including
-   every segment's gain, so an unchanged id is a strong statement: not one
-   frequency, duration, or level moved.  They are written as literals rather
-   than recomputed, because a pin that derives its expectation from the code
-   under test pins nothing.
+1. **Regression pins.** The composed programs' current ``program_id``s and
+   segment gains, written as literals rather than recomputed, because a pin
+   that derives its expectation from the code under test pins nothing.  A
+   ``program_id`` hashes the schedule and every segment's gain but not the
+   session fader (#5012); a change that moves one recomputes it by composing
+   this fixture and says why.
 2. **The identity invariant** — the COMPARED pair (VERIFY and the entry
    baseline) gets the *same object*, not an equal one, and each position group
    gets one object of its own.  #2291's before→after comparison is keyed by
@@ -98,9 +96,9 @@ from tests.crossover_v2_fixtures import (
 #: The solved per-driver gains a CHECK pass would hand MEASURE.
 GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 
-#: MEASURE and VERIFY at this fixture with the courtesy prelude on, under the
-#: stimulus-only id (#5012). Re-derive them only by composing this fixture;
-#: editing a literal here to make a test pass deletes the evidence it exists to be.
+#: Regression pins of MEASURE and VERIFY's current ids at this fixture with the
+#: courtesy prelude on (#5012). A change that moves one recomputes it by
+#: composing this fixture and says why.
 #:
 #: ``measure`` is not what MEASURE ships (it no longer opens on the prelude):
 #: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program` puts the
@@ -148,7 +146,7 @@ def _conductor(caps: dict[str, float]):
     )
 
 
-# 1. golden identities — the extraction changed nothing that plays
+# 1. regression pins of the current ids
 
 
 def test_the_verify_program_is_the_one_that_shipped():

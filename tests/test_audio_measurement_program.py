@@ -432,6 +432,14 @@ def test_a_version_1_program_refuses_to_load():
         ExcitationProgram.from_dict(payload)
 
 
+def test_a_hand_edited_segment_peak_refuses_to_load():
+    payload = build_measure_program(_gain_plan(), _roles(), downstream_gain_db=-20.0).to_dict()
+    sweep = next(s for s in payload["segments"] if s["kind"] == KIND_SWEEP)
+    sweep["effective_peak_dbfs"] = sweep["gain_db"]
+    with pytest.raises(ValueError):
+        ExcitationProgram.from_dict(payload)
+
+
 def test_tampered_manifest_is_rejected():
     prog = build_verify_program(1600.0, sweep_s=1.0)
     payload = prog.to_dict()
