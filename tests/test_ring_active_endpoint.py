@@ -76,11 +76,6 @@ RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
 OUTPUTD_CONFIG_RS = REPO / "rust/jasper-outputd/src/config.rs"
 
 
-# --------------------------------------------------------------------------
-# Local topology builders. Deliberately self-contained rather than imported
-# from a sibling test module: no other test file does that, and it would need
-# a sys.path insert plus an E402 suppression per import.
-# --------------------------------------------------------------------------
 
 
 def _topology(groups, routing=None, *, device_id="hifiberry_dac8x", outputs=8):
@@ -916,11 +911,6 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     the three this test is actually about — so the chain stays non-vacuous.
     """
     import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-    )
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
     from tests.test_fanin_coupling_reconcile import force_ring_gates_pass
     from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
@@ -2737,10 +2727,6 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     Everything the command itself decides (destination, atomicity, repoint,
     refusal) runs for real.
     """
-    from jasper.active_speaker.graph_types import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        GraphSafety,
-    )
     from jasper.cli import active_speaker as cli
 
     artifact = tmp_path / "configs" / "active_speaker_baseline_candidate_abc.yml"
@@ -2766,7 +2752,6 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
         lambda *a, **k: None,
     )
 
-    from types import SimpleNamespace
     monkeypatch.setattr("jasper.active_speaker.measurement_emit.load_tuning_declaration",
                         lambda topology, *, playback_device: SimpleNamespace(playback_device=playback_device))
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.candidate_from_applied_profile", lambda *args: object())
@@ -2981,7 +2966,6 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     )
     from jasper.fanin.coupling_reconcile import _outputd_actions
     from jasper.fanin_coupling import (
-        DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_PATH_ENV_VAR,
     )
 
@@ -3061,7 +3045,6 @@ def _anchor_reemit_harness(
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_DRIVER_DOMAIN_BASELINE,
         GRAPH_PARKED_ALL_MUTED,
-        GraphSafety,
     )
     from jasper.active_speaker import startup_load
     from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -3124,15 +3107,15 @@ def _anchor_reemit_harness(
     # Commission-load state is stubbed in BOTH directions on purpose: the live
     # default path would otherwise decide this test's outcome from whatever the
     # dev machine happens to have on disk.
-    monkeypatch.setattr(
-        "jasper.active_speaker.startup_load.load_commission_load_state",
-        lambda *a, **k: (
+    def _commission_load_state(*_args, **_kwargs):
+        return (
             {"status": "loaded", "target": "mono/tweeter",
              "candidate_config_path": "/var/lib/camilladsp/configs/commissioning.yml"}
             if commission_loaded
             else {}
-        ),
-    )
+        )
+    monkeypatch.setattr(startup_load, "load_commission_load_state", _commission_load_state)
+    monkeypatch.setattr(cli, "load_commission_load_state", _commission_load_state)
 
     # (safe-graph status, classification, which slot carries it). The last two
     # are the DISCRIMINATOR cases: `preserve_current` is also how an approved
@@ -3386,7 +3369,6 @@ def test_baseline_reemit_help_names_both_accepted_graph_classes():
     """
     from jasper.active_speaker.graph_types import (
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
     )
     from jasper.cli.active_speaker import build_parser
 
@@ -3793,15 +3775,12 @@ def test_anchor_and_driver_commission_refusals_use_DISTINCT_reason_strings(
     payload = _json.loads(out.getvalue())
     assert payload["status"] == "refused", payload
     assert payload["reason"] == "commission_load_active", payload
-    # The sibling's token, read from its own source rather than retyped, so this
-    # pin tracks a rename instead of going quietly vacuous after one.
-    sibling = (
-        Path(__file__).resolve().parents[1] / "jasper/cli/active_speaker.py"
-    ).read_text(encoding="utf-8")
-    assert '"reason": "commission_load_already_active",' in sibling, (
-        "the sibling refusal's token changed; re-derive whether these two are "
-        "still meant to be distinct"
-    )
-    assert payload["reason"] != "commission_load_already_active"
+    sibling_out = io.StringIO()
+    with contextlib.redirect_stdout(sibling_out):
+        sibling_code = main(["commission-load", "--group", "mono", "--role", "tweeter", "--json"])
+    sibling = _json.loads(sibling_out.getvalue())
+    assert sibling_code == 1
+    assert sibling["reason"] == "commission_load_already_active", sibling
+    assert payload["reason"] != sibling["reason"]
     # The refusal is actionable as DATA too, not only as prose.
     assert payload["active_target"] == "mono/tweeter", payload
