@@ -123,20 +123,14 @@ def test_undeclared_tweeter_style_keeps_conservative_floor_when_hardware_ceiling
 # --- derive_hf_measurement_ceiling_dbfs (W6.5 two-invariant protection model) -
 
 
-# derive_hf_measurement_ceiling_dbfs = lf_cap - (sens_hf - sens_lf), with no
-# absolute floor. Mutation guard: a retired -35.0 dBFS hedge used to clamp
-# several of these worked examples; restore it and this fails.
+# See ADR-0227 §9: no absolute dBFS hedge sits above the derivation. A
+# -35.0 cap fails every case but sensitivity_relative_ceiling.
 @pytest.mark.parametrize(
     ("lf_cap_dbfs", "sens_hf_db", "sens_lf_db", "expected_ceiling_dbfs"),
     (
-        # bc_de250_dayton_e150he44_v1 as shipped on JTS3: B&C DE250 (108.5)
-        # vs Dayton E150HE-44 (83.3) off a 0.0 dBFS woofer cap.
-        pytest.param(0.0, 108.5, 83.3, -25.2, id="jts3_shipped_preset"),
-        # Same 25.2 dB sensitivity delta, off a -8 dBFS woofer cap.
+        pytest.param(0.0, 108.5, 83.3, -25.2, id="datasheet_pair_full_scale_woofer"),
         pytest.param(-8.0, 108.5, 83.3, -33.2, id="operator_worked_example"),
-        # A quieter LF cap with a 16 dB delta.
         pytest.param(-30.0, 100.0, 84.0, -46.0, id="sensitivity_relative_ceiling"),
-        # Equal sensitivities: zero delta, ceiling equals the LF cap outright.
         pytest.param(-20.0, 90.0, 90.0, -20.0, id="zero_sensitivity_delta"),
     ),
 )
