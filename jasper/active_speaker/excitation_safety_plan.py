@@ -635,22 +635,6 @@ def driver_cap_dbfs(
     return derived, f"{LEVEL_CEILING_SENSITIVITY_DELTA}:{anchor}"
 
 
-def published_driver_caps(
-    safety_profile: Mapping[str, Any], target_fingerprints: Mapping[str, str],
-) -> dict[str, dict[str, Any]]:
-    """Each driver's program-path ``cap_dbfs`` and ``cap_source``, or the code refusing it."""
-
-    caps: dict[str, dict[str, Any]] = {}
-    for target_id, fingerprint in target_fingerprints.items():
-        try:
-            cap, source = driver_cap_dbfs(safety_profile, fingerprint, program_admission=True)
-        except ExcitationSafetyPlanError as exc:
-            caps[target_id] = {"cap_dbfs": None, "cap_source": None, "reason": exc.code}
-        else:
-            caps[target_id] = {"cap_dbfs": cap, "cap_source": source}
-    return caps
-
-
 def resolve_driver_measurement_band_hz(
     safety_profile: Mapping[str, Any], target_fingerprint: str,
 ) -> tuple[float, float]:

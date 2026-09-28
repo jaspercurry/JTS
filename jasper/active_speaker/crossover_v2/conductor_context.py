@@ -14,6 +14,11 @@ from jasper.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
+from jasper.active_speaker.excitation_safety_plan import (
+    ExcitationSafetyPlanError,
+    ExcitationSafetyPlanRefusal,
+    driver_cap_dbfs,
+)
 
 from .refusal_copy import (
     REASON_DRIVER_SENSITIVITY_UNDECLARED,
@@ -38,6 +43,7 @@ __all__ = [
     "V2ConductorContext",
     "ensure_crossover_preview_ready",
     "measurement_role_channels",
+    "published_driver_caps",
     "resolve_conductor_context",
 ]
 
@@ -171,6 +177,31 @@ def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
     return out
 
 
+def _cap_refused(target_id: str, exc: ValueError) -> CrossoverV2Refused:
+    """The door's refusal for a driver whose cap cannot be resolved (ADR-0382)."""
+    if isinstance(exc, ExcitationSafetyPlanError) and exc.code == ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value:
+        return CrossoverV2Refused(
+            driver_sensitivity_undeclared_message(exc.detail["undeclared_roles"], exc.detail["disagreeing_roles"]),
+            code=REASON_DRIVER_SENSITIVITY_UNDECLARED,
+        )
+    return CrossoverV2Refused(f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY)
+
+
+def published_driver_caps(
+    safety_profile: Mapping[str, Any], target_fingerprints: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Each driver's program-path ``cap_dbfs`` and ``cap_source``, or the registry code refusing it."""
+    caps: dict[str, dict[str, Any]] = {}
+    for target_id, fingerprint in target_fingerprints.items():
+        try:
+            cap, source = driver_cap_dbfs(safety_profile, fingerprint, program_admission=True)
+        except (ExcitationSafetyPlanError, ValueError) as exc:
+            caps[target_id] = {"cap_dbfs": None, "cap_source": None, "reason": _cap_refused(target_id, exc).code}
+        else:
+            caps[target_id] = {"cap_dbfs": cap, "cap_source": source}
+    return caps
+
+
 @overload
 def resolve_conductor_context(
     status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[True] = True,
@@ -193,8 +224,6 @@ def resolve_conductor_context(
     from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset  # lazy: test_correction_crossover_v2_conductor_context patches commission_wiring
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
-        ExcitationSafetyPlanError,
-        ExcitationSafetyPlanRefusal,
         require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
@@ -301,17 +330,7 @@ def resolve_conductor_context(
                 safety_profile, fingerprint,
             )
         except (ExcitationSafetyPlanError, ValueError) as exc:
-            if (isinstance(exc, ExcitationSafetyPlanError)
-                    and exc.code == ExcitationSafetyPlanRefusal.SENSITIVITY_UNDECLARED.value):
-                raise CrossoverV2Refused(
-                    driver_sensitivity_undeclared_message(
-                        exc.detail["undeclared_roles"], exc.detail["disagreeing_roles"],
-                    ),
-                    code=REASON_DRIVER_SENSITIVITY_UNDECLARED,
-                ) from exc
-            raise CrossoverV2Refused(
-                f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY,
-            ) from exc
+            raise _cap_refused(target_id, exc) from exc
     measurement_bands: dict[str, tuple[float, float]] = {}
     for channel, role in enumerate(roles):
         # Flat-linearization plan PR-4: this role's confirmed measurement band.

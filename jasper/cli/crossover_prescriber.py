@@ -22,7 +22,7 @@ from jasper.active_speaker.commissioning_coordinator import next_program_action,
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.design_draft import load_design_draft
-from jasper.active_speaker.excitation_safety_plan import published_driver_caps
+from jasper.active_speaker.crossover_v2.conductor_context import published_driver_caps
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median

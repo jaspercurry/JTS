@@ -26,11 +26,10 @@ from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
-from .crossover_v2.conductor_context import resolve_conductor_context
+from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
 from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
-from .excitation_safety_plan import published_driver_caps
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
 from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
