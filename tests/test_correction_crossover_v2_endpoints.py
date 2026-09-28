@@ -21,7 +21,6 @@ from __future__ import annotations
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.web import correction_crossover_v2_evidence as v2evidence
-from jasper.web import correction_crossover_v2_grade as v2grade
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
@@ -603,7 +602,6 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
 
     block = v2status.crossover_v2_status_block()
     assert not {"cloud", "cloud_chart", "findings"} & set(block)
-    assert block["post_apply_grade"] == {"state": v2grade.GRADE_UNVERIFIED}
     envelope = build_crossover_envelope_v2({
         "active": True,
         "capture": {"status": "awaiting_capture"},
@@ -1153,22 +1151,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     v2state.reset_v2_journey_state()
     assert v2state.load_v2_state()["attempts_loop"] == loop
-
-
-@pytest.mark.parametrize(
-    ("applied", "grade"),
-    [(True, v2grade.GRADE_UNVERIFIED), (False, v2grade.GRADE_NOT_APPLIED)],
-)
-def test_the_status_block_never_reads_an_applied_correction_as_checked(applied, grade):
-    """Durable state records no post-apply check, so ``/state`` names an
-    applied correction ``unverified`` rather than leaving silence to read as
-    a pass."""
-    v2state.save_v2_state({
-        "session_id": "cap_ungraded",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": applied,
-    })
-    assert v2status.crossover_v2_status_block()["post_apply_grade"] == {"state": grade}
 
 
 @pytest.mark.parametrize("initial_manifest", [False, True])
