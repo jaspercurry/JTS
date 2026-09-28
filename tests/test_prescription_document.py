@@ -29,6 +29,7 @@ from jasper.active_speaker.measured_crossover_candidate import compile_candidate
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
+from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
@@ -330,8 +331,9 @@ def test_a_one_way_speaker_with_no_declared_band_judges_its_full_range_role(bank
     (True, 36.0, None, True),
 ])
 def test_composition_judges_the_charge_the_emitted_graph_applies(bank, evidence, rear, gain, pin, refused):
-    """#5909: the door judges no headroom. Composition refuses what the emitter would, and
-    the charge it answers with is the emitted graph's own attenuation, rear stage included."""
+    """#5909: the door judges no headroom. Composition refuses what the emitter would, with the
+    charge it refused as data, and the charge it answers with is the emitted graph's own
+    attenuation, rear stage included."""
     base = publish_authored_candidate(replace(_candidate(
         preset=_rear_pair("mono")[0] if rear else None, rear_calibration=_rear_document() if rear else None,
     ), analysis={"measurement_status": "unmeasured"}), root=bank)
@@ -343,6 +345,13 @@ def test_composition_judges_the_charge_the_emitted_graph_applies(bank, evidence,
             judge_prescription_document(raw, base=base, evidence=evidence)
         assert (caught.value.code, caught.value.section) == ("program_headroom_exhausted", None)
         assert caught.value.to_dict()["next_action"]["id"] == "reduce_boosts"
+        chain = [{key: value for key, value in boost.items() if key != "role"}]
+        with pytest.raises(ProgramHeadroomExhausted) as emitted:
+            compile_candidate_config(replace(base.candidate, linearization={"woofer": {"filters": chain}}),
+                                     playback_device="null")
+        assert caught.value.failure_detail()["evidence"] == {
+            "program_headroom_spent_db": pytest.approx(emitted.value.charge_db), "max_program_headroom_db": 40.0,
+            "binding": "program_headroom"}
         return
     child = judge_prescription_document(raw, base=base, evidence=evidence)
     graph = yaml.safe_load(compile_candidate_config(child, playback_device="null"))

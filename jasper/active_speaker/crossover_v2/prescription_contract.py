@@ -23,10 +23,10 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_protection_slope_db_per_octave,
 )
 from jasper.active_speaker.branch_chain import branch_chain_peak_db
-from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_EXHAUSTED
-from jasper.active_speaker.candidate_parts import applied_round_base, program_charge_db
+from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_BINDING, PROGRAM_HEADROOM_EXHAUSTED
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, program_charge_db
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
-from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB, required_driver_roles,
@@ -49,6 +49,8 @@ from .feature_classification import UNCERTAINTY_RANDOM
 from .corner_admissibility import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
+#: A round that banked no candidate has no base its packet may charge (ADR-0371).
+BASE_NOT_BANKED = "base_not_banked"
 SECTIONS = tuple(row.purpose for row in PROGRAM_DOCUMENT_ORDER)
 
 
@@ -140,23 +142,21 @@ def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
     return programs_for_topology(OutputTopology("", "", unknown_output_hardware(), groups))
 
 
-def _base_charge_db(candidate: Mapping[str, Any], draft: Mapping[str, Any],
-                    applied_profile: Mapping[str, Any]) -> float | None:
-    """The program charge of the base the round was measured on, which the fit reads too.
-
-    ``None`` when neither the round nor an applied tune names a readable base.
+def _base_charge(candidate: Mapping[str, Any]) -> tuple[float | None, str | None]:
+    """The program charge of the candidate the round banked, or the code that says why there
+    is none. Read from the round alone, so a packet is built from banked inputs (ADR-0371).
     """
+    if not candidate:
+        return None, BASE_NOT_BANKED
     try:
-        base = (MeasuredCrossoverCandidate.from_mapping(candidate) if candidate
-                else applied_round_base(draft, applied_profile) if applied_profile else None)
-    except (LookupError, TypeError, ValueError):
-        return None
-    return None if base is None else program_charge_db(base)
+        return program_charge_db(MeasuredCrossoverCandidate.from_mapping(candidate)), None
+    except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
+        return None, getattr(exc, "code", COMPOSITION_INVALID)
 
 
 def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
              preset: ActiveSpeakerPreset | None, candidate: Mapping[str, Any],
-             manifest: Mapping[str, Any], applied_profile: Mapping[str, Any]) -> dict[str, Any]:
+             manifest: Mapping[str, Any]) -> dict[str, Any]:
     blend_format = blend.prescription_response_format()
     driver_format = driver.driver_prescription_response_format()
     alignment_format = alignment.alignment_prescription_response_format()
@@ -175,7 +175,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             spl = finite_float(level.get("loudest_half_second_db_spl"))
             if spl is not None:
                 spl_margins.append(max(0.0, preset.safety.max_commissioning_level_db_spl - spl - SPL_RAISE_MARGIN_DB))
-    spent = _base_charge_db(candidate, draft, applied_profile)
+    spent, reason = _base_charge(candidate)
     linearization = linearization_filters_by_role(as_mapping(candidate.get("linearization")))
     headroom = {role: {
         "composed_boost_db": max(0.0, branch_chain_peak_db(linearization.get(role, ()))),
@@ -184,7 +184,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
         "session_volume_db": max(levels) if levels and len(levels) == len(takes) else None,
         "spl_headroom_db": min(spl_margins) if spl_margins else None,
-        "binding": "program_headroom" if spent is not None and spent >= MAX_PROGRAM_HEADROOM_DB else None,
+        "binding": PROGRAM_HEADROOM_BINDING if spent is not None and spent >= MAX_PROGRAM_HEADROOM_DB else None,
+        "reason": reason,
     } for role in (required_driver_roles(preset.way_count) if preset else sorted(passbands))}
     band = as_mapping(as_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
@@ -567,8 +568,7 @@ def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mappi
                            manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate, applied_profile or {})
-    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}, applied_profile or {})
-                   if name == "speaker" else
+    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}) if name == "speaker" else
                    _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
                    _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS if name in programs}
 

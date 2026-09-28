@@ -380,27 +380,6 @@ def test_linearization_populated_round_trips():
     assert reopened.linearization == payload
 
 
-def test_a_candidate_refuses_to_carry_a_non_finite_fit_cost():
-    """No fitted candidate can carry a NaN or an infinity anywhere in
-    ``linearization``.
-
-    Asserted as the PROPERTY rather than against one mechanism, because two
-    layers enforce it: ``null_walk.DspPredecessor`` freezes the state and
-    ``evidence_identity.json_fingerprint`` freezes the fingerprint payload, both
-    through ``json_fields.freeze_json``, which refuses a non-finite float
-    (verified by mutation: relaxing it turns this red).
-    """
-    for bad in (float("nan"), float("inf"), float("-inf")):
-        with pytest.raises(MeasuredCrossoverCandidateError) as caught:
-            _candidate(linearization={"woofer": {"headroom_cost_db": bad}})
-        assert "non-finite" in str(caught.value)
-
-    # …the same shape with a finite cost is accepted, so the refusals above are
-    # about the VALUE rather than about the mapping's shape.
-    accepted = _candidate(linearization={"woofer": {"headroom_cost_db": 2.0}})
-    assert accepted.linearization["woofer"]["headroom_cost_db"] == 2.0
-
-
 def test_linearization_participates_in_the_fingerprint():
     preset = _preset()
     base = _candidate(preset=preset, linearization={})

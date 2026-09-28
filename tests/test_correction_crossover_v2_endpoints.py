@@ -3089,14 +3089,6 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
     # The speaker's commanded level did not move. This is the safety claim.
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
-    # #5909 D6: the summary discloses the attenuation the loaded graph applies,
-    # the household's Extra headroom included.
-    import yaml
-
-    loaded = yaml.safe_load(Path(payload["profile"]["config"]["path"]).read_text(encoding="utf-8"))
-    charge = -loaded["filters"]["active_baseline_headroom"]["parameters"]["gain"]
-    assert charge == pytest.approx(-_APPLY_OFFSET_DB, abs=1e-3)
-    assert v2state.load_v2_state()["candidate"]["applied_headroom_db"] == pytest.approx(charge)
 
 
 def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_path):

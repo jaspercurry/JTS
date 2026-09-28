@@ -27,7 +27,9 @@ from jasper.biquad import (
 )
 from jasper.json_fields import finite_float
 
+from .graph_safety import GraphView
 from .graph_transfer import GraphTransferError, complex_channel_transfer, mixer_mapping
+from .profile import ActiveSpeakerConfigError
 
 PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
 
@@ -37,6 +39,21 @@ _MONOTONIC_Q_MAX = round(SHELF_Q, SHELF_Q_EMIT_DECIMALS)
 _UNITY_COMBOS = frozenset({
     "LinkwitzRileyHighpass", "LinkwitzRileyLowpass", "ButterworthHighpass", "ButterworthLowpass",
 })
+
+
+class ProgramHeadroomUnreadable(ActiveSpeakerConfigError):
+    """An emitted active graph whose :data:`PROGRAM_HEADROOM_FILTER` is not one finite ``Gain``."""
+
+    code = "program_headroom_unreadable"
+
+
+def graph_headroom_db(view: GraphView) -> float:
+    """The attenuation an emitted active program graph applies before the split, dB (#5909)."""
+    headroom = view.filters.get(PROGRAM_HEADROOM_FILTER)
+    gain = finite_float(headroom.params.get("gain")) if headroom is not None and headroom.type == "Gain" else None
+    if gain is None:
+        raise ProgramHeadroomUnreadable(f"the graph has no finite {PROGRAM_HEADROOM_FILTER} gain")
+    return 0.0 - gain
 
 
 class ProgramPeak(NamedTuple):

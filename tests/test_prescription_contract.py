@@ -7,8 +7,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,26 +21,26 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import (
-    CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
+    BASE_NOT_BANKED, CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    contract_sources, default_out, read_run_manifest, round_inputs, set_artifact_name,
+    contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs, set_artifact_name,
 )
-from jasper.active_speaker import candidate_parts
+from jasper.active_speaker import candidate_bank, candidate_parts
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
-from jasper.active_speaker.speaker_fit import _fit_vocabularies
+from jasper.active_speaker.speaker_fit import SpeakerFitUnreadable, _fit_vocabularies
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.measurement_programs import programs_for_topology
-from jasper.active_speaker.round_packet import store_banked_evidence
+from jasper.active_speaker.round_packet import banked_evidence, store_banked_evidence
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
@@ -63,10 +63,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "19c68fc70cf3289f7ccab11afd325f79537d54150fdce0a5e580c216e8af0518"),
-    ("mono", True, "217f995a2d110499ea58ac4c29f669cc58b0a004b50a05ce8876da5f917290c5"),
-    ("stereo", False, "78f151da2796e9165cfd58f47eaefbba91d952c96d413c88d5fe1c8647c22b24"),
-    ("stereo", True, "11cee7fff3b159fb719b7c6437d9ed47396ad7c6711c3359aa7bdaaff39e6f70"),
+    ("mono", False, "f9b99931d43e9d70decd9beaa42d42616267a114899fea02d6af6968c0d5a212"),
+    ("mono", True, "937084f3e5326b811bfc43f52c0b765fe28b56b5a5f979fbb06b89a1554c08cf"),
+    ("stereo", False, "b0484de916c33c226eb240ba2b67ada10ac61a3d37bafd960d96c2b58e9d8b41"),
+    ("stereo", True, "066dadd4b32dd383743be7db1ff2a07c911e85972b339ff105171275ce92f0e0"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -488,31 +488,59 @@ def test_the_contract_spends_what_the_emitted_graph_attenuates(rear):
 
 
 def test_an_exhausted_base_spends_the_charge_the_emitter_refused():
-    """#5909: past the ceiling the contract and the fit read the emitter's own charge, as main did."""
+    """#5909: past the ceiling, the contract and the fit read the charge the emitter refused."""
     candidate = _candidate(linearization={"woofer": {"filters": [
         {"biquad_type": "Peaking", "freq": 900.0, "q": 1.0, "gain": 45.0}]}})
     with pytest.raises(ProgramHeadroomExhausted) as refused:
         compile_candidate_config(candidate, playback_device="null")
     rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
-    assert {role: (row["program_headroom_spent_db"], row["program_headroom_remaining_db"], row["binding"])
-            for role, row in rows.items()} == {role: (refused.value.charge_db, 0.0, "program_headroom")
+    assert {role: (row["program_headroom_spent_db"], row["program_headroom_remaining_db"], row["binding"], row["reason"])
+            for role, row in rows.items()} == {role: (refused.value.charge_db, 0.0, "program_headroom", None)
                                                for role in ("woofer", "tweeter")}
     caps = _fit_vocabularies(candidate.to_dict(), {"woofer": {}, "tweeter": {}})
     assert {role: vocabulary.composed_boost_cap_db for role, vocabulary in caps.items()} == {
         "woofer": 40.0, "tweeter": 0.0}
 
 
-def test_a_round_without_a_candidate_is_charged_on_the_applied_base(monkeypatch):
-    """#5909: with no candidate.json the contract charges the applied tune, the base the fit reads."""
-    applied = _candidate(linearization={"woofer": {"filters": [
-        {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 4.0}]}})
-    monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda fingerprint: SimpleNamespace(candidate=applied))
-    profile = {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint},
-               "recomposition_snapshot": {"preset": applied.source_preset.to_dict()}}
-    rows = prescription_contracts(candidate={}, draft={"topology": mono_output_topology().to_dict()},
-                                  applied_profile=profile)["speaker"]["driver"]["bounds"]["boost_headroom"]
-    assert [row["program_headroom_spent_db"] for row in rows.values()] == [
-        candidate_parts.program_charge_db(applied)] * 2 != [0.0] * 2
+def test_a_round_without_a_candidate_charges_no_base_and_never_touches_the_bank(round_bank, monkeypatch):
+    """#5909: the packet is built from the round's banked inputs alone (ADR-0371), even when
+    the applied tune names a banked candidate."""
+    bank, session = round_bank
+    (session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json").unlink()
+    (bank / "applied-profile.json").write_text(json.dumps({
+        **applied_profile(preset=_two_way_preset()), "candidate_artifact_path": str(bank / "elsewhere.json"),
+        "source": {"measured_candidate_fingerprint": "f" * 64},
+    }))
+
+    def touched(*args, **kwargs):
+        raise AssertionError("the candidate bank was touched")
+
+    for module in (candidate_bank, candidate_parts):
+        for name in ("find_banked_candidate", "load_applied_candidate", "publish_authored_candidate"):
+            monkeypatch.setattr(module, name, touched)
+    stored, error = banked_evidence(round_inputs(bank))
+    assert error is None and stored[EVIDENCE_KEY] is not None
+    rows = prescription_contracts(**prescription_sources(round_inputs(bank)))["speaker"]["driver"]["bounds"]
+    assert {role: (row["program_headroom_spent_db"], row["reason"]) for role, row in rows["boost_headroom"].items()} == {
+        role: (None, BASE_NOT_BANKED) for role in ("woofer", "tweeter")}
+
+
+def test_a_base_the_emitter_refuses_names_its_code_and_the_packet_still_builds(round_bank):
+    """#5909: the contract publishes no charge for a base the emitter refuses, with the refusal's
+    code, and the round's packet builds; the fit refuses with that code."""
+    bank, session = round_bank
+    cut = {"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -1.0}
+    candidate = replace(_candidate(), blend_correction=[cut] * 3)
+    (session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json").write_text(
+        json.dumps(candidate.to_dict()))
+    stored, error = banked_evidence(round_inputs(bank))
+    assert error is None and stored[EVIDENCE_KEY] is not None
+    rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert {role: (row["program_headroom_spent_db"], row["reason"]) for role, row in rows.items()} == {
+        role: (None, candidate_parts.COMPOSITION_INVALID) for role in ("woofer", "tweeter")}
+    with pytest.raises(SpeakerFitUnreadable) as refused:
+        _fit_vocabularies(candidate.to_dict(), {"woofer": {}})
+    assert refused.value.code == candidate_parts.COMPOSITION_INVALID
 
 
 def test_rear_contract_bounds_equal_the_rear_calibration_constants():

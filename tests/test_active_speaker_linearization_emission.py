@@ -35,6 +35,7 @@ from jasper.active_speaker.baseline_profile import (
 from jasper.biquad import SHELF_Q, PeqFilter
 from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, linearization_headroom_db
 from jasper.active_speaker import program_headroom
+from jasper.active_speaker.graph_safety import GraphFilter, GraphView
 from jasper.active_speaker.camilla_names import (
     blend_correction_name, driver_linearization_peak_name, driver_linearization_shelf_name,
     driver_linearization_taper_name, room_peq_name,
@@ -1088,6 +1089,17 @@ def test_runaway_program_headroom_is_refused():
             _preset(), playback_device=ACTIVE_PCM,
             linearization={"tweeter": [_peak(6000.0, 22.0)] * 3},
         )
+
+
+@pytest.mark.parametrize("headroom", [
+    None, GraphFilter("Gain", {"gain": float("nan")}), GraphFilter("Biquad", {"gain": -3.0}),
+])
+def test_an_active_graph_without_one_finite_headroom_gain_is_malformed(headroom):
+    """#5909: every emitted active program graph carries one finite pre-split ``Gain``."""
+    filters = {} if headroom is None else {program_headroom.PROGRAM_HEADROOM_FILTER: headroom}
+    with pytest.raises(program_headroom.ProgramHeadroomUnreadable) as refused:
+        program_headroom.graph_headroom_db(GraphView(parsed_ok=True, filters=filters))
+    assert refused.value.code == "program_headroom_unreadable"
 
 
 def test_a_generous_program_headroom_still_emits():

@@ -17,7 +17,7 @@ from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB
 from jasper.active_speaker.alignment_evidence import alignment_evidence
-from jasper.active_speaker.candidate_parts import applied_round_base, program_charge_db
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, program_charge_db
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
@@ -30,7 +30,7 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
-from jasper.active_speaker.profile import CrossoverRegion
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, CrossoverRegion
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
@@ -70,7 +70,7 @@ def _round_candidate(directory: Path, sources: Mapping[str, Any]) -> dict[str, A
     if path.is_file():
         return _read_candidate(path)
     if applied := sources.get("applied_profile"):
-        return applied_round_base(sources["draft"], applied).to_dict()
+        return candidate_from_applied_profile(None, applied).to_dict()
     raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
@@ -141,8 +141,11 @@ def _fit_vocabularies(
     for role, budget in budgets.items():
         # The charge without this role's chain (#5909). An unreadable base leaves
         # only the ceiling, which composition enforces.
-        spent = None if base is None else program_charge_db(replace(base, linearization={
-            name: fit for name, fit in base.linearization.items() if name != role}))
+        try:
+            spent = None if base is None else program_charge_db(replace(base, linearization={
+                name: fit for name, fit in base.linearization.items() if name != role}))
+        except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
+            raise SpeakerFitUnreadable(str(exc), code=getattr(exc, "code", COMPOSITION_INVALID)) from exc
         remaining = MAX_PROGRAM_HEADROOM_DB if spent is None else max(0.0, MAX_PROGRAM_HEADROOM_DB - spent)
         vocabularies[role] = FitVocabulary(
             allow_boost=True, per_filter_boost_cap_db=remaining, composed_boost_cap_db=remaining,

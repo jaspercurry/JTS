@@ -467,7 +467,8 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
     if not trial:
         (directory / "candidate.json").unlink()
     draft_path = root / "design-draft.json"
-    draft_path.write_text(json.dumps({**json.loads(draft_path.read_text()), "topology": mono_output_topology().to_dict()}))
+    draft_path.write_text(json.dumps({key: value for key, value in json.loads(draft_path.read_text()).items()
+                                      if key != "topology"}))
     (root / "applied-profile.json").write_text(json.dumps({
         "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied",
         "source": {"measured_candidate_fingerprint": "base-fp"},

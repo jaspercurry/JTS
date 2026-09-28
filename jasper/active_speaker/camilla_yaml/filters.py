@@ -69,6 +69,7 @@ APPLIED_RESPONSE_FILTER_MODE = "applied_crossover_response"
 BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 
 PROGRAM_HEADROOM_EXHAUSTED = "program_headroom_exhausted"
+PROGRAM_HEADROOM_BINDING = "program_headroom"
 
 
 class ProgramHeadroomExhausted(ActiveSpeakerConfigError):
@@ -79,6 +80,8 @@ class ProgramHeadroomExhausted(ActiveSpeakerConfigError):
     def __init__(self, charge_db: float) -> None:
         super().__init__(f"program headroom {charge_db:g} dB exceeds {MAX_PROGRAM_HEADROOM_DB:g} dB")
         self.charge_db = charge_db
+        self.evidence = {"program_headroom_spent_db": charge_db, "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
+                         "binding": PROGRAM_HEADROOM_BINDING}
 
 
 def _emit_delay_filter(name: str, delay_ms: float = 0.0) -> list[str]:

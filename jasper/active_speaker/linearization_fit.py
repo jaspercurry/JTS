@@ -514,10 +514,6 @@ def linearization_filters_by_role(
     return out
 
 
-HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN = "realized_peak_full_domain"
-HEADROOM_COST_BASIS_UNKNOWN = "unknown"
-
-
 def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
     """Power-domain band average of ``magnitude_db`` over ``mask``:
     ``10*log10(mean(10**(dB/10)))``. Returns 0.0 on an empty mask. Same

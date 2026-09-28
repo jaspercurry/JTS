@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record, runtime_contract
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft, graph_headroom_db
+from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
 from jasper.active_speaker.crossover_declaration import (
     CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
 )
@@ -36,8 +36,6 @@ async def apply_candidate(
     camilla_factory: Callable[[], Any],
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN  # lazy: NumPy is needed only when applying
-
     from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
@@ -81,8 +79,7 @@ async def apply_candidate(
                 if not validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
             offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
-            summary = v2durable.candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN,
-                                                  applied_headroom_db=graph_headroom_db(text))
+            summary = v2durable.candidate_summary(selected, topology_pinned=True)
             change = declaration_change_for_candidate(source_preset=selected.source_preset, design_draft=draft)
             if on_candidate_verified is not None:
                 await on_candidate_verified()

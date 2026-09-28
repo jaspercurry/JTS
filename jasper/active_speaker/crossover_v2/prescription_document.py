@@ -17,7 +17,7 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
@@ -440,6 +440,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                       **({"commissioning": {"alignment": read}} if read is not None else {})},
         )
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail,
+                                          evidence=getattr(exc, "evidence", None)) from exc
     except (ValueError, TypeError, KeyError) as exc:
-        raise PrescriptionDocumentRefused("composition_invalid", None, str(exc)) from exc
+        raise PrescriptionDocumentRefused(COMPOSITION_INVALID, None, str(exc)) from exc

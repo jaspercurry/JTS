@@ -355,15 +355,7 @@ def candidate_summary(
     candidate: Any,
     *,
     topology_pinned: bool = False,
-    headroom_cost_basis: str | None = None,
-    applied_headroom_db: float | None = None,
 ) -> dict[str, Any] | None:
-    from jasper.active_speaker.linearization_fit import (  # lazy: fitting stack import cost
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-    )
-
-    stamped_basis = headroom_cost_basis or HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
-
     if candidate is None:
         return None
     analysis = candidate.analysis if isinstance(candidate.analysis, Mapping) else {}
@@ -399,8 +391,6 @@ def candidate_summary(
         "linearization_driver_class": _candidate_octave_driver_classes(
             candidate.linearization, octaves
         ),
-        "applied_headroom_db": applied_headroom_db,
-        "headroom_cost_basis": stamped_basis,
     }
 
 

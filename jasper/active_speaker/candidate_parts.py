@@ -40,9 +40,11 @@ from .level_trim import declared_driver_gains
 from ._common import MeasurementGraphRefused
 from .measurement_programs import PRESCRIPTION_SECTIONS
 from .profile import ActiveSpeakerPreset, required_driver_roles
-from .program_headroom import PROGRAM_HEADROOM_FILTER
+from .program_headroom import graph_headroom_db
 
 COMPOSITION_KIND = "jts_candidate_composition"
+#: What an emitter refusal that names no code of its own is refused as.
+COMPOSITION_INVALID = "composition_invalid"
 DECLARED_CROSSOVER_PROGRAM_ID = "jts_declared_crossover"
 AlignmentSource = Literal["document", "cleared", "saved", "measured", "base"]
 
@@ -64,28 +66,19 @@ def _emitted(candidate: MeasuredCrossoverCandidate) -> str:
     return compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
 
 
-def graph_headroom_db(text: str) -> float:
-    """The attenuation an emitted active graph applies before the split, dB (#5909)."""
-    return 0.0 - float(view_from_emitted_text(text).filters[PROGRAM_HEADROOM_FILTER].params["gain"])
-
-
 def program_charge_db(candidate: MeasuredCrossoverCandidate) -> float:
-    """:func:`graph_headroom_db` of the graph composition compiles for ``candidate``, so
-    every judge agrees with the emitter. Past the ceiling, the charge the emitter refused.
+    """:func:`~.program_headroom.graph_headroom_db` of the graph composition compiles for
+    ``candidate``, so every judge agrees with the emitter. Past the ceiling, the charge the
+    emitter refused.
     """
     try:
-        return graph_headroom_db(_emitted(candidate))
+        return graph_headroom_db(view_from_emitted_text(_emitted(candidate)))
     except ProgramHeadroomExhausted as exc:
         return exc.charge_db
 
 
-def applied_round_base(draft: Mapping[str, Any], applied_profile: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
-    """The base a round that banked no candidate of its own was measured on: the applied tune."""
-    return candidate_from_applied_profile(OutputTopology.from_mapping(draft["topology"]), applied_profile)
-
-
 def candidate_from_applied_profile(
-    topology: OutputTopology, applied_profile: Mapping[str, Any],
+    topology: OutputTopology | None, applied_profile: Mapping[str, Any],
     *, find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Look up the applied candidate, migrating pre-bank records once."""
@@ -293,6 +286,6 @@ def compose_candidate(
     try:
         text = _emitted(candidate)
     except ProgramHeadroomExhausted as exc:
-        raise CandidateBankRefusal(exc.code, str(exc)) from exc
+        raise CandidateBankRefusal(exc.code, str(exc), evidence=exc.evidence) from exc
     prove_candidate_config(candidate, text)
     return candidate
