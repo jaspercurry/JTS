@@ -35,7 +35,6 @@ from .driver_pad import effective_sensitivity_db, normalise_pad
 from .design_inputs import resolved_draft_inputs
 from .driver_safety import (
     DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    _normalise_field_provenance,
     _reject_bool_tree,
     compute_driver_safety_profile,
     driver_protection_policy_view,
@@ -225,15 +224,7 @@ def _driver_class(raw: Any, field_name: str) -> str | None:
     return value
 
 
-def _normalise_driver_common(
-    raw: Any,
-    prefix: str,
-    *,
-    require_model: bool,
-    include_sources: bool,
-    include_research_safety_evidence: bool,
-    gain_provenance_default: str,
-) -> dict[str, Any]:
+def _normalise_driver_common(raw: Any, prefix: str, *, research: bool) -> dict[str, Any]:
     raw = _mapping(raw, prefix)
     gain_offset_db = _finite_float(
         raw.get("gain_offset_db"),
@@ -248,7 +239,7 @@ def _normalise_driver_common(
         "model": _text(
             raw.get("model"),
             f"{prefix}.model",
-            required=require_model,
+            required=research,
             max_chars=120,
         ),
         "manufacturer": _text(
@@ -282,7 +273,7 @@ def _normalise_driver_common(
             _gain_offset_provenance(
                 raw.get("gain_offset_db_provenance"),
                 f"{prefix}.gain_offset_db_provenance",
-                default=gain_provenance_default,
+                default="research_estimate" if research else "operator_pinned",
             )
             if gain_offset_db is not None
             else None
@@ -298,19 +289,9 @@ def _normalise_driver_common(
             f"{prefix}.radiating_diameter_mm",
         ),
     }
-    if include_sources:
+    if research:
         driver["sources"] = _string_list(raw.get("sources"), f"{prefix}.sources")
-    if include_sources and not include_research_safety_evidence:
-        _normalise_field_provenance(
-            raw.get("field_provenance"), f"{prefix}.field_provenance",
-        )
-    driver.update(
-        normalise_driver_safety_fields(
-            raw,
-            prefix,
-            include_research_evidence=include_research_safety_evidence,
-        )
-    )
+    driver.update(normalise_driver_safety_fields(raw, prefix, include_research_evidence=research))
     # Pad is operator-owned input, excluded from research and safety limits.
     # declared_effective_driver_sensitivities() folds it into sensitivity;
     # level_trim.declared_driver_gains() owns the resulting trims.
@@ -322,35 +303,13 @@ def _normalise_driver_common(
     return {key: value for key, value in driver.items() if value not in (None, [])}
 
 
-def _normalise_driver(
-    raw: Any,
-    *,
-    include_research_safety_evidence: bool = False,
-) -> dict[str, Any]:
-    return _normalise_driver_common(
-        raw,
-        "driver",
-        require_model=True,
-        include_sources=True,
-        include_research_safety_evidence=include_research_safety_evidence,
-        gain_provenance_default="research_estimate",
-    )
-
-
 def _normalise_manual_driver(raw: Any) -> dict[str, Any]:
     # Legacy manual values had no provenance. Preserve them as pinned: an
     # upgrade must never silently replace an attenuation the operator may have
     # chosen for driver safety. New UI-generated sensitivity proposals send
     # ``sensitivity_estimate`` and remain supersedable by acoustic measurement.
     raw = _mapping(raw, "manual_settings.driver")
-    driver = _normalise_driver_common(
-        raw,
-        "manual_settings.driver",
-        require_model=False,
-        include_sources=False,
-        include_research_safety_evidence=False,
-        gain_provenance_default="operator_pinned",
-    )
+    driver = _normalise_driver_common(raw, "manual_settings.driver", research=False)
     target_id = _text(
         raw.get("target_id") if isinstance(raw, Mapping) else None,
         "manual_settings.driver.target_id",
@@ -455,22 +414,16 @@ def normalise_driver_research(
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "driver_research")
+    research_schema_version = raw.get("artifact_schema_version")
+    if type(research_schema_version) is not int or research_schema_version != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:  # noqa: E721
+        raise ActiveSpeakerDesignDraftError(
+            f"driver_research.artifact_schema_version must be {DRIVER_RESEARCH_RESULT_SCHEMA_VERSION}{_REIMPORT_RESEARCH}",
+            code="research_version_unsupported",
+        )
     _reject_unknown_keys(raw, "driver_research", {
         "artifact_schema_version", "kind", "drivers", "crossover_candidates",
         "human_review", "request_fingerprint", "result_fingerprint",
-    })
-    research_schema_version = raw.get("artifact_schema_version")
-    if type(research_schema_version) is not int:  # noqa: E721
-        raise ActiveSpeakerDesignDraftError(
-            "driver_research.artifact_schema_version must be integer 1 or 2"
-        )
-    if research_schema_version not in {
-        SCHEMA_VERSION,
-        DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
-    }:
-        raise ActiveSpeakerDesignDraftError(
-            "driver_research.artifact_schema_version must be 1 or 2"
-        )
+    }, _REIMPORT_RESEARCH)
     if raw.get("kind") != DRIVER_RESEARCH_KIND:
         raise ActiveSpeakerDesignDraftError(
             f"driver_research.kind must be {DRIVER_RESEARCH_KIND}"
@@ -485,12 +438,7 @@ def normalise_driver_research(
             DRIVER_RESEARCH_FIELDS,
             _REIMPORT_RESEARCH,
         )
-        drivers.append(_normalise_driver(
-            item,
-            include_research_safety_evidence=(
-                research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION
-            ),
-        ))
+        drivers.append(_normalise_driver_common(item, "driver", research=True))
     target_ids = [
         str(driver["target_id"]) for driver in drivers if driver.get("target_id")
     ]
@@ -503,18 +451,16 @@ def normalise_driver_research(
         raise ActiveSpeakerDesignDraftError("driver_research.drivers is required")
     candidates = []
     for index, item in enumerate(_sequence(
-        raw.get("crossover_candidates"), "driver_research.crossover_candidates",
-        limit=8 if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION else _MAX_CANDIDATES,
+        raw.get("crossover_candidates"), "driver_research.crossover_candidates", limit=8,
     )):
         _reject_unknown_keys(
             _mapping(item, f"driver_research.crossover_candidates[{index}]"),
             f"driver_research.crossover_candidates[{index}]", MANUAL_CANDIDATE_FIELDS,
         )
-        if research_schema_version == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-            _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
+        _reject_bool_tree(item, f"driver_research.crossover_candidates[{index}]")
         candidates.append(_normalise_candidate(item))
     result: dict[str, Any] = {
-        "artifact_schema_version": research_schema_version,
+        "artifact_schema_version": DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": drivers,
         "crossover_candidates": candidates,
@@ -836,13 +782,7 @@ def _summary(
         manual_settings.get("crossover_candidates", []) if manual_settings else []
     )
     research_drivers = driver_research.get("drivers", []) if driver_research else []
-    research_target_ids = resolved_target_ids(
-        research_drivers,
-        allow_legacy_role_fanout=bool(
-            driver_research
-            and driver_research.get("artifact_schema_version") == SCHEMA_VERSION
-        ),
-    )
+    research_target_ids = resolved_target_ids(research_drivers)
     manual_target_ids = resolved_target_ids(
         manual_drivers,
         allow_legacy_role_fanout=True,
@@ -939,7 +879,7 @@ def build_design_draft(
     manual = normalise_manual_settings(manual_settings)
     validate_manual_target_bindings(topology, manual)
     research = normalise_driver_research(driver_research)
-    if research and research["artifact_schema_version"] == DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
+    if research:
         research = finalise_research_result(
             research, build_driver_research_context(topology, inputs),
         )
@@ -1020,7 +960,6 @@ def build_design_draft(
             "loads_camilla": False,
             "applies_filters": False,
             "requires_human_review": True,
-            "research_is_advisory": True,
         },
         "issues": issues,
         "next_step": (

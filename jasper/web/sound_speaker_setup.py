@@ -14,7 +14,7 @@ from jasper.active_speaker import commissioning_coordinator, design_draft
 from jasper.active_speaker.design_inputs import resolve_design_inputs
 from jasper.active_speaker.driver_pad import PAD_KINDS
 from jasper.active_speaker.driver_safety import (
-    build_driver_research_context, SUPPORTED_ENCLOSURE_KINDS, DRIVER_RESEARCH_RESULT_SCHEMA_VERSION,
+    build_driver_research_context, SUPPORTED_ENCLOSURE_KINDS,
 )
 from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
 from jasper.active_speaker.installation import INSTALLATION_FIELDS
@@ -191,8 +191,8 @@ def import_research(raw: Mapping[str, Any]) -> None:
         research = json.loads(fence[1] if fence else text)
     except json.JSONDecodeError as exc:
         raise ValueError("The result is not valid JSON. Paste the complete result and try again.") from exc
-    if not isinstance(research, dict) or research.get("artifact_schema_version") != DRIVER_RESEARCH_RESULT_SCHEMA_VERSION:
-        raise ValueError("Use the current research prompt so the result matches each driver in this speaker.")
+    if not isinstance(research, dict):
+        raise ValueError("The result is not a JSON object. Paste the complete result and try again.")
     topology = load_output_topology()
     prior = design_draft.load_design_draft(computed=False)
     design_draft.save_design_draft(topology, driver_research=research,

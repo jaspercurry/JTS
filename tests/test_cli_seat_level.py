@@ -498,7 +498,8 @@ async def test_commissioning_uses_current_draft_and_checks_protection_before_cle
         path = tmp_path / "design_draft.json"
         draft = json.loads(path.read_text())
         if change == "protection":
-            draft["manual_settings"]["drivers"][1].pop("recommended_highpass_hz", None)
+            for driver in (draft["manual_settings"]["drivers"][1], *draft["driver_research"]["drivers"]):
+                driver.pop("recommended_highpass_hz", None)
             draft["manual_settings"]["drivers"][1].pop("required_protection_filters", None)
         else:
             draft["manual_settings"]["drivers"][1]["gain_offset_db"] = -12.0

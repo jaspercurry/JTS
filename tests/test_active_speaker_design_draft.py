@@ -20,6 +20,7 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.design_draft import (
     normalise_driver_research,
+    normalise_manual_settings,
     _normalise_candidate,
     design_draft_view,
     declared_driver_sensitivities,
@@ -34,7 +35,7 @@ from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import current_research, mono_output_topology, research_design_draft
 
 
 def _topology() -> OutputTopology:
@@ -81,7 +82,6 @@ def test_installation_rejects_invalid_facts(facts, code):
 
 def _research() -> dict:
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": [
             {
@@ -123,13 +123,21 @@ def _research() -> dict:
     }
 
 
+def _one_research_driver(driver: dict) -> dict:
+    research = {"artifact_schema_version": 2, "kind": DRIVER_RESEARCH_KIND,
+                "drivers": [{**driver, "target_id": f"mono:{driver['role']}"}]}
+    return normalise_driver_research(research)["drivers"][0]
+
+
 def test_design_draft_persists_research_without_authorizing_audio(tmp_path: Path):
     path = tmp_path / "active_speaker_design_draft.json"
 
+    research, inputs = current_research(_topology(), _research())
     payload = save_design_draft(
         _topology(),
-        driver_research=_research(),
+        driver_research=research,
         operator_inputs={
+            **inputs,
             "woofer": "Dayton Epique E150HE-44",
             "tweeter": "Eminence F110M-8",
             "notes": "bench bring-up",
@@ -224,7 +232,7 @@ def test_driver_research_cannot_weaken_human_review_requirements():
         "needs_measurement_before_final": False,
     }
 
-    payload = build_design_draft(_topology(), driver_research=raw)
+    payload = research_design_draft(_topology(), raw)
 
     assert payload["driver_research"]["human_review"] == {
         "must_verify_wiring": True,
@@ -236,12 +244,12 @@ def test_driver_research_cannot_weaken_human_review_requirements():
 def test_driver_research_notes_remain_bounded():
     raw = _research()
     raw["drivers"][1]["notes"] = "x" * 2048
-    payload = build_design_draft(_topology(), driver_research=raw)
+    payload = research_design_draft(_topology(), raw)
     assert len(payload["driver_research"]["drivers"][1]["notes"]) == 2048
 
     raw["drivers"][1]["notes"] = "x" * 2049
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=raw)
+        research_design_draft(_topology(), raw)
     assert caught.value.code == "field_too_long"
 
 
@@ -278,17 +286,8 @@ def test_research_and_manual_drivers_share_field_normalisation() -> None:
         "notes": "same normalized fields",
         "sources": ["https://example.test/woofer"],
     }
-    research = _research()
-    research["drivers"] = [common]
-    research["crossover_candidates"] = []
-    research_driver = build_design_draft(
-        _topology(),
-        driver_research=research,
-    )["driver_research"]["drivers"][0]
-    manual_driver = build_design_draft(
-        _topology(),
-        manual_settings={"drivers": [common], "crossover_candidates": []},
-    )["manual_settings"]["drivers"][0]
+    research_driver = _one_research_driver(common)
+    manual_driver = normalise_manual_settings({"drivers": [common]})["drivers"][0]
 
     assert research_driver["gain_offset_db_provenance"] == "research_estimate"
     assert manual_driver["gain_offset_db_provenance"] == "operator_pinned"
@@ -299,10 +298,10 @@ def test_research_and_manual_drivers_share_field_normalisation() -> None:
 
 
 def test_research_requires_model_while_manual_driver_does_not() -> None:
-    research = _research()
+    research, _ = current_research(_topology(), _research())
     research["drivers"][0].pop("model")
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=research)
+        normalise_driver_research(research)
     assert caught.value.code == "field_required"
 
     payload = build_design_draft(
@@ -408,7 +407,7 @@ def test_design_draft_rejects_unsupported_research_shape():
     raw["kind"] = "not_jts"
 
     with pytest.raises(ActiveSpeakerDesignDraftError):
-        build_design_draft(_topology(), driver_research=raw)
+        research_design_draft(_topology(), raw)
 
 
 def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
@@ -453,8 +452,13 @@ def test_legacy_digests_are_ignored_on_read_and_dropped_on_save(tmp_path: Path) 
     assert "driver_research_request" not in json.loads(path.read_text())
 
 
-@pytest.mark.parametrize("key", ["horn_coverage_deg", "crossover_search_band_hz", "target_fingerprint"])
-def test_a_stored_research_driver_with_a_retired_key_refuses(tmp_path: Path, key: str) -> None:
+@pytest.mark.parametrize(("where", "update", "code"), [
+    ("driver", {"horn_coverage_deg": 1}, "unknown_driver_fields"),
+    ("driver", {"crossover_search_band_hz": 1}, "unknown_driver_fields"),
+    ("driver", {"target_fingerprint": 1}, "unknown_driver_fields"),
+    ("research", {"artifact_schema_version": 1, "retired_key": 1}, "research_version_unsupported"),
+])
+def test_stored_research_the_import_refuses_refuses_on_load(tmp_path: Path, where, update, code) -> None:
     from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
     from jasper.active_speaker.driver_safety import build_driver_research_context
 
@@ -463,12 +467,13 @@ def test_a_stored_research_driver_with_a_retired_key_refuses(tmp_path: Path, key
     research = _research_result(build_driver_research_context(topology, _operator_inputs()))
     save_design_draft(topology, driver_research=research, operator_inputs=_operator_inputs(), path=path)
     stored = json.loads(path.read_text())
-    stored["driver_research"]["drivers"][0][key] = 90
+    research = stored["driver_research"]
+    (research["drivers"][0] if where == "driver" else research).update(update)
     path.write_text(json.dumps(stored))
 
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
         load_design_draft(path, topology=topology)
-    assert caught.value.code == "unknown_driver_fields"
+    assert caught.value.code == code
 
 
 def test_design_draft_revision_is_informational(
@@ -677,7 +682,7 @@ def test_driver_research_crossover_vocabulary_is_refused_at_the_same_door():
     research["crossover_candidates"][0]["slope_db_per_octave"] = 18
 
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), driver_research=research)
+        research_design_draft(_topology(), research)
     assert caught.value.code == "unsupported_slope"
 
 
@@ -711,7 +716,7 @@ def test_manual_crossover_settings_carry_polarity_and_delay_through_draft():
 def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
     # Every pre-existing crossover-candidate fixture in this file omits the
     # new fields; confirm normalisation doesn't inject them.
-    payload = build_design_draft(_topology(), driver_research=_research())
+    payload = research_design_draft(_topology(), _research())
 
     candidate = payload["driver_research"]["crossover_candidates"][0]
     assert "lower_polarity" not in candidate
@@ -907,14 +912,9 @@ def test_driver_class_accepts_every_hoisted_value():
         assert payload["manual_settings"]["drivers"][0]["driver_class"] == value
 
 
-@pytest.mark.parametrize("version", [1, 2])
 @pytest.mark.parametrize("shape", ["document", "driver", "candidate", "provenance"])
-def test_pasted_research_refuses_unknown_fields(version, shape):
-    research = _research()
-    research["artifact_schema_version"] = version
-    if version == 2:
-        for item in research["drivers"]:
-            item["target_id"] = f"mono:{item['role']}"
+def test_pasted_research_refuses_unknown_fields(shape):
+    research, _ = current_research(_topology(), _research())
     driver = research["drivers"][0]
     driver["field_provenance"] = {"sensitivity_db_2v83_1m": {
         "confidence": "high", "basis": "datasheet",
@@ -1066,17 +1066,8 @@ def test_research_and_manual_drivers_share_the_new_fields_too():
         "driver_class": "soft_dome",
         "radiating_diameter_mm": 25,
     }
-    research = _research()
-    research["drivers"] = [common]
-    research["crossover_candidates"] = []
-    research_driver = build_design_draft(
-        _topology(),
-        driver_research=research,
-    )["driver_research"]["drivers"][0]
-    manual_driver = build_design_draft(
-        _topology(),
-        manual_settings={"drivers": [common], "crossover_candidates": []},
-    )["manual_settings"]["drivers"][0]
+    research_driver = _one_research_driver(common)
+    manual_driver = normalise_manual_settings({"drivers": [common]})["drivers"][0]
 
     for field in ("driver_class", "radiating_diameter_mm"):
         assert research_driver[field] == manual_driver[field] == common[field]

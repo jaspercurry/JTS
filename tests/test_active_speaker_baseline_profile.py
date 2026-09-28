@@ -35,7 +35,7 @@ from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )
-from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft, design_draft_view, save_design_draft
+from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, design_draft_view, save_design_draft
 from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
@@ -51,7 +51,7 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
-    declared_profile_fixture, declared_graph_fixture, standard_design_draft,
+    current_research, declared_profile_fixture, declared_graph_fixture, research_design_draft, standard_design_draft,
     mono_output_topology,
     valid_camilla_config as _valid_config,  # noqa: F401 - shared fixture export
 )
@@ -101,7 +101,7 @@ def _dual_apple_topology() -> OutputTopology:
     )
 
 
-def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -> dict:
+def _research(*, tweeter_gain_db: float = -18.5) -> dict:
     drivers = [
         {
             "role": "woofer",
@@ -123,16 +123,7 @@ def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -
             "sources": ["https://example.test/tweeter"],
         },
     ]
-    if with_subwoofer:
-        drivers.append({
-            "role": "subwoofer",
-            "model": "Sub driver",
-            "recommended_lowpass_hz": 80,
-            "usable_frequency_range_hz": [20, 200],
-            "sources": ["https://example.test/sub"],
-        })
     return {
-        "artifact_schema_version": 1,
         "kind": DRIVER_RESEARCH_KIND,
         "drivers": drivers,
         "crossover_candidates": [
@@ -147,18 +138,9 @@ def _research(*, tweeter_gain_db: float = -18.5, with_subwoofer: bool = False) -
     }
 
 
-def _draft(
-    topology: OutputTopology,
-    *,
-    tweeter_gain_db: float = -18.5,
-    with_subwoofer: bool = False,
-) -> dict:
-    return design_draft_view(build_design_draft(
-        topology,
-        driver_research=_research(
-            tweeter_gain_db=tweeter_gain_db, with_subwoofer=with_subwoofer
-        ),
-        created_at="2026-06-14T12:00:00Z",
+def _draft(topology: OutputTopology, *, tweeter_gain_db: float = -18.5) -> dict:
+    return design_draft_view(research_design_draft(
+        topology, _research(tweeter_gain_db=tweeter_gain_db), created_at="2026-06-14T12:00:00Z",
     ))
 
 
@@ -187,10 +169,11 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
     topology = _dual_apple_topology()
     path = tmp_path / "draft.json"
     sources = []
+    research, inputs = current_research(topology, _research())
     for index in range(2):
         draft = save_design_draft(
-            topology, path=path, driver_research=_research(),
-            operator_inputs={"notes": "edited" if changed and index else "same"},
+            topology, path=path, driver_research=research,
+            operator_inputs={**inputs, "notes": "edited" if changed and index else "same"},
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
         sources.append(baseline_record._source_payload(
@@ -215,7 +198,7 @@ def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
     preview = build_crossover_preview(draft)
     topology = OutputTopology.from_mapping(draft["topology"])
     source = baseline_record._source_payload(topology, draft, preview)
-    fingerprint = "6f72a93df72681846819bf3a40e1495a4881ee7e0c57ee1fa065f64fea03c8af"
+    fingerprint = "2e9271be7c09d7ccbff04dfadd80836084052de9b4f406f554b7ba0873a44ea8"
     assert source["crossover_preview_fingerprint"] == fingerprint
     monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
         "declaration_fingerprint": fingerprint,
