@@ -3008,7 +3008,6 @@ def _boosting_candidate(preset, *, boost_db: float):
                         "gain": boost_db,
                     },
                 ],
-                "headroom_cost_db": boost_db,
             },
         },
         linearization_outcome="fitted",

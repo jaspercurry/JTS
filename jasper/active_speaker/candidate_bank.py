@@ -38,13 +38,14 @@ MAX_CANDIDATE_BYTES = 4 * 1024 * 1024
 
 class CandidateBankRefusal(LookupError):
     """No single trustworthy banked candidate answers this fingerprint. Carries a machine
-    ``code`` so a door can map it without parsing prose.
+    ``code`` so a door can map it without parsing prose, and its structured ``evidence``.
     """
 
-    def __init__(self, code: str, detail: str) -> None:
+    def __init__(self, code: str, detail: str, *, evidence: Mapping[str, Any] | None = None) -> None:
         super().__init__(detail)
         self.code = code
         self.detail = detail
+        self.evidence = dict(evidence or {})
 
 
 @dataclass(frozen=True)

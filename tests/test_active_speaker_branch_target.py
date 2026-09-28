@@ -292,7 +292,6 @@ def test_a_flat_driver_behind_its_crossover_attracts_no_correction():
     """
     shaped = _perfect_branch_fit(shaped=True)
     assert shaped.filters == ()
-    assert shaped.headroom_cost_db == 0.0
     assert shaped.lift_requested_db == 0.0
     assert shaped.residual_rms_db == pytest.approx(0.0124, abs=0.002)
 

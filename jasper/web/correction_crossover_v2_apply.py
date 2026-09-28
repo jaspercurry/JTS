@@ -36,8 +36,6 @@ async def apply_candidate(
     camilla_factory: Callable[[], Any],
     on_candidate_verified: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    from jasper.active_speaker.linearization_fit import HEADROOM_COST_BASIS_UNKNOWN  # lazy: NumPy is needed only when applying
-
     from_saved_draft = candidate is None
     expected = candidate if isinstance(candidate, str) else ""
     prepared: dict[str, Any] = {}
@@ -81,7 +79,7 @@ async def apply_candidate(
                 if not validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
             offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
-            summary = v2durable.candidate_summary(selected, topology_pinned=True, headroom_cost_basis=HEADROOM_COST_BASIS_UNKNOWN)
+            summary = v2durable.candidate_summary(selected, topology_pinned=True)
             change = declaration_change_for_candidate(source_preset=selected.source_preset, design_draft=draft)
             if on_candidate_verified is not None:
                 await on_candidate_verified()

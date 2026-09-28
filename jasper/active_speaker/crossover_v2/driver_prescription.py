@@ -29,7 +29,6 @@ import numpy as np
 from jasper.json_fields import finite_float
 from jasper.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_NYQUIST_HZ, SHELF_Q,
-    PeqFilter,
 )
 
 from jasper.active_speaker.branch_chain import (
@@ -38,9 +37,7 @@ from jasper.active_speaker.branch_chain import (
     _evaluation_grid,
     chain_response,
 )
-from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import (
-    boost_headroom_by_role,
     LINEARIZATION_BIQUAD_TYPES,
     MAX_PROGRAM_HEADROOM_DB,
     linearization_slot,
@@ -172,9 +169,6 @@ DRIVER_MIN_CUT_DB = 0.5
 
 DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
-# dB; absorbs f64 cascade evaluation residue, below YAML's 4-decimal precision.
-_COMPOSED_BOOST_EVAL_TOL_DB = 1e-9
-
 #: How many filters one role may carry — ``linearization_fit.
 #: MAX_FILTERS_PER_DRIVER``, which is also the emitter's own
 #: ``camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
@@ -201,7 +195,6 @@ ROLE_UNKNOWN = "driver_role_unknown"
 PASSBAND_UNAVAILABLE = "driver_passband_unavailable"
 FILTER_OUTSIDE_PASSBAND = "driver_filter_outside_passband"
 FILTER_Q_OUT_OF_RANGE = "driver_filter_q_out_of_range"
-COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 TRIM_PIN_MALFORMED = "driver_trim_pin_malformed"
 DRIVER_EXPECTATION_MALFORMED = "driver_expectation_malformed"
 
@@ -220,7 +213,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     PASSBAND_UNAVAILABLE,
     FILTER_OUTSIDE_PASSBAND,
     FILTER_Q_OUT_OF_RANGE,
-    COMPOSED_BOOST_EXCEEDED,
     TRIM_PIN_MALFORMED,
     DRIVER_EXPECTATION_MALFORMED,
 })
@@ -1080,15 +1072,12 @@ def read_driver_prescription(
     passbands_hz: DriverPassbands | None,
     classifications: Sequence[FeatureVerdict] | None,
     incumbent_filters: Mapping[str, Sequence[Mapping[str, Any]]] | None,
-    branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
-    room_peqs: Sequence[PeqFilter] = (),
+    speaker_roles: Collection[str],
 ) -> DriverPrescription | None:
-    """Validate total role replacements against the program that will be emitted.
+    """Validate total role replacements for a speaker with ``speaker_roles``.
 
-    Branch context carries crossover sections and trims in dB. Unnamed roles
-    keep their incumbent filters; an empty filter list clears all roles.
-    Room PEQs are the selected program's shared correction. These trusted
-    inputs come from the base candidate and judged document sections.
+    Unnamed roles keep their incumbent filters; an empty filter list clears all
+    roles. Composition judges the program headroom the result spends (#5909).
     """
     if raw is None:
         return None
@@ -1099,25 +1088,14 @@ def read_driver_prescription(
     expected_delta_db, declared_tilt = _pre_registration(raw)
 
     passbands = dict(passbands_hz or {})
-    prescription_class = _check_bounds(filters, passbands, branch_context)
+    prescription_class = _check_bounds(filters, passbands, speaker_roles)
     # A pin beside filters names one of their roles (_parse_pinned_trim), and
     # _check_bounds has judged those.
     for role, _ in pinned_trim_db:
-        if not filters and role not in passbands and role not in branch_context:
+        if not filters and role not in passbands and role not in speaker_roles:
             refuse(ROLE_UNKNOWN, "unknown speaker role", role=role,
-                    speaker_roles=sorted(set(passbands) | set(branch_context)))
-    context = {**{role: ((), 0.0) for role in passbands}, **branch_context}
-    for role, trim in pinned_trim_db:
-        context[role] = (context.get(role, ((), 0.0))[0], trim)
-    proposed = dict(incumbent_filters or {}) if filters else {}
-    for role in {entry["role"] for entry in filters}:
-        proposed[role] = [entry for entry in filters if entry["role"] == role]
+                    speaker_roles=sorted(set(passbands) | set(speaker_roles)))
     composed_boost_db, composed_boost_role = _check_composed(filters, passbands)
-    headroom = boost_headroom_by_role(branch_context=context, linearization=proposed, room_peqs=room_peqs)
-    cost = headroom[composed_boost_role] if composed_boost_role else next(iter(headroom.values()))
-    if cost["program_headroom_spent_db"] > MAX_PROGRAM_HEADROOM_DB + _COMPOSED_BOOST_EVAL_TOL_DB:
-        refuse(COMPOSED_BOOST_EXCEEDED, "program headroom exhausted",
-                role=composed_boost_role, **cost)
     basis, unvouched_filters = _check_classification(filters, classifications)
     displaced_filters, displaced_boost_db, displaced_boost_role = _check_displaced(
         filters, incumbent_filters, passbands
@@ -1175,13 +1153,6 @@ def driver_prescription_to_candidate_fields(
     nothing measured. The one exception is :data:`MIC_TIER_FIELD`, carried
     forward from the replaced entry — it names the MICROPHONE that measured the
     round, not this correction (#2649).
-
-    ``headroom_cost_db`` is omitted but NOT owned here: a charge is a property
-    of the emitted chain (filters, crossover sections, committed trim) and this
-    is a pure function over a document and a fitted map.
-    ``candidate_parts.compose_candidate`` stamps it (#2759), so a caller that
-    folds these entries on without charging them discloses 0.0 for a branch
-    that genuinely spends maximum SPL.
 
     ``{}`` for a ``None`` prescription, whatever ``fitted`` holds.
     """
@@ -1407,7 +1378,6 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "boost SPENDS is bounded by the caps above either way"
             ),
             "refusals": sorted({
-                COMPOSED_BOOST_EXCEEDED,
                 FILTER_Q_OUT_OF_RANGE,
                 FILTER_OUTSIDE_PASSBAND,
                 PASSBAND_UNAVAILABLE,

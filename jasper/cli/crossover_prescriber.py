@@ -20,6 +20,7 @@ from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
+from jasper.active_speaker.candidate_parts import program_charge_db
 from jasper.active_speaker.crossover_declaration import preset_crossover_geometry
 from jasper.active_speaker.design_draft import ActiveSpeakerDesignDraftError, load_design_draft
 from jasper.active_speaker.crossover_v2.conductor_context import published_driver_caps
@@ -169,6 +170,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
         answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
+                  "program_charge_db": program_charge_db(candidate),
                   "measurement_status": "unmeasured", "adopted": False,
                   "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
         if args.command == "judge":

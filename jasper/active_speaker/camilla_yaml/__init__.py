@@ -69,6 +69,9 @@ from .filters import (
     MAX_BLEND_CORRECTION_FILTERS as MAX_BLEND_CORRECTION_FILTERS,
     MAX_BLEND_CORRECTION_GAIN_DB as MAX_BLEND_CORRECTION_GAIN_DB,
     MAX_LINEARIZATION_FILTERS_PER_DRIVER as MAX_LINEARIZATION_FILTERS_PER_DRIVER,
+    PROGRAM_HEADROOM_BINDING as PROGRAM_HEADROOM_BINDING,
+    PROGRAM_HEADROOM_EXHAUSTED as PROGRAM_HEADROOM_EXHAUSTED,
+    ProgramHeadroomExhausted as ProgramHeadroomExhausted,
     STARTUP_HEADROOM_DB as STARTUP_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB as STARTUP_LIMITER_CLIP_LIMIT_DB,
     _crossover_filter_name as _crossover_filter_name,
@@ -114,7 +117,6 @@ from .ledger import (
     _branch_context as _branch_context,
     _correction_bool as _correction_bool,
     _correction_value as _correction_value,
-    boost_headroom_by_role as boost_headroom_by_role,
     linearization_headroom_db as linearization_headroom_db,
     program_headroom_db as program_headroom_db,
 )

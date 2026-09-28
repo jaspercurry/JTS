@@ -67,37 +67,6 @@ def program_headroom_db(
             + max(0.0, output_trim_db))
 
 
-def boost_headroom_by_role(
-    *, branch_context: Mapping[str, tuple[Sequence[CrossoverSection], float]],
-    linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
-    room_peqs: Sequence[PeqFilter] = (),
-    session_volume_db: float | None = None,
-    spl_headroom_db: float | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Disclose playback's program headroom cost, in dB, using the emitter's charge.
-
-    Full-scale branch peak is session volume + trim + crossover/linearization
-    peak - program absorption (dBFS). Absorption includes the largest positive
-    branch peak plus its margin, so boost spends maximum SPL without raising
-    the branch above the fader. Measurement excitation caps do not apply here;
-    session volume and measured SPL headroom are disclosures only.
-    """
-    from ..branch_chain import (
-        branch_chain_peak_db,  # lazy: numpy import cost (fanin imports this module for one constant)
-    )
-
-    spent = program_headroom_db(linearization, branch_context=branch_context, room_peqs=room_peqs)
-    return {role: {
-        "composed_boost_db": max(0.0, branch_chain_peak_db((linearization or {}).get(role, ()))),
-        "program_headroom_spent_db": spent,
-        "program_headroom_remaining_db": max(0.0, MAX_PROGRAM_HEADROOM_DB - spent),
-        "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
-        "session_volume_db": session_volume_db,
-        "spl_headroom_db": spl_headroom_db,
-        "binding": "program_headroom" if spent >= MAX_PROGRAM_HEADROOM_DB else None,
-    } for role in branch_context}
-
-
 def linearization_headroom_db(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]] | None,
     *,
@@ -120,10 +89,8 @@ def linearization_headroom_db(
     in the loud direction for a delta. :func:`_branch_context` builds it from
     the same preset and corrections the graph is emitted from.
 
-    Public because the runtime contract's prover must agree with the emitter
-    about this number and the candidate payload discloses it. The evaluation
-    lives in :mod:`jasper.active_speaker.branch_chain` — one implementation.
-    0.0 for a cut-only linearization.
+    The evaluation lives in :mod:`jasper.active_speaker.branch_chain` — one
+    implementation. 0.0 for a cut-only linearization.
     """
     # A branch with no positive gain cannot reach unity through a crossover and
     # a non-positive trim, so a cut-only graph is charged 0.0 without evaluating
@@ -176,13 +143,11 @@ def _branch_context(
     Built from the same two sources the graph itself is — the preset's crossover
     regions and ``corrections``' per-driver ``gain_db`` — so the chain this
     charge is computed over IS the chain the next few lines emit. The role ->
-    sections half is :func:`jasper.active_speaker.crossover_section.sections_by_role`,
-    shared with the session that stamps the disclosed ``headroom_cost_db``.
+    sections half is :func:`jasper.active_speaker.crossover_section.sections_by_role`.
 
     Deliberately omits the bass-management and protective tweeter high-passes,
     which attenuate further still: crediting less attenuation over-charges
-    rather than under-charges, and keeps this identical to what the runtime
-    contract can re-derive without walking optional filters.
+    rather than under-charges.
     """
     return {
         role: (

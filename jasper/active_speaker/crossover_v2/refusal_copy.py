@@ -412,6 +412,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
            ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
+           ("program_headroom_exhausted", "reduce_boosts", "Reduce the room, driver or rear boosts, or lower the Extra headroom setting."),
            ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},

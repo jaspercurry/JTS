@@ -33,8 +33,9 @@ from jasper.active_speaker.baseline_profile import (
     profile_program_headroom_db,
 )
 from jasper.biquad import SHELF_Q, PeqFilter
-from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, boost_headroom_by_role, linearization_headroom_db
+from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, linearization_headroom_db
 from jasper.active_speaker import program_headroom
+from jasper.active_speaker.graph_safety import GraphFilter, GraphView
 from jasper.active_speaker.camilla_names import (
     blend_correction_name, driver_linearization_peak_name, driver_linearization_shelf_name,
     driver_linearization_taper_name, room_peq_name,
@@ -48,7 +49,6 @@ from jasper.active_speaker.runtime_contract import (
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_crossover_v2_driver_prescription import BRANCH_CONTEXT, _boost
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear, _rear_document
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
@@ -424,19 +424,6 @@ def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
     assert _headroom_gain_db(both) > _headroom_gain_db(flat) - (
         woofer_alone + tweeter_alone
     )
-
-
-@pytest.mark.parametrize("volume,spl", [(-21.09, 36.0), (None, None), (-21.09, -3.0)])
-def test_program_headroom_discloses_cost_without_measurement_caps(volume, spl):
-    filters = {"woofer": [_boost(gain=6.0, role="woofer")], "tweeter": [_boost(gain=6.0)]}
-    bounds = boost_headroom_by_role(branch_context=BRANCH_CONTEXT, linearization=filters,
-                                   session_volume_db=volume, spl_headroom_db=spl)
-    for row in bounds.values():
-        assert row == {
-            "composed_boost_db": pytest.approx(6.0), "program_headroom_spent_db": pytest.approx(7.0),
-            "program_headroom_remaining_db": pytest.approx(33.0), "max_program_headroom_db": 40.0,
-            "session_volume_db": volume, "spl_headroom_db": spl, "binding": None,
-        }
 
 
 def test_linearization_headroom_is_zero_for_a_cut_only_correction():
@@ -1102,6 +1089,17 @@ def test_runaway_program_headroom_is_refused():
             _preset(), playback_device=ACTIVE_PCM,
             linearization={"tweeter": [_peak(6000.0, 22.0)] * 3},
         )
+
+
+@pytest.mark.parametrize("headroom", [
+    None, GraphFilter("Gain", {"gain": float("nan")}), GraphFilter("Biquad", {"gain": -3.0}),
+])
+def test_an_active_graph_without_one_finite_headroom_gain_is_malformed(headroom):
+    """#5909: every emitted active program graph carries one finite pre-split ``Gain``."""
+    filters = {} if headroom is None else {program_headroom.PROGRAM_HEADROOM_FILTER: headroom}
+    with pytest.raises(program_headroom.ProgramHeadroomUnreadable) as refused:
+        program_headroom.graph_headroom_db(GraphView(parsed_ok=True, filters=filters))
+    assert refused.value.code == "program_headroom_unreadable"
 
 
 def test_a_generous_program_headroom_still_emits():

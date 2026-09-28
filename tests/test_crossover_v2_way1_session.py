@@ -16,7 +16,6 @@ from __future__ import annotations
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 import shlex
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +31,6 @@ from jasper.active_speaker import (
     commission_wiring,
     crossover_v2_flow,
 )
-from jasper.active_speaker.branch_chain import branch_headroom_db
 from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2.planning import analysis_json
@@ -283,8 +281,7 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
 
 
 def _way1_candidate(conductor, analysis):
-    """The solo's fit, charged into its own chain, at a fixed 0 dB: a lone
-    branch has no pair to trim."""
+    """The solo's fit at a fixed 0 dB: a lone branch has no pair to trim."""
     (response,) = analysis.driver_responses
     sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
     fit = fit_branches(
@@ -292,12 +289,11 @@ def _way1_candidate(conductor, analysis):
         mic_tiers={"full_range": str(analysis.mic_tier)},
         vocabulary=FitVocabulary(allow_boost=True), sections={},
     ).fits["full_range"]
-    charge_db = branch_headroom_db([f.to_dict() for f in fit.filters])
     return MeasuredCrossoverCandidate(
         program_id=analysis.stimulus_id,
         analysis=analysis_json(analysis),
         source_preset=conductor.source_preset,
         role_attenuations_db={"full_range": 0.0},
-        linearization={"full_range": replace(fit, headroom_cost_db=charge_db).to_dict()},
+        linearization={"full_range": fit.to_dict()},
         linearization_outcome=LINEARIZATION_OUTCOME_SINGLE_BRANCH,
     )

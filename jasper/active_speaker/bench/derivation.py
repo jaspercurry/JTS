@@ -19,17 +19,12 @@ import yaml
 
 from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.active_speaker.program_headroom import PROGRAM_HEADROOM_FILTER, graph_headroom_db
 from jasper.json_fields import require_finite
 
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
     {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}
 )
-
-#: The program-domain gain the emitter folds baseline headroom, room-correction
-#: boost, and linearization boost into. Read (never written) here so the loop
-#: can account for the level move a boosting linearization causes between the
-#: two arms of its A/B.
-PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
 
 
 class EmitDerivationError(ValueError):
@@ -306,16 +301,7 @@ def _program_headroom_db(text: str) -> float:
     """
 
     view = view_from_emitted_text(text)
-    definition = view.filters.get(PROGRAM_HEADROOM_FILTER)
-    if definition is None:
-        return 0.0
-    if definition.type != "Gain":
-        raise EmitDerivationError(
-            f"{PROGRAM_HEADROOM_FILTER!r} is not a Gain in the emitted graph"
-        )
-    return _finite_float(
-        definition.params.get("gain"), f"{PROGRAM_HEADROOM_FILTER}.gain"
-    )
+    return 0.0 if PROGRAM_HEADROOM_FILTER not in view.filters else 0.0 - graph_headroom_db(view)
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,7 +511,6 @@ def derive_offline_render_config(
 
 
 __all__ = [
-    "PROGRAM_HEADROOM_FILTER",
     "BranchStep",
     "DeviceGeometry",
     "DerivedRenderConfig",

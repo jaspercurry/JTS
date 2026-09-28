@@ -17,11 +17,10 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.camilla_yaml import _branch_context
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from ..measured_crossover_candidate import (
-    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
+    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
@@ -30,7 +29,6 @@ from jasper.active_speaker import rear_calibration
 from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper import output_topology_store as output_topology
 from ._prescription_common import PRESCRIPTION_MALFORMED
-from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
 from . import bass_prescription as bass
@@ -173,20 +171,15 @@ def vary_document(
 
 def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
                    contracts: Mapping[str, Any], evidence: PrescriptionEvidence,
-                   fc_hz: float | None, selected: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+                   fc_hz: float | None) -> tuple[Any, Mapping[str, Any]]:
     packet = dict(evidence.packet)
     speaker = contracts.get("speaker", {})
     if name == "driver":
-        preset, _ = apply_topology_pin(selected.get("topology"), preset=base.candidate.source_preset, fc_hz=None)
         driver.check_driver_document_size(json.dumps(raw).encode())
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
-            # A role with no crossover region (a one-way speaker's) still has a
-            # branch; ((), 0.0) is what the emitter's headroom charge assumes.
-            branch_context={**dict.fromkeys(required_driver_roles(preset.way_count), ((), 0.0)),
-                            **_branch_context(preset, driver_corrections(base.candidate))},
-            room_peqs=room_peqs_from_correction(selected.get("room", base.candidate.room_correction) or {}, preset),
+            speaker_roles=required_driver_roles(base.candidate.source_preset.way_count),
             classifications=packet_feature_classifications(packet),
             incumbent_filters=linearization_filters_by_role(base.candidate.linearization),
         )
@@ -416,7 +409,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         section = _section_payload(name, section, document["rationale"], contracts)
         try:
             selected[name], judged[name] = _judge_section(
-                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz, selected=selected,
+                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz,
             )
             if name == "topology":
                 fc_hz = selected[name].fc_hz
@@ -447,6 +440,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                       **({"commissioning": {"alignment": read}} if read is not None else {})},
         )
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail,
+                                          evidence=getattr(exc, "evidence", None)) from exc
     except (ValueError, TypeError, KeyError) as exc:
-        raise PrescriptionDocumentRefused("composition_invalid", None, str(exc)) from exc
+        raise PrescriptionDocumentRefused(COMPOSITION_INVALID, None, str(exc)) from exc
