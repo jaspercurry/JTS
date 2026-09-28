@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.corner_admissibility import (
     _fc_rejection,
 )
 from jasper.speaker_layout import declared_radiating_diameters_mm
-from tests.active_speaker_fixtures import mono_output_topology
 
 # The JTS3 declaration, so the numbers below are the ones the owner's speaker
 # actually produces rather than a synthetic shape.
@@ -131,13 +130,13 @@ def test_the_refusal_vocabulary_is_exactly_the_two_damage_stops():
 def test_the_declared_diameter_resolves_off_the_draft_like_driver_class():
     from jasper.active_speaker.crossover_v2.conductor_context import _resolve_driver_class_by_role
 
-    draft = {"topology": mono_output_topology().to_dict(), "manual_settings": {"drivers": [
-        {"role": "woofer", "target_id": "mono:woofer", "driver_class": "unknown",
+    draft = {"manual_settings": {"drivers": [
+        {"role": "woofer", "driver_class": "unknown",
          "radiating_diameter_mm": JTS3_DIAMETER_MM},
-        {"role": "tweeter", "target_id": "mono:tweeter", "driver_class": "compression_horn"},
+        {"role": "tweeter", "driver_class": "compression_horn"},
     ]}}
     assert declared_radiating_diameters_mm(draft) == {"woofer": JTS3_DIAMETER_MM}
-    # Both key by role off the same stored draft.
+    # Same draft path, same role keying as the field it mirrors.
     assert set(_resolve_driver_class_by_role(draft)) >= {"tweeter"}
 
 

@@ -14,7 +14,6 @@ from jasper.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
-from jasper.active_speaker.design_inputs import resolved_draft_inputs
 
 from .refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
@@ -138,18 +137,25 @@ def ensure_crossover_preview_ready(design_draft: Mapping[str, Any] | None = None
 def _resolve_driver_class_by_role(draft: Mapping[str, Any]) -> dict[str, str]:
     """Per-role declared driver technology class (#1665 component entry).
 
-    Bound through the draft's topology, one value per physical output; a role
-    whose outputs disagree drops, and a value outside ``DRIVER_CLASSES`` is
-    skipped, so it costs that role
-    :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`'s
-    "unknown" default, never the session.
+    Read by role off ``manual_settings.drivers``, like its pair
+    :func:`jasper.speaker_layout.declared_radiating_diameters_mm`: a role with
+    disagreeing declarations drops entirely, and anything malformed is skipped
+    rather than raised. This resolver runs inside conductor-context resolution:
+    an unexpected value should fall back to
+    :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`'s own
+    conservative "unknown" default for that one role, never abort the whole
+    session.
     """
 
-    if not isinstance(draft, Mapping) or not draft.get("topology"):
+    manual = draft.get("manual_settings") if isinstance(draft, Mapping) else None
+    if not isinstance(manual, Mapping):
         return {}
+    drivers = manual.get("drivers")
     out: dict[str, str] = {}
     conflicted: set[str] = set()
-    for driver in resolved_draft_inputs(draft)["drivers"]:
+    for driver in drivers if isinstance(drivers, list) else []:
+        if not isinstance(driver, Mapping):
+            continue
         role = str(driver.get("role") or "")
         value = driver.get("driver_class")
         if not role or not isinstance(value, str) or value not in DRIVER_CLASSES:
