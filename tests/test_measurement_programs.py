@@ -541,16 +541,20 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
 
 
-@pytest.mark.parametrize("purpose,base,cleared", [
-    (mp.PURPOSE_BASS, True, ("room_correction", "bass_extension")),
-    (mp.PURPOSE_BASS, False, ("room_correction",)),
-    (mp.PURPOSE_SPEAKER, True, ()), (mp.PURPOSE_ROOM, True, ()), (mp.PURPOSE_REAR, False, ()),
-    (mp.PURPOSE_REFERENCE, True, ()), (None, True, ()),
+@pytest.mark.parametrize("purpose,base,regime,cleared", [
+    (mp.PURPOSE_BASS, True, mp.REGIME_SUMMED, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_BASS, False, mp.REGIME_SUMMED, ("room_correction",)),
+    (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, ("rear_calibration",)),
+    (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, ("rear_calibration",)),
+    (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
+    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_REFERENCE, True, mp.REGIME_SUMMED, ()),
+    (None, True, mp.REGIME_SUMMED, ()),
 ])
-def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, cleared) -> None:
+def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, regime, cleared) -> None:
     """A bass take plays the applied speaker layer with room off, and its base
-    plays bass off too; every other purpose plays its layers as composed (ADR-0370)."""
-    assert mp.cleared_layers(purpose, base=base) == cleared
+    plays bass off too; a rear pair take plays its parent with the rear stage
+    off; every other take plays its layers as composed (ADR-0370, ADR-0386)."""
+    assert mp.cleared_layers(purpose, base=base, regime=regime) == cleared
 
 
 def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:

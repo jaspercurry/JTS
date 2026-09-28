@@ -1478,6 +1478,27 @@ def test_only_a_branches_stop_may_name_a_branch_pair():
         ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR)
 
 
+@pytest.mark.parametrize("preset, candidates, parent", [
+    ("rear/pair", (), "applied"), ("rear/pair", ("base",), "applied"), ("rear/pair", ("fp-a",), "fp-a"),
+    ("rear/pair", ("fp-a", "fp-b"), None),
+    ("branches/express", (), None), ("branches/express", ("base",), None), ("branches/express", ("fp-a",), "fp-a"),
+])
+def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candidates, parent):
+    """A rear pair's parent is the applied base unless one saved candidate is
+    named; any other pair names one (ADR-0386)."""
+    row = mp.run_preset(preset)
+    if parent is None:
+        with pytest.raises(ac.LateralWalkRefused) as refused:
+            ac.request_for_preset(row, candidates=candidates)
+        assert refused.value.reason == ac.REASON_MEASUREMENT_CANDIDATE_REQUIRED
+        return
+    request = ac.request_for_preset(row, candidates=candidates)
+    specs = ac.stop_specs(request, baseline_id="applied", roles_bands=_ROLES_BANDS,
+                          prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    assert {(spec.graph_scope, spec.candidate_id, spec.cleared_layers) for spec in specs} == {
+        ("candidate_branches", parent, ("rear_calibration",) if row.purpose == mp.PURPOSE_REAR else ())}
+
+
 @pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
 def test_request_levels_round_trip_and_single_level_bytes(levels):
     program = mp.preset("room")

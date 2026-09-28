@@ -365,14 +365,6 @@ def reset_prescription_document(
             "sections": sections, "rationale": "Reset the applied tuning layers."}
 
 
-def rear_cleared_candidate() -> MeasuredCrossoverCandidate:
-    """The applied tune without its rear stage, for raw pair capture (issue #5330).
-
-    Composed, not banked: the caller publishes it.
-    """
-    return bank_section("rear_calibration", None, rationale="Measure both woofers with no rear stage.")
-
-
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
     """Judge ONE authored section on the applied baseline, as a ``base: saved`` document does.
 

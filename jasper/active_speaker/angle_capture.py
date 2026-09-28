@@ -29,7 +29,7 @@ from typing import Any, Mapping, Sequence
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 
-from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -715,7 +715,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id),
+            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
@@ -794,8 +794,13 @@ def request_for_preset(
     (:func:`~.measurement_programs.plan_poses`)."""
     if preset.mover is not None and preset.mover != mover:
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{preset.preset} requires mover={preset.mover}")
-    if preset.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
-        raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
+    # A pair whose takes clear a layer reads the drivers raw, so the applied base
+    # may be its one candidate (ADR-0386).
+    saved = bool(candidates) and candidate_identity(candidates[0]) != BASE_CANDIDATE
+    if preset.regime == REGIME_BRANCHES and (len(candidates) > 1 or not saved and not cleared_layers(
+            preset.purpose, base=True, regime=REGIME_BRANCHES)):
+        raise LateralWalkRefused(REASON_MEASUREMENT_CANDIDATE_REQUIRED,
+                                 f"{preset.preset} plays one candidate: name one saved fingerprint")
     room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
@@ -1004,6 +1009,7 @@ SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     REASON_WALK_MOVER_MISMATCH,
+    REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
     WALK_SCHEMA_VERSION_UNSUPPORTED,
