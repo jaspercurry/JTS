@@ -329,12 +329,30 @@ def test_stored_candidate_integrity_survives_retired_preset_fields(tmp_path, tam
     assert reopened.to_dict() == raw
 
 
-def test_from_mapping_rejects_unknown_fields():
+@pytest.mark.parametrize(
+    "field, bad_value, code",
+    [
+        pytest.param("extra_field", 1, "candidate_malformed", id="unknown_field"),
+        pytest.param(
+            "exclusion_evidence", "not-a-mapping", "exclusion_evidence_malformed",
+            id="non_mapping_exclusion_evidence",
+        ),
+        pytest.param(
+            "linearization_outcome", 7, "linearization_outcome_malformed",
+            id="non_string_linearization_outcome",
+        ),
+        pytest.param(
+            "linearization", "not-a-mapping", "linearization_malformed",
+            id="non_mapping_linearization",
+        ),
+    ],
+)
+def test_from_mapping_rejects_malformed_field(field, bad_value, code):
     candidate = _candidate()
-    raw = {**candidate.to_dict(), "extra_field": 1}
+    raw = {**candidate.to_dict(), field: bad_value}
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "candidate_malformed"
+    assert excinfo.value.code == code
 
 
 # --- linearization field (#1668 PR-C) ---------------------------------------
@@ -842,22 +860,6 @@ def test_exclusion_evidence_tampering_trips_the_tamper_check():
     assert excinfo.value.code == "candidate_tampered"
 
 
-def test_from_mapping_rejects_non_mapping_exclusion_evidence():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "exclusion_evidence": "not-a-mapping"}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "exclusion_evidence_malformed"
-
-
-def test_from_mapping_rejects_non_string_linearization_outcome():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "linearization_outcome": 7}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "linearization_outcome_malformed"
-
-
 def test_to_dict_canonical_shape_always_includes_linearization_key():
     """Canonical to_dict shape (forward-shape consistency, chosen over
     omitting the key when empty): every NEWLY-serialized candidate always
@@ -880,14 +882,6 @@ def test_to_dict_canonical_shape_always_includes_linearization_key():
         "schema_version", "kind", "program_id", "analysis", "source_preset",
         "role_attenuations_db", "alignment", "fingerprint",
     } | set(_OPTIONAL_FIELD_TYPES)
-
-
-def test_from_mapping_rejects_non_mapping_linearization():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "linearization": "not-a-mapping"}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "linearization_malformed"
 
 
 # --- room_correction --------------------------------------------------------
