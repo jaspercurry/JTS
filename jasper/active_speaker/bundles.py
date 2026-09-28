@@ -58,6 +58,7 @@ from jasper.paths import resolve_state_path
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
 from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
+from jasper.install_profile import BUILD_MANIFEST_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ _CAPTURE_KINDS = frozenset({"driver", "summed", CAPTURE_KIND_SEQUENTIAL})
 _VALID_STATES = frozenset({"open", "closed", "proposal_ready", "applied", "failed", "abandoned"})
 _UNFINISHED_STATES = frozenset({"open", "proposal_ready"})
 
-_BUILD_MANIFEST_PATH = Path("/var/lib/jasper/build.txt")
+_BUILD_MANIFEST_PATH = BUILD_MANIFEST_FILE
 
 
 def _env_int(name: str, default: int) -> int:

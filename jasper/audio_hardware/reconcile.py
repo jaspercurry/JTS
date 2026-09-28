@@ -71,6 +71,7 @@ from jasper.output_hardware import (
     state_path,
 )
 from jasper.shell_env import render_shell_assignments
+from jasper.install_profile import INSTALL_PROFILE_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ class Pass:
             or "/run/jasper-output-hardware/i2s-hat-reboot-required"
         )
         self.install_profile_file = (
-            env.get("JASPER_INSTALL_PROFILE_FILE") or "/var/lib/jasper/install_profile"
+            env.get("JASPER_INSTALL_PROFILE_FILE") or str(INSTALL_PROFILE_FILE)
         )
         self.output_topology_path = (
             env.get("JASPER_OUTPUT_TOPOLOGY_PATH") or DEFAULT_TOPOLOGY_PATH

@@ -31,11 +31,10 @@ from jasper.audio_hardware import dac as dac_registry
 from jasper.config import env_bool
 from jasper.audio_profile_state import (
     AEC_MODE_FILE_ENV,
-    DEFAULT_AEC_MODE_PATH,
     PROFILE_CUSTOM,
     normalize_audio_input_profile,
 )
-from jasper.env_load import parse_env_file
+from jasper.env_load import parse_env_file, DEFAULT_AEC_MODE_PATH
 from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output

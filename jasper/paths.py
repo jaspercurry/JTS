@@ -16,6 +16,9 @@ DEFAULT_CAMILLA_STATEFILE = Path("/var/lib/camilladsp/outputd-statefile.yml")
 DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 OUTPUT_HARDWARE_STATE_PATH = "/run/jasper-output-hardware/output_hardware.json"
 OUTPUT_TOPOLOGY_PATH = "/var/lib/jasper/output_topology.json"
+SOUNDS_DIR = "/var/lib/jasper/sounds"
+WAKE_EVENTS_DIR = "/var/lib/jasper/wake-events"
+XVF_FIRMWARE_UPDATE_STATE_PATH = "/var/lib/jasper/xvf-firmware-update.json"
 
 
 def resolve_state_path(

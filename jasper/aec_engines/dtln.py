@@ -38,6 +38,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from jasper.aec_engines.dtln_models import DTLN_MODELS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -215,4 +216,4 @@ class DTLNEngine:
 
 def default_model_dir() -> Path:
     """Where install.sh places the converted ONNX models on the Pi."""
-    return Path(os.environ.get("JASPER_DTLN_MODEL_DIR", "/var/lib/jasper/dtln"))
+    return Path(os.environ.get("JASPER_DTLN_MODEL_DIR", DTLN_MODELS_DIR))

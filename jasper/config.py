@@ -54,6 +54,7 @@ from .wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST
 from .wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
+from jasper.paths import SOUNDS_DIR, WAKE_EVENTS_DIR
 
 
 class VoiceConfigError(RuntimeError):
@@ -242,7 +243,7 @@ def _parse_wake_input_env() -> dict[str, Any]:
         # Per-leg WAVs cover 6 s; the audio ring evicts oldest first.
         wake_events_dir=_env(
             "JASPER_WAKE_EVENTS_DIR",
-            "/var/lib/jasper/wake-events",
+            WAKE_EVENTS_DIR,
         ),
         # See jasper/wake_events.py for retention-cap sizing.
         wake_events_max_audio_bytes=_env_int(
@@ -386,7 +387,7 @@ def _parse_local_services_env(hostname: str, timers: ModuleType) -> dict[str, An
             "JASPER_MANAGEMENT_URL", f"http://{hostname}",
         ),
         sounds_dir=_env(
-            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+            "JASPER_SOUNDS_DIR", SOUNDS_DIR,
         ),
         timer_db_path=_env(
             "JASPER_TIMER_DB", timers.DEFAULT_DB_PATH,

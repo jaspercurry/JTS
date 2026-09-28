@@ -215,10 +215,12 @@ def check_active_speaker_runtime_graph() -> CheckResult:
 
 
 def _sound_profile_path() -> Path:
+    from jasper.sound.profile import PROFILE_PATH
+
     return Path(
         os.environ.get(
             "JASPER_SOUND_PROFILE_PATH",
-            "/var/lib/jasper/sound_profile.json",
+            PROFILE_PATH,
         )
     )
 

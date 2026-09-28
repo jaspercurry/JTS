@@ -44,7 +44,7 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ... import audio_profile_state, conversation_history, mic_mute_persistence, mux_mode_persistence
+from ... import conversation_history, mic_mute_persistence, mux_mode_persistence
 from ...active_speaker.design_draft import DEFAULT_DESIGN_DRAFT_PATH
 from ...control.control_token import TOKEN_FILE
 from ...sound.profile import PROFILE_PATH
@@ -62,6 +62,7 @@ from ...env_load import (
     VOICE_PROVIDER_ENV_PATH,
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
+    DEFAULT_AEC_MODE_PATH,
 )
 from ...identity import identity_state
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, DEFAULT_CAMILLA_STATEFILE
@@ -131,7 +132,7 @@ MANIFEST: tuple[DaemonReadSpec, ...] = (
             SPEAKER_NAME_ENV_PATH,
             TRANSIT_ENV_PATH,
             PEERING_ENV_PATH,
-            str(audio_profile_state.DEFAULT_AEC_MODE_PATH),
+            str(DEFAULT_AEC_MODE_PATH),
             PROFILE_PATH,
             SETTINGS_PATH,
             str(DEFAULT_CAMILLA_STATEFILE),

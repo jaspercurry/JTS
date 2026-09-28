@@ -338,6 +338,8 @@ def check_fanin_service() -> CheckResult:
         them — and the reported reason is the FIRST fault found, not the
         "worst" one.
     """
+    from ...env_load import FANIN_ENV_PATH
+
     service_failure = service_state_failure(
         "jasper-fanin service",
         FANIN_SERVICE,
@@ -490,7 +492,7 @@ def check_fanin_service() -> CheckResult:
         faults.append((
             REASON_FANIN_INPUTS_DRIFTED,
             f"input roster drifted: {roster_detail} — check "
-            "/var/lib/jasper/fanin.env",
+            f"{FANIN_ENV_PATH}",
         ))
     if input_buffer_frames < 4096:
         faults.append((
