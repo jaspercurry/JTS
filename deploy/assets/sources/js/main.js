@@ -224,23 +224,20 @@ el("airplay-reset").addEventListener("click", async () => {
   postInFlight = true;
   disableControls();
   const button = el("airplay-reset");
-  const result = el("airplay-reset-result");
   button.textContent = "Resetting…";
-  result.hidden = true;
   try {
     const resp = await fetch("./airplay/reset", {
       method: "POST", headers: jsonHeaders(), body: "{}",
     });
     const payload = await resp.json();
     if (!resp.ok) throw new Error(payload.error || "AirPlay reset failed. Try again.");
-    result.textContent = payload.airplay_session_cleanup.reason === "receiver_absent"
+    await jtsAlert(payload.airplay_session_cleanup.reason === "receiver_absent"
       ? "AirPlay is not running. Turn AirPlay off and on, then connect again."
-      : "AirPlay connection reset. Select this speaker again on your device.";
+      : "AirPlay connection reset. Select this speaker again on your device.");
   } catch (error) {
-    result.textContent = error.message || "Could not reset AirPlay. Check the speaker connection and try again.";
+    await jtsAlert(error.message || "Could not reset AirPlay. Check the speaker connection and try again.");
   } finally {
-    result.hidden = false;
-    button.textContent = "Reset AirPlay connection";
+    button.textContent = "Reset";
     await refreshAfterMutation();
   }
 });

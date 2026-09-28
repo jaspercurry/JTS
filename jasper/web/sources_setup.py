@@ -72,11 +72,10 @@ def _source_row(
     return f"""
     <div class="source-row">
       <div class="source-text">
-        <div class="source-name">{name}</div>
+        <div class="source-name">{name}{actions_html}</div>
         {notes}
       </div>
       {toggle_html(input_id, disabled=True)}
-      {actions_html}
     </div>
     """
 
@@ -103,14 +102,9 @@ def _index_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
         _source_row(
             name="AirPlay", input_id="t-airplay",
             actions_html=(
-                '<div class="source-actions">'
-                '<button type="button" class="btn btn--ghost" '
-                'id="airplay-reset" aria-describedby="airplay-reset-hint" disabled>'
-                'Reset AirPlay connection</button>'
-                '<p class="form-hint" id="airplay-reset-hint">Stops AirPlay audio. '
-                'Select this speaker again on your device.</p>'
-                '<p class="source-note" id="airplay-reset-result" '
-                'role="status" aria-live="polite" hidden></p></div>'
+                '<button type="button" class="btn btn--ghost source-reset" '
+                'id="airplay-reset" aria-label="Reset AirPlay connection" disabled>'
+                'Reset</button>'
             ),
             unavailable_html=(
                 '<div class="source-note warn" id="airplay-unavailable-note" '
