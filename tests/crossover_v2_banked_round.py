@@ -54,11 +54,13 @@ import numpy as np
 
 from jasper.audio_measurement.bundles import record_artifact
 from jasper.audio_measurement.calibration import store_calibration
-from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
+from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, mint_wired_answer
 from jasper.active_speaker.capture_provenance import CaptureProvenance, CaptureProvenanceRecorder
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, place_wired_answer
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.plan_run import PlanCapture, run_plan
+from jasper.active_speaker.round_packet import RoundPacket
+from jasper.active_speaker.run_levels import LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
@@ -960,12 +962,15 @@ def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None,
-                       analysis_fields=None, recording=None, request=None, planned=None):
+                       analysis_fields=None, recording=None, request=None, planned=None,
+                       ladder=None, door=None, gate=None):
     """One take through the engine and the capture host: ``planned``, one of
     ``request``'s captures, or else a candidate take at the stop ``pose`` names.
-    ``recording`` is int32 samples the host analyses for real at the stop's own
-    lateral pose, as a walk plays it; without one the take records 32 zeros
-    under a stand-in analysis."""
+    With a ``ladder``, ``request`` plays each rung as the web host does, one
+    child manifest per rung on ``door(manifest, seams, records)`` behind
+    ``gate``, and every rung's take comes back in order. ``recording`` is int32
+    samples the host analyses for real at the stop's own lateral pose, as a walk
+    plays it; without one the take records 32 zeros under a stand-in analysis."""
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -989,36 +994,63 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
         spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
                                                         candidate_id=stop.candidate_id, program_phase=program.phase)
-        wav, _ = encode_wav_s32(np.zeros(32, dtype=np.int32) if recording is None else recording, sample_rate_hz=48000)
-        answer = WiredCaptureAnswer(wav=wav, program=program.to_dict(),
-            device={"card": "UMIK2", "usb_id": "2752:002b", "model_key": "minidsp_umik2",
-                    "pcm": "hw:CARD=UMIK2,DEV=0", "channel_selected": 0},
+        samples = np.zeros(32, dtype=np.int32) if recording is None else recording
+        answer = replace(mint_wired_answer(
+            WiredRecording(chunks=(np.column_stack((samples, np.zeros_like(samples))).astype("<i4").tobytes(),),
+                           frames=len(samples), gap_count=0, gap_frames=0, truncated=False,
+                           sample_rate_hz=48000, channels=2),
+            device=WiredMicDevice(card_id="UMIK2", card_index=2, usb_id="2752:002b",
+                                  model_key="minidsp_umik2", model_label="miniDSP UMIK-2"),
             setup={"calibration": {"mode": "stored", "calibration_id": calibration.calibration_id,
-                                    "model": calibration.model}})
+                                    "model": calibration.model}}), program=program.to_dict())
         answer = place_wired_answer(store.bundle_dir, answer, phase=program.phase, group=program.phase)
-        capture = SimpleNamespace(take_answer=lambda: answer, bundle_dir=store.bundle_dir)
-        records = CapturedRecordStore(manifest, capture)
+        provenance = CaptureProvenanceRecorder()
+
+        def take_answer():
+            provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
+                session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
+            return answer
+        capture = SimpleNamespace(take_answer=take_answer, bundle_dir=store.bundle_dir)
         conductor = (_conductor(FakeSeams(), index_phase_map={1: program.phase}) if recording is None else
                      _conductor(FakeSeams(), index_phase_map={1: PHASE_LATERAL},
                                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                                 lateral_prompts=(angle_capture.resolve_request(request)[0].prompt,)))
         refs: dict[str, Any] = {}
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))
-        provenance = CaptureProvenanceRecorder()
-        provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
-            session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
-        analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
-        engine = TwinSeams(records=SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})),
-                           play=FakePlay(wav_path=answer.wav_path))
+        seams = TwinSeams(play=FakePlay(wav_path=answer.wav_path))
+
+        def assessor(*_args, **_kwargs):
+            return TakeVerdict(True)
+
+        def bound(run):
+            records = CapturedRecordStore(run, capture)
+            analyze, _ = bind_plan_analysis(conductor, records, manifest=run, evidence=refs, provenance=provenance)
+            return SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})), analyze
+
         async def bank():
-            async with open_session(engine, session_id=manifest.run_id,
-                                    allocate_take_id=manifest.allocate_take_id) as (session, _):
-                await run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                    captures=(PlanCapture(stop, spec),),
-                    assessor=lambda *_a, **_k: TakeVerdict(True), aborts={Exception: "internal_error"})
-            assert manifest.status == ("partial" if analysis_error is not None else "complete")
-            _, record_id = manifest.pending_records[0]
-            return json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+            runs = [manifest]
+            if ladder is None:
+                records, analyze = bound(manifest)
+                async with open_session(replace(seams, records=records), session_id=manifest.run_id,
+                                        allocate_take_id=manifest.allocate_take_id) as (session, _):
+                    await run_plan(request, session=session, manifest=manifest, analyze=analyze,
+                                   captures=(PlanCapture(stop, spec),), assessor=assessor,
+                                   aborts={Exception: "internal_error"})
+            else:
+                packet, runs = RoundPacket(manifest, ladder.to_dict()), []
+
+                def prepare(plan):
+                    runs.append(RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet))
+                    records, analyze = bound(runs[-1])
+                    return LevelRun(runs[-1], door(runs[-1], seams, records), analyze, assessor,
+                                    prepare_level_captures(plan, roles_bands=conductor.roles_bands))
+                await run_levels(ladder, hold=door(manifest, seams, None).hold, prepare=prepare, gate=gate,
+                                 aborts={Exception: "internal_error"}, save_ladder=packet.update_schedule)
+                await packet.finish()
+            assert {run.status for run in runs} == {"partial" if analysis_error is not None else "complete"}
+            takes = tuple(json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
+                          for run in runs for _, record_id in run.pending_records)
+            return takes if ladder is not None else takes[0]
         return asyncio.run(bank())
 
 

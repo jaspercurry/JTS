@@ -30,8 +30,6 @@ RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
-#: A take record's ``pose`` block: the planned pose, less the ``place`` derived from these.
-_POSE_FACTS = ("kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver")
 
 
 def kept_measurements(
@@ -229,7 +227,8 @@ class RunManifest:
     def capture_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         pose = self._context["pose"]
         planned = {
-            "preset": self.program, "layout": self.layout, "pose": {key: pose.get(key) for key in _POSE_FACTS},
+            "preset": self.program, "layout": self.layout,
+            "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
             "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
         }

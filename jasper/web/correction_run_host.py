@@ -114,8 +114,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         else:
             fields = {**fields, IMPULSES_KEY: _kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
-        if band is not None:
-            fields["trusted_band"] = band
+        fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             "phase": record.get("program_phase"),
