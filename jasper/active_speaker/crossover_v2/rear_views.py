@@ -41,6 +41,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REFUSE_NO_BRANCH_DIAGNOSTIC,
     REFUSE_NO_INCUMBENT,
     REFUSE_NO_REAR_TAKES,
+    EvidenceUnavailable,
 )
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
@@ -65,7 +66,7 @@ from .measurement_context import capture_basis
 from .position_cycle import curves_for_take, parse_curve_complex
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
-from .round_captures import RoundCapturesRefused, doc_pose_key
+from .round_captures import doc_pose_key
 from .round_inputs import RoundInputs, banked_round_of
 
 
@@ -246,12 +247,12 @@ def rear_document(
                 and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
             on_axis.add(take.pose_key)
     if not batch:
-        raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+        raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
     sets = {_candidate_key(row["capture_basis"].get("candidate_id")): row
             for row in view_sets(manifest)}
     incumbent_id = next((name for name, row in sets.items() if row.get("base")), None)
     if incumbent_id not in batch:
-        raise RoundCapturesRefused(REFUSE_NO_INCUMBENT, {"candidates": sorted(batch)})
+        raise EvidenceUnavailable(REFUSE_NO_INCUMBENT, {"candidates": sorted(batch)})
     for poses in batch.values():
         for takes in poses.values():
             takes.sort(key=lambda take: take.take_id)
@@ -533,11 +534,11 @@ def _pair_document(
         records.setdefault(doc_pose_key(record), []).append(record)
         observed.append(capture_basis(record))
     if not records:
-        raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+        raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
     every = [record for rows in records.values() for record in rows]
     candidate = _shared([_candidate_key(record.get("candidate_id")) for record in every]) or ""
     if not any(record.get("branch_diagnostic") for record in every):
-        raise RoundCapturesRefused(REFUSE_NO_BRANCH_DIAGNOSTIC, {
+        raise EvidenceUnavailable(REFUSE_NO_BRANCH_DIAGNOSTIC, {
             "candidates": sorted({_candidate_key(record.get("candidate_id"))
                                   for record in every}),
             "takes": len(every),

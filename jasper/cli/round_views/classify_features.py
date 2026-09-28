@@ -29,7 +29,6 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 from jasper.active_speaker.crossover_v2.feature_classifier import (
     ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
-    FeatureClassificationRefused,
     classify_round,
     load_round_captures,
     load_round_pose_curves,
@@ -50,7 +49,6 @@ from ._common import (
     _write,
     add_rungs_ms_argument,
     answer,
-    refused_by_name,
     resolved_out,
     subject,
 )
@@ -107,16 +105,7 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     args.bundle_dir = inputs.session_dir
     round_dir = _round_dir(args.bundle_dir)
     programs_dir = round_program_dir(args.bundle_dir, round_dir, ADMISSIBLE_PHASES)
-    try:
-        artifact = stage(
-            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir
-        )
-    except FeatureClassificationRefused as refusal:
-        # The instrument's own reason, and the directory actually read: a
-        # refusal that named neither starts a wrong-directory hunt.
-        return refused_by_name(
-            refusal.reason, {**refusal.detail, "programs_dir": str(programs_dir)}
-        )
+    artifact = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir)
 
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)

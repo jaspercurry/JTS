@@ -47,6 +47,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_stat
 from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.atomic_io import atomic_write_json
 from jasper.output_topology_store import load_output_topology
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
@@ -99,10 +100,10 @@ def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> 
             evidence = _document_evidence(args, document)
         if kind == "emitted_graph" and args.round:
             capture_id = resolve_set(round_inputs(Path(args.round)), args.set).take_id(args.take)
-    except RoundSetRefused as exc:
+        return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
+                                             base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
+    except (RoundSetRefused, EvidenceUnavailable) as exc:
         raise PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail) from exc
-    return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                         base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
 
 
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:

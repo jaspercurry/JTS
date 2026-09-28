@@ -31,6 +31,7 @@ from jasper.audio_measurement.evidence_reasons import (
     CAPTURE_UNREADABLE_SIDECAR,
     CAPTURE_UNSTAMPED_NAME,
     CAPTURE_WAV_MISSING,
+    EvidenceUnavailable,
     NO_ADMISSIBLE_CAPTURES,
     NO_FEATURES_DETECTED,
     PROGRAM_MISSING,
@@ -107,15 +108,6 @@ _NO_CAPTURE_REMEDY = {
 
 #: The closed vocabulary a per-capture admissibility row's ``reason`` speaks.
 CAPTURE_ADMISSIBILITY_REASONS = frozenset(_REFUSAL_FOR_CAPTURE_REASON)
-
-
-class FeatureClassificationRefused(RuntimeError):
-    """This round cannot be classified, and ``reason`` says why by name."""
-
-    def __init__(self, reason: str, detail: Mapping[str, Any] | None = None):
-        super().__init__(reason)
-        self.reason = reason
-        self.detail: dict[str, Any] = dict(detail or {})
 
 
 ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
@@ -213,7 +205,7 @@ def load_round_captures(
     is correct only when the ring holds one round. ``walk_logs`` supply angles
     only for captures without a banked position.
 
-    Raises :class:`FeatureClassificationRefused` — never returns empty, "no
+    Raises :class:`EvidenceUnavailable` — never returns empty, "no
     captures" being a finding a caller must be told by name. EVERY refusal
     carries ``captures``: one row per sidecar the ring listed, the reason drawn
     from :data:`CAPTURE_ADMISSIBILITY_REASONS`, and which name a no-capture
@@ -322,12 +314,12 @@ def load_round_captures(
         # not carry the bytes one of its captures heard is incomplete,
         # and quietly classifying the half that survived would change the
         # answer without changing anything a reader could see.
-        raise FeatureClassificationRefused(
+        raise EvidenceUnavailable(
             PROGRAM_MISSING,
             {
                 "phases": sorted(set(missing_program)),
                 "captures_dropped": len(missing_program),
-                "round_dir": round_dir.name,
+                "programs_dir": str(round_dir),
                 "programs_present": [path.name for path in banked_programs],
                 "matched_by": "provenance.stimulus.wav_sha256",
                 "captures": census,
@@ -343,12 +335,13 @@ def load_round_captures(
             (slug for slug in _REFUSAL_PRECEDENCE if slug in speaks),
             NO_ADMISSIBLE_CAPTURES,
         )
-        raise FeatureClassificationRefused(
+        raise EvidenceUnavailable(
             reason,
             {
                 "admissible_phases": sorted(ADMISSIBLE_PHASES),
                 "phases_seen": seen_phases,
                 "session_id": session_id,
+                "programs_dir": str(round_dir),
                 "dumps_dir": dumps_dir.name,
                 "note": _NO_CAPTURE_REMEDY[reason],
                 "captures": census,

@@ -1,9 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Analysis-side evidence codes; capture refusals belong to refusal_copy."""
+"""Analysis-side evidence codes, and the one exception an evidence reader refuses with."""
 
+import json
+from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Any
 
 CAPTURES_UNREADABLE = "classification_captures_unreadable"
 CAPTURE_ADMISSIBLE = "admissible"
@@ -88,3 +91,12 @@ EVIDENCE_REASONS = MappingProxyType({
     ROUND_SHAPE_INADMISSIBLE: "The round banked no capture shape admissible for feature classification.",
     TAKE_CURVES_NOT_BANKED: "No take in the measurement banked analysed curves, so it has none to draw.",
 })
+
+
+class EvidenceUnavailable(Exception):
+    """The evidence cannot answer: ``reason`` is a code, ``detail`` the facts behind it."""
+
+    def __init__(self, reason: str, detail: Mapping[str, Any]) -> None:
+        super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
+        self.reason = reason
+        self.detail = dict(detail)

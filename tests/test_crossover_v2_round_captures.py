@@ -22,11 +22,11 @@ from jasper.active_speaker.crossover_v2 import round_captures
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.record_index import played_graph_fingerprint
 from jasper.active_speaker.crossover_v2.round_captures import (
-    RoundCapturesRefused,
     discover_captures,
     doc_pose_key,
     select_capture,
 )
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.json_fields import sha256_file
 from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
 
@@ -85,7 +85,7 @@ def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path, metadata:
         record, _ = _bank_canonical(root)
         if metadata == "two_rounds":
             (record.parents[2] / "other-candidate-round").mkdir()
-            with pytest.raises(RoundCapturesRefused) as excinfo:
+            with pytest.raises(EvidenceUnavailable) as excinfo:
                 discover_captures(root)
             assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
             return
@@ -148,7 +148,7 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
     unasked: list[dict[str, str]] = []
     assert select_capture(root, capture_id="cloud_verify_01", omitted=unasked).capture_id == "cloud_verify_01"
     assert unasked == []
-    with pytest.raises(RoundCapturesRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         select_capture(root, capture_id="cloud_verify_00_a02")
     assert excinfo.value.reason == reason
     assert excinfo.value.detail["omitted"] == [omission]
@@ -274,14 +274,14 @@ def test_a_missing_input_is_refused_by_name(
     was looked for, what was declared, what was actually there and, when
     every capture failed, which ones were left out.
     """
-    with pytest.raises(RoundCapturesRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         discover_captures(make(tmp_path))
     assert excinfo.value.reason == reason
     assert excinfo.value.detail.items() >= evidence.items()
 
 
 def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path: Path) -> None:
-    with pytest.raises(RoundCapturesRefused) as excinfo:
+    with pytest.raises(EvidenceUnavailable) as excinfo:
         select_capture(tmp_path / "absent")
     assert excinfo.value.reason == round_captures.REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
 
@@ -374,5 +374,5 @@ def test_window_view_keeps_one_capture_reference_and_exact_window_math(tmp_path)
         np.testing.assert_allclose(np.array(curve["magnitude_db"]) - curve["reference_db"], expected.curves[curve["window_ms"]])
         assert curve["capture_id"] == cap.capture_id
         assert curve["validity_floor_hz"] == 1000 / curve["window_ms"]
-    with pytest.raises(RoundCapturesRefused):
+    with pytest.raises(EvidenceUnavailable):
         window_view(root, capture_id=cap.capture_id, rungs_ms=(2, 7), role="woofer")

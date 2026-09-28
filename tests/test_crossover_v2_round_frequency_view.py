@@ -28,9 +28,9 @@ from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker import measurement_analysis
-from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle, analyzed_measurements
+from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle, analyzed_measurements
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
@@ -49,7 +49,7 @@ from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.round_view_builders import analyzed_frequency_run
 from jasper.active_speaker import measurement_archive
 from tests.crossover_v2_banked_round import bank_executor_take
-from jasper.cli._refusal import EXIT_UNREADABLE
+from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE
 from jasper.cli.round_views import build_parser, main as round_views_main, run_bookkeeping
 from jasper.web import correction_measurements
 
@@ -799,9 +799,9 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
 
 @pytest.mark.parametrize("reference_db", [float("nan"), float("inf"), float("-inf")])
 def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_db):
-    with pytest.raises(MeasurementAnalysisRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         analyze_measurement_bundle(tmp_path, run_reference_db=reference_db)
-    assert caught.value.code == "measurement_reference_invalid"
+    assert caught.value.reason == "measurement_reference_invalid"
     assert round_views_main([
         "frequency", str(tmp_path), "--analyze-wavs", f"--reference-db={reference_db}",
     ]) == EXIT_UNREADABLE
@@ -825,12 +825,12 @@ def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle
         for row in document["artifacts"]:
             row["dependencies"] = []
         manifest.write_text(json.dumps(document))
-    with pytest.raises(MeasurementAnalysisRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         analyze_measurement_bundle(bundle)
-    assert caught.value.code == code
+    assert caught.value.reason == code
     assert round_views_main([
         "frequency", str(bundle), "--analyze-wavs", "--out", str(tmp_path / "refused.json"),
-    ]) == EXIT_UNREADABLE
+    ]) == EXIT_REFUSED
 
 
 @pytest.mark.parametrize("by_take_ids", [False, True])
@@ -889,13 +889,13 @@ def test_a_take_is_read_from_its_record_never_its_recording(summed_capture_bundl
     asyncio.run(bank("take", phase="lateral", **fields))
     monkeypatch.setattr(measurement_analysis, "decode_wav_to_mono", _refuse_decoding)
     if read == TAKE_CURVES_NOT_BANKED:
-        with pytest.raises(MeasurementAnalysisRefused) as refused:
+        with pytest.raises(EvidenceUnavailable) as refused:
             list(analyzed_measurements(bundle))
-        assert refused.value.code == TAKE_CURVES_NOT_BANKED
+        assert refused.value.reason == TAKE_CURVES_NOT_BANKED
         return
     assert [take.record["take_id"] for take in analyzed_measurements(bundle)] == read
     if not read:
-        assert round_views_main(["frequency", str(bundle), "--out", str(tmp_path / "f.json")]) == EXIT_UNREADABLE
+        assert round_views_main(["frequency", str(bundle), "--out", str(tmp_path / "f.json")]) == EXIT_REFUSED
         assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
 
 

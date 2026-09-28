@@ -33,7 +33,6 @@ from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, round_inputs
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
@@ -47,6 +46,7 @@ from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
 from jasper.audio_measurement.evidence_reasons import (
+    EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
@@ -456,7 +456,7 @@ def test_front_pair_round_uses_records_without_spectra(tmp_path, monkeypatch, ca
     spectra.assert_not_called()
 
 
-@pytest.mark.parametrize("error", [OSError(), ValueError(), RoundCapturesRefused("refused", {})])
+@pytest.mark.parametrize("error", [OSError(), ValueError(), EvidenceUnavailable("refused", {})])
 def test_pair_round_walk_continues_after_refusal(tmp_path, monkeypatch, error):
     pair = pair_round(tmp_path)
     (pair / "provenance.json").write_text("{}")
@@ -808,9 +808,9 @@ def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates
     entry, = packet["rear"]
 
     # The fixture really does carry the shape the analyzer cannot read.
-    with pytest.raises(measurement_analysis.MeasurementAnalysisRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         list(measurement_analysis.analyzed_measurements(inputs.session_dir))
-    assert refused.value.code == "measurement_analysis_program_unsupported"
+    assert refused.value.reason == "measurement_analysis_program_unsupported"
     assert next(v for v in views if v["view"] == "rear")["status"] == "written"
     assert entry["comparison"]["positions_unscored"] == {}
     assert len(entry["pair"]["positions"]) == len(entry["comparison"]["positions"]) == 3
