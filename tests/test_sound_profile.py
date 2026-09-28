@@ -314,9 +314,7 @@ def test_missing_profile_has_no_applied_timestamp(tmp_path):
     assert profile.updated_at == ""
 
 
-# An old shape falls back too, as a profile and as a library entry, so /sound/eq/ still opens (#2902).
-@pytest.mark.parametrize("content", [b"{not json", b"\xff", json.dumps(
-    {"profiles": [{"id": "custom_0123456789ab", "profile": {"simple_eq": {"bass_db": 3.0}}}]}).encode()])
+@pytest.mark.parametrize("content", [b"{not json", b"\xff"])
 @pytest.mark.parametrize("load, expected", [
     (load_profile, SoundProfile(updated_at="")), (load_profile_library, ()),
 ])
@@ -327,7 +325,7 @@ def test_corrupt_profile_data_falls_back(tmp_path, content, load, expected):
 
 
 @pytest.mark.parametrize("field", ["simple_eq", *(f"simple_eq.{name}" for name in SIMPLE_EQ_FIELDS)])
-def test_a_profile_missing_a_simple_eq_field_refuses_by_that_field(field):
+def test_a_profile_missing_a_simple_eq_field_refuses_by_that_field(tmp_path, field):
     raw = SoundProfile(simple_eq=SimpleEq(bass_db=3.0)).to_dict()
     if field == "simple_eq":
         raw.update(raw.pop("simple_eq"))
@@ -336,6 +334,22 @@ def test_a_profile_missing_a_simple_eq_field_refuses_by_that_field(field):
     with pytest.raises(SoundProfileRefused) as refused:
         SoundProfile.from_mapping(raw)
     assert (refused.value.code, refused.value.field) == ("sound_profile_field_missing", field)
+    # The stored read plays Flat instead, so /sound/eq/ still opens (#2902).
+    (tmp_path / "sound_profile.json").write_text(json.dumps(raw))
+    assert load_profile(tmp_path / "sound_profile.json") == SoundProfile(updated_at="")
+
+
+def test_a_library_skips_a_refused_entry_and_every_write_keeps_it_verbatim(tmp_path):
+    path = tmp_path / "sound_profiles.json"
+    refused = {"id": "custom_aaaaaaaaaaaa", "name": "Old", "profile": {"simple_eq": {"bass_db": 3.0}}}
+    sibling = {"id": "custom_0123456789ab", "name": "Kept", "profile": SoundProfile().to_dict()}
+    path.write_text(json.dumps({"version": 1, "profiles": [refused, sibling]}))
+    assert [entry.id for entry in load_profile_library(path)] == [sibling["id"]]
+
+    added = save_named_profile(SoundProfile(curve_id="bk"), name="New", path=path)
+
+    assert refused in json.loads(path.read_text())["profiles"]
+    assert [entry.id for entry in load_profile_library(path)] == [sibling["id"], added.id]
 
 
 # ---------------------------------------------------------------------------

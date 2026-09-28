@@ -8,7 +8,7 @@ This module is intentionally pure Python and import-cheap. The web
 wizard, future voice/LLM proposal path, and CamillaDSP YAML emitter all
 share this one contract:
 
-  stock sound curve -> simple bass/mid/treble -> advanced PEQ bands
+  stock sound curve -> five simple bands -> advanced PEQ bands
 
 The curve/preset labels are user-facing, but the output is deliberately
 deterministic DSP data. Future AI help should propose bounded edits to
@@ -192,13 +192,7 @@ class SimpleEq:
         })
 
     def to_dict(self) -> dict[str, float]:
-        return {
-            "sub_bass_db": round(self.sub_bass_db, 3),
-            "bass_db": round(self.bass_db, 3),
-            "mid_db": round(self.mid_db, 3),
-            "presence_db": round(self.presence_db, 3),
-            "treble_db": round(self.treble_db, 3),
-        }
+        return {name: round(getattr(self, name), 3) for name in SIMPLE_EQ_FIELDS}
 
 
 @dataclass(frozen=True)
@@ -526,34 +520,44 @@ def profile_library_payload(
     ]
 
 
-def load_profile_library(path: str | Path | None = None) -> tuple[ProfileLibraryEntry, ...]:
-    library_path = Path(
-        path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
-    )
+def _read_library(
+    library_path: Path,
+) -> tuple[list[ProfileLibraryEntry], list[tuple[Any, SoundProfileRefused]]]:
+    """The offered entries, and each stored item a profile read refuses, as stored (#2902)."""
     try:
         raw = json.loads(library_path.read_text())
     except FileNotFoundError:
-        return ()
+        return [], []
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         logger.warning("could not read sound profile library %s: %s", library_path, e)
-        return ()
+        return [], []
     raw_profiles = raw.get("profiles") if isinstance(raw, dict) else raw
     if not isinstance(raw_profiles, list):
-        return ()
+        return [], []
     entries: list[ProfileLibraryEntry] = []
+    refused: list[tuple[Any, SoundProfileRefused]] = []
     seen: set[str] = set()
     for item in raw_profiles:
         try:
             entry = ProfileLibraryEntry.from_mapping(item)
         except SoundProfileRefused as e:
-            logger.warning("sound profile library %s: skipped an entry: %s", library_path, e)
+            refused.append((item, e))
             continue
-        if entry is None or entry.id in seen:
+        if entry is None or entry.id in seen or len(entries) >= MAX_CUSTOM_PROFILES:
             continue
         entries.append(entry)
         seen.add(entry.id)
-        if len(entries) >= MAX_CUSTOM_PROFILES:
-            break
+    return entries, refused
+
+
+def load_profile_library(path: str | Path | None = None) -> tuple[ProfileLibraryEntry, ...]:
+    library_path = Path(
+        path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
+    )
+    entries, refused = _read_library(library_path)
+    for item, e in refused:
+        logger.warning("sound profile library %s: skipped %s (%s): %s",
+                       library_path, item["id"], item.get("name"), e)
     return tuple(entries)
 
 
@@ -561,15 +565,17 @@ def save_profile_library(
     entries: Iterable[ProfileLibraryEntry],
     path: str | Path | None = None,
 ) -> None:
+    """Write ``entries``; an item the read refuses stays in the file exactly as stored."""
     library_path = Path(
         path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
     )
     custom_entries = [entry for entry in entries if not entry.builtin][
         :MAX_CUSTOM_PROFILES
     ]
+    kept = [item for item, _ in _read_library(library_path)[1]]
     atomic_write_json(
         library_path,
-        {"version": 1, "profiles": [entry.to_dict() for entry in custom_entries]},
+        {"version": 1, "profiles": [*(entry.to_dict() for entry in custom_entries), *kept]},
         mode=CONFIG_FILE_MODE,
     )
 
