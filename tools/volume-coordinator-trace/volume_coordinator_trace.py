@@ -310,6 +310,10 @@ class Backend:
         rec("probe.renderers", sorted(k for k, v in self.active.items() if v))
         return dict(self.active)
 
+    async def last_handoff(self):
+        # No scenario reports a mux handoff, so every observer transition applies (#5990).
+        return None
+
 
 async def publisher(context) -> bool:
     rec(
