@@ -94,8 +94,7 @@ def capture_device_for_playback(playback_device: str) -> str:
     The device axis is TOPOLOGY-FREE by construction, so this takes no
     ``topology`` and reads no env and no file: the ring is the only transport
     (ADR-0100), every playback device pairs with Ring A, and the answer is a
-    module constant. Only the FORMAT axis needs
-    :func:`~jasper.fanin_coupling.resolve_ring_wire`, which can raise.
+    module constant.
     """
 
     return RING_CAPTURE_DEVICE
@@ -149,9 +148,7 @@ def active_emit_devices(
       ring-NAMED lanes). Moving both halves together makes it unreachable.
     - ``capture_format`` / ``playback_format`` —
       :func:`~jasper.fanin_coupling.resolve_ring_wire`, ONE format for both
-      because the three rings share one wire. Never the box's program-lane
-      default, which can be ``S32_LE`` where the resolver answers narrow — a
-      sheared attach waiting at the arm.
+      because the three rings share the fixed S32_LE program wire.
     - ``chunksize`` / ``target_level`` / ``queuelimit`` /
       ``enable_rate_adjust`` — :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`
       whole, the certified pairing passed EXPLICITLY rather than the box floor an
@@ -177,10 +174,7 @@ def active_emit_devices(
             queuelimit=None,
             enable_rate_adjust=resolve_enable_rate_adjust(playback_device),
         )
-    try:
-        wire_format = resolve_ring_wire(topology).sample_format
-    except ValueError as exc:
-        raise ActiveSpeakerConfigError(str(exc)) from exc
+    wire_format = resolve_ring_wire(topology).sample_format
     return ActiveEmitDevices(
         capture_device=capture_device_for_playback(playback_device),
         capture_format=wire_format,
