@@ -43,23 +43,23 @@ from jasper.audio_measurement.program import ExcitationProgram
 logger = logging.getLogger(__name__)
 
 
-def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> dict[str, Any]:
-    """The take record's impulses block, once they are written beside its recording.
+def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> dict[str, Any] | None:
+    """The take record's impulses block once they are written beside its
+    recording, or ``None`` when none were kept (a CHECK take).
 
     A failed write costs only the saved copy: the raw recording stays, so the
     impulses remain recomputable.
     """
     bundle_dir = getattr(getattr(records, "capture", None), "bundle_dir", None)
     if bundle_dir is None:
-        return {}
+        return None
     try:
-        block = write_take_impulses(Path(bundle_dir), take_id, analysis,
-                                    recording=getattr(answer, "wav_path", None) or None)
+        return write_take_impulses(Path(bundle_dir), take_id, analysis,
+                                   recording=getattr(answer, "wav_path", None) or None)
     except (OSError, BundleError) as exc:
         log_event(logger, "correction.take_impulses_not_saved", level=logging.WARNING,
                   take_id=take_id, error_type=type(exc).__name__)
-        return {}
-    return {IMPULSES_KEY: block} if block else {}
+        return None
 
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
@@ -105,14 +105,14 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 phase = conductor.phase_of_index(index_of(record))
                 played = ExcitationProgram.from_dict(program)
                 result = analyze_capture(record, played, capture, first_bounce_s)
-                fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
+                fields = {**evidence.get("capture_provenance", {}).get(phase, {}), "branch_diagnostic": None,
                           **analysis_blocks(result, played)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
         if isinstance(result, Exception):
             fields = {"analysis_error": {"code": REASON_INTERNAL_ERROR, "error_type": type(result).__name__}}
         else:
-            fields = {**fields, **_kept_impulses(records, record["take_id"], result, capture)}
+            fields = {**fields, IMPULSES_KEY: _kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
         if band is not None:
             fields["trusted_band"] = band

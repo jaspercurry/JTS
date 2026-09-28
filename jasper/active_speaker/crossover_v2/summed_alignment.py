@@ -103,7 +103,7 @@ def session_reference(bundle_dir: Path, baseline: Any, preset: Any) -> SummedAli
     selected: dict[str, Measurement] = {}
     for row, doc in documents:
         if (row.position_deg != 0 or row.vertical_deg != 0 or row.graph_scope != "timing"
-                or (row.session_id, row.phase) != (anchor_row.session_id, anchor_row.phase)
+                or (row.run_id, row.phase) != (anchor_row.run_id, anchor_row.phase)
                 or capture_basis(doc) != capture_basis(anchor_doc)):
             continue
         selected[doc["take_id"]] = row

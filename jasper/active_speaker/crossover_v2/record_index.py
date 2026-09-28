@@ -49,7 +49,7 @@ class Measurement:
     """One selected take. ``path`` is the id ``bank`` returned for it."""
 
     path: str
-    session_id: str
+    run_id: str
     kind: str
     phase: str
     position_deg: int | None
@@ -153,7 +153,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         return None
     return (
         path,
-        _text(document.get("session_id")),
+        _text(document.get("run_id")),
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
         _position_deg(document.get("position_deg")),

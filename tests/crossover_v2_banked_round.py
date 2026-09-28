@@ -61,11 +61,10 @@ from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.plan_run import PlanCapture, run_plan
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
-from jasper.active_speaker.crossover_v2.session import MeasureOutcome, StimulusOutcome
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
 from jasper.web.correction_run_host import bind_plan_analysis
-from tests.crossover_v2_fixtures import FakeSeams, _conductor, _measure_analysis, _verify_analysis
-from tests.engine_twin import open_session
+from tests.crossover_v2_fixtures import FakeSeams, _check_analysis, _conductor, _measure_analysis, _verify_analysis
+from tests.engine_twin import FakeSeams as TwinSeams, open_session
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.wired_capture import encode_wav_s32
 from jasper.active_speaker.bundles import open_bundle
@@ -402,7 +401,7 @@ def _take_identity(
         "index": index,
         "attempt": attempt,
         "take_id": take_id_for(position_id, attempt),
-        "session_id": session_id,
+        "run_id": session_id,
         "wav_sha256": wav_sha256,
         "measure_kind": claim.measure_kind,
         "graph_fingerprint": graph_fingerprint,
@@ -410,13 +409,7 @@ def _take_identity(
         "candidate_id": claim.candidate_id,
         "polarity": claim.polarity,
         "level_matched": claim.level_matched,
-        # The numbers only when there ARE numbers: an absent key reads as an
-        # un-matched take, so no schema version moves.
-        **(
-            {"level_match_trims_db": dict(claim.level_match_trims_db)}
-            if claim.level_matched and claim.level_match_trims_db
-            else {}
-        ),
+        "level_match_trims_db": dict(claim.level_match_trims_db or {}) if claim.level_matched else {},
         # Stated or absent, never a guessed default: see TakeClaim.
         **(
             {"phase_composition": claim.phase_composition}
@@ -967,10 +960,12 @@ def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None,
-                       analysis_fields=None, recording=None):
-    """One take through the capture host. ``recording`` is int32 samples the
-    host analyses for real at the stop's own lateral pose, as a walk plays it;
-    without one the take records 32 zeros under a stand-in analysis."""
+                       analysis_fields=None, recording=None, request=None, planned=None):
+    """One take through the engine and the capture host: ``planned``, one of
+    ``request``'s captures, or else a candidate take at the stop ``pose`` names.
+    ``recording`` is int32 samples the host analyses for real at the stop's own
+    lateral pose, as a walk plays it; without one the take records 32 zeros
+    under a stand-in analysis."""
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -979,8 +974,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
     with monkeypatch.context() as patch:
         patch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(calibration_root))
         if recording is None:
-            analysis = replace(_measure_analysis(program) if program.phase == "measure" else _verify_analysis(program),
-                               **(analysis_fields or {}))
+            analysis = replace({"measure": _measure_analysis, "check": _check_analysis}.get(
+                program.phase, _verify_analysis)(program), **(analysis_fields or {}))
             def analyzed(*args, **kwargs):
                 if analysis_error is not None:
                     raise analysis_error
@@ -989,11 +984,11 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
-        stop = angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
-                                      candidate_id="speaker-candidate", **(pose or {}))
-        request = angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
-        spec = MeasureSpec(kind="candidate", graph_scope="candidate", candidate_id=stop.candidate_id,
-                           program_phase=program.phase)
+        stop = planned.stop if planned else angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
+                                                                    candidate_id="speaker-candidate", **(pose or {}))
+        request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
+        spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
+                                                        candidate_id=stop.candidate_id, program_phase=program.phase)
         wav, _ = encode_wav_s32(np.zeros(32, dtype=np.int32) if recording is None else recording, sample_rate_hz=48000)
         answer = WiredCaptureAnswer(wav=wav, program=program.to_dict(),
             device={"card": "UMIK2", "usb_id": "2752:002b", "model_key": "minidsp_umik2",
@@ -1013,16 +1008,12 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         provenance.record(CaptureProvenance(graph_kind="tuning_measurement", graph_fingerprint="played",
             session_volume_db=-20.0, stimulus_wav_sha256="a" * 64, stimulus_peak_dbfs=-20.0))
         analyze, _ = bind_plan_analysis(conductor, records, manifest=manifest, evidence=refs, provenance=provenance)
-        async def measure(session, spec):
-            record_id = await records.bank({"take_id": "executor-take", "kind": "candidate",
-                "graph_scope": "candidate", "candidate_id": "speaker-candidate", "graph_fingerprint": "submitted",
-                "program_phase": program.phase, "position_axis": "horizontal", "position_deg": 0,
-                "level_db": -20.0, "stimulus_dbfs": None, **raw_record})
-            return MeasureOutcome(spec, (StimulusOutcome(0, None, -20.0, record_id),))
+        engine = TwinSeams(records=SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})))
         async def bank():
-            async with open_session() as (session, _):
+            async with open_session(engine, session_id=manifest.run_id,
+                                    allocate_take_id=manifest.allocate_take_id) as (session, _):
                 await run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                    captures=(PlanCapture(stop, spec),), measure=measure,
+                    captures=(PlanCapture(stop, spec),),
                     assessor=lambda *_a, **_k: TakeVerdict(True), aborts={Exception: "internal_error"})
             assert manifest.status == ("partial" if analysis_error is not None else "complete")
             _, record_id = manifest.pending_records[0]

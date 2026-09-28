@@ -36,7 +36,8 @@ from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker import arm_walk
 from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, request_for_preset
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
@@ -53,7 +54,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_e
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
-from jasper.audio_measurement.program import ExcitationProgram, build_measure_program
+from jasper.audio_measurement.program import ExcitationProgram, build_check_program, build_measure_program
 from jasper.audio_measurement.program_analysis.model import AppliedAlignment, SummedAlignmentReference
 from jasper.audio_measurement.wired_capture import (
     CODE_WIRED_MIC_MISSING,
@@ -1295,6 +1296,48 @@ def test_executor_banks_the_capture_snr_the_packet_reads(tmp_path, monkeypatch):
         "stimulus_wav_sha256": "a" * 64, "phase": record["phase"],
         "snr": {"pilot_ambient": "present", "pilot_snr_ok": True, "summed_pilot_snr_db": 41.7},
     }]
+
+
+#: The keys every banked take carries, whatever its purpose (ADR-0383).
+_TAKE_RECORD_KEYS = frozenset({
+    "analysis", "attempt", "baseline_record_id", "branch_diagnostic", "candidate_id", "capture_calibration",
+    "capture_device", "capture_index", "capture_session_id", "capture_setup", "captured_at", "cleared_layers",
+    "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses", "incident", "index",
+    "inverted_role", "kind", "layout", "level_db", "level_match_trims_db", "level_matched", "mark_distance_m",
+    "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity", "pose",
+    "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program", "program_phase", "prompt",
+    "provenance", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side", "stimulus_dbfs",
+    "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "vertical_deg", "wav_bytes",
+    "wav_path", "wav_sha256",
+})
+
+
+@pytest.mark.parametrize("name,layout,candidates,phase,kind,targets", [
+    ("speaker/mark", None, (), "measure", "bearing", []),
+    ("nearfield/each", None, (), "lateral", "close", ["woofer"]),
+    ("room/seat", None, ("speaker-candidate",), "lateral", "seat", []),
+    ("bass/axis", None, ("speaker-candidate",), "lateral", "bearing", []),
+    ("rear/pair", "rear_behind", ("speaker-candidate",), "lateral", "behind", ["woofer", "woofer:rear"]),
+    ("speaker/mark", None, (), "check", "bearing", []),
+], ids=["speaker", "reference", "room", "bass", "rear", "check"])
+def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, name, layout, candidates, phase, kind, targets):
+    """A take of every purpose banks the same keys, naming its run, preset,
+    layout, pose and targets; a CHECK take banks no curves (ADR-0383)."""
+    preset = run_preset(name, layout)
+    request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
+    planned = next(capture for capture in plan_run.prepare_plan_captures(request, roles_bands=_roles())
+                   if (capture.spec.program_phase, capture.stop.kind) == (phase, kind))
+    program = (build_check_program(_roles()) if phase == "check" else
+               build_measure_program({"woofer": -20.0, "tweeter": -24.0}, _roles())
+               if planned.spec.graph_scope == "drivers" else None)
+    record = bank_executor_take(tmp_path, monkeypatch, program=program, request=request, planned=planned)
+    assert set(record) == _TAKE_RECORD_KEYS
+    assert set(record["pose"]) == {"kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
+    assert (record["run_id"], record["preset"], record["layout"], record["targets"]) == (
+        "executor", preset.preset, preset.layout, targets)
+    driver = planned.stop.driver or None
+    assert (record["pose"]["kind"], record["pose"]["driver"], record["pose_driver"]) == (kind, driver, driver)
+    assert (record["curves"] == []) is (phase == "check")
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):

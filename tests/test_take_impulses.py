@@ -123,7 +123,7 @@ def test_a_banked_take_keeps_its_impulses_beside_the_recording(tmp_path, monkeyp
 
 
 def test_a_take_without_impulses_records_none(tmp_path, monkeypatch):
-    assert "impulses" not in bank_executor_take(tmp_path, monkeypatch)
+    assert bank_executor_take(tmp_path, monkeypatch)["impulses"] is None
 
 
 def _response(role: str, peak: int) -> SimpleNamespace:
