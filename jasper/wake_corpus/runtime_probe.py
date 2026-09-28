@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper import audio_validation, audio_validation_artifacts as artifacts, wake_legs
+from jasper import audio_validation_probes, audio_validation_artifacts as artifacts, wake_legs
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
@@ -531,7 +531,7 @@ def validation_artifact_summary(
     unknown/missing shape instead of making session creation depend on it.
     """
     path = path or AUDIO_VALIDATION_ARTIFACT_PATH
-    filters: dict[str, Any] = audio_validation.current_artifact_filter_kwargs(
+    filters: dict[str, Any] = audio_validation_probes.current_artifact_filter_kwargs(
         requested_profile=requested_profile,
         system_env=system_env,
         mic_probe=mic_probe,

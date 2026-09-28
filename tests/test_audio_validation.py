@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from jasper import audio_validation, audio_validation_artifacts as artifacts
+from jasper import audio_validation, audio_validation_artifacts as artifacts, audio_validation_hardware_checks
 from jasper.audio_profile_state import MicProbe
 from jasper.audio_validation_route import route_live_state_issues
 from tests.audio_validation_fixtures import (
@@ -417,8 +417,8 @@ def test_chip_aec_hardware_validation_clean_passive_evidence_still_recommends_dr
         ],
         chip_readback=_chip_readback(),
         chip_convergence_polls=[
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
         ],
         duration_seconds=10,
     )
@@ -537,8 +537,8 @@ def test_chip_aec_hardware_validation_zero_convergence_is_not_observed():
         ],
         chip_readback=_chip_readback(),
         chip_convergence_polls=[
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
         ],
         duration_seconds=10,
     )
@@ -563,10 +563,10 @@ def test_chip_aec_hardware_validation_warns_when_convergence_is_lost():
         ],
         chip_readback=_chip_readback(),
         chip_convergence_polls=[
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [0]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
         ],
         duration_seconds=10,
     )
@@ -616,7 +616,7 @@ def test_chip_aec_hardware_validation_gates_chip_poll_until_ref_health_passes():
         ],
         chip_readback=_chip_readback(),
         chip_convergence_polls=[
-            {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+            {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
         ],
         duration_seconds=10,
     )
