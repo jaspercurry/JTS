@@ -131,6 +131,5 @@ def read_preflight_facts(
                                   or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
                             if context is not None and any(stop.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
-        driver_caps=(published_driver_caps(getattr(context, "safety_profile", {}), context.role_targets)
-                     if context is not None else {}),
+        driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},
     )
