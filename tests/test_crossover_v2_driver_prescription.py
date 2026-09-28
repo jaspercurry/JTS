@@ -2549,9 +2549,9 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
         emit_active_speaker_baseline_config,
     )
 
+    from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
     from tests.test_active_speaker_linearization_emission import (
         ACTIVE_PCM,
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
         _active_topology,
         _headroom_gain_db,
         _two_way_preset,

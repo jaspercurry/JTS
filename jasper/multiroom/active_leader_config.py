@@ -65,6 +65,10 @@ import logging
 import shutil
 from pathlib import Path
 
+from jasper.active_speaker.graph_types import (
+    GRAPH_DRIVER_DOMAIN_BASELINE,
+    GRAPH_PROGRAM_BAKE_PIPE,
+)
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
 from ..log_event import log_event
 from . import _stash, follower_config
@@ -132,10 +136,7 @@ async def precheck_active_leader(
         emit_active_speaker_program_bake_config,
     )
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_bass_extension_graph,
-    )
+    from jasper.active_speaker.runtime_contract import classify_bass_extension_graph
     from jasper.fanin_coupling import capture_half, capture_kwargs_for_coupling
     from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
     from jasper.sound.profile import load_profile
@@ -301,7 +302,6 @@ async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
     is up (the pipe's reader exists — a FIFO write-open blocks until a reader
     exists, exactly like the passive leader's apply_bonded_leader_config).
     """
-    from jasper.active_speaker.runtime_contract import GRAPH_PROGRAM_BAKE_PIPE
     from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     cam = camilla_factory()

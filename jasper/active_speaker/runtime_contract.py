@@ -24,7 +24,7 @@ import asyncio
 import logging
 import os
 import json
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import (
@@ -39,6 +39,13 @@ from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
 from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
+from jasper.sound.flat_verifier import (
+    _flat_graph_allowed,
+    _flat_hard_muted_outputs,
+    _flat_mono_fold_proved,
+    _playback_is_program_bake_pipe,
+    _required_mono_fold_output,
+)
 
 from jasper.output_topology import (
     OutputTopology,
@@ -53,6 +60,17 @@ from jasper.active_speaker.state_paths import baseline_profile_state_path
 from .camilla_yaml import PARKED_CONFIG_NAME, _reserialize_keeping_header
 from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name as _commission_mute_name
 from .graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE, _active_graph_evidence
+from .graph_types import (
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_GUARDED_COMMISSIONING,
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GRAPH_DRIVER_DOMAIN_BASELINE,
+    GRAPH_PROGRAM_BAKE_PIPE,
+    GRAPH_PARKED_ALL_MUTED,
+    GRAPH_UNKNOWN,
+    GRAPH_UNSAFE,
+    GraphSafety,
+)
 from .graph_safety import (
     output_hard_muted_and_wired,
     view_from_yaml_dict,
@@ -86,28 +104,6 @@ logger = logging.getLogger(__name__)
 # The ONE flat outputd startup graph. It is a RING graph: the ring is the only
 # transport (ADR-0100), so there is no sibling to re-seed instead of.
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
-
-GRAPH_FLAT_FULL_RANGE = "flat_full_range"
-GRAPH_ALL_MUTED_ACTIVE_STARTUP = "all_muted_active_startup"
-GRAPH_GUARDED_COMMISSIONING = "guarded_commissioning"
-GRAPH_APPROVED_ACTIVE_RUNTIME = "approved_active_runtime"
-GRAPH_DRIVER_DOMAIN_BASELINE = "driver_domain_baseline"
-# The active-leader's camilla#1 program bake: a flat (no-Layer-A) program graph
-# whose playback is a File/pipe sink, not a DAC. Allowed regardless of topology
-# (safe by construction — no DAC, no driver to over-drive); see
-# sound.flat_verifier._flat_graph_allowed.
-GRAPH_PROGRAM_BAKE_PIPE = "program_bake_pipe"
-# The PARKED graph: a roleful topology with declared drivers but no staged
-# all-muted startup graph yet. Every physical output is hard-muted and no
-# unmuted route exists, so it is legal for ANY topology — but it is a HOLDING
-# state, never a tuning, and NOT interchangeable with
-# GRAPH_ALL_MUTED_ACTIVE_STARTUP: the staged graph carries per-driver
-# crossover/limiter/protective-HP wiring that survives an unmute and must never
-# be passed over for a parked graph. Proof: ``_parked_graph_allowed``; decision
-# order: ``safe_graph_for_current_topology`` (last).
-GRAPH_PARKED_ALL_MUTED = "parked_all_muted"
-GRAPH_UNKNOWN = "unknown"
-GRAPH_UNSAFE = "unsafe"
 
 # The third statefile-seeding outcome, alongside "select a flat graph" and
 # "select the staged all-muted active startup graph". A parked deploy SUCCEEDS —
@@ -168,30 +164,6 @@ NO_BASS_EXTENSION_PROFILE_SUMMARY: Mapping[str, Any] = MappingProxyType({
     "authority_valid": True,
     "runtime_block_required": False,
 })
-
-
-@dataclass(frozen=True)
-class GraphSafety:
-    classification: str
-    allowed: bool
-    config_path: str | None = None
-    camilla_classification: str = "missing"
-    playback_device: str | None = None
-    playback_channels: int | None = None
-    issues: tuple[dict[str, str], ...] = ()
-    details: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "classification": self.classification,
-            "allowed": self.allowed,
-            "config_path": self.config_path,
-            "camilla_classification": self.camilla_classification,
-            "playback_device": self.playback_device,
-            "playback_channels": self.playback_channels,
-            "issues": list(self.issues),
-            "details": self.details,
-        }
 
 
 @dataclass(frozen=True)
@@ -602,14 +574,6 @@ def classify_camilla_graph(
         or path_name == "outputd-cutover.yml"
     )
     if is_flat:
-        from jasper.sound.flat_verifier import (  # lazy: flat_verifier imports this module's GraphSafety and GRAPH_* vocabulary
-            _flat_graph_allowed,
-            _flat_hard_muted_outputs,
-            _flat_mono_fold_proved,
-            _playback_is_program_bake_pipe,
-            _required_mono_fold_output,
-        )
-
         # Detect the File/pipe playback ONCE here (this scope has the config
         # text) so _flat_graph_allowed stays text-free; the exemption keys
         # strictly on the File-pipe sink.

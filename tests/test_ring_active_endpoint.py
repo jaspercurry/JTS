@@ -40,7 +40,10 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
 )
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology, ring_channels_for_topology
-from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME, GraphSafety
+from jasper.active_speaker.graph_types import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GraphSafety,
+)
 from jasper.outputd_active_lane import (
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
     OUTPUTD_LEGAL_ENDPOINT_DEVICES,
@@ -2780,7 +2783,7 @@ def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="gr
     Everything the command itself decides (destination, atomicity, repoint,
     refusal) runs for real.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_types import (
         GRAPH_APPROVED_ACTIVE_RUNTIME,
         GraphSafety,
     )
@@ -3100,7 +3103,7 @@ def _anchor_reemit_harness(
     own tests, and what THIS command owns is which class it accepts and what it
     does about it.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_types import (
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_DRIVER_DOMAIN_BASELINE,
         GRAPH_PARKED_ALL_MUTED,
@@ -3261,7 +3264,7 @@ def test_reemit_staged_startup_anchor_reports_facts_and_prints_nothing(
     directions — a re-emit and a refusal — because a pin on the text would put
     the surface concern back into the engine that this boundary took out of it.
     """
-    from jasper.active_speaker.runtime_contract import GRAPH_ALL_MUTED_ACTIVE_STARTUP
+    from jasper.active_speaker.graph_types import GRAPH_ALL_MUTED_ACTIVE_STARTUP
     from jasper.active_speaker.startup_load import reemit_staged_startup_anchor
 
     h = _anchor_reemit_harness(monkeypatch, tmp_path)
@@ -3427,7 +3430,7 @@ def test_baseline_reemit_help_names_both_accepted_graph_classes():
     typed here: a help string naming a class the contract has renamed is exactly
     the drift this pins against.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_types import (
         GRAPH_ALL_MUTED_ACTIVE_STARTUP,
         GRAPH_APPROVED_ACTIVE_RUNTIME,
     )

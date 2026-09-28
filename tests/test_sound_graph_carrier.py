@@ -33,9 +33,11 @@ import yaml
 
 from jasper.active_speaker import baseline_apply
 from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_FLAT_FULL_RANGE,
+)
+from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )

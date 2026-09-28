@@ -10,6 +10,11 @@ from typing import Any, Literal, Mapping
 
 import yaml
 
+from jasper.active_speaker.graph_types import (
+    GRAPH_FLAT_FULL_RANGE,
+    GRAPH_PROGRAM_BAKE_PIPE,
+    GraphSafety,
+)
 from jasper.active_speaker.camilla_names import (
     STARTUP_MUTE_GAIN_DB,
     output_commission_mute_name as _commission_mute_name,
@@ -27,11 +32,6 @@ from jasper.active_speaker.output_contract import (
     classify_output_contract,
     flat_full_range_outputs,
     topology_allows_flat_dac_graph,
-)
-from jasper.active_speaker.runtime_contract import (
-    GRAPH_FLAT_FULL_RANGE,
-    GRAPH_PROGRAM_BAKE_PIPE,
-    GraphSafety,
 )
 from jasper.camilla_config_contract import playback_is_pipe
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources

@@ -40,7 +40,7 @@ from jasper.active_speaker.audition_claim import graph_replaced
 from jasper.active_speaker.state_paths import audition_state_path
 from jasper.output_topology import topology_config_fingerprint
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.sound.profile import SimpleEq
 
 from tests.test_active_speaker_profile import _two_way_preset
