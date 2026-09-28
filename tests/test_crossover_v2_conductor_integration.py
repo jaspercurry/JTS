@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import replace
-from jasper.active_speaker.crossover_v2_flow import PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
 from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
@@ -84,23 +83,6 @@ def test_analysis_json_round_trips_trim_band_average_db():
 
 
 # PR-L4 item 2 — spec-grade the prediction before auto-apply
-
-
-def test_prediction_gate_tolerance_is_the_models_own_tracking_error():
-    """The third tolerance's derivation, pinned like its two siblings (PR-L4
-    review: it was the only one without a test).
-
-    Since B1 made both terms the same instrument, the comparison carries no
-    measurement noise — so the threshold is a product-policy floor, and the
-    floor is the gap between what the model predicts and what the hardware
-    realizes. ``_fit_linearization`` records that as ~0.5 dB for the complex
-    correction model on JTS3. An improvement smaller than the model's own
-    tracking error is not one we can honestly claim."""
-    complex_model_tracking_error_db = 0.5
-    assert PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB == complex_model_tracking_error_db
-    # And well under the zero-phase model it replaced (~2.0 dB), which is the
-    # regime where "improvement" would have been indistinguishable from noise.
-    assert PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB < 2.0
 
 
 def test_the_accountability_reasons_are_gone_from_the_registry():

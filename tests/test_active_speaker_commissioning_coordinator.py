@@ -22,7 +22,6 @@ from jasper.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.json_fields import parse_utc_iso
 from jasper.web import correction_crossover_v2_status as v2status, sound_active_speaker
-from jasper.web.correction_crossover_v2_grade import GRADE_NOT_APPLIED
 from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
 import pytest
@@ -319,10 +318,7 @@ def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypat
     block = v2status.crossover_v2_status_block()
     assert block["applied_identity"] == expected
     assert block["applied"] is session_applied
-    if not session_applied:
-        assert block["post_apply_grade"]["state"] == GRADE_NOT_APPLIED
-        assert block["post_apply_grade"]["complete"] is True
-    view = build_commissioning_view(_topology(), applied_profile=applied)["applied_profile"]
+    view =build_commissioning_view(_topology(), applied_profile=applied)["applied_profile"]
     assert {"candidate" if key == "candidate_fingerprint" else key: view[key]
             for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == (
                 expected or dict.fromkeys(("candidate", "record", "config_path", "applied_at")))

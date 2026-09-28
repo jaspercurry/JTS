@@ -1017,19 +1017,6 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
 
 _PILOT_AT = 1_760_000_000.0
 
-_GATE_WINDOW_MS = 6.5
-
-_PREDICTED_SPEC = {"overall_within_target": True, "bands": [{"f_lo_hz": 1000.0, "within_target": True}]}
-
-_COMMANDED_FREQS_HZ = [
-    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0,
-    2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0,
-]
-
-_COMMANDED_DELTA_DB = [
-    0.1, 0.2, 0.4, 0.8, 1.2, 1.6, 2.0, 2.2, 2.4, 2.5, 2.5, 2.5, 2.5,
-]
-
 _ENTRY_BASELINE_STIMULUS_ID = "prog-entry-baseline-stage-1"
 
 _ENTRY_BASELINE_GRAPH = "fp-entry-graph"
@@ -1074,13 +1061,7 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
                 "freqs_hz": [500.0, 1000.0, 2000.0, 4000.0],
                 "magnitude_db": [-1.0, -0.5, 0.5, 1.0],
             },
-            "predicted_spec": dict(_PREDICTED_SPEC),
-            "commanded_delta": {
-                "freqs_hz": list(_COMMANDED_FREQS_HZ),
-                "delta_db": list(_COMMANDED_DELTA_DB),
-            },
             "entry_baseline": _entry_baseline_record(),
-            "gate_window_ms": _GATE_WINDOW_MS,
             "pilot_transfer_reference": {
                 "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
             },
@@ -1142,7 +1123,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "failure",
     "gain_plan_db",
     "kind",
-    "measure",
     "measure_gain_ceiling_db",
     "measure_sweep_durations_s",
     "previous_candidate_fingerprint",
@@ -1154,7 +1134,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "session_phases",
     "sound_design_revision",
     "updated_at",
-    "verify",
     "verify_priors",
 }
 

@@ -49,8 +49,7 @@ BLEND_FILTER_Q = 2.0
 BLEND_MAX_FILTER_CUT_DB = 3.0
 
 #: The smallest cut worth emitting, dB — this model's own measured tracking
-#: error, the same floor ``crossover_v2_flow.PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB``
-#: holds. A correction smaller than the gap between what the model predicts and
+#: error. A correction smaller than the gap between what the model predicts and
 #: what the hardware realizes cannot be honestly claimed.
 BLEND_MIN_CUT_DB = 0.5
 

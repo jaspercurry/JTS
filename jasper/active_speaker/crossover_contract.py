@@ -20,8 +20,6 @@ from ._common import coerce_finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 TUNING_OWNERS = frozenset({"manual", "automatic"})
-REASON_APPLIED_GRADE_MARK_ONLY = "applied_grade_mark_only"
-
 
 
 def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:

@@ -2,30 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: diagnosis-honesty, the boost gate's evidence claim, and post-apply verification."""
+"""Conductor W5a: diagnosis-honesty — MEASURE's priors carry CHECK's ambient."""
 
 from __future__ import annotations
 
-import pytest
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
 )
 
-from jasper.active_speaker.crossover_v2.contracts import CLAIM_NOT_EVALUATED
 from tests.crossover_v2_fixtures import (
     FakeSeams,
-    _absolute,
     _conductor,
     _run_phase,
-    _verify_analysis,
 )
-
-
-#
-# Four shipped instruments each stated less than they measured. These pin the
-# disclosure, not the physics: the numbers below are fixtures, but the SHAPE of
-# what reaches a persisted record or a household screen is the contract.
 
 
 def test_measure_priors_carry_the_ambient_report_check_measured():
@@ -82,81 +72,3 @@ def test_measure_priors_carry_no_ambient_when_check_never_ran():
         if phase == PHASE_MEASURE
     )
     assert measure_priors.ambient_report is None
-
-
-# #1967 — the boost gate's evidence claim, made substantive
-
-
-# R18 — honest post-apply verification (issues #1868 / #1654)
-#
-# The numbers in these records are SYNTHETIC and labelled so — no hardware
-# measurement is restated as a fixture value. The journal-verified fact they DO
-# reproduce is the graded band: ``tracking_band_lo_hz=2000.0`` on a box whose
-# tweeter is swept from Fc.
-
-
-#: The claims a persisted VERIFY carried for each capture below.
-_GRADED_ABSOLUTE_CLAIM = {
-    "status": "pass", "tolerance_db": 2.0, "band_hz": [1000.0, 4000.0],
-    "max_db": 1.503, "rms_db": 0.7515, "worst_db": -1.503, "worst_hz": 1700.0,
-}
-_UNGRADED_ABSOLUTE_CLAIM = {
-    "status": CLAIM_NOT_EVALUATED, "reason": "no_trusted_crossover_region",
-}
-
-
-@pytest.mark.parametrize(
-    ("verify_absolute", "absolute_claim", "badged"),
-    [
-        pytest.param(_absolute(1.503), _GRADED_ABSOLUTE_CLAIM, True, id="absolute_graded"),
-        pytest.param(
-            {"not_evaluated": "no_trusted_crossover_region"}, _UNGRADED_ABSOLUTE_CLAIM,
-            False, id="nothing_graded",
-        ),
-    ],
-)
-def test_the_mark_badge_needs_a_claim_that_was_actually_graded(
-    verify_absolute,
-    absolute_claim,
-    badged,
-):
-    """The corner of the pin above: a capture that graded NOTHING.
-
-    Accepting an ungradeable tracking claim (#3487) is what makes this
-    reachable — and when the same capture also finds no trusted crossover
-    region, the absolute claim is ``not_evaluated`` too, so the accepted
-    VERIFY carries four claims and not one verdict. The badge over it must
-    then not be the one that means *verified at the mark*: the republish
-    door's own contract, which is where this shape comes from, is that such a
-    VERIFY grades INDETERMINATE and never a false pass.
-
-    The first case is the witnessed one and is unchanged — one claim graded,
-    none failed, badge at the mark. What separates the two is not the
-    ``outcome``, which is a ``pass`` in both: it is whether any claim was
-    graded at all.
-    """
-    from jasper.web.correction_crossover_v2_grade import GRADE_INCONCLUSIVE, GRADE_MARK_VERIFIED, _post_apply_grade
-
-    from jasper.active_speaker.crossover_v2 import capture_dispatch
-    c = _conductor(FakeSeams())
-    analysis = _verify_analysis(c.program_for_phase("verify"), max_db=None, verify_absolute=verify_absolute)
-    verdict = capture_dispatch.assess(analysis, phase="verify", program=c.program_for_phase("verify"))
-    claims = {
-        "woofer_branch": {"status": CLAIM_NOT_EVALUATED, "reason": "no_per_branch_verify_capture"},
-        "hf_branch": {"status": CLAIM_NOT_EVALUATED, "reason": "no_per_branch_verify_capture"},
-        "integration": {"status": CLAIM_NOT_EVALUATED, "max_db": None, "tolerance_db": 1.5, "band_hz": None},
-        "absolute": absolute_claim,
-    }
-    assert verdict.ok is True
-    assert claims["integration"]["status"] == CLAIM_NOT_EVALUATED
-    grade = _post_apply_grade(
-        {
-            "applied": True,
-            "verify": {"outcome": "pass", "claims": claims},
-        }
-    )
-
-    assert grade["state"] == (GRADE_MARK_VERIFIED if badged else GRADE_INCONCLUSIVE)
-    assert grade["graded"] is badged
-
-

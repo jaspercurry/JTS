@@ -15,7 +15,6 @@ decision, the applied record — and shapes what comes back into
 
 from __future__ import annotations
 
-from jasper.web import correction_crossover_v2_grade as v2grade
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
@@ -78,24 +77,17 @@ def crossover_v2_status_block(
         needs_recovery = bool(v2volume.session_volume_plan().needs_recovery)
     except (OSError, RuntimeError, ValueError):
         needs_recovery = True  # unreadable volume state fails closed
-    applied_profile = load_applied_baseline_profile_state()
-    identity = applied_identity(applied_profile)
-    graded = v2grade.grade_inputs(state)
-    block: dict[str, Any] = {
+    identity = applied_identity(load_applied_baseline_profile_state())
+    return {
         "phase": _projection.crossover_v2_phase(
             state, review_declined=v2state.review_declined(state),
         ),
         # save_v2_state stamps transitions; polls must not create a second clock (#1947).
         "updated_at": (state or {}).get("updated_at"),
-        **graded,
+        "applied": bool((state or {}).get("applied")),
+        "candidate": (state or {}).get("candidate"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
         "level": seat_level_reference_status(),
-        # MEASURE's own verdict-time disclosures — today just G1's ripple
-        # reservation (#2087). Copied through unvalidated, exactly like
-        # ``candidate`` and ``verify`` beside it: the envelope's own accessor
-        # is the validating reader, so a state file written by another build
-        # cannot 500 this poll path.
-        "measure": (state or {}).get("measure"),
         # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
         "execution": (state or {}).get("execution"),
@@ -117,8 +109,6 @@ def crossover_v2_status_block(
         # prescription consumes it, and this module writes nothing.
         "controllability": _controllability_status() if controllability is False else controllability,
     }
-    block["post_apply_grade"] = v2grade.post_apply_grade(state, applied_profile=applied_profile, inputs=graded)
-    return block
 
 
 def _controllability_status() -> dict[str, Any] | None:

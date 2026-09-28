@@ -545,16 +545,11 @@ async def test_cancelling_recorder_start_drains_and_aborts_before_return(tmp_pat
     assert half.take_answer() is None
 
 
-def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp_path, monkeypatch):
+def test_state_save_refreshes_activity(tmp_path, monkeypatch):
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(v2state.time, "time", lambda: 200.0)
-    v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0,
-                          "verify": {"outcome": "pass", "code": "verified"}})
+    v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0})
     assert v2state.load_v2_state()["updated_at"] == 200.0
-    assert v2state.persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
-    state = v2state.load_v2_state()
-    assert state["verify"] == {"outcome": "pass", "code": "verified"}
-    assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
 
 def _run_door(tmp_path, box, fakes, manifest, records=None):

@@ -60,15 +60,13 @@ def test_reset_clears_and_seed_preempts_the_reader():
 
 
 @pytest.mark.parametrize("install_profile", ["full", "streambox"])
-def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
+def test_grouping_config_is_read_once_per_registry_run(
     monkeypatch, install_profile,
 ):
     """ADR-0233 rule 4, end to end: whatever subset of the ~170 registered
-    checks consumes the household's grouping config or the crossover-v2
-    status block, each is read AT MOST ONCE per run — the whole point of
-    routing every consumer through ``evidence.grouping_config()`` /
-    ``evidence.get("crossover_v2_status", ...)`` instead of calling the
-    readers directly.
+    checks consumes the household's grouping config, it is read AT MOST ONCE
+    per run — the whole point of routing every consumer through
+    ``evidence.grouping_config()`` instead of calling the reader directly.
 
     ``build_audio_runtime_plan_from_system`` is faked out: it re-reads the
     same grouping.env for an unrelated fact (the audio-runtime route mode)
@@ -77,7 +75,6 @@ def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
     inflating this guard's count.
     """
     import jasper.multiroom.config as mr_config
-    import jasper.web.correction_crossover_v2_status as crossover_status
     from jasper.cli import doctor
     from jasper.cli.doctor import _cli, _harness
 
@@ -88,17 +85,7 @@ def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
         load_config_calls.append(None)
         return real_load_config(*args, **kwargs)
 
-    status_block_calls: list[None] = []
-    real_status_block = crossover_status.crossover_v2_status_block
-
-    def counting_status_block():
-        status_block_calls.append(None)
-        return real_status_block()
-
     monkeypatch.setattr(mr_config, "load_config", counting_load_config)
-    monkeypatch.setattr(
-        crossover_status, "crossover_v2_status_block", counting_status_block,
-    )
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.build_audio_runtime_plan_from_system",
         lambda *a, **k: None,
@@ -115,7 +102,6 @@ def test_grouping_config_and_crossover_status_are_read_once_per_registry_run(
 
     assert results, "registry is empty — nothing ran"
     assert len(load_config_calls) <= 1
-    assert len(status_block_calls) <= 1
 
 
 @pytest.mark.parametrize(
