@@ -42,7 +42,7 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
             manifest = {}
         purpose = run_purpose(manifest.get("program"))
         run = manifest_frequency_run(manifest) if purpose == PURPOSE_SPEAKER else analyze_measurement_bundle(
-            inputs.session_dir, calibration_root=calibration_root, run_reference_db=run_reference_db,
+            inputs.session_dir, run_reference_db=run_reference_db,
         )
         rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
             (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
@@ -127,7 +127,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: P
     selected = resolve_set(inputs, set_id, manifest=manifest)
     selection = select_seat_takes(
         inputs.session_dir, purposes=(*run_purposes(manifest["program"]), PURPOSE_ROOM),
-        take_ids=selected.selected_ids, basis=selected.capture_basis, calibration_root=calibration_root,
+        take_ids=selected.selected_ids, basis=selected.capture_basis,
     )
     if not selection.takes:
         raise RoundCapturesRefused(REFUSE_NO_SEAT_TAKES, {"set_id": selected.set_id,

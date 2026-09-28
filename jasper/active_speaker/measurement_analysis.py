@@ -133,10 +133,7 @@ def analyzed_measurements(bundle_dir: Path, *, paths: Iterable[str] | None = Non
         yield BankedMeasurement(record, path)
 
 
-def analyze_measurement_bundle(
-    bundle_dir: Path, *, calibration_root: Path | None = None,
-    run_reference_db: float | None = None,
-) -> FrequencyRun:
+def analyze_measurement_bundle(bundle_dir: Path, *, run_reference_db: float | None = None) -> FrequencyRun:
     if run_reference_db is not None and finite_float(run_reference_db) is None:
         raise MeasurementAnalysisRefused("measurement_reference_invalid")
     info = json.loads((bundle_dir / "info.json").read_text())
