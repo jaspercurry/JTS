@@ -13,7 +13,6 @@ from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
-    RING_WIRE_FORMAT,
     RING_WIRE_FORMAT_WIDE,
     capture_kwargs_for_coupling,
     resolve_ring_path,
@@ -23,7 +22,6 @@ from jasper.fanin_coupling import (
 from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
-
 
 
 def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
@@ -39,15 +37,7 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
         "playback_device": RING_PLAYBACK_DEVICE,
         "playback_format": RING_WIRE_FORMAT_WIDE,
     }
-    # S32_LE, NOT the historical S16LE default — resolve_ring_wire_format's
-    # default flipped WIDE in PR #2601 (convergence design §3.2/B3): narrow was a
-    # width REGRESSION on the loopback CamillaDSP->outputd hop the ring replaces,
-    # which already carries DEFAULT_PLAYBACK_FORMAT (S32_LE). RING_WIRE_FORMAT
-    # (S16_LE) still exists — it is now the NARROW rollback token an operator
-    # pins via JASPER_FANIN_RING_WIRE_FORMAT, not the shipped/default wire — so
-    # both tokens' literal spellings are pinned here, "narrow" and "wide" alike.
     assert RING_WIRE_FORMAT_WIDE == "S32_LE"
-    assert RING_WIRE_FORMAT == "S16_LE"
     assert RING_CAPTURE_DEVICE == "jts_ring_capture"
     assert RING_PLAYBACK_DEVICE == "jts_ring_playback"
 
@@ -97,19 +87,6 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
 
 
 def test_ring_kwargs_emit_ring_capture_device_s32le():
-    # SF-2: the ring capture kwargs DO flow through
-    # capture_kwargs_for_coupling into the product emitters (transport_pipe
-    # precedent) — this is deliberate coherence. A household /sound/ save emits a
-    # CamillaDSP config whose ALSA capture device is jts_ring_capture + the box's
-    # resolved wire format, so the emitted config and the running fan-in daemon
-    # name the SAME ring. (That device only RESOLVES once the arm script has
-    # installed the ioplug conf.d block.)
-    #
-    # Renamed from ...s16le: an undeclared box now resolves S32_LE (the
-    # resolver's default flipped WIDE in PR #2601). S16_LE survives only as the
-    # operator's explicit JASPER_FANIN_RING_WIRE_FORMAT rollback pin — see
-    # test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology for the
-    # per-topology walk that used to carry this test's old name.
     armed_kwargs = capture_kwargs_for_coupling()
     cfg = emit_sound_config(SoundProfile(), profile_id="x", **armed_kwargs)
 
@@ -128,10 +105,6 @@ def test_ring_kwargs_emit_ring_capture_device_s32le():
     assert f'device: "{RING_PLAYBACK_DEVICE}"' in playback_block
     assert f"format: {RING_WIRE_FORMAT_WIDE}" in playback_block
     assert 'device: "outputd_content_playback"' not in playback_block
-    # S32_LE on an undeclared box — matches loopback's DEFAULT_PLAYBACK_FORMAT
-    # rather than narrowing the hop the ring replaces (convergence design
-    # §3.2/B3). RING_WIRE_FORMAT (S16_LE) is the operator's narrow rollback
-    # token now, not what an armed-but-undeclared box emits.
     assert RING_WIRE_FORMAT_WIDE == "S32_LE"
     # The coupling carries DEVICES, not geometry: this emit resolves its own
     # chunk through resolve_camilla_latency_for_devices, which answers a ring
@@ -315,11 +288,6 @@ def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
     )
 
     wire = resolve_ring_wire()
-    # WIDE: the shipped conf.d now DECLARES S32_LE explicitly in every block
-    # (deploy/alsa/conf.d/60-jts-ring.conf), matching resolve_ring_wire_format's
-    # own default for an undeclared box — "shipped geometry" and "the resolver's
-    # default" are the same answer by construction, not two facts that happen to
-    # agree.
     assert wire.sample_format == RING_WIRE_FORMAT_WIDE
     assert wire.ring_a_channels == RING_A_CHANNELS
     assert wire.ring_b_channels == RING_A_CHANNELS
@@ -327,20 +295,7 @@ def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
 
 
 def test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology():
-    """DORMANCY BAR, RE-POINTED to the new invariant.
-
-    Renamed from ..._is_narrow_stereo_on_every_topology: since the resolver's
-    default flipped WIDE (PR #2601), no topology resolves S16_LE any more —
-    the invariant this walk protects was never "the wire is narrow", it was
-    "the format axis is not per-topology". :func:`resolve_ring_wire`'s own
-    docstring says why: ``sample_format`` comes from
-    :func:`read_declared_ring_wire_format` alone, resolved once per box before
-    any topology is even consulted, while only ``ring_b_channels`` (and
-    ``ring_active_channels``) vary with the topology argument. This walk keeps
-    proving that split holds — a resolver that let sample_format leak a
-    per-topology branch would flip that box's emitted config, conf.d and
-    outputd env in one deploy, silently, on exactly one topology shape.
-    """
+    """Only channel geometry varies with topology; the program format is fixed."""
     from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import (
         _active_topology,
@@ -410,14 +365,14 @@ def test_ring_wire_formats_are_exactly_the_two_the_ioplug_accepts():
     """
     from pathlib import Path
 
-    from jasper.fanin_coupling import RING_WIRE_FORMATS
+    from jasper.ring_header import RING_SAMPLE_FORMAT_NAMES
 
     c_src = (
         Path(__file__).resolve().parents[1]
         / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
     ).read_text(encoding="utf-8")
-    assert set(RING_WIRE_FORMATS) == {"S16_LE", "S32_LE"}
-    for token in RING_WIRE_FORMATS:
+    assert set(RING_SAMPLE_FORMAT_NAMES.values()) == {"S16_LE", "S32_LE"}
+    for token in RING_SAMPLE_FORMAT_NAMES.values():
         assert f'strcmp(format_name, "{token}")' in c_src, token
     assert 'format %s unsupported (S16_LE|S32_LE)' in c_src
 
@@ -441,23 +396,3 @@ def test_capture_kwargs_take_their_format_from_the_resolver(monkeypatch):
     assert kwargs["capture_format"] == "S32_LE"
     assert kwargs["playback_format"] == "S32_LE"
     assert fc.content_lane_format_for_coupling() == "S32_LE"
-
-
-def test_the_assistant_width_defaults_to_the_declared_file(monkeypatch):
-    """The width defaults to a FILE-FRESH read of the same SSOT the daemons use.
-
-    Not ``os.environ``: ``jasper-voice`` and the socket-activated wizards never
-    loaded ``fanin.env``, which is the stale-``os.environ`` class AGENTS.md
-    canonizes.
-    """
-    import jasper.fanin_coupling as fc
-
-    seen = {"format": 0}
-
-    def _format() -> str:
-        seen["format"] += 1
-        return fc.RING_WIRE_FORMAT_WIDE
-
-    monkeypatch.setattr(fc, "read_declared_ring_wire_format", _format)
-    assert fc.assistant_wire_is_wide() is True
-    assert seen == {"format": 1}

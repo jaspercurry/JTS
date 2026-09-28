@@ -2055,51 +2055,6 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     )
 
 
-def test_ring_candidate_refuses_a_typod_wire_as_a_typed_config_error(
-    tmp_path, monkeypatch
-):
-    from jasper.web.correction_crossover_v2_apply import apply_candidate
-    import asyncio
-    from dataclasses import replace
-    from jasper.active_speaker import ActiveSpeakerConfigError, applied_tune, baseline_profile
-    from jasper.active_speaker.candidate_parts import candidate_from_design_draft
-    from jasper.active_speaker.design_draft import load_design_draft
-    from jasper.active_speaker.measurement_emit import compile_tuning_graph, load_tuning_declaration
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
-
-    topology, cam = _ring_composer_box(monkeypatch, tmp_path)
-    draft = load_design_draft(topology=topology)
-    declaration = load_tuning_declaration(topology, design_draft=draft)
-    candidate = candidate_from_design_draft(topology, draft)
-    reviewed = applied_tune.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
-    assert reviewed["status"] == "ready_to_compile", reviewed["issues"]
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-
-    for call_site in (
-        lambda: compile_tuning_graph(declaration, candidate=candidate),
-        _grouping_site(topology, tmp_path),
-    ):
-        with pytest.raises(ActiveSpeakerConfigError) as caught:
-            call_site()
-        assert type(caught.value.__cause__) is ValueError
-        assert caught.value.args == caught.value.__cause__.args
-
-    result = asyncio.run(apply_candidate(
-        camilla_factory=lambda: cam,
-    ))
-    assert result["status"] == "blocked"
-    assert result["issues"][0]["code"] == "compose_refused"
-    assert cam.path is None
-    assert not list(tmp_path.glob("*.yml"))
-
-    control = compile_tuning_graph(
-        replace(declaration, playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE), candidate=candidate,
-    )
-    assert parse_camilla_devices_config(control)["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-
-
 def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
     """See #2338: forwarding a device-contract subset can silently change the wire."""
     import dataclasses
@@ -2574,7 +2529,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     monkeypatch.setattr(ring_assets_module, "RING_CONF_D", str(RING_CONF))
 
     ok, detail = ring_edge_width_ready(
-        fanin_text="",
         outputd_text="",
         graph=LoadedCamillaGraph(
             path="step1-artifact.yml",

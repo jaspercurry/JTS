@@ -36,8 +36,7 @@ RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 # gains a line.
 #
 # ``RING_CONF_DEFAULT_FORMAT`` MIRRORS THE C IOPLUG AND DOES NOT FOLLOW THE
-# RESOLVER. The ring wire's resolver defaults WIDE
-# (``jasper.fanin_coupling.resolve_ring_wire_format``) while the compiled-in
+# RESOLVER. The ring wire is fixed S32_LE while the compiled-in
 # ioplug default is ``S16_LE``, and moving this constant to match the resolver
 # would make Python believe a stale ``.so`` parses a ``format`` field it cannot
 # — precisely what :func:`jasper.ring_assets.ring_ioplug_wire_supported` exists to catch. The

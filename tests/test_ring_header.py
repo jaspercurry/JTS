@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from jasper import ring_header
-from jasper.fanin_coupling import RING_WIRE_FORMATS
 from jasper.ring_header import (
     RING_FLOW_ABSENT,
     RING_FLOW_FLOWING,
@@ -167,7 +166,7 @@ def test_python_ring_constants_match_the_generated_abi():
     assert ring_header.RING_SAMPLE_FORMAT_S16LE == RING_ABI["sample_format_s16le"]
     assert ring_header.RING_SAMPLE_FORMAT_S32LE == RING_ABI["sample_format_s32le"]
     # The names are the ALSA tokens the conf.d and every emitter spell.
-    assert set(ring_header.RING_SAMPLE_FORMAT_NAMES.values()) == set(RING_WIRE_FORMATS)
+    assert set(ring_header.RING_SAMPLE_FORMAT_NAMES.values()) == {"S16_LE", "S32_LE"}
 
 
 def test_python_header_offsets_match_the_generated_abi():

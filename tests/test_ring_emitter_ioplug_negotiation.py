@@ -32,12 +32,15 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
     RING_SLOT_FRAMES,
-    RING_WIRE_FORMAT,
-    RING_WIRE_FORMAT_WIDE,
 )
 from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
 from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 from tests.ring_abi import ring_abi
+from jasper.ring_header import (
+    RING_SAMPLE_FORMAT_NAMES,
+    RING_SAMPLE_FORMAT_S16LE,
+    RING_SAMPLE_FORMAT_S32LE,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -131,9 +134,8 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     c/jts-ring-ioplug/pcm_jts_ring.c::jts_ring_set_hw_constraints pins
     SND_PCM_IOPLUG_HW_PERIOD_BYTES to ``p->period_frames * frame_bytes(p)``, and
     ``frame_bytes`` is ``jts_ring_bytes_per_sample(p->sample_format) *
-    p->channels`` (jts_ring_shm.c). Both of those are per-box: the wire format is
-    resolved by ``resolve_ring_wire`` and Ring B's channel count follows the
-    topology. A frames-only model answers identically for an S16_LE/2ch ring and
+    p->channels`` (jts_ring_shm.c). A frames-only model cannot distinguish
+    a generic S16_LE/2ch ring from
     an S32_LE/8ch ring, which are 8x apart in the byte the ioplug actually pins.
 
     The expected byte counts below are computed from the C's own factors rather
@@ -142,7 +144,7 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     """
 
     narrow = ioplug_constraints()
-    wide = ioplug_constraints(sample_format=RING_WIRE_FORMAT_WIDE)
+    wide = ioplug_constraints(sample_format=RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S32LE])
     eight_channel = ioplug_constraints(channels=8)
 
     # The frame view is identical across all three — that is the point.
@@ -151,7 +153,7 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     assert narrow.buffer_frames == wide.buffer_frames == eight_channel.buffer_frames
 
     # The byte view is not. S16_LE is 2 bytes per sample, S32_LE is 4.
-    assert narrow.sample_format == RING_WIRE_FORMAT
+    assert narrow.sample_format == RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE]
     assert narrow.channels == wide.channels == RING_A_CHANNELS
     assert narrow.period_bytes == RING_SLOT_FRAMES * RING_A_CHANNELS * 2
     assert wide.period_bytes == RING_SLOT_FRAMES * RING_A_CHANNELS * 4
@@ -163,15 +165,10 @@ def test_ioplug_pinned_period_bytes_scale_with_the_wire_not_only_the_frames():
     assert narrow.buffer_bytes == narrow.period_bytes * DEFAULT_FANIN_RING_SLOTS
     assert wide.buffer_bytes == 2 * narrow.buffer_bytes
 
-    # narrow is ioplug_constraints()'s fixed compiled-in baseline (mirrors
-    # jasper.ring_conf.RING_CONF_DEFAULT_FORMAT), NOT what an undeclared box's
-    # resolve_ring_wire() answers any more — that resolver defaults WIDE since
-    # PR #2601 (test_fanin_coupling.py pins the resolver side of this). Every
-    # caller here that passes neither axis still gets the S16_LE/2ch geometry
-    # unchanged, because this model's default is fixed, not resolver-derived.
+    # The generic model defaults mirror the C ioplug, not the program wire.
     assert narrow.ok
     assert narrow == ioplug_constraints(
-        sample_format=RING_WIRE_FORMAT, channels=RING_A_CHANNELS
+        sample_format=RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE], channels=RING_A_CHANNELS
     )
 
 

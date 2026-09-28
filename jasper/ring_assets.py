@@ -225,39 +225,14 @@ def ring_ioplug_so_sha256(*, plugin_dir: str | None = None) -> str | None:
 
 
 def ring_wire_capabilities(wire: RingWire) -> frozenset[str]:
-    """The ioplug capabilities this wire NEEDS, beyond the ioplug's own defaults.
+    """The ioplug capabilities this wire needs beyond its compiled-in defaults.
 
-    The conf.d renderer writes a ``format`` / ``channels`` key only where the
-    resolved wire differs from :data:`ring_conf.RING_CONF_DEFAULT_FORMAT` /
-    :data:`ring_conf.RING_CONF_DEFAULT_CHANNELS` (see :func:`ring_conf.render_ring_conf_wire`), and
-    an omitted key is what an older ioplug expects. So the capability a wire
-    needs is the set of keys it forces onto the conf.d — non-empty on every box
-    that has not pinned itself narrow, because the wire resolver defaults WIDE
-    (``jasper.fanin_coupling.resolve_ring_wire_format``) while
-    :data:`ring_conf.RING_CONF_DEFAULT_FORMAT` stays the C ioplug's own ``S16_LE``.
+    Format and Ring A/B channels are compared with the renderer's defaults.
+    The ACTIVE channel count is separate: a roleful box can keep A/B stereo
+    while driving four or more channels through its ACTIVE block. Its fallback
+    mirrors render_ring_conf_wire so the two agree on which keys are emitted.
 
-    THREE AXES, one per conf.d key the renderer can write:
-
-    * ``format`` — every block shares one token, so one comparison covers all
-      three;
-    * ``channels`` on Ring A / Ring B — the full-range stereo pair;
-    * ``channels`` on the ACTIVE block — the post-crossover per-driver width, a
-      SEPARATE axis because :func:`ring_conf.render_ring_conf_wire` writes that block from
-      ``ring_active_channels`` while a roleful box's Ring A/B stay structurally
-      2, so a roleful box driving 4+ channels forces the key through this block
-      alone. The coercion mirrors the renderer's own
-      (``ring_active_channels or ring_conf.RING_CONF_DEFAULT_CHANNELS``) so "which boxes
-      force the key" has one answer, not two.
-
-    WHAT THIS DOES NOT WEIGH: the axes above answer "which keys does this WIRE
-    force onto the conf.d", not "which keys does the conf.d on disk DECLARE".
-    Since the shipped conf.d spells ``format`` explicitly, a box an operator has
-    pinned narrow resolves an empty format axis while its rendered conf.d still
-    carries a ``format`` line — an older ioplug would refuse it at ``open()``
-    with this predicate reporting nothing needed. It needs an operator pin AND
-    an unvouched plugin to bite, and closing it means keying the predicate on
-    the FILE rather than the wire — a contract change to a safety-adjacent gate,
-    so it is issue #2597 rather than a silent widening here.
+    This predicate weighs the requested wire, not declarations on disk.
     """
     needed: set[str] = set()
     if wire.sample_format != ring_conf.RING_CONF_DEFAULT_FORMAT:
@@ -302,8 +277,7 @@ def ring_ioplug_wire_supported(
 
     Short-circuits to ``ok`` when the wire needs nothing
     (:func:`ring_wire_capabilities` is empty) — no file is read and no hash is
-    computed on that path. That arm is reached only by a box an operator has
-    pinned narrow; on every other box this is a live record compare.
+    computed on that path. The fixed S32 program wire requires a format record.
     """
     provenance_path = (
         RING_IOPLUG_PROVENANCE if provenance_path is None else provenance_path

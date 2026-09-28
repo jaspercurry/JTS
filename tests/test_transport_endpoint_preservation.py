@@ -46,7 +46,6 @@ from tests.transport_camilla_fixtures import RETIRED_ALOOP_CAPTURE_DEVICE
 STAGING_LOGGER = "jasper.active_speaker.staging"
 
 
-
 # --------------------------------------------------------------------------
 # Boxes, graphs, payload readers.
 # --------------------------------------------------------------------------
@@ -736,44 +735,6 @@ async def test_the_derived_device_block_is_byte_identical_off_the_ring(
     ), f"the derived device block changed a NON-ring {stage} emit"
 
 
-async def test_boot_anchor_refuses_a_typod_ring_wire_instead_of_tracebacking(
-    commissioning_box, tmp_path, monkeypatch,
-):
-    """A bad ``JASPER_FANIN_RING_WIRE_FORMAT`` is this function's blocker, not a
-    crash: the ``/sound/`` wizard calls it too, so an unhandled ``ValueError``
-    is a 500 on a household page. Nothing may be written, and the ALSA control
-    says the branch did not block everything."""
-    from jasper.active_speaker.staging import stage_protected_startup_config
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
-
-    topology, preset = commissioning_box
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-
-    out_dir = tmp_path / "ring"
-    payload = stage_protected_startup_config(
-        topology,
-        preset=preset,
-        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-        config_dir=out_dir,
-        metadata_path=out_dir / "staged_metadata.json",
-        run_config_check=False,
-    )
-
-    assert payload["status"] == "blocked", payload
-    issue = _issue(payload, "ring_wire_declaration_invalid")
-    assert issue["severity"] == "blocker", issue
-    # No structured field carries the typed token; the operator has to see it.
-    assert RING_WIRE_FORMAT_ENV_VAR in issue["message"], issue
-    assert "s32le" in issue["message"], issue
-    # The refusal precedes the write, so a bad wire leaves no half-formed anchor.
-    assert not Path(payload["config"]["path"]).exists(), payload["config"]["path"]
-    assert _anchor_yaml(
-        topology, preset, tmp_path / "alsa", ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-    )
-
-
 # --------------------------------------------------------------------------
 # 8. #2412 Wave 4 — the transport is on the journal line.
 #
@@ -863,20 +824,10 @@ def _leaf_paths(node, prefix: str = "") -> dict[str, Any]:
     return out
 
 
-@pytest.mark.parametrize("wire", ["S32_LE", "S16_LE"], ids=["wide", "narrow"])
 async def test_the_ring_emit_changes_the_transport_and_nothing_else(
-    commissioning_box, tmp_path, monkeypatch, wire,
+    commissioning_box, tmp_path,
 ):
-    """THE LOAD-BEARING ASSERTION: the seven device fields at most, nothing else.
-
-    Everything #2412 claims about hearing safety rests on this, so it is a
-    STRUCTURAL DIFF rather than an enumeration of what should stay put, which
-    cannot notice a field nobody thought to enumerate. BOTH WIRES, because the
-    count is not fixed: the emitter's non-ring formats are ``S32_LE`` and the
-    shipped ring default is WIDE, so on an ordinary box the format pair holds
-    one value on both transports and only five fields move — the design's
-    "device, two formats, four knobs" is exact only as an upper bound.
-    """
+    """Only transport device/geometry fields may change; hearing and graph fields stay."""
     from jasper.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_ENABLE_RATE_ADJUST,
@@ -884,9 +835,9 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
         RING_CAMILLA_TARGET_LEVEL,
     )
 
-    monkeypatch.setattr(
-        "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: wire
-    )
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
+
+    wire = RING_WIRE_FORMAT_WIDE
     topology, preset = commissioning_box
     flat = {
         lane: _leaf_paths(

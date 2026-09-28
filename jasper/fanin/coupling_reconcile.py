@@ -888,10 +888,6 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     is :func:`jasper.ring_assets.ring_header_matches_conf`, shared with the
     doctor so the two cannot mean different things by "coherent".
 
-    THE FORMAT AXIS IS WHAT MAKES THE WIRE ROLLBACK LEVER REPEATABLE: forcing the
-    wire narrow again leaves the WIDE ring file on disk, which the writer rejects
-    at attach as a config-class fault.
-
     A magic-less / absent / correct-geometry file is left untouched (the writer
     reclaims a magic-less file itself; a correct file is reused). Best-effort: a
     delete failure is logged, never raised — the writer's own attach error is the

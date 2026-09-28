@@ -305,38 +305,6 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     assert cam.loaded == []  # no unprotected-tweeter emit reached CamillaDSP
 
 
-def test_typod_ring_wire_refusal_surfaces_as_follower_error(
-    monkeypatch, tmp_path
-) -> None:
-    """See #2338: invalid wire declarations must reach the follower fallback."""
-    from jasper.fanin_coupling import (
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-        RING_WIRE_FORMAT_ENV_VAR,
-    )
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
-    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-
-    # ARM the box — the endpoint marker is the whole difference between this
-    # test and the solo boxes every other case here drives — then typo its wire.
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text(
-        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
-    )
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-
-    with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
-    assert exc.value.reason == "driver_domain_emit_refused"
-    assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
-
-
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     """Stub the topology load + the graph re-proof for restore tests."""
     monkeypatch.setattr(

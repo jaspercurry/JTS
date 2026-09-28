@@ -11,10 +11,9 @@ contract suite owns it next to the assertions it supports.
 
 The pinned device quantity is BYTES, not frames: the ioplug pins PERIOD_BYTES
 min==max, and the frame count that follows from it depends on the wire
-(``period_bytes / (channels * bytes_per_sample)``). Both wire axes are per-box —
-:func:`jasper.fanin_coupling.resolve_ring_wire` answers the format and Ring B's
-channel count — so the model carries them rather than answering the same frames
-for rings that are 8x apart in bytes.
+(``period_bytes / (channels * bytes_per_sample)``). The generic model covers
+both protocol formats, including stale narrow headers, and per-topology channel
+counts; an S16 stereo ring and an S32 eight-channel ring differ eightfold.
 """
 
 from __future__ import annotations
@@ -25,9 +24,11 @@ from jasper.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
     RING_SLOT_FRAMES,
-    RING_WIRE_FORMAT,
-    RING_WIRE_FORMAT_WIDE,
-    RING_WIRE_FORMATS,
+)
+from jasper.ring_header import (
+    RING_SAMPLE_FORMAT_NAMES,
+    RING_SAMPLE_FORMAT_S16LE,
+    RING_SAMPLE_FORMAT_S32LE,
 )
 
 # CamillaDSP v4.1.3 (05e9cfc) source constants:
@@ -45,14 +46,14 @@ _CAMILLA_PERIOD_REQUEST_DIVISOR = 8
 
 # Bytes per sample for the two tokens the ring wire vocabulary defines, mirroring
 # c/jts-ring-ioplug/jts_ring_shm.c::jts_ring_bytes_per_sample. Keyed by the ALSA
-# token jasper.fanin_coupling owns rather than by the header's sample_format id,
+# token ring_header names rather than by the header's sample_format id,
 # because the token is what the ioplug conf.d block declares and what this model
 # is handed. A token outside this map has no stride here: the C default-arm's
 # fallback to 2 is a defensive branch behind jts_ring_geometry_validate's
 # two-format accept-set, not a width claim this model may repeat.
 _RING_BYTES_PER_SAMPLE = {
-    RING_WIRE_FORMAT: 2,
-    RING_WIRE_FORMAT_WIDE: 4,
+    RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE]: 2,
+    RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S32LE]: 4,
 }
 
 
@@ -114,7 +115,7 @@ class IoplugConstraints:
         if self.sample_format not in _RING_BYTES_PER_SAMPLE:
             return (
                 f"sample_format {self.sample_format!r} is not a ring wire format "
-                f"({', '.join(RING_WIRE_FORMATS)}), so PERIOD_BYTES has no value"
+                f"({', '.join(RING_SAMPLE_FORMAT_NAMES.values())}), so PERIOD_BYTES has no value"
             )
         expected = self.period_frames * self.periods
         return (
@@ -139,32 +140,10 @@ def ioplug_constraints(
     *,
     slot_frames: int = RING_SLOT_FRAMES,
     n_slots: int = DEFAULT_FANIN_RING_SLOTS,
-    sample_format: str = RING_WIRE_FORMAT,
+    sample_format: str = RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE],
     channels: int = RING_A_CHANNELS,
 ) -> IoplugConstraints:
-    """Build the ioplug's fixed constraint space from product geometry.
-
-    c/jts-ring-ioplug/pcm_jts_ring.c::jts_ring_set_hw_constraints pins
-    PERIOD_BYTES min=max to ``slot_frames * frame_bytes`` and PERIODS min=max to
-    n_slots, so the ALSA buffer is exactly slot_frames*n_slots frames. FORMAT and
-    CHANNELS are pinned to single values in the same call, which is what lets the
-    one pinned byte count name one frame count: the frames that follow from
-    PERIOD_BYTES depend on the wire, and an S32_LE/8ch ring is 8x an S16_LE/2ch
-    ring in bytes at identical frames. These values are not CamillaDSP choices;
-    they are the device space that CamillaDSP negotiates against.
-
-    THE DEFAULTS ARE THE IOPLUG'S OWN COMPILED-IN TOKENS, NOT THE SHIPPED WIRE.
-    ``sample_format``/``channels`` default to :data:`RING_WIRE_FORMAT` (narrow)
-    and :data:`RING_A_CHANNELS` — the C plugin's own hard-coded defaults,
-    mirroring ``jasper.ring_conf.RING_CONF_DEFAULT_FORMAT`` — because they are
-    a fixed test baseline every byte-math assertion in this suite is measured
-    against, not a claim about what a real box carries. Since
-    :func:`jasper.fanin_coupling.resolve_ring_wire_format`'s default flipped
-    WIDE (PR #2601, convergence design §3.2/B3), an undeclared box no longer
-    resolves this default — it resolves :data:`RING_WIRE_FORMAT_WIDE`. A caller
-    modelling that box passes ``sample_format=RING_WIRE_FORMAT_WIDE`` explicitly,
-    the same way the product resolver now does.
-    """
+    """The generic C baseline is S16 stereo; explicit wire axes remain supported."""
 
     return IoplugConstraints(
         period_frames=slot_frames,
@@ -190,7 +169,7 @@ def negotiate(
     chunksize: int,
     slot_frames: int = RING_SLOT_FRAMES,
     n_slots: int = DEFAULT_FANIN_RING_SLOTS,
-    sample_format: str = RING_WIRE_FORMAT,
+    sample_format: str = RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE],
     channels: int = RING_A_CHANNELS,
 ) -> NegotiationOutcome:
     """Model ALSA ``*_near`` negotiation against the jts_ring fixed space.

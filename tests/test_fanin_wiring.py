@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 
 from jasper.audio_runtime_settings import DEFAULT_FANIN_INPUT_BUFFER_FRAMES
-from jasper.fanin_coupling import resolve_ring_wire_format
+from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from tests.install_surface import installer_text
 from tests.shairport_template_helpers import (
     SHAIRPORT_TEMPLATE,
@@ -88,7 +88,7 @@ def test_asoundrc_declares_the_private_renderer_substreams():
         # snd-aloop pins both halves of a cable to one format, and the reader
         # half opens at the box's resolved wire — so these slaves declare the
         # width an UNDECLARED box resolves, not a literal of their own.
-        assert f"format {resolve_ring_wire_format(None)}" in block
+        assert f"format {RING_WIRE_FORMAT_WIDE}" in block
         assert "slave.pcm" not in block
         assert expected_slave not in seen, f"duplicate lane {expected_slave}"
         seen.add(expected_slave)

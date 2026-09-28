@@ -30,15 +30,8 @@ pub const HEADER_BYTES: usize = 128;
 
 /// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE).
 ///
-/// This is a header VOCABULARY id, not the wire a box carries. Which of the two
-/// ids a ring actually declares is `resolve_ring_wire`'s answer (the Python
-/// control plane), and since the wide-wire flip that answer is
-/// [`SAMPLE_FORMAT_S32LE`] on any box that has not been pinned narrow — the same
-/// width the general ALSA playback lane already had
-/// (`DEFAULT_PLAYBACK_FORMAT = "S32_LE"`). So a ring reaching this id today is
-/// either an operator's `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` rollback pin or a
-/// pre-flip file still on disk. The narrow peer that genuinely stays narrow by
-/// policy is the pipe/File sink (`DEFAULT_PIPE_SINK_FORMAT = "S16_LE"`).
+/// A protocol id retained for generic readers and stale-file mismatch checks.
+/// The program ring writer uses [`SAMPLE_FORMAT_S32LE`].
 pub const SAMPLE_FORMAT_S16LE: u32 = 1;
 
 /// `sample_format` = 2: interleaved signed 32-bit little-endian (S32LE).

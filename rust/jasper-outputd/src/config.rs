@@ -157,9 +157,7 @@ pub struct Config {
     /// not yet reconciled or whose probe could not run:
     /// `deploy/bin/jasper-audio-hardware-reconcile` emits this key on every
     /// box, from `jasper.fanin_coupling.content_lane_format_for_coupling`, and
-    /// answers `S32_LE` by default because the ring wire's resolver defaults
-    /// wide. `S16_LE` on a ring box means an explicit operator rollback pin
-    /// (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`).
+    /// answers the fixed `S32_LE` program wire.
     pub content_format: SampleFormat,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind

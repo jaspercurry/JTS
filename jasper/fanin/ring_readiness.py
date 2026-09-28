@@ -49,7 +49,7 @@ from jasper.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PCM_DEVICES,
     RING_SLOTS_ENV_VAR,
-    RING_WIRE_FORMAT_ENV_VAR,
+    RING_WIRE_FORMAT_WIDE,
 )
 from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.multiroom.grouping_ring import (
@@ -259,35 +259,6 @@ def _effective_env_value(
     return read_value(read_snapshot(BASE_ENV_PATH).text, key), BASE_ENV_PATH
 
 
-def resolve_effective_fanin_wire_format(fanin_text: str) -> tuple[str, str]:
-    """fan-in's declared Ring-A wire format, and which file declared it.
-
-    Same ``jasper.env`` -> ``fanin.env`` chain systemd gives ``jasper-fanin``:
-    looking only at ``fanin.env`` would report the default while an operator's
-    value in the earlier system env still controls the next daemon start.
-
-    THE UNSET CASE GOES THROUGH THE RESOLVER'S OWN NORMALIZER, never a default
-    restated here, so this end stays honest across a change to that default.
-
-    An unrecognized token is returned VERBATIM rather than raised on: this
-    function reports what an end declares, and
-    :func:`ring_edge_width_ready`'s comparison against the resolved wire turns a
-    bad token into a refusal. Raising here would throw mid-arm from a reader
-    whose job is to describe.
-
-    THIS END IS THE RESOLVER'S INPUT: it agrees by construction on the live path,
-    and stays a declaration only because this reader takes the caller's fanin.env
-    TEXT while the resolver reads the FILE. The independent witnesses are the
-    conf.d, outputd's env and the loaded graph.
-    """
-    raw, source = _effective_env_value(
-        fanin_text, RING_WIRE_FORMAT_ENV_VAR, later_path=FANIN_ENV_PATH
-    )
-    if raw is None or not raw.strip():
-        return fanin_coupling.resolve_ring_wire_format(None), "default"
-    return raw.strip(), source
-
-
 def graph_wire_declarations(
     graph: LoadedCamillaGraph,
 ) -> tuple[RingWireDeclaration, ...]:
@@ -329,7 +300,6 @@ def graph_wire_declarations(
 
 def ring_wire_declarations(
     *,
-    fanin_text: str,
     outputd_text: str,
     graph: LoadedCamillaGraph | None = None,
 ) -> tuple[RingWireDeclaration, ...]:
@@ -356,7 +326,6 @@ def ring_wire_declarations(
         if conf_present
         else f"{ring_assets.RING_CONF_D} absent — ring_assets_ready owns that refusal"
     )
-    fanin_format, fanin_source = resolve_effective_fanin_wire_format(fanin_text)
     outputd_channels_raw = read_value(outputd_text, _OUTPUTD_ACTIVE_CHANNELS_ENV_VAR)
     try:
         outputd_channels = (
@@ -378,9 +347,9 @@ def ring_wire_declarations(
     return (
         RingWireDeclaration(
             end="fan-in (Ring A writer)",
-            source=fanin_source,
+            source="fan-in fixed wire",
             ring=RING_A,
-            sample_format=fanin_format,
+            sample_format=RING_WIRE_FORMAT_WIDE,
             # fan-in's mixer is stereo and NOT configurable
             # (``mixer.rs``'s ``CHANNELS: u32 = 2``). Comparing it catches a
             # resolver answering a Ring A width the writer cannot produce.
@@ -438,22 +407,6 @@ def ring_wire_declarations(
     )
 
 
-def resolve_wire_for_gate(topology: Any = None) -> tuple[Any | None, str]:
-    """``(wire, "")`` — or ``(None, why)`` when the box declares an illegal wire.
-
-    Convert an invalid wire declaration to a gate refusal (ADR-0100).
-    The arm may already have written env changes; refusal retains them.
-    """
-    try:
-        return fanin_coupling.resolve_ring_wire(topology), ""
-    except ValueError as exc:
-        return None, (
-            f"{exc} — refusing to arm on a wire this box cannot declare; "
-            "fails closed and retains applied changes — "
-            "never a fallback (ADR-0100)"
-        )
-
-
 def _wire_channels_for_ring(ring: str, wire: Any) -> int | None:
     """Which of the resolved wire's three channel fields ``ring`` is held to.
 
@@ -472,7 +425,6 @@ def _wire_channels_for_ring(ring: str, wire: Any) -> int | None:
 
 def ring_edge_width_ready(
     *,
-    fanin_text: str | None = None,
     outputd_text: str | None = None,
     graph: LoadedCamillaGraph | None = None,
 ) -> tuple[bool, str]:
@@ -489,9 +441,7 @@ def ring_edge_width_ready(
 
     THE ENDS, and what each contributes:
 
-    - **fan-in** — ``JASPER_FANIN_RING_WIRE_FORMAT`` off the daemon's own env
-      chain, plus its compile-time stereo mixer width. Its FORMAT axis is the
-      resolver's own input, so it agrees by construction on the live path;
+    - **fan-in** — its fixed S32_LE format and compile-time stereo mixer width;
     - **the conf.d** — both stereo PCM blocks, PER BLOCK, because Ring A and
       Ring B may legitimately differ on channels and only the file says what the
       ioplug will attach with. The ACTIVE conf.d block is deliberately NOT one of
@@ -517,22 +467,17 @@ def ring_edge_width_ready(
     width the wire question is not well-posed and a mismatch report would name
     the wrong defect.
 
-    ``fanin_text`` / ``outputd_text`` / ``graph`` default to reading their
+    ``outputd_text`` / ``graph`` default to reading their
     sources, so the gate stays callable with no arguments; the arm path passes
     the snapshots it has already written. Each source is read ONCE per call.
     """
-    if fanin_text is None:
-        fanin_text = read_snapshot(FANIN_ENV_PATH).text
     if outputd_text is None:
         outputd_text = read_snapshot(OUTPUTD_ENV_PATH).text
     if graph is None:
         graph = read_loaded_camilla_graph()
 
-    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
-    if wire is None:
-        return False, wire_problem
+    wire = fanin_coupling.resolve_ring_wire(load_topology_for_wire())
     declarations = ring_wire_declarations(
-        fanin_text=fanin_text,
         outputd_text=outputd_text,
         graph=graph,
     )
@@ -631,17 +576,8 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     ADR-0178) rather than arming into a CamillaDSP that cannot open the ring;
     ``jasper-doctor``'s ``ring ioplug provenance`` check reports the state with
     the redeploy remedy first.
-
-    The short-circuit — no record read at all — survives for one shape: a box an
-    operator has pinned to ``S16_LE``, the ioplug's own compiled-in conf.d
-    default.
-
-    An unparseable declaration is refused here rather than raised — see
-    :func:`resolve_wire_for_gate` for why a gate must not throw mid-arm.
     """
-    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
-    if wire is None:
-        return False, wire_problem
+    wire = fanin_coupling.resolve_ring_wire(load_topology_for_wire())
     support = ring_assets.ring_ioplug_wire_supported(wire)
     return support.ok, support.detail
 
@@ -861,9 +797,7 @@ def graph_at_active_ring_endpoint(
             f"playback {RING_ACTIVE_PLAYBACK_DEVICE!r})"
         )
 
-    wire, wire_problem = resolve_wire_for_gate(load_topology_for_wire())
-    if wire is None:
-        return False, wire_problem
+    wire = fanin_coupling.resolve_ring_wire(load_topology_for_wire())
     problems: list[str] = []
     for decl in (decl for stage in graphs for decl in graph_wire_declarations(stage)):
         if decl.sample_format != wire.sample_format:

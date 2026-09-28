@@ -394,7 +394,6 @@ def _render_log(tmp_path: Path) -> str:
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-
 def _assert_states(text: str, *needles: str) -> None:
     """Every needle present. Reports ALL that are missing, not just the first."""
     assert [n for n in needles if n not in text] == [], text
@@ -3637,16 +3636,7 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 def test_reconcile_emits_the_wide_content_format(
     tmp_path: Path, initial_outputd_env: str | None
 ):
-    """Both boxes carry the wide program lane, plumbed verbatim from
-    content_lane_format_for_coupling.
-
-    An operator narrow pin (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) is not
-    reachable here: the probe's ring-wire read is file-fresh against the
-    REAL /etc/jasper/jasper.env and /var/lib/jasper/fanin.env, which on a
-    Pi are the files this harness diverges into tmp_path. That pin is
-    exercised in tests/test_fanin_coupling.py and
-    tests/test_audio_runtime_plan.py.
-    """
+    """The content wire stays S32 independently of the DAC edge format."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,

@@ -919,19 +919,7 @@ def test_camilla_outputd_config_declares_outputd_lane():
 
 
 def _emit_shipped_cutover_config(monkeypatch, tmp_path) -> str:
-    """The emitter call the shipped seed must match, made deterministic.
-
-    ``emit_flat_outputd_cutover_config()`` resolves the ring wire through
-    ``read_declared_ring_wire_format`` — a FILE-FRESH read of
-    ``/var/lib/jasper/fanin.env`` then ``/etc/jasper/jasper.env`` with no
-    parameter seam — and, with no ``topology`` passed, loads the saved
-    topology from ``JASPER_OUTPUT_TOPOLOGY_PATH``/the default path. Neither
-    is in conftest's ``_isolate_host_state_paths`` allowlist, so on a roleful
-    box (one with a real fanin.env or saved topology) this call would emit
-    THAT box's wire/topology rather than the plain flat-stereo identity graph
-    the shipped seed is. Point both at absent tmp paths so the result is the
-    hermetic default everywhere, laptop or roleful box alike.
-    """
+    """Render the shipped wide ring graph."""
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(tmp_path / "jasper.env"))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
