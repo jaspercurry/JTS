@@ -32,6 +32,15 @@ def _stash_path(tmp_path: Path) -> Path:
     return tmp_path / "wifi_guardian.env"
 
 
+def _saved_profile(ssid: str, psk: str = "", key_mgmt: str = ""):
+    """`nmcli -s` output for a saved profile's SSID, PSK and key-mgmt."""
+    return _mock_proc(stdout=(
+        f"802-11-wireless.ssid:{ssid}\n"
+        f"802-11-wireless-security.psk:{psk}\n"
+        f"802-11-wireless-security.key-mgmt:{key_mgmt}\n"
+    ))
+
+
 @pytest.fixture
 def stash_path(tmp_path, monkeypatch):
     """Point the wizard's stash path at tmp_path. The wizard reads the
@@ -49,17 +58,17 @@ def stash_path(tmp_path, monkeypatch):
 
 def test_connect_new_success_writes_stash(stash_path, monkeypatch):
     """The canonical happy path: user pastes PSK into the wizard,
-    nmcli connect returns 0 → stash gets the SSID + PSK + key_mgmt."""
+    nmcli connect returns 0 → stash gets the SSID + PSK + key_mgmt that
+    NetworkManager saved for the network."""
     import jasper.web.wifi_setup as wifi_setup
 
     side_effect = _scripted_nmcli([
         _mock_proc(),  # _current_wifi: NAME,UUID,TYPE,DEVICE (empty)
         _mock_proc(),  # _profile_exists: NAME (empty)
         _mock_proc(returncode=0),  # the actual connect
+        _mock_proc(),  # _current_wifi (empty → the SSID names the profile)
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        # _resolve_key_mgmt → return wpa-psk
-        _mock_proc(returncode=0,
-                   stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
+        _saved_profile("Home", "myhomepsk", "wpa-psk"),  # _read_profile_secrets
     ])
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
          patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
@@ -74,6 +83,36 @@ def test_connect_new_success_writes_stash(stash_path, monkeypatch):
     assert stash.key_mgmt == "wpa-psk"
 
 
+def test_connect_new_follows_the_profile_networkmanager_activated(stash_path):
+    """NetworkManager can satisfy a new-network connect with a saved profile
+    under another name (the OS imager's `netplan-wlan0-<SSID>`). The harden
+    and the stash follow that profile, and the stash holds what it saved."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    profile = "netplan-wlan0-HomeNet"
+    hardened: list[str] = []
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        if cmd[-2:] == ["show", "--active"]:
+            return _mock_proc(stdout=f"{profile}:uuid-1:802-11-wireless:wlan0\n")
+        if cmd[:3] == ["nmcli", "connection", "modify"]:
+            hardened.append(cmd[3])
+        if cmd[:2] == ["nmcli", "-s"] and cmd[-1] == profile:
+            return _saved_profile("HomeNet", "saved-psk", "wpa-psk")
+        return _mock_proc()
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
+        ok, _ = wifi_setup.connect_new("HomeNet", "typed-psk")
+
+    assert ok is True
+    assert hardened == [profile]
+    stash = wifi_guardian_persistence.read_stash(stash_path)
+    assert stash is not None
+    assert (stash.ssid, stash.psk, stash.key_mgmt) == (
+        "HomeNet", "saved-psk", "wpa-psk",
+    )
+
+
 def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
     """A successful wizard connect should persist NM settings that survive
     router flaps and keep `.local` mDNS fast for Apple clients."""
@@ -83,11 +122,6 @@ def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
 
     def nmcli_side_effect(cmd, *args, **kwargs):
         calls.append(list(cmd))
-        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
-            return _mock_proc(
-                returncode=0,
-                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
-            )
         return _mock_proc(returncode=0)
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
@@ -115,11 +149,6 @@ def test_connect_new_hardening_nonzero_does_not_block_connect(stash_path):
     def nmcli_side_effect(cmd, *args, **kwargs):
         if cmd[:3] == ["nmcli", "connection", "modify"]:
             return _mock_proc(returncode=1, stderr="Error: hardening failed")
-        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
-            return _mock_proc(
-                returncode=0,
-                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
-            )
         return _mock_proc(returncode=0)
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
@@ -137,11 +166,6 @@ def test_connect_new_hardening_oserror_does_not_block_connect(stash_path):
     def nmcli_side_effect(cmd, *args, **kwargs):
         if cmd[:3] == ["nmcli", "connection", "modify"]:
             raise FileNotFoundError("nmcli not found")
-        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
-            return _mock_proc(
-                returncode=0,
-                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
-            )
         return _mock_proc(returncode=0)
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
@@ -176,9 +200,9 @@ def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(),  # _current_wifi
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        _mock_proc(returncode=0,
-                   stdout="802-11-wireless-security.key-mgmt:\n"),
+        _saved_profile("GuestNet"),  # _read_profile_secrets
     ])
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
          patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
@@ -211,11 +235,8 @@ def test_connect_new_retries_hidden_on_ssid_lookup_failure(
                 returncode=10,
                 stderr="Error: No network with SSID 'HiddenHome' found\n",
             )
-        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
-            return _mock_proc(
-                returncode=0,
-                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
-            )
+        if cmd[:2] == ["nmcli", "-s"]:
+            return _saved_profile("HiddenHome", "myhomepsk", "wpa-psk")
         return _mock_proc()
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
@@ -242,10 +263,7 @@ def test_connect_new_explicit_hidden_uses_hidden_yes(stash_path, monkeypatch):
 
     def nmcli_side_effect(cmd, *args, **kwargs):
         calls.append(list(cmd))
-        return _mock_proc(
-            returncode=0,
-            stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
-        )
+        return _mock_proc(returncode=0)
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
          patch.object(
@@ -291,9 +309,9 @@ def test_connect_new_stash_failure_does_not_block_connect(
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(),  # _current_wifi
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        _mock_proc(returncode=0,
-                   stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
+        _saved_profile("Home", "p", "wpa-psk"),  # _read_profile_secrets
     ])
 
     def boom(*args, **kwargs):
@@ -321,9 +339,9 @@ def test_connect_new_enterprise_skips_stash(stash_path, monkeypatch, caplog):
         _mock_proc(),  # _current_wifi
         _mock_proc(),  # _profile_exists
         _mock_proc(returncode=0),  # connect
+        _mock_proc(),  # _current_wifi
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        _mock_proc(returncode=0,
-                   stdout="802-11-wireless-security.key-mgmt:wpa-eap\n"),
+        _saved_profile("EnterpriseNet", key_mgmt="wpa-eap"),  # _read_profile_secrets
     ])
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
          patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
@@ -346,15 +364,17 @@ def test_connect_new_psk_never_in_log_records(stash_path, caplog):
         _mock_proc(),
         _mock_proc(),
         _mock_proc(returncode=0),
+        _mock_proc(),  # _current_wifi
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        _mock_proc(returncode=0,
-                   stdout="802-11-wireless-security.key-mgmt:wpa-psk\n"),
+        _saved_profile("Home", psk, "wpa-psk"),  # _read_profile_secrets
     ])
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
          patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
         with caplog.at_level("DEBUG"):
             wifi_setup.connect_new("Home", psk)
 
+    # Without a stash write, the absence pin below holds vacuously.
+    assert stash_path.exists()
     for record in caplog.records:
         assert psk not in record.getMessage()
 
@@ -372,12 +392,7 @@ def test_connect_saved_refreshes_stash_from_nmcli_secrets(stash_path):
     side_effect = _scripted_nmcli([
         _mock_proc(returncode=0),  # connection up
         _mock_proc(returncode=0),  # _harden_wifi_profile
-        # _read_profile_secrets: SSID + PSK + key_mgmt
-        _mock_proc(returncode=0, stdout=(
-            "802-11-wireless.ssid:HomeRealSSID\n"
-            "802-11-wireless-security.psk:nmstoredpsk\n"
-            "802-11-wireless-security.key-mgmt:wpa-psk\n"
-        )),
+        _saved_profile("HomeRealSSID", "nmstoredpsk", "wpa-psk"),  # _read_profile_secrets
     ])
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         ok, _ = wifi_setup.connect_saved("netplan-wlan0-Home")
