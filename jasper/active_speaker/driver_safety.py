@@ -282,7 +282,7 @@ def _normalise_cabinet(value: Any, field_name: str, radiating_diameter_mm: float
         return None
     if not isinstance(value, Mapping):
         raise DriverSafetyProfileError(f"{field_name} must be an object")
-    # A driver's size is its own radiating_diameter_mm (ADR-0384).
+    # A cabinet holds no size: a driver's is its own radiating_diameter_mm (ADR-0384).
     _reject_unknown_keys(value, field_name, {"enclosure_kind", "radiator_count", "baffle_width_mm",
                                              "lf_reconstruction_capability"}, fix)
     enclosure = (
