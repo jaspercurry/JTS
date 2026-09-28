@@ -123,8 +123,8 @@ async def test_selected_source_times_out_on_stalled_connect(renderer):
     """A wedged mux listener must not hang the connect past its 1s bound.
 
     VolumeObserver polls selected_source() every tick through a
-    cancellation-only chain (_tick -> _active_source -> here); an
-    unbounded connect would make that loop immortal (#2003)."""
+    cancellation-only chain (_tick -> active_source -> audible_source ->
+    here); an unbounded connect would make that loop immortal (#2003)."""
     async def _hang(*_a, **_kw):
         await asyncio.Event().wait()
 
@@ -185,38 +185,66 @@ async def test_active_renderers_resilient_to_missing_state_file(renderer):
 
 
 # ----------------------------------------------------------------------
-# RendererClient.get_currentsong — cascade by active source
+# RendererClient.get_currentsong — the audible source's track
 # ----------------------------------------------------------------------
 
-async def test_currentsong_spotify_returns_uri(renderer):
-    """librespot's --onevent only gives us URI/track_id in the state
-    file — title/artist resolution requires a Spotify Web API call,
-    which voice tools handle via spotify_router. The renderer just
-    surfaces the URI so transport routing knows the source identity."""
+_SPOTIFY_URI = "spotify:track:6IiSsjuKiOIbOCSv10SqPn"
+_AIRPLAY_TAGS = {
+    "title": "Bohemian Rhapsody", "album": "A Night at the Opera", "artist": "Queen",
+}
+
+
+async def _shairport_playing(*args, **kwargs):
+    """busctl against shairport-sync: Playing, with the tags above."""
+    if "PlaybackStatus" in args:
+        out = b'v s "Playing"\n'
+    elif "Metadata" in args:
+        out = (
+            b'v a{sv} 4 "mpris:trackid" o "/foo" '
+            b'"xesam:title" s "Bohemian Rhapsody" '
+            b'"xesam:album" s "A Night at the Opera" '
+            b'"xesam:artist" as 1 "Queen"'
+        )
+    else:
+        out = b""
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.communicate = AsyncMock(return_value=(out, b""))
+    proc.wait = AsyncMock(return_value=0)
+    return proc
+
+
+@pytest.mark.parametrize(
+    ("mux_answer", "expected"),
+    [
+        # Spotify and AirPlay both report playing; mux's answer decides
+        # (ADR-0150), even when it names neither.
+        ("airplay", _AIRPLAY_TAGS),
+        # librespot's state file carries only the URI; tags need the Web API.
+        ("spotify", {"title": "", "album": "", "artist": "", "uri": _SPOTIFY_URI}),
+        ("bluetooth", {}),
+        ("idle", {}),
+        # Mux unreachable: the probes' order puts AirPlay first.
+        (OSError("no mux socket"), _AIRPLAY_TAGS),
+    ],
+    ids=["airplay", "spotify", "bluetooth", "idle", "mux_unreachable"],
+)
+async def test_currentsong_follows_the_audible_source(
+    renderer, mux_answer, expected,
+):
     write_librespot_state(
         renderer._librespot_state_path,
-        playing=True, paused=False, stopped=False,
-        uri="spotify:track:6IiSsjuKiOIbOCSv10SqPn",
+        playing=True, paused=False, stopped=False, uri=_SPOTIFY_URI,
     )
-    with patch(
-        "asyncio.create_subprocess_exec",
-        new=_mock_subprocess(stdout=b""),
+    mux = AsyncMock(
+        return_value={"active_source": mux_answer},
+        side_effect=mux_answer if isinstance(mux_answer, Exception) else None,
+    )
+    with (
+        patch("jasper.renderer.mux_socket_command", new=mux),
+        patch("asyncio.create_subprocess_exec", side_effect=_shairport_playing),
     ):
-        song = await renderer.get_currentsong()
-    assert song["uri"] == "spotify:track:6IiSsjuKiOIbOCSv10SqPn"
-
-
-async def test_currentsong_returns_empty_when_no_source(renderer):
-    """When no Spotify, AirPlay, or BT is active, currentsong returns
-    {} — the three real renderers are the only sources we introspect."""
-    # No librespot state file → no spotify; subprocess mock → no AirPlay
-    # PlaybackStatus; no BlueZ bus → no BT.
-    with patch(
-        "asyncio.create_subprocess_exec",
-        new=_mock_subprocess(stdout=b""),
-    ):
-        song = await renderer.get_currentsong()
-    assert song == {}
+        assert await renderer.get_currentsong() == expected
 
 
 # ----------------------------------------------------------------------
@@ -267,40 +295,3 @@ async def test_active_renderers_when_busctl_missing(renderer):
     # All probes return False on FileNotFoundError; nothing crashes.
     assert result["aplactive"] is False
     assert result["btactive"] is False
-
-
-async def test_currentsong_airplay_returns_metadata(renderer):
-    """When AirPlay is the active source and shairport-sync's MPRIS
-    has metadata, currentsong should populate title/album/artist
-    from the parsed busctl output."""
-    # No librespot state file → spotactive False; aplactive=True via MPRIS
-
-    sample_mpris = (
-        'v a{sv} 4 "mpris:trackid" o "/foo" '
-        '"xesam:title" s "Bohemian Rhapsody" '
-        '"xesam:album" s "A Night at the Opera" '
-        '"xesam:artist" as 1 "Queen"'
-    )
-
-    async def fake_subproc(*args, **kwargs):
-        # First call: busctl Get PlaybackStatus (returns "Playing")
-        # Second call: busctl Get Metadata (returns the sample)
-        proc = MagicMock()
-        proc.returncode = 0
-        if "PlaybackStatus" in args:
-            proc.communicate = AsyncMock(return_value=(b'v s "Playing"\n', b""))
-        elif "Metadata" in args:
-            proc.communicate = AsyncMock(
-                return_value=(sample_mpris.encode(), b""),
-            )
-        else:
-            proc.communicate = AsyncMock(return_value=(b"", b""))
-        proc.wait = AsyncMock(return_value=0)
-        return proc
-
-    with patch("asyncio.create_subprocess_exec", side_effect=fake_subproc):
-        song = await renderer.get_currentsong()
-
-    assert song["title"] == "Bohemian Rhapsody"
-    assert song["album"] == "A Night at the Opera"
-    assert song["artist"] == "Queen"
