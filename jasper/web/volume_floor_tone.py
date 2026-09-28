@@ -28,7 +28,6 @@ from jasper.audio_measurement.correction_lane import (
     CORRECTION_TONE_DIR,
     popen_correction_play,
 )
-from jasper.camilla import CamillaUnavailable
 from jasper.dsp_control.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
 from jasper.log_event import log_event
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
@@ -324,12 +323,10 @@ class _WriterLockHold:
             self._settled.set()
 
 
-async def _unmute(camilla: Any) -> None:
+async def _unmute(camilla: Any, *, context: str) -> None:
     """Unmute for the tone; an unreachable CamillaDSP fails like any start step."""
-    try:
-        await camilla.set_main_mute(False)
-    except CamillaUnavailable as exc:
-        raise RuntimeError("CamillaDSP is unavailable") from exc
+    if not await write_main_mute(camilla, False, context=context):
+        raise RuntimeError("CamillaDSP is unavailable")
 
 
 async def _claim_floor_level(
@@ -483,7 +480,7 @@ class VolumeFloorToneSession:
                     self._claim = await _claim_floor_level(
                         original[0], percent_to_db(1, floor_db=floor_db),
                     )
-                    await _unmute(camilla)
+                    await _unmute(camilla, context="floor_tone_start_unmute")
                     with self._lock:
                         cancelled = self._cancel_start
                         self._starting = False
@@ -555,7 +552,7 @@ class VolumeFloorToneSession:
                     self._claim = await owner.relevel(
                         self._claim, percent_to_db(1, floor_db=floor_db),
                     )
-                await _unmute(camilla)
+                await _unmute(camilla, context="floor_tone_update_unmute")
                 with self._lock:
                     if self._runner is runner and self._generation == generation:
                         self._floor_db = floor_db

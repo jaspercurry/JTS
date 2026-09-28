@@ -468,8 +468,8 @@ class _WitnessCamilla(FakeVolumeCamilla):
 
     ``breaks`` fails the audition's start the way an unreachable CamillaDSP
     does: ``"read"`` answers its best-effort read with nothing,
-    ``"unmute"`` raises from its one strict write, ``"unmute_hang"`` never
-    returns from it; ``""`` breaks nothing.
+    ``"unmute"`` refuses the unmute (``False`` best-effort, CamillaUnavailable
+    strict), ``"unmute_hang"`` never returns from it; ``""`` breaks nothing.
     """
 
     def __init__(
@@ -494,10 +494,12 @@ class _WitnessCamilla(FakeVolumeCamilla):
 
     async def set_main_mute(self, muted: bool, *, best_effort: bool = False) -> bool:
         self.held_at_write.append(self._held())
-        if not best_effort and self.breaks.startswith("unmute"):
+        if not muted and self.breaks.startswith("unmute"):
             self.unmute_entered.set()
             if self.breaks == "unmute_hang":
                 await asyncio.Event().wait()
+            if best_effort:
+                return False
             raise CamillaUnavailable("camilla restarting")
         return await super().set_main_mute(muted, best_effort=best_effort)
 
@@ -4418,7 +4420,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert fake.events[0] == (
         "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
     )
-    assert fake.events[1] == ("mute", False, False)
+    assert fake.events[1] == ("mute", False, True)
     assert fake.db == pytest.approx(percent_to_db(1, floor_db=-24.0))
     assert fake.muted is False
     assert not settings_path.exists()
@@ -4434,7 +4436,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert fake.events[-2:] == [
         ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), True),
-        ("mute", False, False),
+        ("mute", False, True),
     ]
     assert fake.db == pytest.approx(percent_to_db(1, floor_db=-36.0))
     assert fake.muted is False
