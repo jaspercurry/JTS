@@ -1516,8 +1516,6 @@ def _commissioning_chain_issues(
 
 
 def _program_prefix_issues(payload: dict[str, Any], view: GraphView) -> list[dict[str, str]]:
-    """The shared headroom gain rides channels [0, 1] before the split and must
-    be non-positive."""
     issues: list[dict[str, str]] = []
     if not pipeline_contains_chain(
         view, channels={0, 1}, required_names=(PROGRAM_HEADROOM_FILTER,),
