@@ -335,7 +335,7 @@ is a band edge instead of the wall trough, read `curve.change_db` at the
 trough. `bands[].change_db` is against this document with its rear muted at
 one headroom, as the Cardioid On|Off switch plays it; `front_chain_db` is the
 front chain's electrical level, the only prediction above the pair's coverage.
-The rear views report no charge. `program_charge_db`, beside `preview`, is the
+The rear views carry no charge. `program_charge_db`, beside `preview`, is the
 document's program charge on its `base` (ADR-0385). A trial plays each
 candidate at its own charge: to read a preview as a trial, subtract the rise
 of `program_charge_db` over the rear-muted copy's.

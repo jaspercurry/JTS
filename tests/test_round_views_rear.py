@@ -547,8 +547,9 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert variant["change_family"] == "band_edge"
     assert variant["changed"] == ["rear.bass.filters.0.parameters.freq"]
     # A rear section's program charge is judge --preview's to report (#5909).
-    assert all(set(row) == {"candidate_id", "set_id", "role", "changed", "change_family", "section_reason",
-                            "level_db", "repeats", "positions", "across_positions"} for row in entry["candidates"])
+    assert [set(row) for row in entry["candidates"]] == [{
+        "candidate_id", "set_id", "role", "changed", "change_family", "section_reason",
+        "level_db", "repeats", "positions", "across_positions"}] * len(entry["candidates"])
     # The variant's hole AND its lower output are both reported, and the worst
     # regression names the shape figure rather than the level it also lost.
     on_axis = min(comparison["positions"])

@@ -448,8 +448,8 @@ def test_compare_trim_is_a_plain_float(compare_evidence, monkeypatch):
     pytest.param(True, -0.8288, 0.83, "off", id="stage_over_unity"),
 ])
 def test_compare_trim_is_the_previewed_change_alone(compare_evidence, seed, delta, trim, louder):
-    """The switch keeps the applied headroom in both states (ADR-0329), so a
-    stage that peaks over unity moves the trim by its change alone."""
+    """The switch keeps the applied headroom in both states (ADR-0329), so the
+    trim follows the previewed change alone, also for a stage that peaks over unity."""
     root, applied = compare_evidence
     if seed:
         applied["recomposition_snapshot"]["rear_calibration"] = _rear_document()
