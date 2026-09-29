@@ -33,6 +33,7 @@ from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
+from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, round_inputs
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
@@ -40,6 +41,7 @@ from jasper.active_speaker.round_bank import _bookkeeping, bank_round
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.round_packet import write_round_packet
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
@@ -47,7 +49,8 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
-    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
+    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
+    REASON_REFERENCE_NOT_IN_SET, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
 from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
@@ -193,39 +196,62 @@ def _poses(repeats: int) -> list[tuple[int, int]]:
 
 def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                repeats: int = 2, missing: Mapping[str, Sequence[int]] = {},
-               on_axis_kind: str = "bearing") -> Path:
-    """One banked ``rear`` round: every candidate at every pose, on-axis repeated.
+               on_axis_kind: str = "bearing", name: str = "r3-seat",
+               curves: Mapping[str, list[float] | None] = _CURVES, retake: Mapping[str, float] = {},
+               unlisted: Mapping[str, Sequence[int]] = {}, failed: Mapping[str, Sequence[int]] = {},
+               band_hz: Sequence[float] | None = None, superseded: bool = False) -> Path:
+    """One banked ``rear`` round, ``name`` in the one rear store: every
+    candidate at every pose, on-axis repeated, each playing its ``curves``
+    over ``band_hz`` (the seat round's by default). A candidate's ``None``
+    curve banks none, as the banker did before ADR-0383; ``failed`` banks a
+    failed analysis instead at named bearings, as the banker does since.
+    ``superseded`` banks every take's program as schema 2 did, before #5991
+    renamed its ``program_id``.
 
     ``missing`` drops a candidate's take at named bearings, which is how a
-    reference take goes missing where other candidates measured. ``on_axis_kind``
-    banks every azimuth-0 take as a non-bearing pose, for the on-axis-reference
-    guard (review, PR #5362).
+    reference take goes missing where other candidates measured. ``retake``
+    adds one on-axis retake, that many dB off, that the manifest deselects;
+    ``unlisted`` leaves a candidate's takes at named bearings out of its
+    manifest set. ``on_axis_kind`` banks every azimuth-0 take as a non-bearing
+    pose, for the on-axis-reference guard (review, PR #5362).
     """
-    root = bank_seat_round(tmp_path / "rear")
+    root = bank_seat_round(tmp_path / "rear", name=name)
     source, store = _round_source(root)
+    base = {key: value for key, value in source.items() if key != "curves"}
+    if superseded:
+        base["program"] = {**{key: value for key, value in source["program"].items() if key != "stimulus_id"},
+                           "schema_version": 2, "program_id": source["program"]["stimulus_id"]}
     groups = []
     for candidate in candidates:
         records = []
-        for degrees, repeat in _poses(repeats):
+        poses = [*_poses(repeats), *([(0, repeats + 1)] if candidate in retake else [])]
+        for degrees, repeat in poses:
             if degrees in missing.get(candidate, ()):
                 continue
             take_id = f"{candidate}-{degrees}-{repeat}"
-            records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
+            offset = retake[candidate] if repeat > repeats else 0.0
+            analysed = curves[candidate] is not None and degrees not in failed.get(candidate, ())
+            records.append({**base, "take_id": take_id, "position_id": take_id, "repeat": repeat,
                             "pose_kind": on_axis_kind if degrees == 0 else "bearing",
                             "position_deg": degrees, "vertical_deg": 0,
                             "mark_distance_m": 1.0, "measurement_purpose": "rear",
                             "gating_applied": False, "graph_scope": "candidate",
                             "candidate_id": candidate, "level_db": -30.0,
                             "seat_offset_m": [0.0, 0.0, 0.0] if on_axis_kind == "seat" and degrees == 0 else None,
-                            "curves": [{**source["curves"][0],
-                                        "magnitude_db": _CURVES[candidate],
-                                        "late_energy": {
-                                            "t0_ms": 5.0, "energy_db": -20.0,
-                                            "early_late_db": 1.0 if candidate == _MUTED else 4.0,
-                                            "centroid_ms": 6.0 if candidate == _MUTED else 5.0,
-                                        }}]})
+                            **({"analysis_error": {"code": "internal_error", "error_type": "ValueError"}}
+                               if degrees in failed.get(candidate, ()) else {}),
+                            **({} if not analysed else {"curves": [{
+                                **source["curves"][0], **({"band_hz": list(band_hz)} if band_hz else {}),
+                                "magnitude_db": (np.asarray(curves[candidate]) + offset).tolist(),
+                                "late_energy": {
+                                    "t0_ms": 5.0, "energy_db": -20.0,
+                                    "early_late_db": 1.0 if candidate == _MUTED else 4.0,
+                                    "centroid_ms": 6.0 if candidate == _MUTED else 5.0,
+                                }}]})})
         group = manifest_set(_banked(store, records), set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
+        group["takes"] = [dict(take, selected=take["selected"] and take["take_id"] != f"{candidate}-0-{repeats + 1}")
+                          for take in group["takes"] if take["pose"]["deg"] not in unlisted.get(candidate, ())]
         groups.append(group)
     write_manifest(root, program="rear/express", groups=groups)
     _round_environment(root, applied=_SECTIONS[BASE_CANDIDATE])
@@ -634,6 +660,76 @@ def test_a_position_the_reference_missed_is_disclosed_rather_than_dropped(
         key: "no_row" for key in off_axis}
     assert set(by_candidate[BASE_CANDIDATE]["positions"]) == set(comparison["positions"])
     assert by_candidate[BASE_CANDIDATE]["across_positions"]["positions_unavailable"] == {}
+
+
+#: A later muted reference 3 dB below the earlier one, with a 20 dB notch at
+#: 143 Hz: the one bad reference take #5404 09-20 item 7 names. The ladder's
+#: band power mean reads the notch as about 0.3 dB more in (90, 350) Hz only.
+_LATER_MUTED = (np.asarray(_CURVES[_MUTED]) - 3.0
+                - 20.0 * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / 143.0) / 0.12) ** 2)).tolist()
+
+
+#: The code an earlier reference this build cannot read discloses, by how it was banked.
+_UNREAD = {"curves_unbanked": TAKE_CURVES_NOT_BANKED, "analysis_failed": TAKE_CURVES_NOT_BANKED,
+           "program_superseded": REASON_UNREADABLE}
+
+
+@pytest.mark.parametrize("earlier", ["banked", *_UNREAD, "manifest_unreadable", "absent"])
+def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
+    tmp_path, banked_candidates, monkeypatch, earlier,
+):
+    """ADR-0391: at each position, the reference against the newest earlier
+    banked round's reference there, on the whole ``rear_level`` ladder. Both
+    sides are built as the rear view builds its own reference, a deselected
+    retake included. A position without one names its reason, an earlier
+    reference this build cannot read names its round, and the rear view
+    writes either way."""
+    # The real reader, so an earlier round's takes refuse or are passed over as they are on a speaker.
+    monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
+    at = {deg: doc_pose_key({"position_deg": deg, "vertical_deg": 0, "mark_distance_m": 1.0}) for deg in (0, -20, 20)}
+    if earlier != "absent":
+        before = rear_round(tmp_path, name="earlier", missing={_MUTED: (20,)}, retake={_MUTED: 6.0},
+                            curves={**_CURVES, _MUTED: None} if earlier == "curves_unbanked" else _CURVES,
+                            failed={_MUTED: (0,)} if earlier == "analysis_failed" else {},
+                            superseded=earlier == "program_superseded")
+        (before / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-20T12:00:00Z"}))
+        if earlier in ("curves_unbanked", "program_superseded"):
+            # A rear round banked from 09-26 to 09-28 declared its reference in the packet that era wrote.
+            (before / "packet.json").write_text(json.dumps({
+                "schema": "jts_round_packet/3", "rear": [{"comparison": {"reference": {"set_id": _MUTED}}}]}))
+        else:
+            packet_of(before)
+        if earlier == "manifest_unreadable":
+            manifest, = round_inputs(before).session_dir.rglob(RUN_MANIFEST_FILENAME)
+            manifest.write_text("{")
+    root = rear_round(tmp_path, name="later", curves={**_CURVES, _MUTED: _LATER_MUTED}, retake={_MUTED: 6.0},
+                      unlisted={_MUTED: (-20,)}, band_hz=(40.0, 20_000.0))
+    (root / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
+
+    previous = packet_of(root)[0]["rear"][0]["comparison"]["previous_reference"]
+    on_axis = previous.pop(at[0])
+
+    assert previous == {at[-20]: {"status": "unavailable", "reason": REASON_REFERENCE_NOT_IN_SET},
+                        at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
+    named = {"round_id": "earlier", "set_id": _MUTED}
+    if earlier != "banked":
+        assert {key: value for key, value in on_axis.items() if key != "detail"} == (
+            {"status": "unavailable", "reason": _UNREAD[earlier], **named} if earlier in _UNREAD
+            else {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE})
+        return
+    bands = {tuple(band["band_hz"]): band for band in on_axis["bands"]}
+    assert {key: on_axis[key] for key in ("status", "round_id", "set_id", "ladder")} == {
+        "status": "available", **named, "ladder": "rear_level"}
+    assert sorted(on_axis["take_ids"]) == [f"{_MUTED}-0-{repeat}" for repeat in (1, 2, 3)]
+    assert list(bands) == list(LEVEL_BANDS_HZ)
+    # The later round swept from 40 Hz, so the shared band leaves (30, 60) Hz uncovered.
+    assert bands.pop((30.0, 60.0)) == {"status": "unavailable", "reason": REASON_COVERAGE_SHORT,
+                                       "band_hz": [30.0, 60.0]}
+    assert {band["status"] for band in bands.values()} == {"available"}
+    assert bands.pop((90.0, 350.0))["change_db"] < -3.25
+    assert [band["change_db"] for band in bands.values()] == pytest.approx([-3.0] * len(bands), abs=0.01)
+    assert set(on_axis["basis"]) == {"basis_status", "intervention_fields", "incompatible_fields",
+                                     "mismatched_fields", "unknown_fields"}
 
 
 def test_the_repeat_spread_comes_from_the_repeated_pose(tmp_path, banked_candidates):
