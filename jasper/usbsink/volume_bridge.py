@@ -42,15 +42,10 @@ from jasper.device_probe.usbgadget import UAC2_CARD_NAME
 logger = logging.getLogger(__name__)
 
 
-# jasper-control declines an observation while USB is not the active source,
-# and while a measurement holds the fader. A declined host slider MOVE is
-# re-presented on a capped exponential backoff, so a host that starts playback
-# right after moving its slider plays at the stale canonical level for at most
-# one ceiling-length window rather than until the next move. A 30 s ceiling was
-# rejected: a jts3 measurement (21%->70%) implies a +24.75 dB unattributed jump
-# held that much longer. The STARTUP snapshot is deliberately not retried —
-# it is not proof of a host action, and re-presenting it cost a measured 708
-# declined POSTs/hour on an idle jts3 with nothing to publish.
+# A host move can precede USB activation or arrive during a measurement hold.
+# A 30 s retry ceiling held a measured +24.75 dB handoff error too long.
+# Startup state is not host intent. An unanswered read can race control startup;
+# an explicit decline needs no further attempt.
 POST_RETRY_INTERVAL_SEC = 1.0
 POST_RETRY_BACKOFF_FACTOR = 2.0
 POST_RETRY_CEILING_SEC = 5.0
@@ -210,7 +205,6 @@ class VolumeBridge:
         # carried to _post() purely for the usbsink.volume_observed log fields.
         self._last_raw: Optional[int] = None
         self._last_muted: bool = False
-        # Re-presents one declined host slider move; see the retry constants.
         self._retry_task: Optional[asyncio.Task[None]] = None
 
         # Simple-mixer handle for the card, opened after discovery.
@@ -469,28 +463,24 @@ class VolumeBridge:
         if pct == self._last_published_pct:
             return
         initial = self._last_published_pct is None and not self._host_moved
+        if await self._post_needs_retry(pct, initial=initial):
+            self._retry_task = asyncio.create_task(self._retry_declined(pct, initial=initial))
+
+    async def _post_needs_retry(self, pct: int, *, initial: bool) -> bool:
         outcome = await self._post(pct, initial=initial)
         if outcome is True:
             self._last_published_pct = pct
-        elif outcome is None or not initial:
-            # Only an explicit decline of the startup snapshot is dropped. No
-            # answer at all is the boot race — jasper-control is still coming
-            # up (observed on jts3: the first POST after a reboot timed out) —
-            # and the snapshot is still the only thing that will sync the host
-            # slider until the user next touches it.
-            self._retry_task = asyncio.create_task(self._retry_declined(pct))
+            return False
+        return outcome is None or not initial
 
-    async def _retry_declined(self, pct: int) -> None:
-        """Re-present one unacknowledged value until the controller takes it,
-        or the cap elapses — see POST_RETRY_MAX_SEC."""
+    async def _retry_declined(self, pct: int, *, initial: bool) -> None:
         started = time.monotonic()
         delay = POST_RETRY_INTERVAL_SEC
         attempts = 0
         while time.monotonic() - started < POST_RETRY_MAX_SEC:
             await asyncio.sleep(delay)
             attempts += 1
-            if await self._post(pct) is True:
-                self._last_published_pct = pct
+            if not await self._post_needs_retry(pct, initial=initial):
                 return
             delay = min(delay * POST_RETRY_BACKOFF_FACTOR, POST_RETRY_CEILING_SEC)
         log_event(
