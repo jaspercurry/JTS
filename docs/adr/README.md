@@ -304,7 +304,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0311](0311-a-run-plays-at-one-session-level.md) | One run, one level | accepted |
 | [0312](0312-the-ladder-has-no-rebuild-to-compare.md) | The ladder has no rebuild to compare | accepted |
 | [0316](0316-rear-woofer-outputs-have-a-physical-variant-identity.md) | Rear woofer outputs have a physical variant identity | accepted |
-| [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |
+| [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | `front_wall_m` reading superseded by 0388 |
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
 | [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | reset rule amended by 0345 |
 | [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | amended by 0321 |
@@ -362,4 +362,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0385](0385-the-program-charge-is-the-emitted-graphs-peak-with-one-margin.md) | The program charge is the emitted graph's netted peak plus one 1.0 dB margin: every series stage nets, preference EQ and dynamic bass do not, one ε decides the charge and the proof, and timing and the room-off rise read the same charge | accepted |
 | [0386](0386-a-rear-pair-take-clears-the-rear-layer-at-the-door.md) | A rear pair take clears the rear layer at the door: the rear row declares it, the pair plays the applied base with no candidate named, and nothing is composed or banked | accepted |
 | [0387](0387-the-tuning-clis-answer-through-one-envelope.md) | The tuning CLIs answer through one envelope: `jasper-round-views`, `jasper-round list\|show` and the prescriber answer through `_refusal.answer`, no success answer has a top-level `status`, and `schema` alone names an artifact's shape | amended by 0389 |
+| [0388](0388-a-declared-geometry-that-carries-front-wall-m-refuses-by-that-field.md) | A declared rig geometry that carries `front_wall_m` refuses by that field and names `jasper-declare-geometry set` as the fix; the front wall comes only from the cabinet-back gap, depth and toe-in | accepted |
 | [0389](0389-the-jasper-round-action-verbs-answer-through-the-envelope.md) | The `jasper-round` action verbs answer through ADR-0387's envelope: their `parameters` are the resolved plan's values, a blocking dry run is a refusal record, and `status` names the wizard's state `state` | accepted |

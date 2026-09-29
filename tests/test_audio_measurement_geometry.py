@@ -32,7 +32,6 @@ from jasper.audio_measurement.measurement_geometry import (
     MAX_WALL_M,
     MIN_DISTANCE_M,
     MIN_HEIGHT_M,
-    MIN_WALL_M,
     DeclaredGeometry,
     GeometryFieldError,
     boundary_prior,
@@ -146,16 +145,6 @@ def test_a_low_ceiling_wins_the_minimum_over_the_floor():
                 "speaker_height_m": 0.84,
                 "mic_height_m": 0.84,
                 "distance_m": 1.0,
-                "front_wall_m": MIN_WALL_M - 0.01,
-            },
-            "front_wall_m",
-            id="front_wall_below_min",
-        ),
-        pytest.param(
-            {
-                "speaker_height_m": 0.84,
-                "mic_height_m": 0.84,
-                "distance_m": 1.0,
                 "side_wall_m": MAX_WALL_M + 0.01,
             },
             "side_wall_m",
@@ -200,13 +189,11 @@ _ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
         pytest.param({"distance_m": float("nan")}, "distance_m", id="nan"),
         pytest.param({"ceiling_height_m": float("inf")}, "ceiling_height_m", id="inf"),
         pytest.param({"distance_m": 10**400}, "distance_m", id="huge_int"),
-        pytest.param(
-            {"front_wall_m": 0.85, "side_wall_m": 1.4}, "", id="with_walls",
-        ),
+        pytest.param({"side_wall_m": 1.4}, "", id="with_side_wall"),
         pytest.param({"side_wall_m": 0.0}, "side_wall_m", id="wall_zero_is_not_absent"),
         pytest.param({"cabinet_back_wall_m": 0.2032}, "", id="back_gap_only"),
         pytest.param({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, "", id="cabinet"),
-        pytest.param({"cabinet_back_wall_m": 0.2, "front_wall_m": 0.5}, "front_wall_m", id="ambiguous_reference"),
+        pytest.param({"front_wall_m": 0.85}, "front_wall_m", id="retired_front_wall"),
         pytest.param({"cabinet_back_wall_m": True}, "cabinet_back_wall_m", id="bool_gap"),
         pytest.param({"cabinet_back_wall_m": -0.001}, "cabinet_back_wall_m", id="negative_gap"),
         pytest.param({"cabinet_back_wall_m": float("nan")}, "cabinet_back_wall_m", id="nan_gap"),
@@ -238,7 +225,6 @@ def test_the_dict_round_trip_is_exact_and_refuses_what_is_not_a_length(
 
 
 @pytest.mark.parametrize("placement,walls,reason", [
-    ({"front_wall_m": 0.85}, {"front": 0.85}, ""),
     ({"cabinet_back_wall_m": 0, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.3}, ""),
     ({"cabinet_back_wall_m": 0.0254, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.3254}, ""),
     ({"cabinet_back_wall_m": 0.2}, {}, "front_baffle_geometry_undeclared"),
@@ -265,8 +251,7 @@ def test_boundary_distances_keep_their_reference_and_disclose_missing_geometry(p
 def test_save_load_round_trip_including_provenance(tmp_path):
     path = tmp_path / "measurement_geometry.json"
     geometry = DeclaredGeometry(
-        speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
-        front_wall_m=0.85, side_wall_m=1.4,
+        speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4, side_wall_m=1.4,
     )
     geometry.save(path)
 
@@ -286,7 +271,6 @@ def test_save_load_round_trip_without_ceiling(tmp_path):
     loaded = DeclaredGeometry.load(path)
     assert loaded == geometry
     assert loaded.ceiling_height_m is None
-    assert loaded.front_wall_m is None
     assert loaded.side_wall_m is None
 
 

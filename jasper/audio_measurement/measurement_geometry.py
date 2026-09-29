@@ -36,8 +36,6 @@ MAX_CEILING_M = 6.0
 MIN_WALL_M = 0.05
 MAX_WALL_M = 10.0
 
-_LEGACY_WALL_FIELDS = {"front": "front_wall_m", "side": "side_wall_m"}
-
 #: How far below the direct sound one wall's quarter-wave null may be reported.
 #: A rigid wall's null is unbounded; a real wall absorbs and diffuses, so the
 #: measured dip has a floor.
@@ -73,16 +71,14 @@ class DeclaredGeometry:
     and an undeclared wall is absent from :func:`boundary_prior`.
     ``cabinet_back_wall_m`` is perpendicular from rear-panel centre to the wall
     behind it. Depth joins rear/front panel centres; toe-in is relative to the
-    wall normal (zero faces straight away). Legacy ``front_wall_m`` retains its
-    baffle-to-wall meaning; ``side_wall_m`` retains speaker-to-nearest-side-wall.
-    See ADR-0317.
+    wall normal (zero faces straight away). ``side_wall_m`` is speaker to the
+    nearest side wall. See ADR-0317 and ADR-0388.
     """
 
     speaker_height_m: float
     mic_height_m: float
     distance_m: float
     ceiling_height_m: float | None = None
-    front_wall_m: float | None = None
     side_wall_m: float | None = None
     cabinet_back_wall_m: float | None = None
     cabinet_depth_m: float | None = None
@@ -92,14 +88,10 @@ class DeclaredGeometry:
         _require_range("speaker_height_m", self.speaker_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("mic_height_m", self.mic_height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
         _require_range("distance_m", self.distance_m, MIN_DISTANCE_M, MAX_DISTANCE_M)
-        for name in _LEGACY_WALL_FIELDS.values():
-            wall_m = getattr(self, name)
-            if wall_m is not None:
-                _require_range(name, wall_m, MIN_WALL_M, MAX_WALL_M)
+        if self.side_wall_m is not None:
+            _require_range("side_wall_m", self.side_wall_m, MIN_WALL_M, MAX_WALL_M)
         if self.cabinet_back_wall_m is not None:
             _require_range("cabinet_back_wall_m", self.cabinet_back_wall_m, 0.0, MAX_WALL_M)
-        if self.cabinet_back_wall_m is not None and self.front_wall_m is not None:
-            raise GeometryFieldError("front_wall_m", "declare cabinet-back gap or legacy baffle distance, not both")
         if self.cabinet_depth_m is not None:
             _require_range("cabinet_depth_m", self.cabinet_depth_m, 0.0, math.inf)
             if self.cabinet_depth_m == 0.0:
@@ -163,8 +155,7 @@ class DeclaredGeometry:
         The derived front distance is to the front-panel centre, not an assumed
         acoustic centre for every driver. A directivity fit needs source geometry.
         """
-        walls = {key: distance for key, name in _LEGACY_WALL_FIELDS.items()
-                 if (distance := getattr(self, name)) is not None}
+        walls = {} if self.side_wall_m is None else {"side": self.side_wall_m}
         if self.cabinet_back_wall_m is not None:
             if self.cabinet_depth_m is None or self.toe_in_degrees is None:
                 return walls, "front_baffle_geometry_undeclared"
@@ -184,6 +175,11 @@ class DeclaredGeometry:
     @classmethod
     def from_dict(cls, doc: Mapping[str, Any]) -> "DeclaredGeometry":
         """:meth:`to_dict`'s inverse, through the constructor's own refusals."""
+        if "front_wall_m" in doc:
+            raise GeometryFieldError("front_wall_m", (
+                "front_wall_m is no longer read; declare the rig again with jasper-declare-geometry set, "
+                "giving the wall behind the speaker as --cabinet-back-wall-mm or --cabinet-back-wall-in, "
+                "with --cabinet-depth-mm and --toe-in-degrees"))
         values: dict[str, Any] = {
             name: doc.get(name)
             for name in ("speaker_height_m", "mic_height_m", "distance_m")
@@ -229,7 +225,7 @@ def boundary_prior(
     declared: dict[str, dict[str, float]] = {}
     curves: list[list[float]] = []
     for key, distance in walls.items():
-        _require_range(_LEGACY_WALL_FIELDS[key], distance, MIN_WALL_M, math.inf)
+        _require_range(f"walls.{key}", distance, MIN_WALL_M, math.inf)
         metres = float(distance)
         declared[key] = {
             "distance_m": metres,
