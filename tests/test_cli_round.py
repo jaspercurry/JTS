@@ -73,15 +73,18 @@ from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
 
-def test_round_parser_does_not_import_numpy():
+@pytest.mark.parametrize("argv,heavy", [(None, "numpy"), (["list"], "scipy"), (["show", "no-such-round"], "scipy")])
+def test_round_stays_light_enough_for_a_pi_zero(argv, heavy):
+    """The parser loads no NumPy, and the reads load no view stack (ADR-0226)."""
     result = subprocess.run(
         [sys.executable, "-c", (
-            "import json, sys\n"
+            "import contextlib, io, json, sys\n"
             "from jasper.cli import round as cli\n"
-            "imported = 'numpy' in sys.modules\n"
-            "cli.build_parser()\n"
-            "print(json.dumps([imported, 'numpy' in sys.modules]))\n"
-        )], capture_output=True, text=True, check=True, timeout=10,
+            f"imported = {heavy!r} in sys.modules\n"
+            "with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):\n"
+            f"    cli.build_parser() if {argv!r} is None else cli.main({argv!r})\n"
+            f"print(json.dumps([imported, {heavy!r} in sys.modules]))\n"
+        )], capture_output=True, text=True, check=True, timeout=30,
     )
     assert json.loads(result.stdout) == [False, False]
 
@@ -1457,12 +1460,14 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "status", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "result", "sets", "applied_identity"}
+_ENVELOPE = {"view", "schema", "subject", "parameters"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [
     (["list", "--limit", "1"], cli.EXIT_OK, None),
     (["show", "r1"], cli.EXIT_OK, None),
+    (["show", "<r1's bundle>"], cli.EXIT_OK, None),
     (["show", "absent"], cli.EXIT_UNREADABLE, "round_not_found"),
     (["show", "no-manifest"], cli.EXIT_REFUSED, "round_manifest_missing"),
 ])
@@ -1475,8 +1480,9 @@ def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch,
     next(bank_measure_round(tmp_path / "campaigns", name="no-manifest").rglob("run_manifest.json")).unlink()
     monkeypatch.chdir(tmp_path)
     capsys.readouterr()
+    bundle = round_inputs(tmp_path / "campaigns" / "r1").session_dir
 
-    assert cli.main(argv) == code
+    assert cli.main([str(bundle) if arg == "<r1's bundle>" else arg for arg in argv]) == code
     printed = capsys.readouterr()
     answer = json.loads(printed.out)
     assert printed.err.count("\n") == 1
@@ -1484,9 +1490,10 @@ def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch,
         assert (answer["status"], answer["reason"]) == (STATUS_BY_CODE[code], reason)
         assert printed.err.startswith(f"{answer['status']} ({reason}): ")
     elif argv[0] == "list":
-        assert (set(answer), answer["truncated"]) == ({"verb", "rounds", "truncated"}, True)
+        assert (set(answer), answer["truncated"]) == ({*_ENVELOPE, "rounds", "truncated"}, True)
         assert [set(row) for row in answer["rounds"]] == [_CATALOG_ROW]
     else:
         selected = resolve_set(round_inputs(tmp_path / "campaigns" / "r1"))
-        assert set(answer) == {"verb", *_CATALOG_ROW}
+        assert set(answer) == {*_ENVELOPE, *_CATALOG_ROW}
+        assert answer["subject"] == {"round_id": "r1"}
         assert [take["take_id"] for group in answer["sets"] for take in group["takes"]] == list(selected.selected_ids)

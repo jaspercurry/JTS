@@ -3,20 +3,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """What every view here shares: the artifact table, the round reader, the
-publisher, the answer envelope, and the flags more than one subcommand takes.
+publisher, and the flags more than one subcommand takes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker import round_bank
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS as ANSWER_SCHEMAS
 from jasper.active_speaker.round_view_artifacts import (
-    PROG as PROG, ANSWER_SCHEMAS as ANSWER_SCHEMAS,
+    PROG as PROG,
     ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
     VIEW_PURPOSES as VIEW_PURPOSES, ViewArtifact as ViewArtifact,
     TAKES_THIS_ROUND as TAKES_THIS_ROUND, TAKES_THIS_BUNDLE as TAKES_THIS_BUNDLE,
@@ -25,10 +26,10 @@ from jasper.active_speaker.round_view_artifacts import (
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundInputs, RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
+    RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
     resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
     default_out as default_out, set_artifact_name as set_artifact_name,
-    round_artifact_dir as round_artifact_dir, banked_round_of,
+    round_artifact_dir as round_artifact_dir, subject as subject,
     round_inputs,
 )
 from jasper.active_speaker.crossover_v2.round_views import (
@@ -42,7 +43,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_UNWRITABLE as REASON_UNWRITABLE,
 )
 from jasper.cli._refusal import (
-    answered,
+    answer as answer,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
@@ -114,41 +115,6 @@ def _write(
         EXIT_WRITE_FAILED, (OSError,), write_report, {**payload, "schema": schema}, out, default_path,
         make_parents=make_parents,
     )
-
-
-def answer(
-    view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-    parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
-) -> int:
-    """Print scalar results and an artifact pointer (ADR-0237) under the
-    envelope every view shares: the view and its answer version, what it read
-    (one :func:`subject`, or a list of them as ``rounds`` for a view that
-    compares rounds), and the analysis parameters it used."""
-    # See ADR-0344
-    document = {
-        "view": view, "schema": schema, "parameters": dict(parameters),
-        "subject": dict(subject) if isinstance(subject, Mapping) else {"rounds": [dict(one) for one in subject]},
-        **fields,
-    }
-    if out is not None:
-        document.update(out=str(out), bytes=out.stat().st_size)
-    return answered(document, line)
-
-
-def subject(
-    inputs: RoundInputs | None, selected: SetTakes | None = None, *, set_id: str | None = None,
-    take_ids: Iterable[str] | None = None, candidate_id: str | None = None,
-) -> dict[str, Any]:
-    """One round a view read, by the catalog's ids (``jasper-round list``);
-    an id that does not apply, or a live bundle no bank holds, is absent."""
-    banked = banked_round_of(inputs.session_dir) if inputs is not None else None
-    if selected is not None:
-        set_id = selected.set_id
-        candidate_id = candidate_id or selected.capture_basis.get("candidate_id")
-    return {key: value for key, value in (
-        ("round_id", banked.name if banked else None), ("set_id", set_id),
-        ("take_ids", None if take_ids is None else list(take_ids)), ("candidate_id", candidate_id),
-    ) if value is not None}
 
 
 def resolve_set_take(

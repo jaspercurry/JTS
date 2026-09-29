@@ -869,7 +869,7 @@ _STATUS_DOCUMENT_KEYS = {
 }
 
 
-def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
+def test_the_cli_json_is_the_status_document_under_the_envelope(tmp_path, capsys):
     """The value door W3-b will call agrees with the print door on shape.
 
     ``status_document`` takes the packet as a value rather than
@@ -892,7 +892,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
     )
 
     assert set(doc_payload) == _STATUS_DOCUMENT_KEYS
-    assert set(doc_payload) == set(cli_payload)
+    assert set(cli_payload) == _STATUS_DOCUMENT_KEYS | {"view", "schema", "subject", "parameters"}
     for name in ("declared", "banked", "applied"):
         assert set(doc_payload[name]) == set(cli_payload[name])
 

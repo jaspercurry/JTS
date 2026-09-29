@@ -497,7 +497,7 @@ def _catalog_row(round_dir: Path, packet: Mapping[str, Any], banked_at: float | 
         "round_id": round_dir.name, "round_dir": str(round_dir),
         "program": packet.get("program"), "layout": packet.get("layout"),
         "purposes": list(packet_purposes(packet)),
-        "banked_at": banked_at, "status": packet.get("result"),
+        "banked_at": banked_at, "result": packet.get("result"),
         "applied_identity": identity if any(identity.values()) else None,
     }
 

@@ -617,18 +617,22 @@ def test_judge_previews_the_composed_emitted_graph(emitted_preview, capsys, sect
     Path(args.document).write_text(json.dumps(doc))
     assert crossover_prescriber.main(argv) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "preview", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "preview", "adopted", "banked"}
     assert answer["section"] == "emitted_graph" and answer["sections"] == sorted(sections)
     assert "status" not in answer and answer["adopted"] is False and answer["banked"] is False
     assert answer["preview"]["kind"] == "jts_capture_prediction"
     assert all(answer["preview"]["relative_graph"]["usable_bins_by_role"][role] > 0 for role in ("woofer", "tweeter"))
+    summary = answer["preview"]["summary"]
+    assert answer["parameters"] == {"window_ms": summary["window"]["window_ms"],
+                                    "band_hz": summary["reconstruction"]["compared_band_hz"]}
 
 
 def test_preview_matches_the_old_forward_model_exactly(emitted_preview, capsys):
     """Composition adds provenance and filter metadata to identity; compare both paths in-process to avoid platform-dependent float hashes."""
     source, target, doc, argv, args = emitted_preview
     base = find_banked_candidate(source.fingerprint, root=Path(args.root))
-    composed = judge_prescription_document(doc, base=base, evidence=crossover_prescriber._document_evidence(args, doc))
+    evidence = crossover_prescriber._document_evidence(args, doc, round_inputs(Path(args.round)))
+    composed = judge_prescription_document(doc, base=base, evidence=evidence)
     assert composed.fingerprint != target.fingerprint
     golden = capture_prediction(Path(args.round), capture_id="old", candidate=target, basis_candidate=source)
     assert crossover_prescriber.main(argv) == 0
@@ -683,8 +687,10 @@ def test_a_preview_written_to_a_file_is_one_side_of_compare(emitted_preview, tmp
     out = tmp_path / "preview.json"
     assert crossover_prescriber.main([*argv, "--out", str(out)]) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "out", "bytes", "summary", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "out", "bytes", "summary",
+                             "adopted", "banked"}
     assert (answer["out"], answer["bytes"]) == (str(out), out.stat().st_size)
+    assert json.loads(out.read_text())["schema"] == answer["schema"]
 
     assert cli_main(["compare", "--a-preview", str(out), args.round, "--b-set", "old", "--b-take", "old",
                              "--out", str(tmp_path / "compare.json")]) == 0
@@ -735,6 +741,7 @@ def test_preview_resolves_an_exact_take_from_the_set(emitted_preview, capsys, ta
     if take or azimuth:
         assert status == 0
         assert answer["preview"]["summary"]["basis"]["capture_id"] == (take or "old")
+        assert (answer["subject"]["set_id"], answer["subject"]["take_ids"]) == ("old", [take or "old"])
     else:
         assert status == 1
         assert (answer["code"], answer["detail"]["section"]) == ("round_take_selection_required", "driver")

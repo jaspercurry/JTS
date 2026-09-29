@@ -18,6 +18,7 @@ from jasper.net.http_security import is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_presets,
 )
@@ -32,7 +33,7 @@ from jasper.logging_setup import configure_logging
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,
-    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, failed,
 )
 
 PROG = "jasper-round"
@@ -320,12 +321,16 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
     rows = list_rounds(program=args.program, limit=args.limit + 1)
     shown = rows[:args.limit]
-    return _answer("list", f"{len(shown)} banked round(s)" + (f", newest {shown[0]['round_id']}" if shown else ""),
-                   rounds=shown, truncated=len(rows) > args.limit)
+    return answer("list", schema=ANSWER_SCHEMAS[f"{PROG} list"], subject={},
+                  parameters={"program": args.program, "limit": args.limit},
+                  line=f"{len(shown)} banked round(s)" + (f", newest {shown[0]['round_id']}" if shown else ""),
+                  rounds=shown, truncated=len(rows) > args.limit)
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused  # lazy: keeps the CLI parser numpy-free
+    from jasper.active_speaker.crossover_v2.round_inputs import (  # lazy: keeps the CLI parser numpy-free
+        ROUND_INPUT_ERRORS, RoundSetRefused, round_inputs, subject,
+    )
     from jasper.active_speaker.round_bank import RoundBankError, show_round  # lazy: keeps the CLI parser numpy-free
 
     try:
@@ -337,7 +342,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     except ROUND_INPUT_ERRORS as exc:
         return failed(EXIT_UNREADABLE, getattr(exc, "code", REASON_UNREADABLE), str(exc))
     takes = sum(len(group["takes"]) for group in shown["sets"])
-    return _answer("show", f"{shown['round_id']}: {len(shown['sets'])} set(s), {takes} take(s)", **shown)
+    return answer("show", schema=ANSWER_SCHEMAS[f"{PROG} show"], subject=subject(round_inputs(Path(shown["round_dir"]))),
+                  parameters={}, line=f"{shown['round_id']}: {len(shown['sets'])} set(s), {takes} take(s)", **shown)
 
 
 def _connection_args(parser: argparse.ArgumentParser) -> None:
@@ -412,7 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
     reset.add_argument("--program", choices=RUNNABLE_PROGRAMS, help="reset only this program; omitted resets everything")
     reset.add_argument("--keep-timing", action="store_true", help="keep saved timing and its provenance (all tuning or speaker only)")
     reset.set_defaults(func=_cmd_reset)
-    list_help = "List banked rounds, newest first: id, directory, program, status, sets and applied identity."
+    list_help = "List banked rounds, newest first: id, directory, program, result, sets and applied identity."
     listing = sub.add_parser("list", help=list_help, description=list_help)
     listing.add_argument("--program", choices=RUNNABLE_PROGRAMS, help="only rounds that count for this program")
     listing.add_argument("--limit", type=_limit, default=20, help="at most this many rounds (default 20)")

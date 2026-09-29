@@ -72,7 +72,6 @@ from .round_captures import PoseCapture, discover_captures, document_capture_id,
 from .record_index import reopen_measurement_capture
 from .position_cycle import take_artifact_path
 
-SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
 
 #: The ladder, shortest first. It reaches 20 ms because the contested
@@ -1150,7 +1149,6 @@ def sweep_round(
         raise
     cache: HostCurves = {}
     return {
-        "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
         "round_dir": str(Path(round_dir)),
         "frame": frame_descriptor(rungs, grid),
