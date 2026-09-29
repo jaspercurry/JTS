@@ -109,11 +109,9 @@ def test_run_async_timeout_before_the_first_step_abandons_the_coroutine():
     loop.call_soon_threadsafe(release_loop.wait, DEFAULT_SIGNAL_TIMEOUT_S)
     caller = threading.Thread(target=call, daemon=True)
     caller.start()
-    try:
-        caller.join(timeout=5.0)
-        returned = not caller.is_alive()
-    finally:
-        release_loop.set()
+    caller.join(timeout=5.0)
+    returned = not caller.is_alive()
+    release_loop.set()
     # One round trip, so the loop has run the cancelled task before the checks.
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(DEFAULT_SIGNAL_TIMEOUT_S)
     assert returned
