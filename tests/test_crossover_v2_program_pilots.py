@@ -386,19 +386,11 @@ def test_short_ambient_window_does_not_feed_the_channel_map_rise_test(phase):
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])
 def test_measure_summary_omits_the_channel_map_flag_it_cannot_judge(phase):
-    """A consequence with a live consumer, so it gets a pin of its own.
-
-    `analysis_diagnostic_summary` drops a tri-state flag whose value is
+    """`analysis_diagnostic_summary` drops a tri-state flag whose value is
     ``None``, and these phases never thread an ambient window into the
-    channel-map check — so since #2052 a healthy MEASURE/VERIFY sidecar
-    records no ``channel_map_ok`` at all, where it used to record ``true``.
-    That is the honest record (the phase did not measure the map), but
-    `harmonic_evidence.FIDELITY_FIELDS` treats an absent field as a
-    reconstruction infidelity: keeping it would fail every banked corpus AND
-    every new sidecar, reporting a deliberate semantic change as a broken
-    replay. That tuple dropped the field; this pins the fact that made it
-    necessary, so a change re-arming the flag on these phases has to come
-    back through here.
+    channel-map check — so a healthy MEASURE/VERIFY take records no
+    ``channel_map_ok`` at all. That is the honest record: the phase did not
+    measure the map.
 
     ``linearity_ok`` and ``pilot_snr_ok`` stay in the record, which is what
     makes the omission specific rather than the summary going quiet.

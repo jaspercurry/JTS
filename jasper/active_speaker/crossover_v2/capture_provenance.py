@@ -40,12 +40,12 @@ def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]
     """What one analysis leaves on its banked take, beside its provenance: its
     ``curves`` and ``analysis``, which the run manifest's rows copy
     (ADR-0383). The evidence packet's ``capture_snr`` block publishes the SNR
-    columns of ``diagnostic``, and the distortion view gates its replay
-    against it.
+    columns of ``diagnostic``.
     """
     return finite_json({
         "curves": analysis_curve_records(analysis, program),
-        "analysis": {**analysis_json(analysis), "bass": getattr(analysis, "bass", None)},
+        "analysis": {**analysis_json(analysis), "bass": getattr(analysis, "bass", None),
+                     "distortion": getattr(analysis, "distortion", None)},
         "diagnostic": analysis_diagnostic_summary(analysis),
         "branch_diagnostic": getattr(analysis, "branch_diagnostic", None) or None,
     })

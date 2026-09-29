@@ -20,7 +20,6 @@ reads, plus the bookkeeping views the round-view table declares::
       declared-geometry.json     declared rig geometry SSOT (optional)
       position_cycle.json        which take was measured at which pose,
                                  derived here from the bundle (optional)
-      bundle/<session-id>/ring/  capture sidecars and hard-linked WAVs
       provenance.json            when it was banked, off which build
 
 ``provenance.json``'s key set is owned here: ``banked_at_utc`` is spelled and
@@ -52,10 +51,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, NamedTuple
 
-from jasper.attribution.session_identity import (
-    ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
-)
-
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.platform.log_event import log_event
@@ -77,24 +72,10 @@ __all__ = [
     "BankedRound",
     "RoundBankError",
     "bank_round",
-    "bundle_session_id",
     "list_rounds",
     "resolve_round",
     "show_round",
-    "CAPTURE_RING_DIR",
-    "SKIP_NO_CAPTURED_AT",
-    "SKIP_NO_PHASE",
-    "SKIP_NO_WAV_PATH",
-    "SKIP_WAV_ESCAPES_BUNDLE",
-    "SKIP_WAV_MISSING",
 ]
-
-CAPTURE_RING_DIR = "ring"
-SKIP_NO_CAPTURED_AT = "no_captured_at"
-SKIP_NO_PHASE = "no_phase"
-SKIP_NO_WAV_PATH = "no_wav_path"
-SKIP_WAV_ESCAPES_BUNDLE = "wav_escapes_bundle"
-SKIP_WAV_MISSING = "wav_missing"
 
 REASON_NOT_A_BUNDLE = "not_a_bundle"
 REASON_ALREADY_BANKED = "already_banked"
@@ -230,60 +211,6 @@ def _index_poses(target: Path) -> list[str]:
     except (PositionCycleError, OSError):
         return [POSITION_CYCLE_FILENAME]
     return []
-
-
-def bundle_session_id(bundle_dir: Path) -> str:
-    info = json.loads((bundle_dir / "info.json").read_text())
-    session_id = info.get("session_id") if isinstance(info, Mapping) else None
-    if not isinstance(session_id, str) or not session_id:
-        raise ValueError(f"{bundle_dir}: no session_id")
-    return session_id
-
-
-def _bank_capture_ring(bundle: Path, session_id: str, calibration_id: str) -> dict[str, Any]:
-    from .crossover_v2.record_index import measurement_documents  # lazy: keep bank constants cheap
-
-    ring = bundle / CAPTURE_RING_DIR
-    (ring / "sidecar").mkdir(parents=True, exist_ok=True)
-    (ring / "wav").mkdir(exist_ok=True)
-    skipped = []
-    written = 0
-    for row, document in measurement_documents(bundle):
-        reason = ""
-        try:
-            moment = datetime.fromisoformat(row.captured_at or "")
-            if moment.tzinfo is None:
-                moment = moment.replace(tzinfo=timezone.utc)
-            stamp = int(moment.timestamp() * 1e6)
-        except (ValueError, OverflowError):
-            reason = SKIP_NO_CAPTURED_AT
-        raw = document.get("wav_path")
-        source = (bundle / str(raw or "")).resolve()
-        if not row.phase:
-            reason = SKIP_NO_PHASE
-        elif not isinstance(raw, str) or not raw:
-            reason = SKIP_NO_WAV_PATH
-        elif not source.is_relative_to(bundle.resolve()):
-            reason = SKIP_WAV_ESCAPES_BUNDLE
-        elif not source.is_file():
-            reason = SKIP_WAV_MISSING
-        if reason:
-            skipped.append({"path": row.path, "reason": reason})
-            continue
-        # The take id breaks ties at the index's one-second timestamp resolution.
-        stem = f"{stamp}_{Path(row.path).stem}"
-        _link_or_copy(str(source), str(ring / "wav" / f"{stem}.wav"))
-        sidecar = dict(document)
-        sidecar["setup_calibration_id"] = calibration_id
-        identity = SessionIdentity(session_id=session_id)
-        try:
-            identity = identity.with_alias(ALIAS_CAPTURE_SESSION_ID, document.get("capture_session_id", ""))
-        except SessionIdentityError:
-            pass
-        stamp_session_identity(sidecar, identity)
-        (ring / "sidecar" / f"{stem}.json").write_text(json.dumps(sidecar))
-        written += 1
-    return {"written": written, "skipped": skipped}
 
 
 def _bookkeeping(
@@ -425,8 +352,6 @@ def bank_round(
                 shutil.copy2(source, target / name)
             else:
                 missing.append(name)
-        calibration_id = str(((info.get("fingerprints") or {}).get("mic") or {}).get("calibration_id") or "")
-        ring = _bank_capture_ring(target / "bundle" / session_dir.name, session_id, calibration_id)
         missing += _index_poses(target)
         manifest, views = _bookkeeping(
             target, target / "bundle" / session_dir.name, view_runner,
@@ -444,7 +369,6 @@ def bank_round(
             "installed_sha": sha,
             "git_absent": sha is None,
             "missing": missing,
-            "capture_ring": ring,
             "manifest": manifest,
             "views": views,
         }

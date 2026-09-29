@@ -66,12 +66,10 @@ from .incumbent import (
 from .offline_reads import (
     CLASSIFICATION_ARTIFACT,
     HARMONICS_ARTIFACT,
-    RING_SIDECAR_GLOB,
     _derived_views_block,
     absence,
     copy_allowed,
     read_json,
-    round_program_dir,
 )
 from .positions import (
     POSITIONS_SUBDIR,
@@ -104,7 +102,6 @@ __all__ = [
     "OPERATOR_NOTES_BLOCK",
     "PACKET_KIND",
     "PACKET_SCHEMA_VERSION",
-    "RING_SIDECAR_GLOB",
     "CrossoverEvidencePacketError",
     "EVIDENCE_KEY",
     "EVIDENCE_NOT_BANKED",
@@ -116,7 +113,6 @@ __all__ = [
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
     "round_artifact_dir",
-    "round_program_dir",
     "applied_profile_source",
     "REPEAT_FLOOR_UNMEASURED",
     "REPEAT_FLOOR_UNREADABLE",

@@ -13,8 +13,6 @@ from dataclasses import replace
 import errno
 import json
 import re
-import hashlib
-import wave
 from itertools import combinations
 from unittest.mock import Mock
 
@@ -49,9 +47,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, resolve_set, round_artifact_dir, round_inputs,
 )
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
-from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
@@ -60,19 +55,13 @@ from jasper.active_speaker import measurement_programs, round_view_artifacts
 from jasper.active_speaker.round_view_artifacts import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
-    CAPTURE_RING_DIR,
     REASON_NOT_A_BUNDLE,
     REASON_SESSION_UNFINISHED,
-    SKIP_NO_CAPTURED_AT,
-    SKIP_NO_PHASE,
-    SKIP_NO_WAV_PATH,
-    SKIP_WAV_ESCAPES_BUNDLE,
-    SKIP_WAV_MISSING,
     RoundBankError,
     bank_round,
 )
 
-from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round, bank_seat_round
+from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_crossover_v2_driver_prescription import _draft
 
@@ -299,114 +288,20 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     (banked.path / "state.json").write_text(state_path.read_text())
     assert banked_calibration() == (calibration if snapshot else {})
 
-SR = 48000
-
-def _ring_wav(path: Path, seed: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(seed)
-    samples = rng.normal(0, 0.2, SR // 10)
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(SR)
-        handle.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
-
-
-def _capture_bundle(root: Path, *, takes: tuple[tuple[str, str, object], ...]) -> Path:
-    bundle = root / "bundle/bank-session"
-    positions = bundle / "evidence/v1/artifacts/crossover_v2/capture-id/positions"
-    positions.mkdir(parents=True)
-    (bundle / "info.json").write_text(json.dumps({"session_id": "bank-session"}))
-    programs = bundle / "crossover_v2/capture-id"
-    for index, (take_id, phase, captured_at) in enumerate(takes):
-        program = programs / f"{phase}_program.wav"
-        _ring_wav(program, seed=index + 1)
-        wav = bundle / f"summed/{take_id}.wav"
-        _ring_wav(wav, seed=index + 2)
-        (positions / f"{take_id}.json").write_text(json.dumps({
-            "kind": POSITION_EVIDENCE_KIND, MEASURE_KIND_KEY: "verify",
-            "take_id": take_id, "phase": phase, "captured_at": captured_at,
-            "run_id": "capture-id-level-2", "capture_session_id": "capture-id",
-            "wav_path": str(wav.relative_to(bundle)),
-            "wav_sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
-            "diagnostic": {"epsilon_ppm": 1.0 + index},
-            "capture_integrity": {"capture_chain": "alsa_s32le"},
-            "frame_ledger": {"received_frames": 4800},
-            "provenance": {"stimulus": {"wav_sha256": hashlib.sha256(program.read_bytes()).hexdigest()}},
-        }))
-    return bundle
-
-
-def test_a_take_the_capture_host_banked_reaches_the_ring(tmp_path, monkeypatch):
-    bank_executor_take(tmp_path, monkeypatch)
-    session, = (tmp_path / "sessions").iterdir()
-    mark_state(session, "closed")
-
-    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
-
-    assert bank.provenance["capture_ring"] == {"written": 1, "skipped": []}
-
-
 @pytest.mark.parametrize("fallback", [None, errno.EXDEV, errno.EPERM, errno.EACCES])
-def test_banking_writes_the_ring_the_distortion_view_reads(tmp_path, monkeypatch, fallback):
-    session = _capture_bundle(tmp_path / "live", takes=(
-        ("verify-a", "verify", "2026-08-31T00:19:52Z"),
-        ("lateral-b", "lateral", 1788135592.4),
-        ("measure-c", "measure", 1788135592.9),
-    ))
+def test_banking_hard_links_the_bundle_and_copies_where_a_link_is_refused(tmp_path, monkeypatch, fallback):
+    session, state = _live_session(tmp_path / "live")
     if fallback:
         def denied(*args, **kwargs):
             raise OSError(fallback, "link unavailable")
         monkeypatch.setattr("jasper.active_speaker.round_bank.os.link", denied)
-    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
+    bank = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, **_ssot(tmp_path, present=False))
     bundle = round_inputs(bank.path).session_dir
     for source in session.rglob("*"):
         if source.is_file():
             copy = bundle / source.relative_to(session)
             assert copy.read_bytes() == source.read_bytes()
             assert (copy.stat().st_ino == source.stat().st_ino) is (fallback is None)
-    ring = bundle / CAPTURE_RING_DIR
-    bound, scope = _scope_captures(_bind_measure_captures(ring), "bank-session")
-    assert len(bound) == 1 and scope["session_id"] == "bank-session"
-    assert bank.provenance["capture_ring"] == {"written": 3, "skipped": []}
-    assert len(list((ring / "wav").glob("*.wav"))) == 3
-    for sidecar in (ring / "sidecar").glob("*.json"):
-        document = json.loads(sidecar.read_text())
-        identity = read_session_identity(document)
-        assert identity.session_id == "bank-session"
-        assert identity.aliases["capture_session_id"] == "capture-id"
-        assert all(key in document for key in ("diagnostic", "capture_integrity", "frame_ledger", "wav_sha256"))
-        wav = ring / "wav" / f"{sidecar.stem}.wav"
-        source = bundle / document["wav_path"]
-        assert wav.read_bytes() == source.read_bytes()
-        assert (wav.stat().st_ino == source.stat().st_ino) is (fallback is None)
-
-
-@pytest.mark.parametrize("fault,reason", [
-    ("timestamp", SKIP_NO_CAPTURED_AT), ("phase", SKIP_NO_PHASE),
-    ("path", SKIP_NO_WAV_PATH), ("escape", SKIP_WAV_ESCAPES_BUNDLE),
-    ("missing", SKIP_WAV_MISSING),
-])
-def test_banking_discloses_captures_missing_from_the_ring(tmp_path, fault, reason):
-    session = _capture_bundle(tmp_path / "live", takes=(("take", "verify", "2026-08-31T00:19:52Z"),))
-    take = next(session.glob("evidence/v1/artifacts/**/positions/*.json"))
-    document = json.loads(take.read_text())
-    if fault == "timestamp":
-        document["captured_at"] = "invalid"
-    elif fault == "phase":
-        document.pop("phase")
-    elif fault == "path":
-        document.pop("wav_path")
-    elif fault == "escape":
-        document["wav_path"] = "../outside.wav"
-    else:
-        (session / document["wav_path"]).unlink()
-    take.write_text(json.dumps(document))
-    bank = bank_round(session, campaign_root=tmp_path / "bank", **_ssot(tmp_path, present=False))
-    assert bank.provenance["capture_ring"]["written"] == 0
-    assert bank.provenance["capture_ring"]["skipped"] == [{
-        "path": "crossover_v2/capture-id/positions/take.json", "reason": reason,
-    }]
 
 
 @pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])

@@ -148,10 +148,9 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("image", "runs", "series")),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": CatalogRow(HARMONICS_ARTIFACT, programs=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/4",
-                             reads=READS_RECORDING,
-        question="How much H2 and H3 did each driver make, at the drive each MEASURE capture used?",
-        needs="a banked round's MEASURE captures of each driver (speaker/mark, per_driver)",
+    "distortion": CatalogRow(HARMONICS_ARTIFACT, programs=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/5",
+        question="How much H2 and H3 did each driver make, at the drive each MEASURE take used?",
+        needs="a round's MEASURE takes of each driver, each with the H2/H3 it banked (speaker/mark, per_driver)",
         avoid="bass takes; bass reads their H2/H3",
         answer_fields=("blocks", "captures_read", "captures_refused", "orders")),
     "dsp-replay": CatalogRow("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--out", "<render-dir>"),

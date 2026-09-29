@@ -16,7 +16,9 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.distortion import floor_limited_mask, read_segment_distortion, sweep_covers_band
-from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_COVERAGE_SHORT, REASON_HARMONIC_WINDOW_OUT_OF_RANGE, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable,
+)
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SUMMED_SWEEP, preceding_silence_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.quality_model import DRIVER
@@ -92,7 +94,7 @@ def bass_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray
             epsilon=analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0,
         )
     except ValueError as exc:
-        reason = "harmonic_window_out_of_range" if isinstance(exc, HarmonicWindowOutOfRange) else REASON_COVERAGE_SHORT
+        reason = REASON_HARMONIC_WINDOW_OUT_OF_RANGE if isinstance(exc, HarmonicWindowOutOfRange) else REASON_COVERAGE_SHORT
         log_event(logger, "active_speaker.bass_harmonics_not_banked", level=logging.WARNING,
                   stimulus_id=program.stimulus_id, reason=reason, error_type=type(exc).__name__)
         return {**reading, "harmonics": unavailable(reason)}

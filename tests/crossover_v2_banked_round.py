@@ -911,7 +911,7 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
     ``gate``, and every rung's take comes back in order. ``recording`` is int32
     samples the host analyses for real at the stop's own lateral pose, as a walk
     plays it; without one the take records 32 zeros under a stand-in analysis,
-    which reads no bass evidence from them."""
+    which reads no bass or distortion evidence from them."""
     program = program or build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     raw_record = raw_record or {}
     calibration_root = root / "calibration"
@@ -928,6 +928,7 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
                 return analysis
             patch.setattr("jasper.audio_measurement.program_analysis.analyze_program_capture", analyzed)
             patch.setattr("jasper.web.correction_crossover_v2_evidence.bass_evidence", lambda *_args: None)
+            patch.setattr("jasper.web.correction_crossover_v2_evidence.distortion_evidence", lambda *_args: None)
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
