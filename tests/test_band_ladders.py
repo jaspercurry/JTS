@@ -116,9 +116,9 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             low, high = payload["coverage_hz"]
             expected = tuple((lo, hi) for lo, hi in expected if lo >= low and hi <= high)
     elif builder == "bass_take":
-        bundle, calibration, _, bank = request.getfixturevalue("summed_capture_bundle")
+        bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
         asyncio.run(bank("baseline"))
-        payload, = bass_view(bundle, take_ids=("baseline",), calibration_root=calibration)["takes"]
+        payload, = bass_view(bundle, take_ids=("baseline",))["takes"]
         # This 1.5 s sweep has no FFT bin in the 50–63 or 63–80 Hz dwells.
         expected = tuple(expected[index] for index in (0, 1, 2, 5, 6, 7, 8))
     elif builder == "bass_level":

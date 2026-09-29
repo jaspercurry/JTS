@@ -45,7 +45,7 @@ def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]
     """
     return finite_json({
         "curves": analysis_curve_records(analysis, program),
-        "analysis": analysis_json(analysis),
+        "analysis": {**analysis_json(analysis), "bass": getattr(analysis, "bass", None)},
         "diagnostic": analysis_diagnostic_summary(analysis),
         "branch_diagnostic": getattr(analysis, "branch_diagnostic", None) or None,
     })

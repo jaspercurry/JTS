@@ -1291,7 +1291,8 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     program = ExcitationProgram.from_dict(record["program"])
     analysis = _verify_analysis(program)
     # Every take banks its curves and analysis; its run-manifest rows copy them (ADR-0383).
-    assert (record["curves"], record["analysis"]) == (analysis_curve_records(analysis, program), analysis_json(analysis))
+    assert (record["curves"], record["analysis"]) == (analysis_curve_records(analysis, program),
+                                                      {**analysis_json(analysis), "bass": None})
     manifest, = (tmp_path / "sessions").rglob(RUN_MANIFEST_FILENAME)
     assert [(take["curve"], take["analysis"]) for group in json.loads(manifest.read_text())["sets"]
             for take in group["takes"]] == [(curve, record["analysis"]) for curve in record["curves"]] != []

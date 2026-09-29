@@ -105,9 +105,9 @@ def frequency_image(payload: dict, image: Path | None, *, series=(), plot_band_h
     return {"image": str(image)}
 
 
-def bass_payload(inputs: RoundInputs, set_id: str | None, *, calibration_root: Path | None = None) -> dict[str, Any]:
+def bass_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id)
-    payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids, calibration_root=calibration_root)
+    payload = bass_view(inputs.session_dir, take_ids=selected.selected_ids)
     return {**payload, "set_id": selected.set_id, "candidate_id": selected.capture_basis.get("candidate_id")}
 
 

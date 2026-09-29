@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_provenance
+from jasper.active_speaker.measurement_bass import bass_evidence
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.web import correction_crossover_v2_volume as v2volume
 
@@ -217,6 +218,8 @@ def bind_production_analyze(
             # the only place the comparison can be made.
             capture_report=getattr(result, "capture_integrity", None),
         )
+        if (bass := bass_evidence(program, analysis, samples, curve)) is not None:
+            analysis = dataclasses.replace(analysis, bass=bass)
         fields = analysis_provenance(program, analysis, record, curve, geometry)
         if meta is not None:
             meta.setdefault("calibration", {})[phase] = fields["capture_calibration"]
