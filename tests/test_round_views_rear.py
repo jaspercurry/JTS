@@ -50,7 +50,7 @@ from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BAN
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
-    REASON_REFERENCE_NOT_IN_SET, TAKE_CURVES_NOT_BANKED,
+    REASON_REFERENCE_NOT_IN_SET, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
 from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
@@ -199,12 +199,14 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                on_axis_kind: str = "bearing", name: str = "r3-seat",
                curves: Mapping[str, list[float] | None] = _CURVES, retake: Mapping[str, float] = {},
                unlisted: Mapping[str, Sequence[int]] = {}, failed: Mapping[str, Sequence[int]] = {},
-               band_hz: Sequence[float] | None = None) -> Path:
+               band_hz: Sequence[float] | None = None, superseded: bool = False) -> Path:
     """One banked ``rear`` round, ``name`` in the one rear store: every
     candidate at every pose, on-axis repeated, each playing its ``curves``
     over ``band_hz`` (the seat round's by default). A candidate's ``None``
     curve banks none, as the banker did before ADR-0383; ``failed`` banks a
     failed analysis instead at named bearings, as the banker does since.
+    ``superseded`` banks every take's program as schema 2 did, before #5991
+    renamed its ``program_id``.
 
     ``missing`` drops a candidate's take at named bearings, which is how a
     reference take goes missing where other candidates measured. ``retake``
@@ -216,6 +218,9 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
     root = bank_seat_round(tmp_path / "rear", name=name)
     source, store = _round_source(root)
     base = {key: value for key, value in source.items() if key != "curves"}
+    if superseded:
+        base["program"] = {**{key: value for key, value in source["program"].items() if key != "stimulus_id"},
+                           "schema_version": 2, "program_id": source["program"]["stimulus_id"]}
     groups = []
     for candidate in candidates:
         records = []
@@ -664,7 +669,12 @@ _LATER_MUTED = (np.asarray(_CURVES[_MUTED]) - 3.0
                 - 20.0 * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / 143.0) / 0.12) ** 2)).tolist()
 
 
-@pytest.mark.parametrize("earlier", ["banked", "curves_unbanked", "analysis_failed", "manifest_unreadable", "absent"])
+#: The code an earlier reference this build cannot read discloses, by how it was banked.
+_UNREAD = {"curves_unbanked": TAKE_CURVES_NOT_BANKED, "analysis_failed": TAKE_CURVES_NOT_BANKED,
+           "program_superseded": REASON_UNREADABLE}
+
+
+@pytest.mark.parametrize("earlier", ["banked", *_UNREAD, "manifest_unreadable", "absent"])
 def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
     tmp_path, banked_candidates, monkeypatch, earlier,
 ):
@@ -680,10 +690,11 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
     if earlier != "absent":
         before = rear_round(tmp_path, name="earlier", missing={_MUTED: (20,)}, retake={_MUTED: 6.0},
                             curves={**_CURVES, _MUTED: None} if earlier == "curves_unbanked" else _CURVES,
-                            failed={_MUTED: (0,)} if earlier == "analysis_failed" else {})
+                            failed={_MUTED: (0,)} if earlier == "analysis_failed" else {},
+                            superseded=earlier == "program_superseded")
         (before / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-20T12:00:00Z"}))
-        if earlier == "curves_unbanked":
-            # A rear round banked from 09-26 to 09-28 declared its reference before its takes banked curves.
+        if earlier in ("curves_unbanked", "program_superseded"):
+            # A rear round banked from 09-26 to 09-28 declared its reference in the packet that era wrote.
             (before / "packet.json").write_text(json.dumps({
                 "schema": "jts_round_packet/3", "rear": [{"comparison": {"reference": {"set_id": _MUTED}}}]}))
         else:
@@ -702,9 +713,8 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
                         at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
     named = {"round_id": "earlier", "set_id": _MUTED}
     if earlier != "banked":
-        unread = earlier in ("curves_unbanked", "analysis_failed")
         assert {key: value for key, value in on_axis.items() if key != "detail"} == (
-            {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED, **named} if unread
+            {"status": "unavailable", "reason": _UNREAD[earlier], **named} if earlier in _UNREAD
             else {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE})
         return
     bands = {tuple(band["band_hz"]): band for band in on_axis["bands"]}
