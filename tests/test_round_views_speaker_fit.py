@@ -608,7 +608,7 @@ def test_a_base_that_does_not_reopen_refuses_by_its_code_and_the_packet_still_bu
     digests = packet[EVIDENCE_KEY]["contracts"]
     assert ([entry["reason_summary"] for entry in packet["fits"]], packet["limits"]["speaker-set"], digests.pop("speaker")) == (
         [{"unavailable": code}], {"status": "unavailable", "reason": code},
-        {"status": "not_evaluated", "reason": code, "field": "candidate.json"})
+        {"status": "unavailable", "reason": code, "field": "candidate.json"})
     assert "schema" in packet["limits"]["room-set"]
     assert digests and all(isinstance(digest, str) for digest in digests.values())
 
