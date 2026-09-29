@@ -78,3 +78,17 @@ async def test_a_restore_whose_mute_write_fails_still_releases_the_claim(
     assert event_field_maps(caplog, "volume.main_mute") == [
         {"muted": str(muted).lower(), "context": context, "result": "failed"},
     ]
+
+
+async def test_a_start_whose_unmute_fails_fails_the_start(audition, caplog):
+    session, camilla, _owner = audition
+    caplog.set_level(logging.WARNING, logger="jasper")
+    camilla.mute_accepted = False
+
+    with pytest.raises(RuntimeError):
+        await _start(session, camilla)
+
+    context = "floor_tone_start_unmute"
+    assert event_field_maps(caplog, "volume.main_mute", context=context) == [
+        {"muted": "false", "context": context, "result": "failed"},
+    ]
