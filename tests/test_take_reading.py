@@ -181,7 +181,7 @@ def _banked(store: Path, name: str, banked_at: str, sets: dict[str, list[tuple]]
     pytest.param({"e": {"base": [("e30", 30)]}, "r": {"base": [("r0", 0)]}}, [], None, id="none"),
 ])
 def test_compare_with_one_take_reads_its_comparand_by_the_one_rule(tmp_path, capsys, rounds, flags, expected):
-    """#5737 P6: side A left unnamed is B's comparand, and the answer says how it
+    """ADR-0391: side A left unnamed is B's comparand, and the answer says how it
     was found beside the capture-basis disclosure; with none, compare refuses by name."""
     store = tmp_path / "campaigns"
     paths = {name: _banked(store, name, f"2026-09-{20 + index:02d}T12:00:00Z", sets)

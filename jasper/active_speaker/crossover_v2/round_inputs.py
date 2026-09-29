@@ -523,7 +523,7 @@ def subject(
     ) if value is not None}
 
 
-#: Where a take's comparand came from (#5737 P6).
+#: Where a take's comparand came from (ADR-0391).
 COMPARAND_SAME_ROUND = "same_round_base"
 COMPARAND_EARLIER_ROUND = "earlier_round"
 
@@ -543,7 +543,7 @@ def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = 
 
 
 def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
-    """The one comparand rule (#5737 P6): the round's base take at the take's
+    """The one comparand rule (ADR-0391): the round's base take at the take's
     place, preferring the take's own run; else the newest selected take banked
     before the round at the same place, drivers (the response ``role`` reads)
     and graph scope, among :func:`banked_rounds`' ``limit`` latest. The
