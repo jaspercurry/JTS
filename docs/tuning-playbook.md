@@ -647,7 +647,7 @@ Bass
 | linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
 | linkwitz_transform_rules | {"adr":"ADR-0359","target_hz_exclusive_upper_field":"source_hz"} | rule | contract.bass.bounds.linkwitz_transform |
 | charged_layers | ["linearization","blend_correction","room_correction","rear_calibration"] | layers | contract.bass.shared_headroom.charged_layers |
-| uncharged_layers | ["bass_extension","preference_eq"] | layers | contract.bass.shared_headroom.uncharged_layers |
+| uncharged_layers | ["bass_extension","preference_filters"] | layers | contract.bass.shared_headroom.uncharged_layers |
 
 Rear
 | Name | Value | Unit | Constant or function field |

@@ -25,6 +25,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.branch_chain import HEADROOM_MARGIN_DB, branch_chain_peak_db
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_BINDING, PROGRAM_HEADROOM_EXHAUSTED
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, program_charge_db
+from jasper.active_speaker.graph_types import PEAK_EPS_DB
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
@@ -52,6 +53,8 @@ CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
 #: A round that banked no candidate has no base its packet may charge (ADR-0371).
 BASE_NOT_BANKED = "base_not_banked"
 SECTIONS = tuple(row.purpose for row in PROGRAM_DOCUMENT_ORDER)
+#: The rear section's name and candidate field; unlike the other layers, no module owns a constant for it.
+_REAR_SECTION = "rear_calibration"
 
 
 def contract_json(value: Mapping[str, Any]) -> str:
@@ -399,19 +402,21 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "shared_headroom": {
             "adrs": ["ADR-0385", "ADR-0359", "ADR-0121"],
             "charge_function": "jasper.active_speaker.program_headroom.charge_db",
-            "charged_layers": ["linearization", "blend_correction", "room_correction", "rear_calibration"],
-            "uncharged_layers": ["bass_extension", "preference_eq"],
+            "charged_layers": [driver.LINEARIZATION_CANDIDATE_FIELD, blend.BLEND_CANDIDATE_FIELD,
+                               room.ROOM_CANDIDATE_FIELD, _REAR_SECTION],
+            "uncharged_layers": ["bass_extension", "preference_filters"],
             "margin_db": HEADROOM_MARGIN_DB,
             "max_charge_db": MAX_PROGRAM_HEADROOM_DB,
             "cost": "maximum_output_level_db",
             "bass_reserve_function": "jasper.bass_extension.dynamic.dynamic_bass_gain_reserve_db",
             "detail": ("One program charge covers the charged layers: the emitted graph's program peak, where every "
                        "series stage and mixer sum ahead of an output nets (crossovers, high-passes and trims too), "
-                       f"plus one {HEADROOM_MARGIN_DB:g} dB margin when that peak is over unity, plus the output "
-                       f"trim. Composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past {MAX_PROGRAM_HEADROOM_DB:g} dB. "
-                       "The charge costs maximum output level. The bass boost and preference EQ are not charged: "
-                       "the bass boost plays at every volume, reserves its own lift (bass_reserve_function) and "
-                       "costs maximum bass level near the clip point, where its compressor gives way."),
+                       f"plus one {HEADROOM_MARGIN_DB:g} dB margin when that peak is over {PEAK_EPS_DB:g} dB, plus "
+                       f"the output trim. Composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past "
+                       f"{MAX_PROGRAM_HEADROOM_DB:g} dB. The charge costs maximum output level. The bass boost and "
+                       "the preference filters are not charged: the bass boost plays at every volume, reserves its "
+                       "own lift (bass_reserve_function) and costs maximum bass level near the clip point, where "
+                       "its compressor gives way."),
         },
     }
 
@@ -514,7 +519,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
 def _rear() -> dict[str, Any]:
     """Electrical branches only; see ADR-0318, ADR-0322, ADR-0324 and ADR-0327."""
     return {
-        "document_section": "rear_calibration",
+        "document_section": _REAR_SECTION,
         "case": "electrical_dsp",
         "mode": "branches",
         "schema": _rear_calibration_schema(),
