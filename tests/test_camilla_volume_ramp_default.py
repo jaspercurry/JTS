@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from jasper.camilla import MAIN_VOLUME_RAMP_SETTLE_S
+from jasper.audio_control.camilla import MAIN_VOLUME_RAMP_SETTLE_S
 
 # CamillaDSP 4.1.3 README, `volume_ramp_time`: "If left out or set to `null`,
 # it defaults to 400 ms."

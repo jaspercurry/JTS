@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 
-import jasper.mic_presence as mic_presence_module
+import jasper.audio_control.mic_presence as mic_presence_module
 from jasper.cli import doctor
 # `main` and `run_async` resolve these names in their own module's
 # namespace, so a patch aimed at the package would not apply.
@@ -27,7 +27,7 @@ from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.control.restart_broker import MANAGED_UNITS
-from jasper.mic_presence import MicPresence
+from jasper.audio_control.mic_presence import MicPresence
 
 
 def _reg(func, *, module="env", **kw) -> RegisteredCheck:

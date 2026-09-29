@@ -409,7 +409,7 @@ def test_session_status_reports_the_fanin_duck():
 def test_capture_gap_resets_wake_history_and_reports_input_age():
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from jasper.audio_buffer import InputFrame
+    from jasper.audio_control.audio_buffer import InputFrame
 
     wl = wake_loop_for_tests()
     rt = wl._wake_legs.legs["on"]

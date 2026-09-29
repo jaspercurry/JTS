@@ -747,7 +747,7 @@ def test_main_drains_exactly_the_ports_no_granted_wizard_claimed(
     """
     import dataclasses
 
-    from jasper import volume_process
+    from jasper.audio_control import volume_process
     from jasper.web import __main__ as web_main
 
     served, unserved = _listener(), _listener()

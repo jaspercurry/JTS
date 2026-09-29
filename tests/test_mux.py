@@ -32,9 +32,9 @@ from jasper.service_state.spotify_router import (
     BuildResult,
     Router,
 )
-from jasper.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
-from jasper.volume_handoff import SourceHandoff
+from jasper.audio_control.volume_handoff import SourceHandoff
 from jasper.service_state.volume_persistence import VolumePersistence
 
 from ._async_wait import wait_signalled

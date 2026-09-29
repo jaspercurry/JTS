@@ -13,7 +13,7 @@ record on every path where the deploy did not produce the installed file.
 
 Two contracts live here:
 
-* the Python reader / capability gate (``jasper.ring_assets``). The fixed
+* the Python reader / capability gate (``jasper.audio_control.ring_assets``). The fixed
   program wire requires the format capability; generic protocol tests also
   cover the C ioplug's narrow baseline; and
 * the cross-language pins — the record path, its key names, the capability
@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_assets
+from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
 from jasper.dsp_control.fanin_coupling import RingWire
 

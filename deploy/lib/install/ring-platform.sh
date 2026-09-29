@@ -40,7 +40,7 @@ JTS_RING_IOPLUG_SO="libasound_module_pcm_jts_ring.so"
 JTS_RING_ALSA_PLUGIN_DIR="${JTS_RING_ALSA_PLUGIN_DIR:-/usr/lib/aarch64-linux-gnu/alsa-lib}"
 JTS_RING_IOPLUG_SRC_SUBDIR="c/jts-ring-ioplug"
 # The installer's record of WHICH ioplug it installed and what that plugin can
-# parse. Mirrored as jasper.ring_assets.RING_IOPLUG_PROVENANCE (the Python
+# parse. Mirrored as jasper.audio_control.ring_assets.RING_IOPLUG_PROVENANCE (the Python
 # reader); the two literals are pinned equal by
 # tests/test_ring_ioplug_provenance.py.
 JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-ioplug.provenance}"
@@ -220,7 +220,7 @@ _jts_ring_ioplug_caps() {
 # path, and a record that could not name which file it described would vouch for
 # whatever happened to be there.
 #
-# Reader: jasper.ring_assets.read_ring_ioplug_provenance (the key names and the
+# Reader: jasper.audio_control.ring_assets.read_ring_ioplug_provenance (the key names and the
 # path are mirrored there and pinned by tests/test_ring_ioplug_provenance.py).
 record_ring_ioplug_provenance() {
     local so_dest="$1" sha="$2"
@@ -237,7 +237,7 @@ record_ring_ioplug_provenance() {
     {
         echo "# Written by deploy/lib/install/ring-platform.sh. Do not hand-edit:"
         echo "# this file is the INSTALLER's statement about the ioplug it built,"
-        echo "# and jasper.ring_assets refuses to arm a wide ring wire whose"
+        echo "# and jasper.audio_control.ring_assets refuses to arm a wide ring wire whose"
         echo "# capability it cannot find here. Regenerate by redeploying."
         echo "JTS_RING_IOPLUG_SHA256=${sha}"
         echo "JTS_RING_IOPLUG_CAPS=${caps}"

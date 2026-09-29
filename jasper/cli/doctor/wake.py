@@ -186,7 +186,7 @@ def _push_to_talk_only_speaker() -> bool:
     if local_mic_present_from_env() is not False:
         return False
     # The accessory half comes from its owner's published file, read fresh —
-    # never os.environ, per jasper.mic_presence. mic_presence() never raises.
+    # never os.environ, per jasper.audio_control.mic_presence. mic_presence() never raises.
     return evidence.mic_presence().accessory_present
 
 def _assess_wake_legs(

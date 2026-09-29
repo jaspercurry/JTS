@@ -39,34 +39,34 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from .assistant_volume import (
+from jasper.audio_control.assistant_volume import (
     EffectiveVolumeContext,
     VolumeContextPublication,
     VolumeContextPublisher,
     volume_context_publisher_for_runtime,
 )
-from .identity.speaker_name import runtime_name as speaker_runtime_name
-from .log_event import log_event
+from jasper.identity.speaker_name import runtime_name as speaker_runtime_name
+from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
-from . import volume_push_sources
-from .renderer import RendererClient, audible_source
-from .volume_echo import (
+from jasper.audio_control import volume_push_sources
+from jasper.audio_control.renderer import RendererClient, audible_source
+from jasper.audio_control.volume_echo import (
     is_own_echo,
     is_recent_cross_process_write,
     stamp_outbound,
 )
-from .volume_carrier import CamillaCarrier
-from .volume_measurement_gate import MeasurementGate
+from jasper.audio_control.volume_carrier import CamillaCarrier
+from jasper.audio_control.volume_measurement_gate import MeasurementGate
 from jasper.audio_resources.volume_owner import VolumeOwner
-from .volume_scales import native_to_listening_level
-from .volume_curve import (
+from jasper.audio_control.volume_scales import native_to_listening_level
+from jasper.volume_curve import (
     canonical_target_db,
     main_mute_for_level,
     percent_to_db,
 )
-from .volume_handoff import VolumeHandoff
-from .volume_reconcile import VolumeReconciler, converged
-from .volume_state import VolumeState, OutboundStamp
+from jasper.audio_control.volume_handoff import VolumeHandoff
+from jasper.audio_control.volume_reconcile import VolumeReconciler, converged
+from jasper.audio_control.volume_state import VolumeState, OutboundStamp
 from jasper.service_state.volume_persistence import (
     FIRST_BOOT_DEFAULT_PCT,
     REGRESS_AFTER_SEC,
@@ -78,10 +78,10 @@ from jasper.service_state.volume_persistence import (
 )
 
 if TYPE_CHECKING:
-    from .volume_handoff import SourceHandoff
-    from .camilla import CamillaController
+    from jasper.audio_control.volume_handoff import SourceHandoff
+    from jasper.audio_control.camilla import CamillaController
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_coordinator")
 
 
 class VolumeCoordinator:

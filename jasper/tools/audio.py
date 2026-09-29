@@ -13,7 +13,7 @@ from ..log_event import log_event
 from ..platform.control_client import AsyncControlClient, ControlError
 
 if TYPE_CHECKING:
-    from ..volume_coordinator import VolumeCoordinator
+    from jasper.audio_control.volume_coordinator import VolumeCoordinator
 
 
 logger = logging.getLogger(__name__)

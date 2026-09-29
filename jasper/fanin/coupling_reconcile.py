@@ -64,7 +64,7 @@ from jasper import (
     env_load, )
 from jasper.dsp_control import (
     fanin_coupling, )
-from jasper import (
+from jasper.audio_control import (
     ring_assets, )
 from jasper.dsp_control import (
     ring_conf, )
@@ -893,7 +893,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     whose geometry differs from what fan-in / the conf.d will create, on ANY of
     the four attach-compared axes: ``n_slots``, ``period_frames`` (the ring slot
     IS one outputd period), ``sample_format`` and ``channels``. The comparison
-    is :func:`jasper.ring_assets.ring_header_matches_conf`, shared with the
+    is :func:`jasper.audio_control.ring_assets.ring_header_matches_conf`, shared with the
     doctor so the two cannot mean different things by "coherent".
 
     A magic-less / absent / correct-geometry file is left untouched (the writer
@@ -1021,7 +1021,7 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     also the pair's RECOVERY: whichever half moved last, one pass converges the
     other. The two halves have different writers and cannot move in one write, so
     the pair is legitimately crossed between them;
-    :func:`jasper.transport_coherence.transport_coherence_report` reports that
+    :func:`jasper.audio_control.transport_coherence.transport_coherence_report` reports that
     window as a note rather than a contradiction.
     """
     return (
@@ -1147,7 +1147,7 @@ def reconcile_in_progress() -> bool | None:
     :func:`_acquire_entry_lock` holds this flock for the WHOLE pass, so a reader
     that cannot take it shared knows a pass is between rungs. Same read-only
     probe shape as
-    :meth:`jasper.camilla.CamillaController.graph_mutation_in_progress`.
+    :meth:`jasper.audio_control.camilla.CamillaController.graph_mutation_in_progress`.
 
     ``missing=None``, unlike the graph-mutation probe: this lock file is
     provisioned by the install, so its absence says the box is unprovisioned,
@@ -1172,7 +1172,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # `reconcile_current_dsp` swaps the live graph from this process, so its
     # swap duck needs a canonical target to release to.
-    from jasper.volume_process import (  # lazy: import cost, CLI-only (ADR-0226)
+    from jasper.audio_control.volume_process import (  # lazy: import cost, CLI-only (ADR-0226)
         install_env_canonical_target_provider,
     )
 

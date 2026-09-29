@@ -32,7 +32,7 @@ from .service_units import (
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
 )
-from .audio_validation_probes import (
+from jasper.audio_control.audio_validation_probes import (
     read_mode_env,
     read_system_env,
     _mic_details,
@@ -42,7 +42,7 @@ from .audio_validation_probes import (
     read_voice_wake_legs,
     _dac_details,
 )
-from .audio_validation_readiness import (
+from jasper.audio_control.audio_validation_readiness import (
     _check,
     _rollup_status,
     _readiness_recommendation,
@@ -56,7 +56,7 @@ from .audio_validation_readiness import (
     _bridge_stats_check,
     profile_runtime_ready,
 )
-from .audio_validation_hardware_checks import (
+from jasper.audio_control.audio_validation_hardware_checks import (
     _dac_identity_check,
     _outputd_pipeline_service_state_check,
     _outputd_dac_status_check,

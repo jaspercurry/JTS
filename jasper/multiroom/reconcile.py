@@ -35,7 +35,7 @@ from typing import Any
 
 from .. import atomic_io
 from jasper.service_state import tts_routing as _tts_routing
-from ..camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 from ..control import restart_broker
 from jasper.dsp_control.dsp_apply import DspApplyError
 from ..env_load import (
@@ -46,7 +46,7 @@ from ..env_load import (
 )
 from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV, RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
-from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
+from jasper.audio_control.ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..service_units import (
     AEC_RECONCILE_SERVICE, CAMILLA_SERVICE, OUTPUTD_SERVICE,
     SHAIRPORT_SYNC_SERVICE, run_systemctl,
@@ -421,7 +421,7 @@ def _probe_active_content_pcm_once(
     peer under a different uid.
 
     ``lock_path=None`` resolves :data:`ACTIVE_CONTENT_WRITER_LOCK_PATH` at CALL
-    time, never as a bound default (the rule :mod:`jasper.ring_assets` states on
+    time, never as a bound default (the rule :mod:`jasper.audio_control.ring_assets` states on
     ``ring_ioplug_so_path``): a def-time binding would make a caller that
     repoints the module constant silently probe the original path while every log
     line still names the constant.
@@ -1134,7 +1134,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # Step 5 below swaps the live CamillaDSP graph, so its swap duck needs a
     # canonical target to release to.
-    from jasper.volume_process import install_env_canonical_target_provider  # lazy: import cost — only main()'s CLI oneshot needs this; callers that import this module for its pure plan()/probe functions never reach main()
+    from jasper.audio_control.volume_process import install_env_canonical_target_provider  # lazy: import cost — only main()'s CLI oneshot needs this; callers that import this module for its pure plan()/probe functions never reach main()
 
     install_env_canonical_target_provider()
 

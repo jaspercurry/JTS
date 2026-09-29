@@ -38,7 +38,7 @@ import signal
 import sys
 import time
 
-from . import debug_mode
+from jasper.audio_control import debug_mode
 from .logging_setup import REDACTING_FILTER
 
 logger = logging.getLogger(__name__)

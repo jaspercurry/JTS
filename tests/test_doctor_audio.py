@@ -20,7 +20,7 @@ import pytest
 
 from jasper.cli.doctor import audio
 from jasper.cli.doctor._evidence import evidence
-from jasper.mic_presence import MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, MicPresence
+from jasper.audio_control.mic_presence import MIC_ABSENT_NO_LOCAL_OR_ACCESSORY, MicPresence
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -645,7 +645,7 @@ def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, reason):
 #
 # A confirmed-absent microphone must yield exactly one yellow `microphone`
 # headline and zero red failures: the downstream `mic ALSA card` and
-# `mic capture` checks defer to jasper.mic_presence instead of independently
+# `mic capture` checks defer to jasper.audio_control.mic_presence instead of independently
 # re-probing ALSA and contradicting it. The reader itself is covered
 # hardware-free in tests/test_mic_presence.py.
 

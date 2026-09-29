@@ -1235,7 +1235,7 @@ async def test_eq_state_reads_only_the_selected_tune_without_writes(tmp_path, mo
         raw["fingerprint"] = "0" * 64
         selected.write_text(json.dumps(raw))
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: cam)
     with mock.patch.object(candidate_bank, "_iter_candidate_paths", side_effect=AssertionError("bank scan")), \
          mock.patch.object(candidate_bank, "publish_authored_candidate", side_effect=AssertionError("bank write")), \
          mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read, \

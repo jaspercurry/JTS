@@ -8,7 +8,7 @@ A box may hold both ingress and return rings, so their identities differ.
 """
 
 from jasper.multiroom.aux_ring import AuxRing
-from jasper.ring_assets import RING_SHM_DIR
+from jasper.audio_control.ring_assets import RING_SHM_DIR
 
 DAC_CONTENT_RING = AuxRing(
     pcm="jts_ring_dac_content",

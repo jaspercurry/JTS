@@ -28,7 +28,7 @@ from jasper.runtime_config.assistant_loudness import (
     update_profile_from_measurement,
     upsample_2x,
 )
-from .assistant_volume import EffectiveVolumeContext
+from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 from .log_event import log_event
 from .platform import wire
 from jasper.service_state.tts_routing import FANIN_TTS_SOCKET

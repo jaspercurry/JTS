@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper import audio_validation_probes
+from jasper.audio_control import audio_validation_probes
 from jasper.audio_resources import audio_validation_artifacts as artifacts
 from jasper.playback_state import wake_legs
 from jasper.aec_sweep import (

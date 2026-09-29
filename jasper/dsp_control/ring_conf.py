@@ -39,7 +39,7 @@ RING_CONF_PCMS = (RING_A_CONF_PCM, RING_B_CONF_PCM, RING_ACTIVE_CONF_PCM)
 # RESOLVER. The ring wire is fixed S32_LE while the compiled-in
 # ioplug default is ``S16_LE``, and moving this constant to match the resolver
 # would make Python believe a stale ``.so`` parses a ``format`` field it cannot
-# — precisely what :func:`jasper.ring_assets.ring_ioplug_wire_supported` exists to catch. The
+# — precisely what :func:`jasper.audio_control.ring_assets.ring_ioplug_wire_supported` exists to catch. The
 # disagreement is what keeps that capability gate live, and it is why
 # ``deploy/alsa/conf.d/60-jts-ring.conf`` DECLARES ``format S32_LE`` explicitly
 # rather than relying on an omitted key.
@@ -52,7 +52,7 @@ RING_CONF_DEFAULT_CHANNELS = 2
 # ``tests/test_ring_assets.py`` pins the two equal. outputd takes the depth from
 # the crate rather than an env, so rendering it here is what stops a
 # hand-edited conf.d from declaring a depth outputd never builds. The render
-# only runs on a box with a declared latency floor (:func:`jasper.ring_assets.ring_conf_wire_report`
+# only runs on a box with a declared latency floor (:func:`jasper.audio_control.ring_assets.ring_conf_wire_report`
 # skips ``no_declared_floor`` first); elsewhere the backstop is outputd's
 # fail-loud attach.
 RING_CONF_N_SLOTS = 2

@@ -12,7 +12,7 @@ from rapidfuzz import fuzz
 
 from . import tool
 from jasper.playback_state.music_sources import SOURCE_TO_ACTIVE_KEY, Source
-from ..renderer import airplay_now_playing
+from jasper.audio_control.renderer import airplay_now_playing
 from jasper.service_state.spotify_router import airplay_client_name
 from jasper.service_state.spotify_routing import resolve_target, stop_renderers
 

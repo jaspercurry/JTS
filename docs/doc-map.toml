@@ -137,8 +137,8 @@ code = [
   "jasper/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
-  "jasper/renderer.py",
-  "jasper/camilla.py",
+  "jasper/audio_control/renderer.py",
+  "jasper/audio_control/camilla.py",
   "jasper/dsp_control/camilla_config_contract.py",
   "jasper/dsp_control/camilla_latency.py",
   "jasper/output_hardware.py",
@@ -277,6 +277,9 @@ code = [
   "deploy/udev/99-jasper-aec-reconcile.rules",
   "scripts/xvf-interrogate.sh",
   "jasper/audio_resources/audio_validation_artifacts.py",
+  "jasper/audio_control/audio_validation_hardware_checks.py",
+  "jasper/audio_control/audio_validation_probes.py",
+  "jasper/audio_control/audio_validation_readiness.py",
 ]
 docs = [
   # Current truth for this subsystem: the reference/transport contract and the
@@ -324,7 +327,7 @@ safety = "audio-output-risk"
 code = [
   "jasper/control/state_aggregate.py",
   "jasper/volume_*.py",
-  "jasper/volume_coordinator.py",
+  "jasper/audio_control/volume_coordinator.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
   "jasper/camilla_stereo_prefix.py",
@@ -347,6 +350,16 @@ code = [
   "jasper/device_probe/bluealsa_probe.py",
   "jasper/audio_resources/volume_owner.py",
   "jasper/service_state/volume_persistence.py",
+  "jasper/audio_control/volume_carrier.py",
+  "jasper/audio_control/volume_echo.py",
+  "jasper/audio_control/volume_handoff.py",
+  "jasper/audio_control/volume_measurement_gate.py",
+  "jasper/audio_control/volume_observers.py",
+  "jasper/audio_control/volume_process.py",
+  "jasper/audio_control/volume_push_sources.py",
+  "jasper/audio_control/volume_reconcile.py",
+  "jasper/audio_control/volume_scales.py",
+  "jasper/audio_control/volume_state.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -499,9 +512,9 @@ docs = [
 id = "audio-latency-lean-lane"
 safety = "boot-risk"
 code = [
-  "jasper/audio_runtime_plan.py",
+  "jasper/audio_control/audio_runtime_plan.py",
   "jasper/service_state/audio_runtime_settings.py",
-  "jasper/transport_coherence.py",
+  "jasper/audio_control/transport_coherence.py",
   "jasper/mux.py",
   "jasper/dsp_control/camilla_config_contract.py",
   "jasper/dsp_control/camilla_latency.py",
@@ -733,7 +746,7 @@ safety = "boot-risk"
 code = [
   "jasper/_oom_adj.py",
   "jasper/watchdog.py",
-  "jasper/debug_mode.py",
+  "jasper/audio_control/debug_mode.py",
   "jasper/flight_recorder.py",
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",

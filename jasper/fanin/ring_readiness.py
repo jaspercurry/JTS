@@ -19,7 +19,7 @@ gate's own docstring owns why.
 A ``# lazy: import cost`` below defers :mod:`jasper.active_speaker` or
 :mod:`jasper.output_topology` unless its own note names another tree.
 ``tests/test_audio_runtime_plan.py`` pins those two out of
-:mod:`jasper.audio_runtime_plan`'s import closure, which reaches this module
+:mod:`jasper.audio_control.audio_runtime_plan`'s import closure, which reaches this module
 at module scope (ADR-0226).
 """
 
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.dsp_control import fanin_coupling
-from jasper import ring_assets
+from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.dsp_control.camilla_config_contract import (
@@ -567,7 +567,7 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     armed-skip exists to avoid. The installer records the sha and capability set
     of the ``.so`` it installed (``deploy/lib/install/ring-platform.sh``) and
     this compares that record against the resolved wire's needs — see
-    :func:`jasper.ring_assets.ring_ioplug_wire_supported`.
+    :func:`jasper.audio_control.ring_assets.ring_ioplug_wire_supported`.
 
     THE WALK IT CLOSES. The ioplug build degrades to a WARN, so a failed rebuild
     leaves the PREVIOUS ``.so`` installed beside freshly-installed Rust daemons.
@@ -594,7 +594,7 @@ def ring_assets_ready() -> tuple[bool, str]:
     retaining applied changes (ADR-0100).
 
     Presence-only; the doctor owns the deep open-probe, and
-    ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
+    ``jasper.audio_control.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
     """
     presence = ring_assets.ring_asset_presence()
     if presence.all_present:

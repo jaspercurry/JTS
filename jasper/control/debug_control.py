@@ -5,7 +5,7 @@
 """Control-side orchestration for the runtime debug-logging toggle.
 
 ``jasper-control`` owns the *write* side of the debug toggle (the read
-+ pure helpers live in :mod:`jasper.debug_mode`). Responsibilities:
++ pure helpers live in :mod:`jasper.audio_control.debug_mode`). Responsibilities:
 
 * persist a toggle to ``/var/lib/jasper/debug.env`` (atomic rewrite,
   preserving other keys — same idiom as the AEC-leg toggle);
@@ -32,9 +32,9 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from .. import debug_mode
+from jasper.audio_control import debug_mode
 from ..atomic_io import locked_update_env_file
-from ..debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
+from jasper.audio_control.debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
 from ..env_file import read_env_file
 from .. import systemd_probe
 from . import restart_broker

@@ -18,7 +18,7 @@ import pytest
 from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S
 
 from jasper.control.server import _make_handler
-from jasper.volume_state import VolumeState
+from jasper.audio_control.volume_state import VolumeState
 from jasper.output_topology_store import save_output_topology
 
 def _recording_popen(calls: list[list[str]]):

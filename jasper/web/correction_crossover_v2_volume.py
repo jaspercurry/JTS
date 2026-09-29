@@ -71,7 +71,7 @@ def _session_volume_read(camilla_factory: Any) -> Callable[[], Any]:
     Reads never were the exception, and both survivors are reads: the
     capture-time hold, and :func:`_volume_door`'s physical snapshot.
     """
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
 
     async def _get() -> float | None:
         try:

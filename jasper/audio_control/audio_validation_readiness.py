@@ -13,19 +13,19 @@ from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
 from jasper.runtime_config.audio_profile_state import RuntimeAecEnv
-from .chip_aec.policy import (
+from jasper.chip_aec.policy import (
     APPROVED_DAC_IDS,
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
-from .env_load import parse_env_file
-from .service_units import (
+from jasper.env_load import parse_env_file
+from jasper.service_units import (
     AEC_BRIDGE_SERVICE,
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
 )
 from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
-from .audio_validation_probes import _env_path
+from jasper.audio_control.audio_validation_probes import _env_path
 
 
 DEFAULT_CHIP_WAKE_LEGS = ("on",)

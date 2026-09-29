@@ -6,7 +6,7 @@
 
 import json
 
-from jasper import audio_runtime_plan
+from jasper.audio_control import audio_runtime_plan
 from jasper.cli.doctor import _evidence, audio_runtime_fanin, audio_runtime_outputd
 from jasper.cli.doctor._evidence import evidence
 

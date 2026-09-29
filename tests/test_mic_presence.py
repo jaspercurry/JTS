@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.mic_presence import (
+from jasper.audio_control.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_GENERIC_DETAIL,
     MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
@@ -253,7 +253,7 @@ def test_unreadable_accessory_file_never_raises_from_the_display_reader(
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(
-        "jasper.mic_presence.read_accessory_mic_sources", _boom,
+        "jasper.audio_control.mic_presence.read_accessory_mic_sources", _boom,
     )
     mp = read_mic_presence()
     assert mp.accessory_sources == ()

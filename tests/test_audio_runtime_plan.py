@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 
 from jasper.service_state import audio_runtime_settings as audio_settings
-from jasper import audio_runtime_plan as audio_plan
-from jasper import transport_coherence
+from jasper.audio_control import audio_runtime_plan as audio_plan
+from jasper.audio_control import transport_coherence
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     HIFIBERRY_DAC8X_ID,
@@ -27,7 +27,7 @@ from jasper.service_state.audio_runtime_settings import (
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
 )
-from jasper.audio_runtime_plan import (
+from jasper.audio_control.audio_runtime_plan import (
     ROUTE_POLICY_OUTPUTD_OFF_RING,
     apply_capture_precedence,
     build_audio_runtime_plan,
@@ -39,7 +39,7 @@ from jasper.audio_runtime_plan import (
     route_owned_env_actions,
     validate_outputd_env,
 )
-from jasper.transport_coherence import (
+from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )
@@ -174,7 +174,7 @@ def test_audio_runtime_plan_import_does_not_load_runtime_contract():
         [
             sys.executable,
             "-c",
-            "import sys, jasper.audio_runtime_plan; "
+            "import sys, jasper.audio_control.audio_runtime_plan; "
             f"print([m for m in {heavy!r} if m in sys.modules])",
         ],
         capture_output=True,
@@ -1125,7 +1125,7 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
     import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
-        "jasper.transport_coherence.resolve_ring_wire",
+        "jasper.audio_control.transport_coherence.resolve_ring_wire",
         lambda topology=None: fc.RingWire(
             sample_format="S32_LE",
             ring_a_channels=2,

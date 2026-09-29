@@ -97,7 +97,7 @@ def wizard_harness_fixture(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_claim_crossover_state_owners", lambda: None
     )
-    from jasper import volume_process
+    from jasper.audio_control import volume_process
 
     monkeypatch.setattr(
         volume_process,

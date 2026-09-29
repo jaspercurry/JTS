@@ -470,7 +470,7 @@ def test_the_installer_ships_the_dac_content_confd():
     can read is a name the non-root renderer users cannot resolve. Asserting the
     install LINE rather than a doctor presence check is the sibling precedent —
     ``62-jts-ring-grouping.conf`` is covered exactly this way, and
-    :func:`jasper.ring_assets.ring_asset_presence`
+    :func:`jasper.audio_control.ring_assets.ring_asset_presence`
     deliberately stays scoped to the coupling's own conf.d because it is the
     shm_ring ACTIVATION gate: a missing conf.d here must not refuse the fan-in
     coupling's arm.

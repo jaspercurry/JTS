@@ -295,7 +295,7 @@ def is_active_speaker_box() -> bool:
 def box_outputd_period_frames() -> int | None:
     """The outputd period THIS box will LOAD, or ``None`` if unresolved.
 
-    :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
+    :func:`jasper.audio_control.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
     plan's policy resolver: the slot gate has to match the value outputd's own
     ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
     and the two differ exactly where guessing is fatal (a DAC floor of 128 with
@@ -309,7 +309,7 @@ def box_outputd_period_frames() -> int | None:
     Lazy import: same ADR-0226 import-cost tree as the topology probes above.
     """
     try:
-        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
+        from jasper.audio_control.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
 
         return outputd_period_frames_as_loaded()
     except Exception as e:  # noqa: BLE001 - an unresolved period must not raise

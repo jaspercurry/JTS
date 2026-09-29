@@ -53,7 +53,7 @@ def _transport_state(
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
     """
-    from ..transport_coherence import transport_coherence_report  # lazy: import cost, keeps route assembly off control startup
+    from jasper.audio_control.transport_coherence import transport_coherence_report  # lazy: import cost, keeps route assembly off control startup
 
     report = transport_coherence_report(
         outputd_env=dict(outputd_env),
@@ -124,7 +124,7 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     mixes these contradictions with USB low-latency route-policy errors, and a
     policy error is not a reason to tell a household its speaker is parked.
     """
-    from ..audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
+    from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
 
     evidence = output_endpoint_evidence_from_statefiles(
         paths.camilla_statefile(), paths.crossover_statefile()
@@ -153,7 +153,7 @@ def read_route_claim() -> dict[str, Any]:
     live audio probe, so it runs on the slow cadence.
     """
     try:
-        from ..audio_runtime_plan import build_audio_runtime_plan_from_system  # lazy: import cost, keeps route assembly off control startup
+        from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan_from_system  # lazy: import cost, keeps route assembly off control startup
 
         plan = build_audio_runtime_plan_from_system()
         profile = plan.route_profile

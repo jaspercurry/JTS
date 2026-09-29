@@ -87,7 +87,7 @@ def test_grouping_config_is_read_once_per_registry_run(
 
     monkeypatch.setattr(mr_config, "load_config", counting_load_config)
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.build_audio_runtime_plan_from_system",
+        "jasper.audio_control.audio_runtime_plan.build_audio_runtime_plan_from_system",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(_harness, "read_install_profile", lambda: install_profile)

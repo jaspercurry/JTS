@@ -75,7 +75,7 @@ _SOUND_SETTINGS_FIELDS = frozenset({
 
 
 def _camilla():
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 
@@ -384,8 +384,8 @@ async def _reconcile_volume_curve_after_settings(
     (ADR-0368).
     """
     from jasper.playback_state import librespot_state
-    from jasper.renderer import RendererClient
-    from jasper.volume_coordinator import VolumeCoordinator
+    from jasper.audio_control.renderer import RendererClient
+    from jasper.audio_control.volume_coordinator import VolumeCoordinator
     from jasper.service_state.volume_persistence import VolumePersistence
     from jasper.service_state.volume_persistence import configured_path as volume_state_path
 

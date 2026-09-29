@@ -307,7 +307,7 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
     from jasper.active_speaker.crossover_v2.composition import (
         bind_program_playback_seams,
     )
-    from jasper.camilla import CamillaConfigRejected
+    from jasper.audio_control.camilla import CamillaConfigRejected
 
     calls: list = []
 

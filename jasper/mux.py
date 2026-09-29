@@ -92,7 +92,7 @@ from jasper.log_event import log_event
 from jasper.playback_state import librespot_state, mux_mode_persistence
 from jasper.playback_state.airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
-from .camilla import primary_controller
+from jasper.audio_control.camilla import primary_controller
 from .control import restart_broker
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from jasper.playback_state.music_sources import (
@@ -107,7 +107,7 @@ from .platform.status_socket import (
     MUX_CONTROL_SOCKET_PATH,
 )
 from .platform.uds import fanin_command, local_status_json
-from .renderer import RendererClient
+from jasper.audio_control.renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
 from jasper.service_state.source_events import start_source_event_tasks
 from jasper.playback_state.source_state import (
@@ -118,7 +118,7 @@ from jasper.playback_state.source_state import (
 )
 from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
 from jasper.service_state.spotify_router import build_router
-from .volume_coordinator import build_volume_coordinator
+from jasper.audio_control.volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)

@@ -6,9 +6,9 @@
 
 **Why this module exists.** CamillaDSP never echoes the config file back. Both
 ``GetConfig`` (the running-graph readback behind
-:meth:`jasper.camilla.CamillaController.get_active_config_raw`) and
+:meth:`jasper.audio_control.camilla.CamillaController.get_active_config_raw`) and
 ``ReadConfig`` (the canonicalizer behind
-:meth:`jasper.camilla.CamillaController.normalize_config_raw`) return
+:meth:`jasper.audio_control.camilla.CamillaController.normalize_config_raw`) return
 CamillaDSP's OWN serialization, in which every key the file leaves out is
 present and explicit. JTS's emitters leave those keys out.
 

@@ -16,15 +16,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from .atomic_io import flock_held
+from jasper.atomic_io import flock_held
 from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
     VolumeLimitViolation,
     check_volume_limit,
 )
-from .camilla_emit import DEFAULT_VOLUME_LIMIT_DB
-from .log_event import log_event
-from .volume_latch import (
+from jasper.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
+from jasper.log_event import log_event
+from jasper.volume_latch import (
     READBACK_TOLERANCE_DB,
     duck_release_target_db,
     fader_matches,
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 # time. (Production code instantiates CamillaController in voice_daemon /
 # web setup / control server; tests use fakes.)
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.camilla")
 
 MIN_MAIN_VOLUME_DB = -150.0
 MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
@@ -831,7 +831,7 @@ class CamillaController:
 
     def _graph_replaced(self) -> None:
         if (self._host, self._port) == _primary_endpoint():
-            from .active_speaker.audition_claim import graph_replaced  # lazy: import cost (keeps active_speaker out of every camilla importer)
+            from jasper.active_speaker.audition_claim import graph_replaced  # lazy: import cost (keeps active_speaker out of every camilla importer)
 
             graph_replaced()
 

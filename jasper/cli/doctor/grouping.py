@@ -338,7 +338,7 @@ def check_grouping_ring_device() -> CheckResult:
                bonded box.
     """
     from ...multiroom.grouping_ring import GROUPING_RING_CONF_D, GROUPING_RING_PCM
-    from ...ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
+    from jasper.audio_control.ring_assets import RING_ALSA_PLUGIN_DIR, RING_IOPLUG_SO
 
     label = "grouping ring device"
     if not Path(GROUPING_RING_CONF_D).is_file():

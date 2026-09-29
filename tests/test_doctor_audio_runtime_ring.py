@@ -69,7 +69,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     finding had been dropped altogether, which is the failure this whole wave is
     supposed to avoid — so the FAIL is asserted in the same test.
     """
-    from jasper.audio_runtime_plan import (
+    from jasper.audio_control.audio_runtime_plan import (
         output_endpoint_evidence_from_statefiles as _real_endpoint_evidence,
     )
     from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
@@ -119,7 +119,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     # payload, and fatal for this one, whose subject IS the evidence resolution.
     # Put the real reader back so both halves resolve the statefiles above.
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         _real_endpoint_evidence,
     )
 
@@ -1251,7 +1251,7 @@ def _absent_other_rings(monkeypatch, tmp_path):
     fan-in witness, set separately per test) can produce a verdict. The
     grouping ring's own real default path is already absent on every dev/test
     host, so it needs no stand-in here."""
-    import jasper.ring_assets as ring_assets
+    import jasper.audio_control.ring_assets as ring_assets
 
     for attr in ("RING_B_CONTENT_FILE", "RING_ACTIVE_CONTENT_FILE"):
         monkeypatch.setattr(ring_assets, attr, str(tmp_path / f"absent-{attr}"))
@@ -1262,7 +1262,7 @@ def test_ring_reader_stall_warns_on_ring_a_header_stall(monkeypatch, tmp_path):
     `stall_active` flag is not consulted."""
     import time
 
-    import jasper.ring_assets as ring_assets
+    import jasper.audio_control.ring_assets as ring_assets
 
     _absent_other_rings(monkeypatch, tmp_path)
     real_now = time.monotonic_ns()
@@ -1314,7 +1314,7 @@ def test_ring_reader_stall_without_a_ring_a_header(
     existing header-only behavior stands (see test_ring_stall_alarm.py's
     unarmed-box pin).
     """
-    import jasper.ring_assets as ring_assets
+    import jasper.audio_control.ring_assets as ring_assets
 
     _absent_other_rings(monkeypatch, tmp_path)
     monkeypatch.setattr(

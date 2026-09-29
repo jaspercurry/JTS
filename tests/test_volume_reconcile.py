@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.volume_reconcile, driven through VolumeCoordinator."""
+"""Tests for jasper.audio_control.volume_reconcile, driven through VolumeCoordinator."""
 from __future__ import annotations
 
 import asyncio
@@ -23,16 +23,16 @@ from tests.volume_coordinator_fixtures import (
 )
 
 from jasper.atomic_io import advisory_file_lock
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import camilla_graph_mutation
 from jasper.playback_state.music_sources import Source
 from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
-from jasper.volume_observers import VolumeObserver
+from jasper.audio_control.volume_observers import VolumeObserver
 from jasper.service_state.volume_persistence import VolumePersistence
 
 

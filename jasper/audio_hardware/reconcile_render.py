@@ -123,7 +123,7 @@ def render_ring_conf_if_needed(run: Pass) -> None:
     Triggers NO restart and feeds no restart flag: ALSA reads the conf.d at
     the next PCM open, and arming is owned by the coupling reconciler.
     """
-    from jasper.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
+    from jasper.audio_control.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
 
     if not run.output_dac_recognized:
         run.log("ring_conf", result="skipped", reason="dac_unrecognized")

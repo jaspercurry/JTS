@@ -31,7 +31,7 @@ from jasper.volume_latch import fader_matches
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
-from jasper.camilla import (
+from jasper.audio_control.camilla import (
     MAIN_VOLUME_RAMP_SETTLE_S,
     declare_main_volume_db,
     read_main_volume_db,
@@ -76,7 +76,7 @@ from jasper.env_load import merged_env_files
 from jasper.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.logging_setup import configure_logging
-from jasper.volume_process import install_env_canonical_target_provider
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from jasper.service_units import (
     AEC_BRIDGE_SERVICE,
     AEC_RECONCILE_SERVICE,

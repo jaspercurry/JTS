@@ -57,7 +57,7 @@ from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
 from jasper.active_speaker.environment import read_camilla_statefile_config_path
-from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
+from jasper.audio_control.camilla import CamillaConfigRejected, CamillaUnavailable
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.sound.profile import SoundProfile, save_profile
 from jasper.sound.runtime import reconcile_current_dsp

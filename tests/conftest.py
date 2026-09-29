@@ -246,7 +246,7 @@ def _isolate_host_state_paths(tmp_path_factory, monkeypatch):
 def _isolate_canonical_target_provider():
     """Reset the process-global canonical main_volume target around each test.
 
-    ``jasper.camilla.set_canonical_target_db_provider`` is per process by
+    ``jasper.audio_control.camilla.set_canonical_target_db_provider`` is per process by
     design: a graph swap's duck release runs on ad-hoc ``primary_controller()``
     instances that no ``VolumeCoordinator`` ever sees, so the target is
     registered once per daemon rather than passed down. A test process has no
@@ -261,7 +261,7 @@ def _isolate_canonical_target_provider():
     Both sides matter, as with the width cache above: clearing BEFORE stops a
     test inheriting a provider, restoring AFTER stops it handing one forward.
     """
-    from jasper import camilla
+    from jasper.audio_control import camilla
 
     saved = camilla._canonical_target_db_provider
     camilla.set_canonical_target_db_provider(None)

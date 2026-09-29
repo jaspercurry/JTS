@@ -521,7 +521,7 @@ def check_usbsink_low_latency_contract() -> CheckResult:
             reason=REASON_LOW_LATENCY_NOT_APPLICABLE,
         )
 
-    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+    from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = evidence.get("audio_runtime_plan", build_audio_runtime_plan_from_system)
     if not plan.route_profile.low_latency_claim:

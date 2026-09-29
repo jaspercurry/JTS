@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-import jasper.camilla as camilla_module
-from jasper.camilla import (
+import jasper.audio_control.camilla as camilla_module
+from jasper.audio_control.camilla import (
     CAMILLA_ATTEMPT_BUDGET_S,
     CAMILLA_FAILURE_MEMORY_S,
     CAMILLA_OPERATION_TIMEOUT_S,
@@ -881,7 +881,7 @@ async def test_call_classifies_config_validation_error_as_config_rejected(monkey
     ``test_wall_budget_aborts_each_attempt_and_bounds_retry`` does above."""
     from camilladsp.exceptions import ConfigValidationError
 
-    from jasper.camilla import CamillaConfigRejected
+    from jasper.audio_control.camilla import CamillaConfigRejected
 
     controller = CamillaController("127.0.0.1", 1234)
     monkeypatch.setattr(controller, "_ensure", lambda _cancelled=None: object())
@@ -902,7 +902,7 @@ async def test_call_still_raises_bare_camilla_unavailable_for_other_errors(monke
     """The new classification is SPECIFIC to ConfigValidationError -- an
     unrelated failure (e.g. a genuinely unreachable daemon) still raises the
     bare CamillaUnavailable, not the config-rejected subclass."""
-    from jasper.camilla import CamillaConfigRejected
+    from jasper.audio_control.camilla import CamillaConfigRejected
 
     controller = CamillaController("127.0.0.1", 1234)
     monkeypatch.setattr(controller, "_ensure", lambda _cancelled=None: object())
@@ -1232,7 +1232,7 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
     """
 
     source = (
-        Path(__file__).resolve().parent.parent / "jasper" / "camilla.py"
+        Path(__file__).resolve().parent.parent / "jasper" / "audio_control" / "camilla.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
 
@@ -1241,7 +1241,7 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
             assert not any(
                 alias.name == "camilla_graph_mutation" for alias in node.names
             ), (
-                "jasper/camilla.py must not import camilla_graph_mutation at "
+                "jasper/audio_control/camilla.py must not import camilla_graph_mutation at "
                 "module scope — an alias would hide it from the body check "
                 "below, and every method that legitimately takes the lock "
                 "imports it locally"
@@ -1269,7 +1269,7 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
             )
             break
     else:  # pragma: no cover - the method exists
-        raise AssertionError("normalize_config_raw not found in jasper/camilla.py")
+        raise AssertionError("normalize_config_raw not found in jasper/audio_control/camilla.py")
 
 
 async def test_failed_duck_release_logs_a_named_event(

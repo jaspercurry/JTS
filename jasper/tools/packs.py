@@ -49,10 +49,10 @@ if TYPE_CHECKING:
     from jasper.service_state.google_creds import GoogleClients
     from ..google_routes import GoogleRoutesClient
     from jasper.service_state.home_assistant import HAClient
-    from ..renderer import RendererClient
+    from jasper.audio_control.renderer import RendererClient
     from jasper.service_state.spotify_router import Router
     from jasper.service_state.timers import TimerScheduler
-    from ..volume_coordinator import VolumeCoordinator
+    from jasper.audio_control.volume_coordinator import VolumeCoordinator
     from jasper.service_state.wake_events import WakeEventStore
     from jasper.service_state.weather import WeatherClient
     from . import Tool, ToolRegistry, UntrustedContentMonitor

@@ -115,7 +115,7 @@ _GRAPH_SWAP_MODULES = {
     # requirement — one module swapped for another, not a new host.
     "jasper/active_speaker/crossover_v2/session_graph.py",
     "jasper/active_speaker/runtime_convergence.py",
-    "jasper/camilla.py",
+    "jasper/audio_control/camilla.py",
     "jasper/multiroom/active_leader_config.py",
     "jasper/multiroom/follower_config.py",
     "jasper/multiroom/leader_config.py",
@@ -195,9 +195,9 @@ def test_the_env_registration_installs_the_process_fader_owner() -> None:
     writers that have no coordinator to be injected from. Making it one call is
     what keeps every existing call site correct with no edit of its own.
     """
-    from jasper import camilla
+    from jasper.audio_control import camilla
     from jasper.audio_resources import volume_owner
-    from jasper.volume_process import install_env_canonical_target_provider
+    from jasper.audio_control.volume_process import install_env_canonical_target_provider
 
     assert volume_owner.volume_owner() is None
 

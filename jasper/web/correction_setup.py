@@ -47,7 +47,7 @@ from urllib.parse import parse_qs, urlparse
 
 
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
-from jasper.volume_process import install_env_canonical_target_provider
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 
 from ..log_event import log_event
 from ..logging_setup import configure_logging
@@ -708,7 +708,7 @@ def _claim_crossover_state_owners() -> None:
                 level=logging.ERROR,
                 reason=type(exc).__name__,
             )
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
 
     try:
         correction_runtime.run_async(_restore_protected_neutral_program_graph(), timeout=15.0)

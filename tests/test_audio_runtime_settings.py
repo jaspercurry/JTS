@@ -31,7 +31,7 @@ from jasper.service_state.audio_runtime_settings import (
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
 )
-from jasper.audio_runtime_plan import build_audio_runtime_plan
+from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan
 from jasper.dsp_control.camilla_config_contract import DEFAULT_TARGET_LEVEL
 
 

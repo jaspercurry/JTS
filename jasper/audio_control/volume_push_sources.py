@@ -15,10 +15,10 @@ import logging
 from functools import partial
 from typing import TYPE_CHECKING
 
-from . import busctl
+from jasper import busctl
 from jasper.device_probe.bluealsa_probe import active_transport_path
 from jasper.service_state.spotify_router import DEVICES_TIMEOUT_SEC
-from .volume_scales import (
+from jasper.audio_control.volume_scales import (
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
 )
@@ -26,7 +26,7 @@ from .volume_scales import (
 if TYPE_CHECKING:
     from jasper.service_state.spotify_router import Router
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_push_sources")
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 

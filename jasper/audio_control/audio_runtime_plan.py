@@ -100,7 +100,7 @@ from jasper.dsp_control.fanin_coupling import (
 from jasper.multiroom import config as grouping_config
 from jasper.output_hardware import load_state as load_output_hardware_state
 from jasper.json_fields import json_fingerprint, sha256_file
-from jasper.transport_coherence import (
+from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )

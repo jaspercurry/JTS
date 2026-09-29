@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from jasper.volume_carrier import CamillaCarrier
+from jasper.audio_control.volume_carrier import CamillaCarrier
 from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.web import volume_floor_tone
 

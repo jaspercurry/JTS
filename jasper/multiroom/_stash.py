@@ -18,8 +18,8 @@ from .. import atomic_io
 
 
 def camilla():
-    """Return camilla#1 (jasper.camilla.primary_controller)."""
-    from jasper.camilla import primary_controller
+    """Return camilla#1 (jasper.audio_control.camilla.primary_controller)."""
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 

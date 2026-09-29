@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper import camilla
+from jasper.audio_control import camilla
 from jasper.dsp_control import dsp_apply
 from jasper.control import restart_broker
 from jasper.sound import runtime as sound_runtime

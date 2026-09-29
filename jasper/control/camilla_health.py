@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from jasper.camilla import CamillaController
+from jasper.audio_control.camilla import CamillaController
 from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
     read_camilla_devices_config,

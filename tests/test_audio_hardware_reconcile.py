@@ -31,10 +31,10 @@ from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
-from jasper import audio_runtime_plan
+from jasper.audio_control import audio_runtime_plan
 from jasper.dsp_control import ring_conf
 from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES, RingWire
-from jasper.ring_assets import ring_conf_wire_report
+from jasper.audio_control.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
 from tests.active_speaker_fixtures import driver_domain_graph
@@ -925,7 +925,7 @@ def test_a_candidate_refused_after_convergence_keeps_the_preliminary_env(
         "--reason",
         "test",
         initial_outputd_env="JASPER_OUTPUTD_BACKEND=stale\n",
-        patches={"jasper.audio_runtime_plan.validate_outputd_env": accept_then_refuse},
+        patches={"jasper.audio_control.audio_runtime_plan.validate_outputd_env": accept_then_refuse},
     )
 
     assert result.returncode == 78, result.stderr
@@ -1506,7 +1506,7 @@ def _lane_less_registry():
 
 
 #: The lane-cap probe has TWO names: the dac module's, and the module-scope
-#: from-import in jasper/audio_runtime_plan.py that the pass reaches lazily.
+#: from-import in jasper/audio_control/audio_runtime_plan.py that the pass reaches lazily.
 #: Patch both, and import that module ABOVE any patch — a first import taken
 #: while the dac copy is a raising stub binds the stub for the whole session.
 _LANE_CAP_TARGETS = (
@@ -2287,7 +2287,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
             # The staged validator refuses this pair against a live ring graph,
             # which is its own job and its own pin. Out of the frame here so the
             # candidate the WRITER produced reaches disk to be read back.
-            "jasper.audio_runtime_plan.validate_outputd_env":
+            "jasper.audio_control.audio_runtime_plan.validate_outputd_env":
                 lambda **_kwargs: (True, ()),
         },
     )
@@ -2953,7 +2953,7 @@ _FLOOR_KEYS = (
 _DROPPED_CAMILLA_KEYS = ("JASPER_CAMILLA_CHUNKSIZE", "JASPER_CAMILLA_TARGET_LEVEL")
 
 _FLOOR_PLAN_PROBE_FAILS = {
-    "jasper.audio_runtime_plan.outputd_floor_plan": _raises(RuntimeError("gone"))
+    "jasper.audio_control.audio_runtime_plan.outputd_floor_plan": _raises(RuntimeError("gone"))
 }
 
 
@@ -3242,7 +3242,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     run.outputd_env_stage = str(tmp_path / "candidate.env")
     with (
         mock.patch(
-            "jasper.audio_runtime_plan.validate_outputd_env",
+            "jasper.audio_control.audio_runtime_plan.validate_outputd_env",
             lambda **_kwargs: (True, (out.strip(),)),
         ),
         _captured_events() as events,
@@ -3309,7 +3309,7 @@ def declare_slot_floor(monkeypatch):
             outputd_dac_buffer_frames=8 * period_frames,
         )
         monkeypatch.setattr(
-            "jasper.ring_assets.latency_floor_for",
+            "jasper.audio_control.ring_assets.latency_floor_for",
             lambda profile_id: floor if profile_id == "hifiberry_dac8x" else None,
         )
 
@@ -3704,7 +3704,7 @@ _LANE_CAP_ANSWERS_FOUR = _lane_cap(lambda _id: 4)
 _PROBE_FAILURES = {
     "observe": ({"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))}, 0),
     "outputd_env_validator": (
-        {"jasper.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
+        {"jasper.audio_control.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
         78,
     ),
     "active_graph_decision": (
@@ -3720,7 +3720,7 @@ _PROBE_FAILURES = {
     "edge_format": (_EDGE_FORMAT_PROBE_FAILS, 0),
     "content_format": (_CONTENT_FORMAT_PROBE_FAILS, 0),
     "route_plan": (
-        {"jasper.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
+        {"jasper.audio_control.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
         0,
     ),
     "latency_floor": (_FLOOR_PLAN_PROBE_FAILS, 0),

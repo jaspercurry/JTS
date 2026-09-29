@@ -354,13 +354,13 @@ STATUS_PATH_CONSUMERS: dict[str, dict[str, str]] = {
     # Its fan-in half is NOT a root: `current["fanin"]` is the AirPlay
     # sampler's normalized model, not what jasper-fanin emitted.
     "jasper/control/audio_health.py": {"outputd": "outputd"},
-    "jasper/audio_validation_probes.py": {
+    "jasper/audio_control/audio_validation_probes.py": {
         "outputd_status": "outputd",
     },
-    "jasper/audio_validation_readiness.py": {
+    "jasper/audio_control/audio_validation_readiness.py": {
         "outputd_status": "outputd",
     },
-    "jasper/audio_validation_hardware_checks.py": {
+    "jasper/audio_control/audio_validation_hardware_checks.py": {
         "outputd_status": "outputd",
     },
     "jasper/cli/doctor/audio_runtime_fanin.py": {"evidence.fanin_status": "fanin"},
@@ -390,7 +390,7 @@ STATUS_PATH_EXCEPTIONS: dict[tuple[str, str], str] = {
     # outputd emits `dac.pcm` but never `dac.card`; `_dac_details` falls
     # through to JASPER_AUDIO_DAC_CARD, so the read is dead rather than
     # broken. REMOVAL CONDITION: goes when the dead read goes.
-    ("jasper/audio_validation_probes.py", "dac.card"): "always-None read; env fallback owns the value",
+    ("jasper/audio_control/audio_validation_probes.py", "dac.card"): "always-None read; env fallback owns the value",
 }
 
 
