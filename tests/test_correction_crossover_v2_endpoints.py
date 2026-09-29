@@ -835,8 +835,9 @@ def test_prepare_refuses_when_volume_needs_recovery():
     assert correction_runtime.refusal_envelope(excinfo.value)["next_action"]["id"] == "recover_volume"
 
 
-@pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
-def test_session_requires_an_inline_v3_plan(body):
+@pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}},
+                                  {"request": {"layouts": "seat_cloud"}}, {"request": {}, "plan": {}}])
+def test_session_requires_a_request_or_an_inline_plan(body):
     from jasper.web.correction_runtime import refusal_envelope
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)

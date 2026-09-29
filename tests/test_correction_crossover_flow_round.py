@@ -37,10 +37,10 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     planned = []
     preview = plan_run.preview_schedule
     monkeypatch.setattr(plan_run, "preview_schedule", lambda request, *args: (
-        planned.append(request.program), preview(request, *args))[1])
+        planned.append((request.program, request.layout, len(request.stops))), preview(request, *args))[1])
     visible = [(preset_id, layout) for preset_id in available_presets() for layout in run_preset(preset_id).layouts]
     choices = measurement_view.round_choices({}, "room/seat@seat_cube")
-    assert planned == ["room/seat"]
+    assert planned == [("room/seat", "seat_cube", 7)]
     assert [c["id"] for c in choices] == [
         preset if layout == run_preset(preset).layout else f"{preset}@{layout}" for preset, layout in visible]
     assert sum("lines" in c for c in choices) == 1
@@ -49,8 +49,7 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
               for row in (run_preset(preset, layout) for preset, layout in visible)]
     assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
     selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
-    plan = selected["action"]["body"]["plan"]
-    assert (plan["program"], plan["layout"], len(plan["stops"])) == ("room/seat", "seat_cube", 7)
+    assert selected["action"]["body"] == {"request": {"program": "room/seat", "layout": "seat_cube"}}
 
 
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):

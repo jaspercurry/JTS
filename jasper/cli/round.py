@@ -407,13 +407,16 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
     presets = ", ".join(available_presets())
     run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")
-    run.add_argument("--plan", help="v5 plan document; used without plan-building flags")
+    source = run.add_mutually_exclusive_group()
+    source.add_argument("--plan", help="v5 plan document; used without plan-building flags")
+    source.add_argument("--request", help="the run as a JSON object keyed by the plan-building flags' names "
+                        "(program, layout, poses, driver, candidates, repeats, mover, level_db); used without them")
     run.set_defaults(func=_cmd_run)
     trial_help = ("Test a banked candidate with the program its document states; --mover picks that program's "
                   "layout the mover can walk.")
     trial = sub.add_parser("trial", parents=[run_args], help=trial_help, description=trial_help)
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
-    trial.set_defaults(func=_cmd_trial, plan=None)
+    trial.set_defaults(func=_cmd_trial, plan=None, request=None)
     for verb, function, help_line in (
         ("placed", _cmd_placed, "Confirm microphone placement at the pending pose."),
         ("stop", _cmd_stop, "Stop the current run."),
