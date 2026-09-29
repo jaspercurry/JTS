@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.json_fields import as_mapping
 
@@ -35,6 +36,7 @@ from ..journey import PHASE_ENTRY_BASELINE
 from ..operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 from ..prescription_contract import (
     CONTRACT_COMMAND,
+    SECTIONS,
     contract_digests,
     contract_programs,
     prescription_contracts,
@@ -553,11 +555,20 @@ def build_crossover_evidence_packet(
 
 
 def _contract_digests(inputs: RoundInputs, round_dir: Path, draft: Mapping[str, Any],
-                      applied_profile: dict[str, Any] | None) -> dict[str, str]:
+                      applied_profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Each contract section's digest. A section the round's banked candidate refuses is a gap
+    with that refusal's code, so the packet still builds from banked inputs (ADR-0371)."""
     receipt, _ = read_json(round_dir / "round_receipt.json")
     sources = {**contract_sources(inputs), "draft": draft, "receipt": as_mapping(receipt),
                "applied_profile": applied_profile or {}}
-    return contract_digests(prescription_contracts(programs=contract_programs(sources), **sources))
+    programs = contract_programs(sources)
+    digests: dict[str, Any] = {}
+    for name in (section for section in SECTIONS if section in programs):
+        try:
+            digests.update(contract_digests(prescription_contracts(programs=(name,), **sources)))
+        except MeasuredCrossoverCandidateError as exc:
+            digests[name] = absence(exc.code, False, "candidate.json")
+    return digests
 
 
 def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:

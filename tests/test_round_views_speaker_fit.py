@@ -33,7 +33,7 @@ from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary, LinearizationFilter, complex_correction_response, core_level_band_hz, fit_driver_linearization, measurement_hole_bands_hz,
 )
-from jasper.active_speaker.profile import CrossoverRegion
+from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion, required_driver_roles
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
@@ -45,17 +45,33 @@ from jasper.audio_measurement.program_analysis import (
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
+from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
 from jasper.active_speaker.round_packet import _fits, write_round_packet
 from jasper.active_speaker.speaker_fit import _fit_vocabularies, design_clouds, fit_feature_curves, speaker_fit
-from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, compile_candidate_config
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from tests.crossover_v2_fixtures import _fixture_applied_profile
+from tests.crossover_v2_fixtures import _fixture_applied_profile, _one_way_preset
+
+
+def _bank_candidate(directory: Path, analysis: dict, preset: ActiveSpeakerPreset | None = None, *,
+                    fc_hz: float = 2400) -> dict:
+    """The round's own ``candidate.json``: a candidate that reopens, on ``preset`` or else on a
+    two-way preset crossed at ``fc_hz``."""
+    if preset is None:
+        two_way = _two_way_preset()
+        two_way["crossover_regions"][0]["fc_hz"] = fc_hz
+        preset = ActiveSpeakerPreset.from_mapping(two_way)
+    trims = dict.fromkeys(required_driver_roles(preset.way_count), 0.0)
+    candidate = replace(_candidate(preset=preset, trims=trims), analysis=analysis).to_dict()
+    (directory / "candidate.json").write_text(json.dumps(candidate))
+    return candidate
 
 
 @pytest.fixture
@@ -98,21 +114,16 @@ def speaker_round(tmp_path):
     (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
         "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": cls} for role, cls in classes.items()],
     }}))
-    region = {"id": "pair", "lower_driver": "woofer", "upper_driver": "tweeter", "fc_hz": 2400, "order": 4}
-    (directory / "candidate.json").write_text(json.dumps({
-        "analysis": analysis_json(analysis), "source_preset": {"crossover_regions": [region]},
-    }))
+    region, = _bank_candidate(directory, analysis_json(analysis))["source_preset"]["crossover_regions"]
     group = manifest_set([(row.path, record)], set_id="speaker-set")
     group["capture_basis"].update(role="woofer")
     write_manifest(root, groups=[group])
     return root, record, program, classes, region
 
 
-@pytest.mark.parametrize("cloud_planned,cloud_present,post_apply_verifies", [
-    (False, False, True), (True, False, True), (True, True, True), (False, False, False),
-])
+@pytest.mark.parametrize("cloud_planned,post_apply_verifies", [(False, True), (True, True), (False, False)])
 def test_speaker_fit_matches_explicit_math_and_banked_decisions(
-    speaker_round, cloud_planned, cloud_present, post_apply_verifies, capsys,
+    speaker_round, cloud_planned, post_apply_verifies, capsys,
 ):
     root, record, program, classes, region = speaker_round
     inputs = round_inputs(root)
@@ -122,11 +133,6 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
     if cloud_planned:
         state["session_phases"].insert(1, "cloud_measure")
     inputs.state_path.write_text(json.dumps(state))
-    directory, _ = round_artifact_dir(inputs.session_dir)
-    candidate_path = directory / "candidate.json"
-    candidate = json.loads(candidate_path.read_text())
-    candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []} if cloud_present else {}
-    candidate_path.write_text(json.dumps(candidate))
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -171,16 +177,13 @@ def test_speaker_fit_matches_explicit_math_and_banked_decisions(
 
 
 @pytest.mark.parametrize("gain_db", [-6.0, float("nan")])
-@pytest.mark.parametrize("fc_hz", [2400, 200])
+@pytest.mark.parametrize("fc_hz", [2400, 400])
 def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, fc_hz, gain_db):
     root, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     manifest = json.loads((directory / "run_manifest.json").read_text())
-    candidate_path = directory / "candidate.json"
-    candidate = json.loads(candidate_path.read_text())
-    candidate["source_preset"]["crossover_regions"][0]["fc_hz"] = fc_hz
-    candidate_path.write_text(json.dumps(candidate))
+    _bank_candidate(directory, json.loads((directory / "candidate.json").read_text())["analysis"], fc_hz=fc_hz)
     original = fit_branches
 
     def one_wide_cut(*args, **kwargs):
@@ -200,7 +203,7 @@ def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, 
         json.dumps(result["linearization"], allow_nan=False)
         return
     assert woofer["handover_level_shift_db"] == pytest.approx(-6, abs=0.5)
-    if fc_hz == 200:
+    if fc_hz == 400:
         assert result["trim_decision"] == {"status": "unavailable", "reason": "handover_band_unmeasured"}
 
 
@@ -217,10 +220,8 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
         curve.update(magnitude_db=np.full_like(response.freqs_hz, level).tolist())
     raw_trim = {"woofer": 0, "tweeter": -10}
     banked_trim = {"woofer": min(0, 10 - cut_db), "tweeter": min(0, -10 + cut_db)}
-    candidate_path = directory / "candidate.json"
-    candidate = json.loads(candidate_path.read_text())
-    candidate["analysis"]["trim_db"] = banked_trim
-    candidate_path.write_text(json.dumps(candidate))
+    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
+    _bank_candidate(directory, {**analysis, "trim_db": banked_trim})
     manifest["sets"][0]["capture_basis"]["gating_applied"] = True
     manifest["sets"][0]["takes"][0]["role"] = "tweeter"
     original = fit_branches
@@ -244,7 +245,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
 
 
 @pytest.mark.parametrize("changes", [
-    {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"}, {"exclusion": True},
+    {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"},
     {"verifies": False}, {"verifies": False, "cloud_planned": False}, {"floor": 100.0}, {"floor": 8000.0},
     {"horn_positions": 3}, {"horn_positions": 1}, {"disagree": True}, {"stimulus": "reference_axis"}, {"basis_role": "summed"}, {"missing_curve": True},
 ])
@@ -258,14 +259,11 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
     inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
     candidate = json.loads((directory / "candidate.json").read_text())
-    if changes.get("exclusion"):
-        candidate["exclusion_evidence"] = {"n_positions": 3, "excluded_bands_hz": [], "band_spread": []}
     if role == "main":
         program = build_measure_program({role: -24.0}, [RoleBand(role, 0, FrequencyBand(150, 20000))])
         record.update(program=program.to_dict(), stimulus_id=program.stimulus_id)
-        candidate["analysis"]["stimulus_id"] = program.stimulus_id
-        candidate["source_preset"]["crossover_regions"] = []
-    (directory / "candidate.json").write_text(json.dumps(candidate))
+        candidate = _bank_candidate(directory, {**candidate["analysis"], "stimulus_id": program.stimulus_id},
+                                    _one_way_preset())
     if changes.get("horn_positions"):
         (root / "design-draft.json").write_text(json.dumps({"topology": mono_output_topology().to_dict(), "manual_settings": {
             "drivers": [{"role": role, "target_id": f"mono:{role}", "driver_class": "compression_horn"}],
@@ -485,7 +483,7 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
 
     def find(fingerprint):
         looked_up.append(fingerprint)
-        return SimpleNamespace(candidate=SimpleNamespace(to_dict=lambda: stored))
+        return SimpleNamespace(candidate=MeasuredCrossoverCandidate.from_mapping(stored))
 
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", find)
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
@@ -560,21 +558,45 @@ def test_a_program_shared_by_takes_cannot_identify_the_banked_analysis(speaker_r
     assert json.loads(capsys.readouterr().out)["reason"] == round_views.REASON_REFUSED
 
 
-@pytest.mark.parametrize("source_preset", ["missing", None, []])
-def test_unreadable_candidate_uses_registry_code(speaker_round, source_preset, capsys):
-    root, *_ = speaker_round
-    directory, _ = round_artifact_dir(round_inputs(root).session_dir)
+@pytest.mark.parametrize("damage,code", [
+    pytest.param(lambda raw: json.dumps({**raw, "bass_extension": {
+        "low_boost_db": 4.0, "reference_level_db": -10.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -12.0,
+    }}), "bass_descriptor_malformed", id="adr-0352-bass"),
+    pytest.param(lambda raw: json.dumps({**raw, "schema_version": 2}), "candidate_schema_unsupported", id="schema"),
+    pytest.param(lambda raw: json.dumps({**raw, "source_preset": {**raw["source_preset"], "crossover_regions": [
+        {**raw["source_preset"]["crossover_regions"][0], "fc_hz": -5.0}]}}), "candidate_malformed", id="region"),
+    pytest.param(lambda raw: json.dumps(raw)[:-1], "candidate_malformed", id="unparseable"),
+])
+def test_a_base_that_does_not_reopen_refuses_by_its_code_and_the_packet_still_builds(
+    speaker_round, capsys, damage, code,
+):
+    """#5909: a round whose banked candidate does not reopen (an ADR-0352 bass section, ADR-0381)
+    is no base either judge charges; the bank still stores its packet and its room set's limits."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
     path = directory / "candidate.json"
-    candidate = json.loads(path.read_text())
-    if source_preset == "missing":
-        del candidate["source_preset"]
-    else:
-        candidate["source_preset"] = source_preset
-    path.write_text(json.dumps(candidate))
+    path.write_text(damage(json.loads(path.read_text())))
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    speaker, room = (manifest_set([(row.path, record)], set_id=set_id) for set_id in ("speaker-set", "room-set"))
+    speaker["capture_basis"].update(role="woofer")
+    speaker["takes"][0].update(role="woofer")
+    room["capture_basis"].update(role="summed", gating_applied=False)
+    write_manifest(root, groups=[speaker, room])
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_UNREADABLE
-    result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "unreadable"
-    assert result["reason"] == round_views.REASON_UNREADABLE
+    fit = json.loads(capsys.readouterr().out)
+    assert crossover_prescriber.main(["contract", "--round", str(root)]) == crossover_prescriber.EXIT_UNREADABLE
+    contract = json.loads(capsys.readouterr().out)
+    assert (fit["status"], fit["code"], contract["status"], contract["reason"]) == ("unreadable", code) * 2
+    assert crossover_prescriber.main(["contract", "--round", str(root), "--section", "room"]) == crossover_prescriber.EXIT_OK
+    assert "schema" in json.loads(capsys.readouterr().out)["sections"]["room"]
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+    digests = packet[EVIDENCE_KEY]["contracts"]
+    assert ([entry["reason_summary"] for entry in packet["fits"]], packet["limits"]["speaker-set"], digests.pop("speaker")) == (
+        [{"unavailable": code}], {"status": "unavailable", "reason": code},
+        {"status": "not_evaluated", "reason": code, "field": "candidate.json"})
+    assert "schema" in packet["limits"]["room-set"]
+    assert digests and all(isinstance(digest, str) for digest in digests.values())
 
 
 @pytest.mark.parametrize("overrides", [[], ["--max-filters", "1", "--boost-floor-hz", "600", "--max-gain-db", "2", "--max-giveback-db", "1"]])
@@ -942,7 +964,7 @@ def test_fit_budget_excludes_replaced_role_but_charges_other_branches(incumbent_
     graph = yaml.safe_load(compile_candidate_config(others, playback_device="null"))
     remaining = 40.0 + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
     candidate = _candidate(linearization={incumbent_role: chain}, **speaker)
-    vocabulary = _fit_vocabularies(candidate.to_dict(), {"tweeter": {"max_gain_db": 2.0}})["tweeter"]
+    vocabulary = _fit_vocabularies(candidate, {"tweeter": {"max_gain_db": 2.0}})["tweeter"]
     assert vocabulary.per_filter_boost_cap_db == vocabulary.composed_boost_cap_db == pytest.approx(remaining)
     assert vocabulary.max_gain_db == 2.0
 

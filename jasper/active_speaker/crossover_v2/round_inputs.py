@@ -369,7 +369,11 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
             else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
         room = {"median": {"code": ROOM_NOT_BANKED}}
-    return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
+    path = artifact_dir / "candidate.json"
+    # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
+    # so each refuses it by this code. Only a round that banked none has no base.
+    candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
+    return {"candidate": candidate,
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")}}
