@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 from jasper.audio_measurement import evidence_reasons
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
 from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
@@ -527,6 +528,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "seat_anchor_unusable": ReasonSpec(
         "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Run jasper-seat-level with the current microphone, then measure.",
         next_action={"id": "measure_seat_level", "label": "Run jasper-seat-level with the current microphone, then measure", "href": "/sound/speaker/crossover/"},
+    ),
+    DECLARED_GEOMETRY_UNREADABLE: ReasonSpec(
+        DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0, "",
+        "Declare the rig again with jasper-declare-geometry set; jasper-declare-geometry show prints the command.",
+        next_action={"id": "declare_geometry", "label": "Declare the rig again with jasper-declare-geometry set", "href": "/sound/speaker/crossover/"},
     ),
     "not_found": ReasonSpec(
         "not_found", TEMPLATE_HARD_STOP, 0, "", "Select a candidate from the bank.",

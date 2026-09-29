@@ -21,8 +21,10 @@ def read_pose(*, arm_offset_deg: float | None = None) -> dict[str, Any]:
 
     try:
         geometry = load_declared_geometry()
-    except (OSError, ValueError, TypeError):
-        geometry = None
+    except (OSError, ValueError, TypeError) as exc:
+        # Declared but unreadable is not "nothing declared"; the pose names why (ADR-0388).
+        return {"geometry": None, "geometry_unreadable": getattr(exc, "field", None) or type(exc).__name__,
+                "arm_offset_deg": arm_offset_deg}
     return {"geometry": geometry.to_dict() if geometry is not None else None, "arm_offset_deg": arm_offset_deg}
 
 
@@ -46,7 +48,7 @@ def read_graph(*, compile_graph: bool = False) -> dict[str, Any]:
 
 
 def provenance_mismatches(record: Mapping[str, Any], *, graph: Mapping[str, Any] | None,
-                          pose: Mapping[str, Any] | None) -> dict[str, bool | None]:
+                          pose: Mapping[str, Any] | None) -> dict[str, bool | str | None]:
     def mismatch(banked: Any, current: Mapping[str, Any] | None) -> bool | None:
         if not isinstance(banked, Mapping) or current is None:
             return None
@@ -56,5 +58,8 @@ def provenance_mismatches(record: Mapping[str, Any], *, graph: Mapping[str, Any]
             return True
         return False if known and len(known) == len(banked) else None
 
+    unreadable = next((side["geometry_unreadable"] for side in (record.get("pose"), pose)
+                       if isinstance(side, Mapping) and side.get("geometry_unreadable")), None)
     return {"anchor_graph_mismatch": mismatch(record.get("graph"), graph),
-            "anchor_pose_mismatch": mismatch(record.get("pose"), pose)}
+            "anchor_pose_mismatch": (f"geometry unreadable: {unreadable}" if unreadable
+                                     else mismatch(record.get("pose"), pose))}

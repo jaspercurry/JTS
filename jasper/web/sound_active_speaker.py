@@ -1030,6 +1030,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
             "rear_calibration", raw,
             rationale="Bank a cardioid rear calibration edited in the wizard.",
         )
+        issues = rear_calibration_issues(candidate)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
         return exc.to_dict()
@@ -1045,11 +1046,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         "sound.active_speaker_rear_calibration_bank",
         candidate_fingerprint=published.fingerprint,
     )
-    return {
-        "ok": True,
-        "candidate_fingerprint": published.fingerprint,
-        "issues": rear_calibration_issues(published.candidate),
-    }
+    return {"ok": True, "candidate_fingerprint": published.fingerprint, "issues": issues}
 
 
 def _cardioid_compare_payload(*, cached_only: bool = False) -> dict[str, Any]:

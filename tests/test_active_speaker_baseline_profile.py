@@ -9,6 +9,7 @@ import logging
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -49,6 +50,7 @@ from jasper.active_speaker.graph.bass_extension import classify_bass_extension_g
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_routes.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.audio_routes.output_topology import OutputTopology
+from jasper.web import sound_active_speaker
 from tests.active_speaker_fixtures import (
     current_research, declared_profile_fixture, declared_graph_fixture, research_design_draft, standard_design_draft,
     mono_output_topology,
@@ -945,6 +947,24 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
 
     assert [issue["code"] for issue in issues] == codes
     assert {issue["severity"] for issue in issues} <= {"warning"}
+
+
+def test_an_unreadable_rig_is_a_warning_and_the_rear_calibration_bank_still_answers(monkeypatch):
+    """ADR-0322: the wall-gap check only discloses, so an unreadable rig neither
+    blocks the review nor refuses a bank that has already been made (ADR-0388)."""
+    def unreadable():
+        raise measurement_geometry.GeometryFieldError("front_wall_m", "front_wall_m is no longer read")
+
+    candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration=_rear_document())
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unreadable)
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.prescription_document.bank_section",
+                        lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.publish_authored_candidate",
+                        lambda banked: SimpleNamespace(fingerprint=banked.fingerprint, candidate=banked))
+    payload = sound_active_speaker._active_speaker_rear_calibration_bank_payload({})
+    assert (payload["ok"], payload["candidate_fingerprint"]) == (True, candidate.fingerprint)
+    assert [(issue["severity"], issue["code"], issue["field"]) for issue in payload["issues"]] == [
+        ("warning", measurement_geometry.DECLARED_GEOMETRY_UNREADABLE, "front_wall_m")]
 
 
 @pytest.mark.parametrize("band,room,room_band", [

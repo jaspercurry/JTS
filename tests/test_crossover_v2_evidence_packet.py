@@ -544,6 +544,18 @@ def test_the_session_block_reads_the_declaration_the_caller_resolved(
     assert (block["reason"] == "source_absent") is (stored is None)
 
 
+def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
+    """A banked copy that carries ``front_wall_m`` stays unreadable, by name (ADR-0388)."""
+    session, _ = _bundle(tmp_path)
+    declared = tmp_path / "declared-geometry.json"
+    declared.write_text(json.dumps({"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05,
+                                    "front_wall_m": 0.85}), encoding="utf-8")
+
+    block = build_crossover_evidence_packet(session, declared_geometry_path=declared)["session"]["declared_geometry"]
+
+    assert (block["status"], block["refused_field"]) == ("not_evaluated", "front_wall_m")
+
+
 def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
     tmp_path,
 ):

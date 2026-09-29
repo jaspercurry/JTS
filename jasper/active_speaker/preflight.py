@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program_analysis.check import ambient_rows_in_band, clears_snr_floor
 from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
@@ -255,6 +256,11 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         add("measurement_mic_unidentified", "The measurement microphone has no known identity")
     if facts.anchor.sensitivity is None:
         add("measure_spl_calibration_required", "Microphone sensitivity cannot be resolved")
+    # Every take gates to the declared room and banks its band from it, so an unreadable one refuses the run (ADR-0388).
+    if unreadable := (facts.anchor.pose or {}).get("geometry_unreadable"):
+        issues.append(replace(PreflightIssue.from_code(
+            DECLARED_GEOMETRY_UNREADABLE, REASON_REGISTRY[DECLARED_GEOMETRY_UNREADABLE].message),
+            evidence={"field": unreadable}))
     stop = finite_float(facts.commissioning_stop_db_spl)
     ceiling = None
     if stop is None or stop <= 0:

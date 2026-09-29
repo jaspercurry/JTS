@@ -27,11 +27,14 @@ from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
+from jasper.active_speaker.anchor_provenance import read_pose
 from jasper.active_speaker.seat_level_reference import (
     SCHEMA_VERSION as SEAT_LEVEL_SCHEMA_VERSION, AnchorFacts, ResolvedLevel, predicted_rung_admission,
     resolve_anchor_level, rise_without_room_db, rung_lift_bound_db,
 )
+from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
 from jasper.biquad import PeqFilter
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
@@ -93,6 +96,19 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+def test_an_unreadable_declared_geometry_refuses_the_run_before_it_plays(monkeypatch):
+    """Every take gates to the declared room, so an unreadable one refuses by its field (ADR-0388)."""
+    def unreadable():
+        raise measurement_geometry.GeometryFieldError("front_wall_m", "front_wall_m is no longer read")
+
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unreadable)
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
+    ready = ready_facts(plan)
+    issue = preflight(plan, replace(ready, anchor=replace(ready.anchor, pose=read_pose()))).blocking_issue
+    assert (issue.code, issue.evidence, issue.next_action["id"]) == (
+        DECLARED_GEOMETRY_UNREADABLE, {"field": "front_wall_m"}, "declare_geometry")
 
 
 def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):

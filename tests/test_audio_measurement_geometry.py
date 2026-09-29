@@ -35,7 +35,6 @@ from jasper.audio_measurement.measurement_geometry import (
     DeclaredGeometry,
     GeometryFieldError,
     boundary_prior,
-    declared_first_bounce_s,
     load_declared_geometry,
 )
 
@@ -193,7 +192,6 @@ _ROOM = {"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05}
         pytest.param({"side_wall_m": 0.0}, "side_wall_m", id="wall_zero_is_not_absent"),
         pytest.param({"cabinet_back_wall_m": 0.2032}, "", id="back_gap_only"),
         pytest.param({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, "", id="cabinet"),
-        pytest.param({"front_wall_m": 0.85}, "front_wall_m", id="retired_front_wall"),
         pytest.param({"cabinet_back_wall_m": True}, "cabinet_back_wall_m", id="bool_gap"),
         pytest.param({"cabinet_back_wall_m": -0.001}, "cabinet_back_wall_m", id="negative_gap"),
         pytest.param({"cabinet_back_wall_m": float("nan")}, "cabinet_back_wall_m", id="nan_gap"),
@@ -425,23 +423,17 @@ def test_a_closer_capture_has_a_lower_room_floor():
 
 def test_an_undeclared_rig_reads_as_none_rather_than_raising(tmp_path):
     assert load_declared_geometry(tmp_path / "absent.json") is None
-    assert declared_first_bounce_s(1.0, path=tmp_path / "absent.json") is None
 
 
-def test_a_declared_rig_reads_back_and_times_its_bounce_at_a_capture(tmp_path):
+def test_a_stored_declaration_with_front_wall_m_refuses_by_that_field(tmp_path):
+    """ADR-0388: the retired field refuses, keeping the file's values its fix declares again."""
     path = tmp_path / "measurement_geometry.json"
-    geometry = DeclaredGeometry(
-        speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
-    )
-    geometry.save(path)
+    kept = {**_ROOM, "ceiling_height_m": 2.4, "side_wall_m": 1.4}
+    path.write_text(json.dumps({**kept, "front_wall_m": 0.85}), encoding="utf-8")
 
-    assert load_declared_geometry(path) == geometry
-    assert declared_first_bounce_s(0.3, path=path) == pytest.approx(
-        geometry.first_bounce_s(0.3)
-    )
-    assert declared_first_bounce_s(path=path) == pytest.approx(
-        geometry.first_bounce_s()
-    )
+    with pytest.raises(GeometryFieldError) as exc:
+        load_declared_geometry(path)
+    assert (exc.value.field, exc.value.declared) == ("front_wall_m", kept)
 
 
 @pytest.mark.parametrize(
