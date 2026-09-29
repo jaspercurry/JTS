@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Analysis-side evidence codes, and the one exception an evidence reader refuses with.
+"""Analysis-side evidence codes, the one exception an evidence reader refuses with,
+and the one shape of a gap inside a document.
 
 Each code's household sentence and next action live in
 ``refusal_copy.REASON_REGISTRY`` (ADR-0300).
@@ -61,3 +62,8 @@ class EvidenceUnavailable(Exception):
         super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
         self.reason = reason
         self.detail = dict(detail)
+
+
+def unavailable(reason: str, detail: Any = None) -> dict[str, Any]:
+    """A gap inside a document; a present value reads ``{"status": "available"}`` (#5928)."""
+    return {"status": "unavailable", "reason": reason, **({} if detail is None else {"detail": detail})}

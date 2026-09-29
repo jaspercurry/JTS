@@ -18,6 +18,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import unavailable
+
 __all__ = [
     "CARRIERS",
     "EXCLUDED_PROSE",
@@ -33,7 +35,7 @@ __all__ = [
 #: Bumped when a reader that understood the previous version would misread this
 #: one. A carrier added to :data:`CARRIERS` leaves every existing key saying
 #: what it said, so it does not move this number.
-OPERATOR_NOTES_SCHEMA_VERSION = 1
+OPERATOR_NOTES_SCHEMA_VERSION = 2
 
 #: ``jts_<owner>_<name>`` — the shape the artifact-kind ruling requires
 #: of a new kind, which ``bundles.validate_artifact_kind`` accepts this string
@@ -315,7 +317,7 @@ def build_operator_notes(draft: Mapping[str, Any] | None) -> dict[str, Any]:
         "artifact_schema_version": OPERATOR_NOTES_SCHEMA_VERSION,
         "kind": OPERATOR_NOTES_KIND,
         "generated_by": GENERATED_BY,
-        "available": bool(build_notes or driver_rows or context_rows),
+        **({"status": "available"} if build_notes or driver_rows or context_rows else unavailable("field_null")),
         "provenance": OPERATOR_NOTES_PROVENANCE,
         "treat_as": OPERATOR_NOTES_TREAT_AS,
         "rule": OPERATOR_NOTES_RULE,

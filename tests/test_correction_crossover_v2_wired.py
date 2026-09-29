@@ -1310,8 +1310,8 @@ def test_executor_banks_the_capture_snr_the_packet_reads(tmp_path, monkeypatch):
     assert record["diagnostic"]["rms_db"] is None
     session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     block = build_crossover_evidence_packet(session)["capture_snr"]
-    assert (block["available"], block["n_captures"], block["n_takes_seen"]) == (True, 1, 1)
-    assert "status" not in block
+    assert (block["status"], block["n_captures"], block["n_takes_seen"]) == ("available", 1, 1)
+    assert "reason" not in block
     assert block["captures"] == [{
         "take_id": record["take_id"], "wav_sha256": record["wav_sha256"],
         "stimulus_wav_sha256": "a" * 64, "phase": record["phase"],

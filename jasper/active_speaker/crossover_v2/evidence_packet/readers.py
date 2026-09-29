@@ -19,7 +19,7 @@ from ..round_inputs import CrossoverEvidencePacketError
 #: this one — never merely because the document grew. The
 #: EVIDENCE document's version only: a prescription answering this packet
 #: carries its own :data:`~.blend_prescription.PRESCRIPTION_SCHEMA_VERSION`.
-PACKET_SCHEMA_VERSION = 3
+PACKET_SCHEMA_VERSION = 4
 
 PACKET_KIND = "jts_crossover_v2_evidence_packet"
 
@@ -49,7 +49,7 @@ def packet_driver_passbands_hz(packet: Any) -> dict[str, tuple[float, float]]:
     if not isinstance(packet, dict):
         return {}
     drivers = packet.get("drivers")
-    if not isinstance(drivers, dict) or not drivers.get("available"):
+    if not isinstance(drivers, dict) or drivers.get("status") != "available":
         return {}
     bands = drivers.get("passbands_hz")
     if not isinstance(bands, dict):
@@ -75,6 +75,6 @@ def packet_feature_classifications(packet: Any) -> tuple[FeatureVerdict, ...] | 
         return None
     views = packet.get(DERIVED_VIEWS)
     block = views.get("feature_classification") if isinstance(views, dict) else None
-    if not isinstance(block, dict) or not block.get("available"):
+    if not isinstance(block, dict) or block.get("status") != "available":
         return None
     return read_feature_verdicts(block.get("verdicts"))

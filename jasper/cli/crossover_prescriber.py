@@ -51,7 +51,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_stat
 from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import sha256_file
 from jasper.audio_routes.output_topology_store import load_output_topology
@@ -331,8 +331,8 @@ def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
     TOTAL.
     """
     if isinstance(value, list):
-        return {"available": True, "n_filters": len(value)}
-    return {"available": False, "reason": _reason(value if isinstance(value, dict) else {}, packet_error)}
+        return {"status": "available", "n_filters": len(value)}
+    return unavailable(_reason(value if isinstance(value, dict) else {}, packet_error))
 
 
 
@@ -346,14 +346,13 @@ def _declared_section(
     """
     passbands = packet_driver_passbands_hz(packet)
     roles = sorted(passbands)
-    reason = None if passbands else _reason(_block(packet, "drivers"), packet_error)
+    reason = "" if passbands else _reason(_block(packet, "drivers"), packet_error)
     return {
-        "available": bool(passbands),
+        **(unavailable(reason) if reason else {"status": "available"}),
         "roles": roles,
         "passbands_hz": {
             role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
         },
-        "reason": reason,
         "summary": (
             ", ".join(_passband_phrase(role, *passbands[role]) for role in roles)
             if passbands
@@ -422,40 +421,32 @@ def _banked_section(
     verdicts = packet_feature_classifications(packet)
     candidates = _candidate_records()
     classification = {
-        "available": bool(verdicts),
+        **({"status": "available"} if verdicts else unavailable(
+            _reason(_block(_block(packet, DERIVED_VIEWS), "feature_classification"), packet_error))),
         "n_verdicts": len(verdicts) if verdicts else 0,
-        "reason": (
-            None
-            if verdicts
-            else _reason(_block(_block(packet, DERIVED_VIEWS), "feature_classification"), packet_error)
-        ),
     }
     lateral = _block(packet, "lateral_poses")
+    walked = lateral.get("status") == "available"
     walk: dict[str, Any] = {
-        "available": bool(lateral.get("available")),
+        **({"status": "available"} if walked else unavailable(_reason(lateral, packet_error))),
         "n_takes": lateral.get("n_takes") or 0,
         "angles_deg": _degree_list(lateral, "angles_deg"),
         "elevations_deg": _degree_list(lateral, "elevations_deg"),
-        "reason": (
-            None if lateral.get("available")
-            else _reason(lateral, packet_error)
-        ),
     }
     # "0 deg" is not a raise worth a clause.
     raised = [deg for deg in walk["elevations_deg"] if deg]
     session = _block(packet, "session")
-    available = bool(session)
-    reason = None if available else _reason(session, packet_error)
+    reason = "" if session else _reason(session, packet_error)
     summary = (
         (
             f"round in session {session.get('bundle_session_id')}"
             + (
                 f", {classification['n_verdicts']} classified feature(s)"
-                if classification["available"]
+                if verdicts
                 else f", no readable classification ({classification['reason']})"
             )
         )
-        if available
+        if session
         else f"no round ({reason})"
     ) + (
         f"; {walk['n_takes']} walk take(s) at "
@@ -466,7 +457,7 @@ def _banked_section(
             if raised
             else ""
         )
-        if walk["available"]
+        if walked
         else f"; no walk takes ({walk['reason']})"
     ) + (
         f"; {len(candidates)} banked candidate artifact(s)"
@@ -474,8 +465,7 @@ def _banked_section(
         else "; no banked candidate"
     )
     return {
-        "available": available,
-        "reason": reason,
+        **(unavailable(reason) if reason else {"status": "available"}),
         "bundle_session_id": session.get("bundle_session_id"),
         "classification": classification,
         "walk": walk,

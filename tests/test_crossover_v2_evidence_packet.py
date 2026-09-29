@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
@@ -49,8 +50,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "4d17d9d0888dcd3ccddaf955a21ca8adc4188c8fc95ac02370444e5882926c77")
-    assert packet["packet_fingerprint"] == "91ddf2b40b3eaec7dd67058d4ea6cd5bb4f1aa5e979624deda4326c258d688a5"
+        "14ef39824d667b7e5959f2179732d4f5cbf64ab2aa9fc2e7155c02197b1b972b")
+    assert packet["packet_fingerprint"] == "b4a24008a8bf4b1d12c823ff1c542e739e6c3968e36a484800d4ce2e9c79c10e"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
@@ -60,7 +61,7 @@ def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
     assert set(components) == {"in_capture_repeat_floor", "mic_calibration_tier"}
     for name, entry in components.items():
         assert entry["kind"] in UNCERTAINTY_KINDS, name
-        assert isinstance(entry["available"], bool), name
+        assert entry["status"] in ("available", "unavailable"), name
 
 
 AGGREGATE = "shipped_linear_pool_db"
@@ -102,9 +103,7 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     packet = build_crossover_evidence_packet(session)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     assert entry["kind"] == UNCERTAINTY_RANDOM
-    assert entry["available"] is False
-    assert entry["absence"] == REPEAT_FLOOR_UNMEASURED
-    assert "E2" in entry["reason"]
+    assert (entry["status"], entry["reason"]) == ("unavailable", REPEAT_FLOOR_UNMEASURED)
 
 
 def test_repeat_floor_banked_but_unusable_is_its_own_absence(tmp_path):
@@ -124,8 +123,7 @@ def test_repeat_floor_banked_but_unusable_is_its_own_absence(tmp_path):
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
 
     assert entry["kind"] == UNCERTAINTY_RANDOM
-    assert entry["available"] is False
-    assert entry["absence"] == REPEAT_FLOOR_UNUSABLE
+    assert (entry["status"], entry["reason"]) == ("unavailable", REPEAT_FLOOR_UNUSABLE)
 
 
 @pytest.mark.parametrize("on_disk", ["{not json", "{}"], ids=["not-json", "not-a-floor"])
@@ -139,8 +137,7 @@ def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
     floor_path.write_text(on_disk)
     packet = build_crossover_evidence_packet(session, repeat_floor_path=floor_path)
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
-    assert entry["available"] is False
-    assert entry["absence"] == REPEAT_FLOOR_UNREADABLE
+    assert (entry["status"], entry["reason"]) == ("unavailable", REPEAT_FLOOR_UNREADABLE)
 
 
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
@@ -153,8 +150,7 @@ def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
     p95 = record["metrics"][AGGREGATE]["pairwise_abs_delta_p95_db"]
 
     assert entry["kind"] == UNCERTAINTY_RANDOM
-    assert entry["available"] is True
-    assert entry["absence"] is None
+    assert entry["status"] == "available"
     assert entry["n_repeats"] == record["n_repeats"]
     assert entry["aggregate_metric"] == AGGREGATE
     assert entry["bundle_session_ids"] == ["sess1", "sess2", "sess3"]
@@ -171,7 +167,7 @@ def test_mic_calibration_tier_reads_absent_with_no_banked_candidate(tmp_path):
     packet = build_crossover_evidence_packet(session)
     entry = packet["accuracy_budget"]["components"]["mic_calibration_tier"]
     assert entry["kind"] == UNCERTAINTY_SYSTEMATIC
-    assert entry["available"] is False
+    assert entry["status"] == "unavailable"
     assert entry["tier_by_role"] == {}
     assert entry["trust_ceiling_hz_by_tier"] == {}
 
@@ -192,7 +188,7 @@ def test_mic_calibration_tier_publishes_each_roles_own_tier(tmp_path):
     }))
     packet = build_crossover_evidence_packet(session)
     entry = packet["accuracy_budget"]["components"]["mic_calibration_tier"]
-    assert entry["available"] is True
+    assert entry["status"] == "available"
     assert entry["tier_by_role"] == {"woofer": "phone", "tweeter": "consumer"}
     assert entry["tier_vocabulary"] == list(MIC_TIERS)
     assert entry["trust_ceiling_hz_by_tier"] == {
@@ -258,7 +254,7 @@ def test_the_history_reads_sibling_bundles_oldest_first(tmp_path):
     )
     packet = build_crossover_evidence_packet(latest)
     history = packet["structural_history"]
-    assert history["available"] is True
+    assert history["status"] == "available"
     assert history["max_rounds"] == 8
     assert history["rounds_covered"] == 3
     assert [row["ordinal"] for row in history["rounds"]] == [1, 2, 3]
@@ -329,7 +325,7 @@ def test_the_history_is_empty_when_no_round_banked_a_candidate(tmp_path):
     only = _sibling_bundle(root, "r1", started_at=1.0)
     packet = build_crossover_evidence_packet(only)
     history = packet["structural_history"]
-    assert history["available"] is False
+    assert history["status"] == "unavailable"
     assert history["rounds_covered"] == 0
     assert history["rounds"] == []
     assert history["max_rounds"] == 8
@@ -449,8 +445,7 @@ def _bank_candidate_take(
 def test_candidates_reads_absent_when_no_take_names_one(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
-    assert packet["candidates"]["available"] is False
-    assert packet["candidates"]["reason"] == NO_CANDIDATE_TAKES
+    assert (packet["candidates"]["status"], packet["candidates"]["reason"]) == ("unavailable", NO_CANDIDATE_TAKES)
     assert "candidates" in {row["field"] for row in packet["not_evaluated"]}
 
 
@@ -471,7 +466,7 @@ def test_candidates_groups_the_takes_by_the_candidate_they_measured(tmp_path):
         )
     packet = build_crossover_evidence_packet(session)
     block = packet["candidates"]
-    assert block["available"] is True
+    assert block["status"] == "available"
     assert [row["candidate_id"] for row in block["candidates"]] == [
         "cand_a", "cand_b",
     ]
@@ -525,9 +520,9 @@ def test_the_session_block_reads_the_declaration_the_caller_resolved(
     if room is not None:
         assert block == room
         return
-    assert block["status"] == "not_evaluated"
+    assert block["status"] == "unavailable"
     assert block["field"] == "declared_geometry"
-    assert (block["reason"] == "source_absent") is (stored is None)
+    assert block["reason"] == ("source_absent" if stored is None else DECLARED_GEOMETRY_UNREADABLE)
 
 
 def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
@@ -539,7 +534,8 @@ def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
 
     block = build_crossover_evidence_packet(session, declared_geometry_path=declared)["session"]["declared_geometry"]
 
-    assert (block["status"], block["refused_field"]) == ("not_evaluated", "front_wall_m")
+    assert (block["status"], block["reason"], block["refused_field"]) == (
+        "unavailable", DECLARED_GEOMETRY_UNREADABLE, "front_wall_m")
 
 
 def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
@@ -555,7 +551,7 @@ def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(
 
     block = build_crossover_evidence_packet(session)["session"]["declared_geometry"]
 
-    assert block["status"] == "not_evaluated"
+    assert block["status"] == "unavailable"
     assert block["reason"] == "source_absent"
 
 
@@ -606,5 +602,5 @@ def test_a_banked_draft_with_garbage_topology_keeps_the_packet_readable(tmp_path
     draft.write_text(json.dumps({"topology": {"artifact_schema_version": -1},
                                 "driver_safety_profile": {"targets": ["obsolete"]}}))
     packet = build_crossover_evidence_packet(session, driver_draft_path=draft)
-    assert packet["drivers"] == {"available": False, "status": "not_evaluated",
+    assert packet["drivers"] == {"status": "unavailable",
                                  "reason": "field_null", "field": "driver_safety_profile.targets"}

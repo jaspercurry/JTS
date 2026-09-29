@@ -280,7 +280,7 @@ def packet_incumbent_linearization(
     # ``_incumbent_record``'s rule, for the same reason: an absence and a role
     # map are both dicts, and telling them apart by duck-typing would make a
     # banked role called ``status`` change the answer.
-    if roles.get("status") == "not_evaluated":
+    if roles.get("status") == "unavailable":
         return None
     out: dict[str, tuple[dict[str, Any], ...]] = {}
     for role, filters in roles.items():
@@ -476,20 +476,19 @@ def test_a_declared_band_past_nyquist_is_clamped_not_dropped():
 
 
 def test_the_packet_carries_the_bands_and_the_verdicts(packet):
-    assert packet["drivers"]["available"] is True
+    assert packet["drivers"]["status"] == "available"
     assert packet["drivers"]["passbands_hz"] == {
         "tweeter": [TWEETER_BAND[0], TWEETER_BAND[1]],
         "woofer": [WOOFER_BAND[0], WOOFER_BAND[1]],
     }
-    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is True
+    assert packet[DERIVED_VIEWS]["feature_classification"]["status"] == "available"
     assert packet[DERIVED_VIEWS]["feature_classification"]["n_rows_readable"] == 2
 
 
 def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
     packet = _speaker(tmp_path, draft=None)
 
-    assert packet["drivers"]["available"] is False
-    assert packet["drivers"]["reason"] == "no driver design draft was supplied"
+    assert (packet["drivers"]["status"], packet["drivers"]["reason"]) == ("unavailable", "source_absent")
     assert any(
         entry["field"] == "drivers.passbands_hz"
         for entry in packet["not_evaluated"]
@@ -499,8 +498,8 @@ def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
 def test_a_missing_classification_is_reported_not_papered_over(tmp_path):
     packet = _speaker(tmp_path, classification=False)
 
-    assert packet[DERIVED_VIEWS]["feature_classification"]["available"] is False
-    assert packet[DERIVED_VIEWS]["feature_classification"]["reason"] == "source_absent"
+    block = packet[DERIVED_VIEWS]["feature_classification"]
+    assert (block["status"], block["reason"]) == ("unavailable", "source_absent")
 
 
 def test_an_unreadable_verdict_row_is_dropped_not_admitted_as_ambiguous(tmp_path):
@@ -2963,10 +2962,8 @@ def test_the_incumbent_is_the_applied_profile_never_the_undo_stash(
         assert block["identity"]["candidate_fingerprint"]
     else:
         assert packet_incumbent_linearization(packet) is None
-        assert block["identity"]["status"] == "not_evaluated"
-        assert block["linearization"]["from_applied_profile"]["status"] == (
-            "not_evaluated"
-        )
+        assert block["identity"]["status"] == "unavailable"
+        assert block["linearization"]["from_applied_profile"]["status"] == "unavailable"
         assert "incumbent" in {
             entry["field"] for entry in packet["not_evaluated"]
         }
@@ -3002,11 +2999,7 @@ def test_incumbent_identity_carries_applied_profile_displacement(
 
     field = packet["incumbent"]["identity"]["applied_profile_displacement"]
     if expected is None:
-        assert field == {
-            "status": "not_evaluated",
-            "reason": "no CamillaDSP statefile was supplied",
-            "field": "camilla_statefile",
-        }
+        assert (field["status"], field["reason"], field["field"]) == ("unavailable", "source_absent", "camilla_statefile")
     else:
         assert field == expected
 

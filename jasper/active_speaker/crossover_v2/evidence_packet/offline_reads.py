@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.json_fields import as_mapping
 
 from ..feature_classification import (
@@ -40,29 +41,34 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 
-def read_json(path: Path) -> tuple[Any, str]:
-    """One artifact, or the reason it is absent or unreadable."""
+#: A file handed to the builder that could not be read or parsed.
+SOURCE_UNREADABLE = "source_unreadable"
+#: A readable document whose field holds the wrong type, which ``field_null`` would misname.
+FIELD_MALFORMED = "field_malformed"
+
+
+def read_json(path: Path) -> tuple[Any, str, str]:
+    """One artifact, or the code for why it is absent or unreadable and the sentence behind it."""
     if not path.exists():
-        return None, "source_absent"
+        return None, "source_absent", ""
     try:
-        return json.loads(path.read_text()), ""
+        return json.loads(path.read_text()), "", ""
     except (OSError, UnicodeDecodeError) as exc:
-        return None, f"unreadable: {type(exc).__name__}"
+        return None, SOURCE_UNREADABLE, f"unreadable: {type(exc).__name__}"
     except json.JSONDecodeError as exc:
-        return None, f"not valid JSON: {exc.msg}"
+        return None, SOURCE_UNREADABLE, f"not valid JSON: {exc.msg}"
 
 
-def absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
-    """Which of the two absences this is, said explicitly.
+def absence(source_reason: str, present: bool, field: str, detail: str = "") -> dict[str, Any]:
+    """Which absence this is, said as a code, with ``detail`` the sentence behind it.
 
-    ``source_absent`` when the artifact never arrived, ``field_null`` when it
-    did and the field inside it is null. Merging them is the reading defect
-    this packet exists partly to fix.
+    ``source_absent`` when the artifact never arrived, ``source_unreadable``
+    when it arrived and could not be read, ``field_null`` when it was read and
+    the field inside it is null. Merging them is the reading defect this
+    packet exists partly to fix.
     """
-    if source_reason:
-        return {"status": "not_evaluated", "reason": source_reason, "field": field}
-    if not present:
-        return {"status": "not_evaluated", "reason": "field_null", "field": field}
+    if source_reason or not present:
+        return {**unavailable(source_reason or "field_null", detail or None), "field": field}
     return {}
 
 
@@ -137,7 +143,7 @@ def round_program_dir(
     return round_dir
 
 
-def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
+def _harmonics_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
     Verbatim: the instrument that produced it (``jasper-round-views distortion``, over
@@ -151,15 +157,12 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     """
     if not isinstance(raw, dict):
         return {
-            "available": False,
-            "status": "not_evaluated",
-            # NEVER the bare read reason: a file that PARSED into a non-object
-            # carries the empty string.
-            "reason": reason or (
+            # A file that PARSED into a non-object has no read reason.
+            **unavailable(reason or "field_null", (detail or None) if reason else (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
                 "reading in it to publish"
-            ),
+            )),
             "n_roles": 0,
         }
     banked_roles = raw.get("roles")
@@ -170,12 +173,10 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     )
     if not roles:
         return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
+            **unavailable("field_null", (
                 "a harmonic-distortion artifact is banked for this round but "
                 "carries no role block, so there is no reading in it to publish"
-            ),
+            )),
             "n_roles": 0,
         }
     orders = [
@@ -189,18 +190,16 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         # excluded above because a ``true`` would declare an "h1" nothing
         # publishes.
         return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
+            **unavailable("field_null", (
                 "a harmonic-distortion artifact is banked for this round but "
                 "names no harmonic order, so nothing says what its rows are "
                 "readings OF and no column in them could be declared"
-            ),
+            )),
             "n_roles": 0,
         }
     captures = as_mapping(raw.get("captures"))
     return {
-        "available": True,
+        "status": "available",
         "schema": raw.get("schema"),
         "orders": orders,
         "n_roles": len(roles),
@@ -233,7 +232,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
+def _classification_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     """The banked feature verdicts and the working behind them, not re-derived.
 
     TWO views of one artifact, side by side and deliberately not joined.
@@ -260,10 +259,9 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     columns that merely LOOK like uncertainties are not — ``gate_slack`` most
     of all, a dB bar beside a dB reading rather than an error bar on it.
     """
-    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
+    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT, detail)
     if absent:
         return {
-            "available": False,
             **absent,
             "note": (
                 "no feature classification was banked for this round, so no "
@@ -287,7 +285,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
             for column, value in kept.items()
         })
     return {
-        "available": bool(verdicts),
+        **({"status": "available"} if verdicts else unavailable("field_null")),
         "n_rows_banked": len(banked) if isinstance(banked, list) else 0,
         "n_rows_readable": len(verdicts),
         "verdicts": [verdict.to_dict() for verdict in verdicts],

@@ -8,6 +8,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import unavailable
+
 from ...commissioning_evidence_store import EVIDENCE_ROOT
 from .. import position_cycle
 from ..journey import PHASE_LATERAL
@@ -85,21 +87,19 @@ def _lateral_poses_block(
     )
     if not takes:
         return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
+            **unavailable("source_absent", (
                 f"this round banked no {PHASE_LATERAL} take records under "
                 f"{POSITIONS_SUBDIR}/ — its walk was refused at take time, its "
                 "poses were never accepted, or the round ran no lateral walk "
                 "at all"
-            ),
+            )),
             "n_takes": 0,
         }
     # Coerced rather than cast: a hand-edited sidecar with a non-numeric index
     # sorts first instead of raising.
     takes.sort(key=lambda take: (_ordinal(take["index"]), _ordinal(take["attempt"])))
     return {
-        "available": True,
+        "status": "available",
         "n_takes": len(takes),
         "takes": takes,
         # ``bool`` subclasses ``int``, so a ``true`` in either field would

@@ -190,15 +190,13 @@ def _harmonics(session: Path) -> dict[str, Any]:
 def test_a_round_with_no_reading_says_it_has_none(tmp_path):
     block = _harmonics(_bundle(tmp_path))
 
-    assert block["available"] is False
-    assert block["status"] == "not_evaluated"
-    assert block["n_roles"] == 0
+    assert (block["status"], block["reason"], block["n_roles"]) == ("unavailable", "source_absent", 0)
 
 
 def test_a_banked_reading_carries_the_rows(tmp_path):
     block = _harmonics(_bundle(tmp_path, harmonics=_artifact()))
 
-    assert block["available"] is True
+    assert block["status"] == "available"
     assert block["schema"] == ARTIFACT_BY_VIEW["distortion"].schema
     assert block["orders"] == [2, 3]
     assert block["n_roles"] == 1
@@ -214,7 +212,8 @@ def test_a_banked_artifact_with_no_role_block_refuses_rather_than_reading_empty(
     artifact = _artifact()
     artifact["roles"] = []
 
-    assert _harmonics(_bundle(tmp_path, harmonics=artifact))["available"] is False
+    block = _harmonics(_bundle(tmp_path, harmonics=artifact))
+    assert (block["status"], block["reason"]) == ("unavailable", "field_null")
 
 
 @pytest.mark.parametrize("banked", ["[]", '["a list"]', '"a string"', "7"])
@@ -226,8 +225,7 @@ def test_an_artifact_that_is_not_an_object_still_names_its_reason(tmp_path, bank
 
     block = _harmonics(session)
 
-    assert block["available"] is False
-    assert block["reason"].strip()
+    assert (block["status"], block["reason"]) == ("unavailable", "field_null")
 
 
 @pytest.mark.parametrize("orders", [[], None, ["2"], [True], "23"])
@@ -246,7 +244,7 @@ def test_an_artifact_naming_no_order_refuses_rather_than_publishing_undeclared(
     artifact["orders"] = orders
     block = _harmonics(_bundle(tmp_path, harmonics=artifact))
 
-    assert block["available"] is False
+    assert (block["status"], block["reason"]) == ("unavailable", "field_null")
 
 
 # --------------------------------------------------------------------------- #

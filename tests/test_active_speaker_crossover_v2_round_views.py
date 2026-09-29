@@ -159,14 +159,14 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
     round_dir = _make_round_dir(tmp_path, "r1")
     component = "in_capture_repeat_floor"
     absent = load_banked_round(round_dir)
-    assert absent.packet["accuracy_budget"]["components"][component]["available"] is False
+    assert absent.packet["accuracy_budget"]["components"][component]["status"] == "unavailable"
 
     # The record the REAL deriver banks from two repeats, never a hand-typed one.
     floor = derive_repeat_floor(samples={"residual_db": [0.0, 0.2]}, rounds=[{}, {}])
     (round_dir / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual_db"}))
     store_banked_evidence(round_dir)
     present = load_banked_round(round_dir)
-    assert present.packet["accuracy_budget"]["components"][component]["available"] is True
+    assert present.packet["accuracy_budget"]["components"][component]["status"] == "available"
 
 
 # --------------------------------------------------------------------------- #

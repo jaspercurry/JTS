@@ -391,7 +391,7 @@ def test_the_evidence_packet_finds_a_record_the_REAL_store_wrote(tmp_path):
         Path(info["bundle_dir"])
     )["lateral_poses"]
 
-    assert block["available"] is True
+    assert block["status"] == "available"
     assert [take["take_id"] for take in block["takes"]] == [record["take_id"]]
     assert block["angles_deg"] == [-22]
 

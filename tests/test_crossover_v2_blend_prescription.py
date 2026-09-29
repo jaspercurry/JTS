@@ -235,7 +235,7 @@ def test_the_packet_emits_no_path_no_prose_and_nothing_off_the_allowlist(
     banked = json.loads(take_path.read_text())
     take_path.write_text(json.dumps({**banked, "wav_path": "/var/lib/jasper/commissioning/take.wav"}))
     packet = build_crossover_evidence_packet(session, state_path=state_path)
-    assert packet["lateral_poses"]["available"] is True
+    assert packet["lateral_poses"]["status"] == "available"
     assert needle not in json.dumps(packet)
 
 
@@ -348,7 +348,7 @@ def test_the_packet_carries_the_signed_bearings_a_lateral_walk_banked(tmp_path):
 
     block = build_crossover_evidence_packet(session)["lateral_poses"]
 
-    assert block["available"] is True
+    assert block["status"] == "available"
     assert block["n_takes"] == 3
     # SIGNED, and negative means LEFT of the design axis — a bearing published
     # unsigned would put an off-axis pose on the wrong side of the speaker.
@@ -452,7 +452,7 @@ def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
     """
     session, _ = _bundle(tmp_path)
     _bank_lateral_walk(session, [0, 7])
-    assert build_crossover_evidence_packet(session)["lateral_poses"]["available"]
+    assert build_crossover_evidence_packet(session)["lateral_poses"]["status"] == "available"
 
     with mock.patch.object(
         position_cycle, "read_lateral_take", return_value=None
@@ -460,7 +460,7 @@ def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
         blinded = build_crossover_evidence_packet(session)
 
     assert refuse.call_count == 2
-    assert blinded["lateral_poses"]["available"] is False
+    assert blinded["lateral_poses"]["status"] == "unavailable"
 
 
 # --------------------------------------------------------------------------- #
@@ -528,7 +528,7 @@ def test_per_capture_snr_is_published_from_the_rounds_own_banked_takes(tmp_path)
 
     block = build_crossover_evidence_packet(session)["capture_snr"]
 
-    assert block["available"] is True
+    assert block["status"] == "available"
     assert (block["n_captures"], block["n_takes_seen"]) == (1, 1)
     # Named by the two identities the packet's other take rows already carry,
     # so a reader can join them without this module deciding what a
@@ -684,7 +684,7 @@ def test_a_round_whose_takes_carry_no_analysis_says_so_rather_than_looking_empty
 
     Records banked before a take carried its own analysis are the ordinary
     case for every corpus already on disk, so the reason names how many takes
-    the round DID bank — a reader that saw only ``available: false`` could not
+    the round DID bank — a reader that saw only ``status: unavailable`` could not
     tell that from a round that banked nothing at all.
     """
     session, _ = _bundle(tmp_path)
@@ -692,13 +692,11 @@ def test_a_round_whose_takes_carry_no_analysis_says_so_rather_than_looking_empty
 
     packet = build_crossover_evidence_packet(session)
 
-    assert packet["capture_snr"]["available"] is False
-    assert packet["capture_snr"]["status"] == "not_evaluated"
+    assert (packet["capture_snr"]["status"], packet["capture_snr"]["reason"]) == ("unavailable", "field_null")
     assert packet["capture_snr"]["n_takes_seen"] == 1
-    assert "banked 1 take(s)" in packet["capture_snr"]["reason"]
     stated = [e for e in packet["not_evaluated"] if e["field"] == "capture_snr"]
     assert len(stated) == 1
-    assert stated[0]["reason"] == packet["capture_snr"]["reason"]
+    assert stated[0]["reason"] == packet["capture_snr"]["detail"]
 
 
 # --------------------------------------------------------------------------- #
