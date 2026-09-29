@@ -25,8 +25,8 @@ from jasper.sound.flat_verifier import (
     _required_mono_fold_output,
 )
 
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
 from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name as _commission_mute_name
 from .graph.active_verifier import _active_graph_evidence

@@ -221,6 +221,6 @@
     "param": "q",
     "value": 0.7071068,
     "value_str": "0.7071068",
-    "note": "The exact CamillaDSP shelf steepness jasper.camilla_stereo_prefix.emit_filter_spec writes. Butterworth is q=1/sqrt(2), equivalently slope: 12 (CamillaDSP's own lowshelf_slope_vs_q test) -- NOT slope: 6, which is what this codebase emitted until 2026-07-27."
+    "note": "The exact CamillaDSP shelf steepness jasper.audio_routes.camilla_stereo_prefix.emit_filter_spec writes. Butterworth is q=1/sqrt(2), equivalently slope: 12 (CamillaDSP's own lowshelf_slope_vs_q test) -- NOT slope: 6, which is what this codebase emitted until 2026-07-27."
   }
 }

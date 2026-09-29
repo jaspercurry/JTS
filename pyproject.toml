@@ -313,7 +313,7 @@ module = [
     "jasper.active_speaker.safe_playback",
     "jasper.active_speaker.staging",
     "jasper.active_speaker.startup_load",
-    "jasper.aec_sweep",
+    "jasper.audio_routes.aec_sweep",
     "jasper.runtime_config.assistant_loudness",
     # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
@@ -358,7 +358,7 @@ module = [
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
     "jasper.voice_daemon",
-    "jasper.volume_diagnostics",
+    "jasper.audio_routes.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
     "jasper.service_state.weather",
     "jasper.web._common",
@@ -408,11 +408,7 @@ layers = [
   "aec : runtime_config : config",
   "service_state",
   "dsp_control",
-  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
-  "source_intent : volume_curve : output_topology_store",
-  "output_topology",
-  "output_topology_evaluation",
-  "output_hardware",
+  "audio_routes : route_latency",
   "aec_engines : device_probe : mics : xvf",
   "playback_state",
   "audio_measurement : audio_resources : bass_extension",
@@ -480,3 +476,29 @@ layers = [
   "assistant_volume : renderer : volume_echo : volume_handoff : volume_measurement_gate : volume_push_sources : volume_reconcile",
   "volume_scales : volume_state : volume_carrier",
 ]
+
+[[tool.importlinter.contracts]]
+name = "Audio routes layers"
+type = "layers"
+containers = ["jasper.audio_routes"]
+exhaustive = true
+layers = [
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : usb_mic : volume_diagnostics",
+  "source_intent : volume_curve : output_topology_store",
+  "output_topology",
+  "output_topology_evaluation",
+  "output_hardware",
+]
+
+[[tool.importlinter.contracts]]
+name = "Audio routes retain route latency rank"
+type = "forbidden"
+source_modules = [
+  "jasper.audio_routes.source_intent",
+  "jasper.audio_routes.volume_curve",
+  "jasper.audio_routes.output_topology_store",
+  "jasper.audio_routes.output_topology",
+  "jasper.audio_routes.output_topology_evaluation",
+  "jasper.audio_routes.output_hardware",
+]
+forbidden_modules = ["jasper.route_latency"]

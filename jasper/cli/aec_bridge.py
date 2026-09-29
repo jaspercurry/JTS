@@ -75,7 +75,7 @@ from typing import Optional
 
 import numpy as np
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
 )
@@ -133,7 +133,7 @@ from jasper.aec.bridge_telemetry import (
     logger,
 )
 from jasper.aec.bridge_corpus_lanes import CorpusLanes, build_corpus_lanes
-from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
+from jasper.audio_routes.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 from ..logging_setup import configure_logging
 

@@ -55,7 +55,7 @@ from jasper.measurement_window import (
 from tests._async_wait import wait_signalled
 from tests._log_events import event_fields, event_records
 from tests.control_server_fixtures import FakeCoordinator
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 class Clock:

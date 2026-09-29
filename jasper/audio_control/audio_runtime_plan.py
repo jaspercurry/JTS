@@ -18,7 +18,7 @@ from jasper.audio_hardware.dac import (
     active_outputd_lane_channels_for,
     latency_floor_for,
 )
-from jasper.audio_runtime_overrides import (
+from jasper.audio_routes.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     load_runtime_overrides,
     runtime_overrides_path,
@@ -98,7 +98,7 @@ from jasper.dsp_control.fanin_coupling import (
     outputd_content_is_central_ring,
 )
 from jasper.multiroom import config as grouping_config
-from jasper.output_hardware import load_state as load_output_hardware_state
+from jasper.audio_routes.output_hardware import load_state as load_output_hardware_state
 from jasper.json_fields import json_fingerprint, sha256_file
 from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
@@ -107,7 +107,7 @@ from jasper.audio_control.transport_coherence import (
 
 # lazy: import cost — callers can supply a parsed topology (ADR-0226).
 if TYPE_CHECKING:
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 # Both transports use the same active-lane hardware/topology proof.
 _ACTIVE_ENDPOINT_DEVICES = frozenset(

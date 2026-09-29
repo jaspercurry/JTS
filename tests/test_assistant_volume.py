@@ -21,7 +21,7 @@ from jasper.audio_control.assistant_volume import (
 )
 from jasper.playback_state.music_sources import Source
 from jasper.audio_control.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.service_state.volume_persistence import VolumePersistence
 
 

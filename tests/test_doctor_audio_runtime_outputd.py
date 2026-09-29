@@ -26,8 +26,8 @@ from .active_speaker_fixtures import (
     register_passive_only_dac,
 )
 from .test_doctor_audio_runtime_fanin import _patch_unreachable_status
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 def _patch_ring_coupled_box(
     monkeypatch,

@@ -118,7 +118,7 @@ def check_active_speaker_runtime_graph() -> CheckResult:
         parked_muted_exits,
     )
     from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
-    from jasper.output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
 
     name = "active speaker runtime graph"
     try:

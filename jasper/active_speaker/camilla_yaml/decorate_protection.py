@@ -8,7 +8,7 @@ from typing import Mapping, Sequence
 
 import yaml
 
-from jasper.camilla_emit import emit_linkwitz_riley
+from jasper.audio_routes.camilla_emit import emit_linkwitz_riley
 
 from ..camilla_names import (
     baseline_protection_name,

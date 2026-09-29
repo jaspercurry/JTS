@@ -15,7 +15,7 @@
 //! Channel selection happens here, without an ALSA channel-split hop:
 //! `left`/`right` duplicate that program channel onto both DAC channels;
 //! `mono` averages (the clip-safe L+R sum at −6.02 dB, matching
-//! `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo` is passthrough.
+//! `jasper.audio_routes.camilla_emit.MONO_SUM_GAIN_DB`); `stereo` is passthrough.
 
 use std::io;
 

@@ -19,7 +19,7 @@ from ...bluetooth.rfkill import read_bluetooth_rfkill_state
 from ...config import Config
 from jasper.playback_state.mux_mode_persistence import DEFAULT_PATH as _MUX_MODE_DEFAULT_PATH
 from jasper.playback_state.music_sources import MUSIC_SOURCES, Source
-from ...source_intent import source_intent_enabled
+from jasper.audio_routes.source_intent import source_intent_enabled
 from ...service_units import LIBRESPOT_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check

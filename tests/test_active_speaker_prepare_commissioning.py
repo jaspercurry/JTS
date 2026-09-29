@@ -111,7 +111,7 @@ def test_commissioning_config_path_is_not_the_boot_config_path():
 
 def _two_active_group_topology():
     """A topology with two active groups — invalid for the single-speaker model."""
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     raw = _topology().to_dict()
     raw["speaker_groups"].append({

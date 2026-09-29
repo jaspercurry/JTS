@@ -169,7 +169,7 @@ def test_audio_runtime_plan_import_does_not_load_runtime_contract():
     import subprocess
     import sys
 
-    heavy = ("jasper.active_speaker.runtime_contract", "jasper.output_topology")
+    heavy = ("jasper.active_speaker.runtime_contract", "jasper.audio_routes.output_topology")
     result = subprocess.run(
         [
             sys.executable,

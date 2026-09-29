@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .atomic_io import atomic_write_json, read_json_mapping
-from .audio_hardware.dac import (
+from jasper.atomic_io import atomic_write_json, read_json_mapping
+from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
     DUAL_APPLE_USB_C_DAC_4CH,
@@ -28,16 +28,16 @@ from .audio_hardware.dac import (
     by_id as _dac_profile_by_id,
     label_for as _dac_label_for,
 )
-from .audio_hardware.hat_eeprom import HatEeprom
-from .audio_hardware.usb_port_role import (
+from jasper.audio_hardware.hat_eeprom import HatEeprom
+from jasper.audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
 )
-from .json_fields import (
+from jasper.json_fields import (
     issue as _issue,
     utc_now_iso,
 )
-from .paths import (
+from jasper.paths import (
     OUTPUT_HARDWARE_STATE_PATH as DEFAULT_STATE_PATH,
     resolve_state_path,
 )

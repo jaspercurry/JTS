@@ -127,7 +127,7 @@ def gate_role_services(run: Pass) -> None:
     # --no-reload: neither unit's file is written by this pass, so the
     # implicit reload `enable` would otherwise trigger buys nothing and
     # only costs time under memory pressure (#3639, the same fix
-    # jasper/source_intent.py's _UNIT_ENABLEMENT_VERBS already made).
+    # jasper/audio_routes/source_intent.py's _UNIT_ENABLEMENT_VERBS already made).
     systemctl_required(run, "enable", "--no-reload", DAC_INIT_UNIT, timeout=None)
     if run.record_changed:
         restart_dac_init_for_record_change(run)

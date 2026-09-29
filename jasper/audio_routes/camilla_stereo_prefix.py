@@ -16,7 +16,7 @@ implementation instead of a copy:
   - the solo-active pre-split section (PR-3, ``jasper.active_speaker``).
 
 **Layering.** This is a neutral leaf module (alongside
-``jasper.camilla_emit`` and ``jasper.dsp_control.camilla_config_contract``). It takes
+``jasper.audio_routes.camilla_emit`` and ``jasper.dsp_control.camilla_config_contract``). It takes
 DATA — already-built preference :class:`FilterSpec` objects and room
 :class:`PeqFilter` objects — never a ``SoundProfile``, so it imports
 nothing from ``jasper.sound`` (and nothing from ``jasper.active_speaker``).
@@ -26,7 +26,7 @@ the builder without an active→sound dependency.
 
 This module spells *what* prefix to build (which filters, in what order,
 the headroom policy); the per-line CamillaDSP YAML spelling stays in
-``jasper.camilla_emit``, the leaf format contract.
+``jasper.audio_routes.camilla_emit``, the leaf format contract.
 """
 
 from __future__ import annotations
@@ -43,21 +43,21 @@ from jasper.biquad import (
     PeqFilter,
     total_positive_boost_db,
 )
-from jasper.camilla_emit import (
+from jasper.audio_routes.camilla_emit import (
     emit_delay_filter,
     emit_gain_filter,
     emit_peaking_biquad,
     fmt,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.camilla_stereo_prefix")
 
 
 def emit_filter_spec(spec: FilterSpec) -> list[str]:
     """Map a preference :class:`FilterSpec` (shelf / gainless / peaking) to a
     CamillaDSP ``Biquad`` block.
 
-    Leaf ``fmt``/Peaking emission is shared (``jasper.camilla_emit``); this
+    Leaf ``fmt``/Peaking emission is shared (``jasper.audio_routes.camilla_emit``); this
     shelf/gainless dispatch is the preference-EQ assembly's own concern.
 
     **Every shelf is spelled with CamillaDSP's ``q`` steepness, at the constant

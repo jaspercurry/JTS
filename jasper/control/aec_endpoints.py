@@ -37,7 +37,7 @@ from ..atomic_io import read_json_mapping
 from ..audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state, DEFAULT_AEC_MODE_PATH
-from ..usb_mic import (
+from jasper.audio_routes.usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
     usb_mic_leg_choices,

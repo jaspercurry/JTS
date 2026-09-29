@@ -13,8 +13,8 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.peq import bell_half_width_oct
 from jasper.biquad import FilterSpec
 from jasper.json_fields import issue as _issue, sha256_text
-from jasper import output_topology_store as output_topology
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes import output_topology_store as output_topology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.sound import settings as sound_settings
 
 from . import baseline_profile, baseline_record, candidate_bank, measurement_emit

@@ -337,9 +337,9 @@ def compose_audio_health(
     """Compose the public, presentation-ready audio-health contract.
 
     ``output_hardware`` is an
-    :class:`~jasper.output_hardware.OutputHardwareState` or ``None``, and
+    :class:`~jasper.audio_routes.output_hardware.OutputHardwareState` or ``None``, and
     ``output_topology_snapshot`` is a
-    :class:`~jasper.output_topology_store.OutputTopologySnapshot` or ``None``
+    :class:`~jasper.audio_routes.output_topology_store.OutputTopologySnapshot` or ``None``
     (before the sampler's first slow-cadence read) — deliberately the
     snapshot, not the bare topology; see :func:`undeclared_hardware_signal`.
 

@@ -18,8 +18,8 @@ from jasper import paths
 from jasper.atomic_io import atomic_write_text
 from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import load_output_topology_strict, stamp_statefile_topology
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 
 from .camilla_yaml import PARKED_CONFIG_NAME
 from .environment import (

@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing import Any
 
 from jasper.json_fields import issue as _issue
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
     SpeakerChannel,
     SpeakerGroup,

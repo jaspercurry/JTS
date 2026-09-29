@@ -17,7 +17,7 @@ it was found and the move is declined (never a fallback — ADR-0100); each
 gate's own docstring owns why.
 
 A ``# lazy: import cost`` below defers :mod:`jasper.active_speaker` or
-:mod:`jasper.output_topology` unless its own note names another tree.
+:mod:`jasper.audio_routes.output_topology` unless its own note names another tree.
 ``tests/test_audio_runtime_plan.py`` pins those two out of
 :mod:`jasper.audio_control.audio_runtime_plan`'s import closure, which reaches this module
 at module scope (ADR-0226).
@@ -216,8 +216,8 @@ def load_topology_for_wire():
     stereo geometry.
     """
     try:
-        from jasper.output_topology import OutputTopologyError  # lazy: import cost
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
+        from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: import cost
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: import cost
     except ImportError:
         # Bound outside the read's ``except`` on purpose: naming
         # ``OutputTopologyError`` in that tuple while the import itself can fail
@@ -901,8 +901,8 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile  # lazy: import cost
     from jasper.active_speaker.measurement_emit import load_tuning_declaration, require_candidate_speaker_identity  # lazy: import cost
     from jasper.active_speaker.output_contract import classify_output_contract  # lazy: import cost
-    from jasper.output_topology import OutputTopologyError  # lazy: import cost
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: import cost
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: import cost
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: import cost
 
     try:
         topology = load_output_topology_strict()

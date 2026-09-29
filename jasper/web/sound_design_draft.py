@@ -14,7 +14,7 @@ from jasper.active_speaker.crossover_declaration import declared_crossover_geome
 from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
 from jasper.active_speaker.installation import installation_view
 from jasper.log_event import log_event
-from jasper.output_topology_store import load_output_topology
+from jasper.audio_routes.output_topology_store import load_output_topology
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_declaration import CrossoverGeometry

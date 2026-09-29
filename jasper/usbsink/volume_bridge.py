@@ -121,7 +121,7 @@ _TLV_SCALE_RE = re.compile(
 # numbers: macOS maps its slider POSITION perceptually onto the host-advertised
 # dB range, and the kernel's wide ~-128..0 dB default compressed the whole Mac
 # slider into the top few dB (issue #1698: a low-mid slider read ~73%). We
-# advertise a narrow -50..0 dB span aligned with jasper.volume_curve's -50 dB
+# advertise a narrow -50..0 dB span aligned with jasper.audio_routes.volume_curve's -50 dB
 # floor. gadget-up (deploy/usbsink/jasper-usbgadget-up) writes these to configfs
 # in 1/256 dB units — c_volume_min/max/res = round(const*256) = -12800/0/256 —
 # and tests/test_usbsink_volume_bridge.py pins the two ends to these constants
@@ -520,7 +520,7 @@ class VolumeBridge:
         the observed Mac 64% / JTS 31% mismatch.
 
         This is one END of a two-ended contract. The other end is
-        jasper.volume_curve.percent_to_db, which turns the resulting
+        jasper.audio_routes.volume_curve.percent_to_db, which turns the resulting
         listening_level back into a CamillaDSP output dB over the SAME
         -50 dB floor we advertise to the host. Keep the two aligned:
         host slider -> UAC2 step index (over the advertised -50..0 dB) ->

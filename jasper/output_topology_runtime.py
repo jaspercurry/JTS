@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import (
     load_output_topology_strict,
     new_topology_draft,
     output_topology_mutation,

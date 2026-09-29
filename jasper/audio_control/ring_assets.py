@@ -22,7 +22,7 @@ from jasper.json_fields import sha256_file
 
 # lazy: import cost — keep ring asset readers import-cheap.
 if TYPE_CHECKING:
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into. Canonical home
 # for the value — do not re-spell it as a literal elsewhere. Build and install
@@ -363,10 +363,10 @@ def ring_ioplug_wire_supported(
 
 def _load_topology_for_ring_wire(path: str | None) -> tuple[OutputTopology | None, str]:
     """Unreadable topology keeps the shipped stereo wire; arm preflights reject it."""
-    from jasper.output_topology import (  # lazy: import cost, keep ring asset readers import-cheap
+    from jasper.audio_routes.output_topology import (  # lazy: import cost, keep ring asset readers import-cheap
         OutputTopologyError,
     )
-    from jasper.output_topology_store import (  # lazy: keep ring asset readers import-cheap
+    from jasper.audio_routes.output_topology_store import (  # lazy: keep ring asset readers import-cheap
         load_output_topology_strict,
     )
 

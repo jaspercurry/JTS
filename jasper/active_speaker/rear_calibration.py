@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 import yaml
 
-from jasper.camilla_emit import emit_delay_filter, emit_gain_filter, emit_mixer
+from jasper.audio_routes.camilla_emit import emit_delay_filter, emit_gain_filter, emit_mixer
 from jasper.json_fields import CodedFieldError, JsonFields, finite_float
 
 KIND = "jts_rear_calibration"

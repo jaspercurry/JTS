@@ -29,7 +29,7 @@ from tests.volume_coordinator_fixtures import (
 
 from jasper.audio_control import renderer
 from jasper.playback_state.music_sources import Source
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_handoff import VolumeHandoff
 from jasper.service_state.volume_persistence import VolumePersistence
 from jasper.audio_control.volume_state import VolumeState

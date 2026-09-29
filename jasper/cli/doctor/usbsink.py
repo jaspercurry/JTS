@@ -35,15 +35,15 @@ from jasper.audio_hardware.usb_port_role import (
     gadget_unavailable_detail,
 )
 from jasper.service_state.audio_runtime_settings import UAC2_LOW_LATENCY_EXPECTED_ATTRS
-from jasper.audio_validation_route import route_live_state_issues
+from jasper.audio_routes.audio_validation_route import route_live_state_issues
 from jasper.fanin.status import (
     fanin_usbsink_input,
     fanin_usbsink_lane_is_direct,
 )
 from jasper.playback_state.music_sources import Source
-from jasper.output_hardware import current_usb_data_role
+from jasper.audio_routes.output_hardware import current_usb_data_role
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET
-from jasper.source_intent import source_intent_enabled
+from jasper.audio_routes.source_intent import source_intent_enabled
 from jasper.service_units import USBGADGET_SERVICE
 from jasper.device_probe.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,
@@ -53,7 +53,7 @@ from jasper.device_probe.usbgadget import (
     network_wanted,
     udc_host_connected,
 )
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     RELAY_STATUS_FRESH_SECONDS,
     RELAY_STATUS_PATH,
     USB_MIC_BCD_DEVICE,

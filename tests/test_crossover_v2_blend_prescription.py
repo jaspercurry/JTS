@@ -81,7 +81,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.camilla_emit import emit_peaking_biquad
+from jasper.audio_routes.camilla_emit import emit_peaking_biquad
 
 from tests.test_active_speaker_profile import _two_way_preset
 

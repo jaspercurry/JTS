@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
-from .json_fields import as_mapping
+from jasper.fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
+from jasper.json_fields import as_mapping
 
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]

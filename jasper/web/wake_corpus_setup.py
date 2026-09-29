@@ -67,7 +67,7 @@ from urllib.parse import parse_qs, urlparse
 
 from jasper.control.restart_broker import manage_units
 from jasper.log_event import log_event
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
     AEC3_SWEEP_VARIANTS,

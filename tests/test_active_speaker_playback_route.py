@@ -25,7 +25,7 @@ from jasper.audio_hardware.dac import (
 )
 from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.playback_route import resolve_output_layout
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )

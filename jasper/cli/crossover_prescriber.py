@@ -49,7 +49,7 @@ from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.atomic_io import atomic_write_json
-from jasper.output_topology_store import load_output_topology
+from jasper.audio_routes.output_topology_store import load_output_topology
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 
 PROG = "jasper-crossover-prescriber"

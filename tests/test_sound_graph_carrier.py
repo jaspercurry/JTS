@@ -67,8 +67,8 @@ from tests.test_active_speaker_runtime_contract import (
     _flat_yaml,
     _full_range_stereo,
 )
-from jasper.output_topology_store import save_output_topology
-from jasper.output_topology_store import new_topology_draft
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import new_topology_draft
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 
@@ -436,7 +436,7 @@ def test_stereo_host_reemit_folds_mono_program_onto_the_declared_output(
     cutover the statefile guard just approved.
     """
     from jasper.active_speaker.camilla_names import output_commission_mute_name
-    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB
     from tests.test_active_speaker_runtime_contract import _full_range_mono_on
 
     _persist_topology(_full_range_mono_on(assigned), tmp_path, monkeypatch)

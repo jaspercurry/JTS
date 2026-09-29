@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from jasper import aec_sweep
+from jasper.audio_routes import aec_sweep
 from jasper.wake_corpus import runtime_probe
 from jasper.web import wake_corpus_setup
 

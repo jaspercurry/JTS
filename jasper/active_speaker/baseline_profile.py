@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_control.dsp_apply import same_config_file
-from jasper.output_topology import canonical_fingerprint as _fingerprint
+from jasper.audio_routes.output_topology import canonical_fingerprint as _fingerprint
 
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
 from .state_paths import baseline_profile_state_path

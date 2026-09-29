@@ -16,7 +16,7 @@ from jasper.dsp_control.camilla_config_contract import (
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
-from jasper.camilla_emit import emit_devices_block
+from jasper.audio_routes.camilla_emit import emit_devices_block
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..camilla_names import blend_correction_name, room_peq_name

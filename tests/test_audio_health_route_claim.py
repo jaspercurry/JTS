@@ -13,8 +13,8 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 from .audio_health_fixtures import _RETIRED_ACTIVE_LANE, _compose
 
 

@@ -51,7 +51,7 @@ from ._common import bonded_follower_active
 from jasper.log_event import log_event
 from jasper.platform import wire
 from jasper.platform.uds import mux_socket_command
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
@@ -62,14 +62,14 @@ from jasper.dsp_control.output_topology_observation import (
     declared_hardware_mismatch,
     repin_composite_child_serials,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     load_output_topology,
     new_topology_draft,
     load_output_topology_snapshot,
     output_topology_mutation,
     topology_hardware_from_state,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
 )

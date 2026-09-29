@@ -26,8 +26,8 @@ from tests.active_speaker_fixtures import (
 
 from jasper.active_speaker import runtime_convergence
 from jasper.active_speaker.graph_selector import parked_safe_graph_decision
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     statefile_unproved_stamp_path,

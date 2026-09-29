@@ -17,8 +17,8 @@ from typing import Any, Mapping
 
 from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.json_fields import as_mapping
-from jasper.output_topology import OutputTopologyError
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.multiroom.config import is_active_member, load_config
 
 from .candidate_bank import load_applied_candidate

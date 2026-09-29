@@ -21,7 +21,7 @@ from jasper.dsp_control.camilla_config_contract import (
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
-from ...camilla_emit import DEFAULT_VOLUME_LIMIT_DB
+from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
@@ -731,7 +731,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     (see `deploy/bin/jasper-camilla-topology-gate`). The next convergence that
     writes a statefile clears either.
     """
-    from ...output_topology_store import (
+    from jasper.audio_routes.output_topology_store import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
         statefile_unproved_stamp_path,

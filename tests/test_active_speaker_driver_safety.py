@@ -44,7 +44,7 @@ from jasper.active_speaker.excitation_safety_plan import (
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import load_tuning_declaration, MeasurementGraphRefused
 from jasper.active_speaker.test_signal_plan import DEFAULT_DRIVER_SWEEP_DURATION_S, DRIVER_SWEEP_DURATIONS_S
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_excitation_safety_plan import _requested
 

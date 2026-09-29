@@ -52,7 +52,7 @@ from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
 from .role_stash import RoleStash
 from .snapfifo import SNAPFIFO
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
 logger = logging.getLogger(__name__)
 

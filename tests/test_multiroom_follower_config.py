@@ -10,7 +10,7 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 """
 from __future__ import annotations
 
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 import ast
 import asyncio
 import logging
@@ -33,7 +33,7 @@ import jasper.active_speaker.design_draft as design_draft_mod
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker import graph_selector, graph_types
 import jasper.dsp_control.dsp_apply as dsp_apply_mod
-import jasper.output_topology_store as output_topology_mod
+import jasper.audio_routes.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
@@ -824,7 +824,7 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 #
 # THE RING BRANCH IS THE ONLY PRODUCTION ONE. `resolve_output_layout` returns
 # RING_ACTIVE_PLAYBACK_DEVICE unconditionally for any profile with an active
-# outputd lane (jasper/output_topology.py — "the ACTIVE ring, unconditionally
+# outputd lane (jasper/audio_routes/output_topology.py — "the ACTIVE ring, unconditionally
 # … OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member"), so a bonded active endpoint
 # plays into the active ring whatever its coupling says. The DAC branch is
 # reached only by the explicit lab/CI override (the `playback_device` argument

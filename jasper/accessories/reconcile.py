@@ -54,7 +54,7 @@ from jasper.service_units import (
     run_systemctl as _systemctl,
     show_blocks,
 )
-from jasper.source_intent import source_intent_enabled
+from jasper.audio_routes.source_intent import source_intent_enabled
 from jasper.systemd_probe import unit_state
 
 from . import status as accessory_status
@@ -430,7 +430,7 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
       owns that unit with start/stop only (ADR-0217).
 
     Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
-    matching ``jasper/source_intent.py``. Any unexpected failure answers
+    matching ``jasper/audio_routes/source_intent.py``. Any unexpected failure answers
     ``absent``, which is the conservative direction: we do not start anything.
     """
     try:

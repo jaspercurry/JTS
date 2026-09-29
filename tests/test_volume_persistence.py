@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from jasper.volume_curve import db_to_percent, percent_to_db
+from jasper.audio_routes.volume_curve import db_to_percent, percent_to_db
 from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
 from jasper.service_state.volume_persistence import (
     VolumePersistence,

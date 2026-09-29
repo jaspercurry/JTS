@@ -12,8 +12,8 @@ from typing import Any, Literal
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
 from .camilla_yaml import ProgramHeadroomExhausted
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate, load_applied_candidate

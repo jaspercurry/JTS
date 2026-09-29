@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 import pytest
 
 from jasper.cli.audio_config import main as audio_config_main
-from jasper.audio_runtime_overrides import (
+from jasper.audio_routes.audio_runtime_overrides import (
     clear_runtime_override,
     load_runtime_overrides,
     runtime_overrides_path,

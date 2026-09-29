@@ -22,11 +22,11 @@ import threading
 import time
 from typing import Any
 
-from jasper.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
+from jasper.audio_routes.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
 from jasper.atomic_io import atomic_write_text, read_json_mapping
 from jasper.log_event import log_event
 from jasper.playback_state import wake_legs
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,

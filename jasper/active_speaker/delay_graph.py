@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from typing import Any, Literal, Mapping, NoReturn, TypeAlias
 
-from jasper.camilla_emit import fmt
+from jasper.audio_routes.camilla_emit import fmt
 from jasper.dsp_control.camilla_config_contract import ensure_volume_limit_db
 from jasper.json_fields import finite_float
 
@@ -86,7 +86,7 @@ def _require_volume_limit(
 def quantized_delay_ms(delay_us: float) -> float:
     """The single µs→ms quantizer for a Camilla ``Delay`` filter value.
 
-    CamillaDSP YAML carries delays through ``jasper.camilla_emit.fmt`` (4
+    CamillaDSP YAML carries delays through ``jasper.audio_routes.camilla_emit.fmt`` (4
     decimal places of ms), so that formatter is the SOLE quantizer: one
     ``fmt`` pass over the raw microsecond value, no intermediate rounding.
     Every producer that folds a requested ``delay_us`` into a graph value

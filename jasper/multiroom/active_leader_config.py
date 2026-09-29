@@ -74,7 +74,7 @@ from ..log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ async def precheck_active_leader(
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
     from jasper.dsp_control.fanin_coupling import capture_half, capture_kwargs_for_coupling
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
     from jasper.sound.profile import load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
 

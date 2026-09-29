@@ -35,7 +35,7 @@ from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source
 from jasper.source_intent_units import RECONCILE_BROKER_TIMEOUT_SECONDS, RECONCILE_UNIT
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.source_intent")
 
 SOURCE_STATUS_PATH = "/run/jasper-source-intent/status.json"
 

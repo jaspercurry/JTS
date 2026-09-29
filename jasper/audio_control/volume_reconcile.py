@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from jasper.control.measurement_hold import read_measurement_hold
 from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
-from jasper.volume_curve import main_mute_for_level, percent_to_db
+from jasper.audio_routes.volume_curve import main_mute_for_level, percent_to_db
 from jasper.volume_floor import RECONCILE_DRIFT_DB
 
 if TYPE_CHECKING:

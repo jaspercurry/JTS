@@ -844,7 +844,7 @@ def requires_roleful_graph() -> bool:
     Every caller that ACTS on rolefulness reads the fail-CLOSED loaders instead.
     """
     from jasper.active_speaker.output_contract import classify_output_contract
-    from jasper.output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
 
     try:
         # The STRICT loader, not `evidence.output_topology()`: this one raises

@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from ..audio_hardware import dac as dac_profiles
-from ..output_hardware import published_dac_id
+from jasper.audio_routes.output_hardware import published_dac_id
 
 
 DacChipAecStatus = Literal["approved", "needs_calibration"]

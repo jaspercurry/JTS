@@ -21,7 +21,7 @@ from typing import Any
 
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.atomic_io import advisory_file_lock
-from jasper.enhanced_aec import (
+from jasper.audio_routes.enhanced_aec import (
     INSTALL_LOCK_PATH,
     SOURCE_ROOT,
     VENV_ROOT,

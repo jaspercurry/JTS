@@ -12,7 +12,7 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
-from jasper.camilla_emit import emit_devices_block, fmt
+from jasper.audio_routes.camilla_emit import emit_devices_block, fmt
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset

@@ -51,7 +51,7 @@ from jasper.active_speaker.output_contract import (
 from jasper.active_speaker.output_contract import flat_graph_program_dest_map
 from jasper.active_speaker.runtime_contract import classify_camilla_graph
 from jasper.sound.flat_verifier import _flat_hard_muted_outputs
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
     FlatChannelPlan,
     emit_flat_outputd_cutover_config,
@@ -464,7 +464,7 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     )
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
+        "jasper.audio_routes.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False

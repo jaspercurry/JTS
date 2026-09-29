@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
+from jasper.audio_routes.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS
 from jasper.speaker_layout import measurement_target_id
 
@@ -119,7 +119,7 @@ def _emit_split_mixer(
 
 
 # The inter-speaker channel-select mixer name, owned by the shared leaf
-# (jasper.camilla_emit) and re-exported so the active-speaker verifier has one
+# (jasper.audio_routes.camilla_emit) and re-exported so the active-speaker verifier has one
 # import point.
 channel_select_mixer_name = CHANNEL_SELECT_MIXER
 

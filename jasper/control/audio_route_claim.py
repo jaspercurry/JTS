@@ -23,8 +23,8 @@ from ..active_speaker.playback_route import (
     ActiveLaneCapabilityGap,
     active_lane_capability_gap,
 )
-from ..output_topology import OutputTopologyError
-from ..output_topology_store import load_output_topology_strict, load_output_topology
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict, load_output_topology
 
 logger = logging.getLogger(__name__)
 

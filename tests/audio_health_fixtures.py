@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from jasper.control.audio_health import compose_audio_health
 from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
-from jasper.output_hardware import OutputHardwareState
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import OutputTopologySnapshot
+from jasper.audio_routes.output_hardware import OutputHardwareState
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import OutputTopologySnapshot
 
 # #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
 # along with the endpoint, so this shape no longer reports a capture MISMATCH —

@@ -94,7 +94,7 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _roles,
 )
-from jasper.output_topology_store import save_output_topology, load_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology, load_output_topology
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 

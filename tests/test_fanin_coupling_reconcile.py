@@ -34,8 +34,8 @@ from jasper.dsp_control.fanin_coupling import (
 )
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_field_maps, event_fields, event_records
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 @pytest.fixture(autouse=True)

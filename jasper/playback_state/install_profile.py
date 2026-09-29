@@ -14,7 +14,7 @@ former third tier (``endpoint`` / ``satellite``) is GONE as an install
 tier — "endpoint behavior" is now purely the multiroom *follower*
 grouping role at runtime (a full/streambox box bonded as a follower
 parks its brain, then hands source parking to the canonical source coordinator;
-see jasper.multiroom.reconcile and jasper.source_intent).
+see jasper.multiroom.reconcile and jasper.audio_routes.source_intent).
 
 What a tier *grants* is named on its own axis: ``Capability``, with the
 per-profile grant table in ``PROFILE_CAPABILITIES`` and one predicate,
@@ -24,7 +24,7 @@ reconciler" pattern, the same shape as ``DacProfile``'s and
 ``WakeModelEntry``'s registries. It lives HERE rather than in a new
 module because this file is already the single import surface every
 tier-aware caller uses (install.sh's landing-page bake, jasper-control,
-jasper-doctor, jasper.enhanced_aec, jasper.accessories.reconcile, the
+jasper-doctor, jasper.audio_routes.enhanced_aec, jasper.accessories.reconcile, the
 multiroom reconciler); a separate module would make all of them learn a
 second import for one enum and one mapping.
 
@@ -183,7 +183,7 @@ def install_profile_supports_wake_detection(profile: str | None) -> bool:
     only where this is granted; the accessory reconciler
     (``jasper.accessories.reconcile``) owns jasper-voice's lifecycle where
     it is not. Enhanced AEC
-    (``jasper.enhanced_aec.install_profile_supports_enhanced_aec``) rides
+    (``jasper.audio_routes.enhanced_aec.install_profile_supports_enhanced_aec``) rides
     with it too.
     """
     return install_profile_has_capability(profile, Capability.WAKE_DETECTION)

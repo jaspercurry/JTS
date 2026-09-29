@@ -17,7 +17,7 @@ import yaml
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import dynamic_bass_owner_groups, validated_base_graph
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 from ..camilla_yaml import _reserialize_keeping_header
 from ..environment import classify_camilla_config_text, parse_camilla_statefile_config_path

@@ -30,7 +30,7 @@ import shutil
 import subprocess
 
 
-from jasper import aec_sweep
+from jasper.audio_routes import aec_sweep
 from jasper.wake_corpus import recording_backend, runtime_probe
 from jasper.web import wake_corpus_setup as wc
 

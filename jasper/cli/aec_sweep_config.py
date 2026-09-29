@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     Aec3SweepConfigError,
     aec3_sweep_config_payload,
     load_aec3_sweep_config,

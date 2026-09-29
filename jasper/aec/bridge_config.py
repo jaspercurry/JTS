@@ -19,7 +19,7 @@ import math
 import os
 from pathlib import Path
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_XVF,
     Aec3SweepConfig,
     Aec3SweepConfigError,
@@ -36,7 +36,7 @@ from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH_ENV,
     logger,
 )
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     INTENT_PATH as USB_MIC_INTENT_PATH,
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_LEG_KEY,

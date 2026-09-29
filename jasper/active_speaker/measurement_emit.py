@@ -12,7 +12,7 @@ from typing import Any, Literal, Mapping, Sequence
 import yaml
 
 from jasper.biquad import FilterSpec
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker._common import MeasurementGraphRefused
 from jasper.active_speaker.playback_route import resolve_active_playback_device

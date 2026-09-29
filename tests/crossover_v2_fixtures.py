@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from jasper import output_topology_store as output_topology_mod
+from jasper.audio_routes import output_topology_store as output_topology_mod
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.plan_run import prepare_plan_captures
 
@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
 from jasper.active_speaker.playback_route import ACTIVE_PLAYBACK_DEVICE_ENV
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )

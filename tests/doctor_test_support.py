@@ -10,7 +10,7 @@ import os
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence
 from jasper.config import Config
-from jasper.output_hardware import OutputCardFact, OutputHardwareState, write_state
+from jasper.audio_routes.output_hardware import OutputCardFact, OutputHardwareState, write_state
 
 
 def _make_unit_states_fake(

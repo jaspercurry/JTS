@@ -30,7 +30,7 @@ from jasper.accessories.registry import (
     lookup_by_name,
 )
 from jasper.service_state.wake_ports import parse_udp_device
-from jasper.usb_mic import USB_HOST_MIC_UDP_PORT
+from jasper.audio_routes.usb_mic import USB_HOST_MIC_UDP_PORT
 
 
 def test_vk01_in_registry():

@@ -141,8 +141,8 @@ code = [
   "jasper/audio_control/camilla.py",
   "jasper/dsp_control/camilla_config_contract.py",
   "jasper/dsp_control/camilla_latency.py",
-  "jasper/output_hardware.py",
-  "jasper/output_topology.py",
+  "jasper/audio_routes/output_hardware.py",
+  "jasper/audio_routes/output_topology.py",
   "jasper/speaker_layout.py",
   "deploy/alsa/**",
   "deploy/lib/jasper-asound-render.sh",
@@ -252,7 +252,7 @@ code = [
   "jasper/cli/aec_*.py",
   "jasper/aec/**",
   "jasper/cli/enhanced_aec_install.py",
-  "jasper/enhanced_aec.py",
+  "jasper/audio_routes/enhanced_aec.py",
   "jasper_aec3/**",
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
@@ -280,6 +280,7 @@ code = [
   "jasper/audio_control/audio_validation_hardware_checks.py",
   "jasper/audio_control/audio_validation_probes.py",
   "jasper/audio_control/audio_validation_readiness.py",
+  "jasper/audio_routes/audio_validation_route.py",
 ]
 docs = [
   # Current truth for this subsystem: the reference/transport contract and the
@@ -330,7 +331,7 @@ code = [
   "jasper/audio_control/volume_coordinator.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
-  "jasper/camilla_stereo_prefix.py",
+  "jasper/audio_routes/camilla_stereo_prefix.py",
   # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
   # that preference EQ, headroom and the tuning fits all predict with.
   "jasper/biquad.py",
@@ -338,7 +339,7 @@ code = [
   # the volume_limit door.
   "jasper/dsp_control/camilla_config_contract.py",
   # Renders the one devices block; volume_limit is 0.0 by construction.
-  "jasper/camilla_emit.py",
+  "jasper/audio_routes/camilla_emit.py",
   "jasper/dsp_control/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_profile_apply.py",
@@ -360,6 +361,8 @@ code = [
   "jasper/audio_control/volume_reconcile.py",
   "jasper/audio_control/volume_scales.py",
   "jasper/audio_control/volume_state.py",
+  "jasper/audio_routes/volume_curve.py",
+  "jasper/audio_routes/volume_diagnostics.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -392,7 +395,7 @@ docs = [
 id = "local-source-lifecycle"
 safety = "boot-risk"
 code = [
-  "jasper/source_intent.py", "jasper/local_sources/reconcile.py",
+  "jasper/audio_routes/source_intent.py", "jasper/local_sources/reconcile.py",
   "jasper/bluetooth/availability.py",
   "jasper/local_sources/registry.py",
   "jasper/local_sources/markers.py",
@@ -456,7 +459,7 @@ code = [
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",
   "jasper/cli/usb_port_role.py",
-  "jasper/output_hardware.py",
+  "jasper/audio_routes/output_hardware.py",
   "jasper/usbsink/**",
   "jasper/*usb*.py",
   "jasper/cli/usb*.py",
@@ -484,7 +487,7 @@ code = [
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",
   "jasper/cli/usb_port_role.py",
-  "jasper/output_hardware.py",
+  "jasper/audio_routes/output_hardware.py",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/lib/install/renderers.sh",
   "deploy/usbsink/jasper-usbgadget-*",
@@ -503,6 +506,7 @@ code = [
   # every unrelated /state change; a real usb-network change still routes
   # here via the gadget scripts/units/doctor globs above.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
+  "jasper/audio_routes/usb_mic.py",
 ]
 docs = [
   "AGENTS.md",

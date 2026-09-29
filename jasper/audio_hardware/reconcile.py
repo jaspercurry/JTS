@@ -65,7 +65,7 @@ from jasper.paths import (
     camilla_statefile,
     crossover_statefile,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     ObservedOutput,
     degraded_marker_path,
     state_path,
@@ -268,7 +268,7 @@ class Pass:
             try:
                 # lazy: import cost — 2k lines a single-DAC install pass
                 # never needs (ADR-0226).
-                from jasper.output_topology_store import load_output_topology_strict  # lazy: topology parse cost on composite paths
+                from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: topology parse cost on composite paths
 
                 self._topology = load_output_topology_strict(
                     self.output_topology_path

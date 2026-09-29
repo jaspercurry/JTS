@@ -18,7 +18,7 @@ from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.active_speaker.driver_safety import DriverSafetyProfileError
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.rear_calibration import RearCalibrationError
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 from jasper.json_fields import (
     CodedFieldError,
     JsonFields,

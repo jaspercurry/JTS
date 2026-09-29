@@ -20,7 +20,7 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
-from jasper import output_topology_store as topology_mod
+from jasper.audio_routes import output_topology_store as topology_mod
 import dataclasses
 import fcntl
 import os
@@ -78,8 +78,8 @@ from jasper.multiroom.reconcile_plan import (
     snapclient_argv,
     snapserver_argv,
 )
-from jasper.output_topology import OutputTopologyError
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 def _desired(plan_: ReconcilePlan, unit: str) -> str:
@@ -2652,7 +2652,7 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
     """`_systemctl_unit_state` is a thin wrapper: the spawn + classification
     it delegates to is jasper.systemd_probe.unit_query (shared with
-    jasper.source_intent's `_query_unit_state`)."""
+    jasper.audio_routes.source_intent's `_query_unit_state`)."""
     import subprocess as sp
 
     calls: list[list[str]] = []

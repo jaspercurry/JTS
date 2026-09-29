@@ -22,7 +22,7 @@ from jasper.dsp_control.camilla_config_contract import (
     VolumeLimitViolation,
     check_volume_limit,
 )
-from jasper.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
+from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from jasper.log_event import log_event
 from jasper.volume_latch import (
     READBACK_TOLERANCE_DB,

@@ -16,21 +16,21 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, cast
 
-from .audio_hardware.dac import (
+from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     clock_domain_label_for as _dac_clock_domain_label_for,
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
 )
-from .json_fields import (
+from jasper.json_fields import (
     CodedFieldError,
     JsonFields,
     lenient_json_fingerprint,
 )
-from .output_hardware import normalize_output_device_id
-from .output_topology_evaluation import evaluate_output_topology
-from .speaker_layout import (
+from jasper.audio_routes.output_hardware import normalize_output_device_id
+from jasper.audio_routes.output_topology_evaluation import evaluate_output_topology
+from jasper.speaker_layout import (
     MAIN_GROUP_KINDS,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     PASSIVE_MAIN_MODE,

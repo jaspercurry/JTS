@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 from jasper.json_fields import JsonFields, issue
 
 if TYPE_CHECKING:
-    from jasper.output_topology import SpeakerGroup
+    from jasper.audio_routes.output_topology import SpeakerGroup
 
 
 # Float round-trip noise only; must never bridge a real crossover setting change.

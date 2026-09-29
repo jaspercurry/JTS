@@ -1378,7 +1378,7 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // asserts a raw `type hw` block with no `plug` in the output.
         //
         // The COMPOSITE CHILDREN reach here on the same terms and with the same
-        // scope: `jasper.output_hardware` hands the reconciler each child as a
+        // scope: `jasper.audio_routes.output_hardware` hands the reconciler each child as a
         // raw `hw:CARD=<card>,DEV=<n>` alias, so a child's client edge is its
         // hardware edge too.
         let current = pcm

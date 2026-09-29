@@ -5,7 +5,7 @@
 """Import-cheap wake capture UDP addresses and port defaults."""
 from __future__ import annotations
 
-from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
+from jasper.audio_routes.aec_sweep import AEC3_SWEEP_VARIANTS
 from jasper.playback_state import wake_legs
 
 DEFAULT_AEC_UDP_HOST = "127.0.0.1"

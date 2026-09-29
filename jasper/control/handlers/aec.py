@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any, cast
 
-from ... import enhanced_aec
+from jasper.audio_routes import enhanced_aec
 from jasper.service_state import wake_models
 from jasper.runtime_config.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
@@ -24,7 +24,7 @@ from jasper.runtime_config.audio_profile_state import (
 from ...atomic_io import locked_update_env_file
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
-from ...usb_mic import (
+from jasper.audio_routes.usb_mic import (
     read_usb_mic_leg,
     usb_mic_leg_choices,
     write_usb_mic_enabled,

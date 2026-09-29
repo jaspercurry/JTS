@@ -15,7 +15,7 @@ from ...audio_hardware.dac import (
 )
 from ...config import Config
 from ...mics import xvf3800
-from ...output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
@@ -510,7 +510,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
     from jasper.active_speaker.output_contract import classify_output_contract
-    from jasper.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
     from jasper.dsp_control.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
 
     try:

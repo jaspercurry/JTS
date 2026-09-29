@@ -16,7 +16,7 @@ from jasper.active_speaker import (
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND
 from jasper.active_speaker.crossover_v2.conductor_context import ensure_crossover_preview_ready
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from tests.active_speaker_fixtures import mono_output_topology, research_design_draft
 
 

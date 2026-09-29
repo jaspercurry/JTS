@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import source_intent
+from jasper.audio_routes import source_intent
 from jasper.control.restart_broker import START_ONLY_UNITS
 from jasper.json_fields import sha256_text
 from jasper.playback_state.music_sources import Source

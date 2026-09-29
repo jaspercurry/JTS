@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 # ``find_spec`` inspects the package path without executing the extension.
 # The control plane and bridge must still call
-# ``jasper.enhanced_aec.runtime_v2_verified`` before accessing ``Aec3V2``.
+# ``jasper.audio_routes.enhanced_aec.runtime_v2_verified`` before accessing ``Aec3V2``.
 HAS_V2 = importlib.util.find_spec(f"{__name__}._aec3_v2") is not None
 
 

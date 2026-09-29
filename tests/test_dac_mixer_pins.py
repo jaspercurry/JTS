@@ -20,8 +20,8 @@ from jasper.audio_hardware.dac import (
     MixerControl,
 )
 from jasper.cli.doctor import audio
-from jasper import output_hardware
-from jasper.output_hardware import (
+from jasper.audio_routes import output_hardware
+from jasper.audio_routes.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
     write_state,

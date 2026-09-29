@@ -30,7 +30,7 @@ from jasper.runtime_config.audio_profile_state import (
     profile_env_updates,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
-from jasper import aec_sweep
+from jasper.audio_routes import aec_sweep
 from jasper.aec import bridge_engines, bridge_telemetry
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
@@ -48,7 +48,7 @@ from jasper.audio_control.mic_presence import (
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
 from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     USB_MIC_RAW_XVF_LEG,
     read_usb_mic_leg,
     usb_mic_enabled,

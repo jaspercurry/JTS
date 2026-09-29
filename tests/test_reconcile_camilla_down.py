@@ -68,7 +68,7 @@ from tests.test_active_speaker_baseline_profile import (
 from tests.active_speaker_fixtures import declare_applied_fixture
 from tests.sound_camilla_fixtures import FakeCamilla
 from tests._log_events import event_fields
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The

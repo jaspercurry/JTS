@@ -14,7 +14,7 @@ from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     latency_floor_for,
 )
-from jasper.audio_runtime_overrides import (
+from jasper.audio_routes.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
 )

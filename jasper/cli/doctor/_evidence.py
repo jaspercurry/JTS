@@ -368,7 +368,7 @@ class Evidence:
         return self.get("boot_config_text", read_boot_config_or_none)
 
     def output_hardware_state(self) -> Any:
-        from ...output_hardware import load_state
+        from jasper.audio_routes.output_hardware import load_state
 
         return self.get("output_hardware_state", load_state)
 
@@ -376,14 +376,14 @@ class Evidence:
         """Whether the reconciler's last pass hit a probe it depends on
         being unavailable (the marker carries no other detail — see
         ``output_hardware.degraded_marker_path``)."""
-        from ...output_hardware import degraded_marker_path
+        from jasper.audio_routes.output_hardware import degraded_marker_path
 
         return self.get(
             "output_hardware_degraded", lambda: degraded_marker_path().is_file(),
         )
 
     def output_topology(self) -> Any:
-        from ...output_topology_store import load_output_topology
+        from jasper.audio_routes.output_topology_store import load_output_topology
 
         return self.get("output_topology", load_output_topology)
 
@@ -395,7 +395,7 @@ class Evidence:
         to see (and fail on) a corrupt/unreadable saved topology, so
         ``OutputTopologyError`` propagates here uncaught.
         """
-        from ...output_topology_store import load_output_topology_strict
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
         return self.get("output_topology_strict", load_output_topology_strict)
 

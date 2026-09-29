@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .json_fields import issue as _issue
-from .speaker_layout import (
+from jasper.json_fields import issue as _issue
+from jasper.speaker_layout import (
     REQUIRED_ROLES_BY_MODE,
     SUB_CROSSOVER_HZ_HI,
     SUB_CROSSOVER_HZ_LO,
@@ -17,7 +17,7 @@ from .speaker_layout import (
 )
 
 if TYPE_CHECKING:
-    from .output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 
 # The stable code for "one speaker's drivers are split across two child DACs of

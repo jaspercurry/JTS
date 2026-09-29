@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
-from .volume_curve import guard_in_effect
+from jasper.audio_routes.volume_curve import guard_in_effect
 
 
 def _source_from_state(

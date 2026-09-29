@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.output_topology_store import new_topology_draft
+from jasper.audio_routes.output_topology_store import new_topology_draft
 from jasper.biquad import PeqFilter
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
@@ -614,7 +614,7 @@ def test_the_flat_startup_graph_names_both_ring_devices_s32le(monkeypatch):
 
 
 def _mono_topology(output_index: int):
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -644,7 +644,7 @@ def _mono_topology(output_index: int):
 
 
 def _stereo_topology():
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -755,7 +755,7 @@ def _composite_mono_topology():
     outputd fans the program across the child DACs, so Camilla channel *i* is
     not physical output *i*. This is the shape a fold would actively break.
     """
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -821,7 +821,7 @@ def test_master_gain_folds_both_program_channels_only_onto_a_declared_mono_outpu
     import yaml as yaml_lib
 
     from jasper.active_speaker.camilla_names import output_commission_mute_name
-    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     doc = yaml_lib.safe_load(
@@ -887,7 +887,7 @@ def test_composite_sink_is_never_index_muted():
     is NOT physical output 1 there. Muting by index would silence a working
     speaker, so the emitter must decline.
     """
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     composite = OutputTopology.from_mapping({
@@ -928,7 +928,7 @@ def test_out_of_width_assignment_is_never_index_muted():
     speaker. The emitter declines; the runtime contract then refuses the
     unmuted graph out loud, which is the fail-loud direction.
     """
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     far = OutputTopology.from_mapping({
@@ -1068,7 +1068,7 @@ def test_a_wide_graph_carries_the_program_and_mutes_every_other_output(
 
     from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
     from jasper.active_speaker.camilla_names import output_commission_mute_name
-    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB
     from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
 
     width = 4
@@ -1220,7 +1220,7 @@ _WIDE_DAC = {
 def _wide_stereo_topology():
     """Stereo on outputs 0 and 1 of an 8-output DAC — a box whose graph can be
     rendered wider than the program without changing which outputs it claims."""
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
@@ -1243,7 +1243,7 @@ def _wide_stereo_topology():
 
 def _wide_mono_topology(output_index: int):
     """One full-range output at ``output_index`` of the same 8-output DAC."""
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     return OutputTopology.from_mapping({
         "artifact_schema_version": 1,
