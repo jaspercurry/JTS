@@ -999,3 +999,7 @@ class ProgramAnalysis:
     stimulus_levels: tuple[LevelReading, ...] = ()
     # dB, VERIFY only: see `response._sweep_over_ambient_db`. ``None`` without an ambient window.
     sweep_over_ambient_db: float | None = None
+    # The bass view's reading of a summed sweep, which the capture host's
+    # analysis seam takes from the same samples (#5737 C4). ``None`` for any
+    # other program, and outside that seam.
+    bass: dict[str, Any] | None = None

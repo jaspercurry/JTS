@@ -141,10 +141,7 @@ class HarmonicReading:
         against NaN is False in numpy, which would otherwise mark the one region
         that is certainly NOT a driver reading as the cleanest of the curve.
         """
-        values = np.asarray(self.relative_db[order], dtype=np.float64)
-        floor = np.asarray(self.floor_relative_db[order], dtype=np.float64)
-        separation = values - floor
-        return ~(separation >= float(margin_db))
+        return floor_limited_mask(self.relative_db[order], self.floor_relative_db[order], margin_db)
 
     def harmonic_db(self, order: int) -> np.ndarray:
         """Absolute level of order ``order`` -- ``fundamental_db + relative_db``.
@@ -170,6 +167,16 @@ class HarmonicReading:
             self.relative_db[order],
             self.floor_limited(order) if above_floor else None,
         )
+
+
+def floor_limited_mask(
+    relative_db: Sequence[float | None] | np.ndarray,
+    floor_relative_db: Sequence[float | None] | np.ndarray,
+    margin_db: float = FLOOR_LIMITED_MARGIN_DB,
+) -> np.ndarray:
+    """:meth:`HarmonicReading.floor_limited` over plain arrays, where ``None`` reads as NaN."""
+    separation = np.asarray(relative_db, dtype=np.float64) - np.asarray(floor_relative_db, dtype=np.float64)
+    return ~(separation >= float(margin_db))
 
 
 def worst_clear_of_floor(

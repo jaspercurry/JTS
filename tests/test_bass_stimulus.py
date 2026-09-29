@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import asdict, replace
+import io
 import json
 import math
 from types import SimpleNamespace
@@ -14,12 +15,13 @@ from jasper.active_speaker.angle_capture import request_for_preset
 from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused, build_bass_program
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
+from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
-from jasper.active_speaker.measurement_analysis import decoded_measurements
-from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_take
+from jasper.active_speaker.measurement_analysis import BankedMeasurement
+from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_evidence, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measurement_programs import (
     gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
@@ -28,6 +30,7 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.deconv import required_pre_guard_s
+from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
@@ -35,7 +38,7 @@ from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
-from jasper.audio_measurement.wired_capture import ZERO_RUN_MIN_SAMPLES
+from jasper.audio_measurement.wired_capture import ZERO_RUN_MIN_SAMPLES, decode_wav_to_mono
 from jasper.web.correction_run_host import compose_plan_program
 from tests.crossover_v2_fixtures import plan_context
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
@@ -89,12 +92,15 @@ def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
     assert exc.value.code == "bass_stimulus_targets_missing"
 
 
-def _replay(bass, raw, tmp_path, monkeypatch):
-    wav = tmp_path / "capture.wav"
+def _replay(bass, raw):
+    """A bass take's analysis and its bass view, as the capture host banks it."""
+    wav = io.BytesIO()
     wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))
-    record = {"program": bass.to_dict(), "graph_scope": "candidate", "candidate_id": "trial"}
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.reopen_measurement_record", lambda *_: (record, wav.read_bytes))
-    return next(decoded_measurements(tmp_path, paths=["capture"]))
+    samples, rate = decode_wav_to_mono(wav.getvalue())
+    analysis = analyze_program_capture(bass, samples, rate, geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT))
+    analysis = replace(analysis, bass=bass_evidence(bass, analysis, samples, None))
+    record = {"program": bass.to_dict(), **analysis_blocks(analysis, bass)}
+    return SimpleNamespace(analysis=analysis, view=bass_take(BankedMeasurement(record, "capture")))
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
@@ -165,7 +171,7 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
 
 
-def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, tmp_path, monkeypatch):
+def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture):
     bass = _bass(bass_fixture)
     rate = bass.sample_rate_hz
     delay = 800
@@ -185,13 +191,13 @@ def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture, tmp_path, mo
                              segment_sweep_meta(sweep), start, BASS_BANDS_HZ) for samples in (raw, averaged)]
     gain = np.median([b["estimated_snr_db"] - a["estimated_snr_db"] for a, b in zip(*rows)])
     assert gain == pytest.approx(10 * math.log10(BASS_PASSES), abs=1.5)
-    take = _replay(bass, raw, tmp_path, monkeypatch)
+    take = _replay(bass, raw)
     anchor = take.analysis.anchor
     assert (anchor.anchor, anchor.witness) == ("sweep_verify", "sweep_verify_repeat_1")
     assert anchor.shift_ms == pytest.approx(delay / rate * 1000, abs=0.5)
     assert (anchor.corroborated, anchor.ambiguous, take.analysis.pilots, take.analysis.pilot_snr_ok) == (True, False, (), None)
     assert assess(take.analysis, phase="verify", program=bass).screens == []
-    result = bass_take(take)
+    result = take.view
     assert len(result["passes"]) == BASS_PASSES
     frequencies = np.array(result["frequency_curve"]["freqs_hz"])
     reference = (frequencies >= 300) & (frequencies <= 1000)
@@ -230,7 +236,7 @@ def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refu
     ("truncated", "summed_pass_capture_incomplete"),
     ("mismatch", "summed_pass_shape_mismatch"),
 ])
-def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeypatch, fault, code):
+def test_unusable_passes_reach_capture_integrity(bass_fixture, fault, code):
     bass = _bass(bass_fixture)
     if fault == "mismatch":
         bass = _finalize(bass.phase, bass.channels, [
@@ -243,15 +249,14 @@ def test_unusable_passes_reach_capture_integrity(bass_fixture, tmp_path, monkeyp
     raw = np.pad(pcm, (delay, rate))
     if fault == "truncated":
         raw = raw[:delay + bass.total_samples - rate // 10]
-    take = _replay(bass, raw, tmp_path, monkeypatch)
+    take = _replay(bass, raw)
     assert code in take.analysis.capture_integrity.failed
-    assert np.array_equal(take.samples, raw.astype(np.float32))
     assert average_summed_capture(bass, raw, delay) is raw
-    assert not any(bass_take(take)["fundamental_qualified"])
+    assert not any(take.view["fundamental_qualified"])
 
 
 @pytest.mark.parametrize("drift_us", [-500, 500])
-def test_pass_alignment_preserves_the_fundamental(bass_fixture, tmp_path, monkeypatch, drift_us):
+def test_pass_alignment_preserves_the_fundamental(bass_fixture, drift_us):
     bass = _bass(bass_fixture)
     rate, delay = bass.sample_rate_hz, 800
     pcm = render_program_pcm(bass)[:, 0].astype(np.float64) * 0.1
@@ -264,14 +269,14 @@ def test_pass_alignment_preserves_the_fundamental(bass_fixture, tmp_path, monkey
         offsets[sweep.segment_id] = index * round(drift_us * 1e-6 * rate)
         start += offsets[sweep.segment_id]
         raw[start:start + sweep.n_samples] = pcm[sweep.start_sample:sweep.start_sample + sweep.n_samples]
-    take = _replay(bass, raw, tmp_path, monkeypatch)
+    take = _replay(bass, raw)
     integrity = take.analysis.capture_integrity
     evidence = integrity.to_dict()
     assert evidence["pass_alignment"] == "correlated"
     assert evidence["pass_offsets_samples"] == offsets
     assert evidence["pass_alignment_residual_spread_samples"] == pytest.approx(0, abs=0.01)
     assert not integrity.failed
-    view = bass_take(take)
+    view = take.view
     assert all(view["diagnostics"][key] == value for key, value in integrity.pass_alignment.to_dict().items())
     assert {row["segment_id"]: row["offset_samples"] for row in view["passes"]} == offsets
     assert all(row["pass_alignment"] == "correlated" and row["residual_spread_samples"] < 0.01 for row in view["passes"])
@@ -279,11 +284,12 @@ def test_pass_alignment_preserves_the_fundamental(bass_fixture, tmp_path, monkey
     reference = (baseline.freqs_hz >= 300) & (baseline.freqs_hz <= 1000)
     assert np.median(take.analysis.summed_response.magnitude_db[reference]) == pytest.approx(
         np.median(baseline.magnitude_db[reference]), abs=0.2)
-    assert take.samples == pytest.approx(average_summed_capture(bass, raw.astype(np.float32), delay, integrity.pass_alignment))
+    assert [band["signal_plus_noise_dbfs"] for band in view["bands"]] == pytest.approx(
+        [band["signal_plus_noise_dbfs"] for band in _replay(bass, clean).view["bands"]], abs=0.01)
 
 
 @pytest.mark.parametrize("noise_rms,dropout", [(0.11, False), (0.01, False), (0.01, True)])
-def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monkeypatch, noise_rms, dropout):
+def test_noisy_passes_still_average_at_the_schedule(bass_fixture, noise_rms, dropout):
     bass = _bass(bass_fixture)
     rate, delay = bass.sample_rate_hz, 800
     raw = np.pad(render_program_pcm(bass)[:, 0].astype(np.float64) * 0.01, (delay, rate))
@@ -294,7 +300,7 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
     if dropout:
         at = delay + bass.segment("sweep_verify_repeat_1").start_sample + rate
         raw[at:at + ZERO_RUN_MIN_SAMPLES] = 0
-    take = _replay(bass, raw, tmp_path, monkeypatch)
+    take = _replay(bass, raw)
     integrity = take.analysis.capture_integrity
     assert (integrity.failed, take.analysis.glitch_detected) == (("zero_fill_runs",) if dropout else (), dropout)
     if noise_rms == 0.11:
@@ -315,8 +321,9 @@ def test_noisy_passes_still_average_at_the_schedule(bass_fixture, tmp_path, monk
     size = quiet.n_samples + sweeps[0].n_samples + bass.segment("tail").n_samples
     starts = [offset + s.start_sample - quiet.n_samples for s in sweeps]
     expected = np.mean([raw.astype(np.float32)[start:start + size].astype(np.float64) for start in starts], axis=0)
-    assert np.array_equal(take.samples[starts[0]:starts[0] + size], expected)
-    view = bass_take(take)
+    averaged = average_summed_capture(bass, raw.astype(np.float32).astype(np.float64), offset, integrity.pass_alignment)
+    assert np.array_equal(averaged[starts[0]:starts[0] + size], expected)
+    view = take.view
     assert all(row["pass_alignment"] == "scheduled" for row in view["passes"])
     assert view["diagnostics"]["pass_correlation_peaks"] == evidence["pass_correlation_peaks"]
     assert view["diagnostics"]["repeat_content"] == content
