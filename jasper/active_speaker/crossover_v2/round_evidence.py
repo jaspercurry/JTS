@@ -23,41 +23,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "BENEFIT_CURVE_MAX_BINS",
-    "ITERATION_PLATEAU_DB",
-    "MEASURED_BENEFIT_MARGIN_DB",
     "EntryBaseline",
     "MeasuredResponse",
     "measured_response_from_analysis",
 ]
 
 
-# --------------------------------------------------------------------------
-# the margin
-# --------------------------------------------------------------------------
-
-#: dB. How much flatter the speaker must measure before the round may say so.
-#:
-#: Fallback until a pooled repeat study is banked; the frozen tracking study
-#: measured a different metric. See repeat_floor.stopping_thresholds.
-MEASURED_BENEFIT_MARGIN_DB = 0.5
-
-#: dB. Advisory threshold for objective size and inter-round movement.
-#: A banked repeat floor supplies the measured value through stopping_thresholds.
-ITERATION_PLATEAU_DB = 0.25
-
-
-#: Resolution of BOTH sides of the benefit comparison — the same 512 the host
-#: applies to ``verify_priors.predicted_sum``, since the entry baseline crosses
-#: the durable stage bridge. Named here rather than imported because
-#: :mod:`jasper.web.correction_crossover_v2` is the wrong direction for this
-#: package, and because governing both sides puts them on one grid by
-#: construction rather than by luck.
 BENEFIT_CURVE_MAX_BINS = 512
-
-
-# --------------------------------------------------------------------------
-# one capture, reduced
-# --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

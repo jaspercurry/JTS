@@ -935,10 +935,8 @@ def program_for_stop(
 
 
 def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
-    """Capture index -> the phase whose program runs there. Same shape
-    ``build_v2_cloud_index_phase_map`` returns, so shipped consumers
-    (:func:`announced_capture_indexes`) work over an angle walk unchanged.
-    """
+    """Capture index -> the phase whose program runs there, the map
+    :func:`announced_capture_indexes` reads."""
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
 

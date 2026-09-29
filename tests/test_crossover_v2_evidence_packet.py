@@ -35,10 +35,6 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-from jasper.active_speaker.crossover_v2.round_evidence import (
-    ITERATION_PLATEAU_DB,
-    MEASURED_BENEFIT_MARGIN_DB,
-)
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
@@ -53,8 +49,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "c8c8080e9fd75439bfd8fa6c1a4c7e5f374b08aa225450f0183c6b144875b3e6")
-    assert packet["packet_fingerprint"] == "1fed1c68ce4f13e2a4f4d694af9a7f02aeb18b28ce512a4fe71bf346e0748397"
+        "4d17d9d0888dcd3ccddaf955a21ca8adc4188c8fc95ac02370444e5882926c77")
+    assert packet["packet_fingerprint"] == "91ddf2b40b3eaec7dd67058d4ea6cd5bb4f1aa5e979624deda4326c258d688a5"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
@@ -109,17 +105,11 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNMEASURED
     assert "E2" in entry["reason"]
-    # Absent means the consumers fall back to the two constants that
-    # self-describe as assumptions, and the packet says which source it used.
-    assert entry["thresholds"]["source"] == "codified_assumption"
-    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
-    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
 
 
-def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_path):
+def test_repeat_floor_banked_but_unusable_is_its_own_absence(tmp_path):
     """A record that exists but carries no finite aggregate p95 is a floor that
-    cannot be read, not a floor nobody measured — unavailable either way, and
-    the thresholds fall back rather than deriving from a non-number."""
+    cannot be read, not a floor nobody measured."""
     session, _ = _bundle(tmp_path)
     floor_path = tmp_path / "repeat-floor.json"
     floor_path.write_text(json.dumps(
@@ -136,9 +126,6 @@ def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_pa
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNUSABLE
-    assert entry["thresholds"]["source"] == "codified_assumption"
-    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
-    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
 
 
 @pytest.mark.parametrize("on_disk", ["{not json", "{}"], ids=["not-json", "not-a-floor"])
@@ -154,7 +141,6 @@ def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNREADABLE
-    assert entry["thresholds"]["source"] == "codified_assumption"
 
 
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):

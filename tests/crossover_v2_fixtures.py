@@ -399,10 +399,6 @@ def _fixture_applied_profile(
 
 _ENTRY_BASELINE_SCALE = 1.5
 
-_ENTRY_BASELINE_RESIDUAL_DB = 6.877
-
-_POST_APPLY_RESIDUAL_DB = 4.331
-
 
 def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
     measured = measured_response_from_analysis(
