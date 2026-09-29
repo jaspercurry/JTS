@@ -400,6 +400,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.ROUND_SHAPE_INADMISSIBLE: "The round banked no recording shape that feature classification can use.",
     },
     ("bank_round", "Bank this round again from its session"): {
+        evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
     },
     ("select_round", "Select the round these takes belong to"): {

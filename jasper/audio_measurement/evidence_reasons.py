@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+CAPTURE_UNREADABLE_SIDECAR = "unreadable_sidecar"
 EVIDENCE_NOT_BANKED = "evidence_not_banked"
 NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
