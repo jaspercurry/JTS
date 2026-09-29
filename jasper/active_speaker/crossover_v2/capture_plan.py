@@ -764,10 +764,8 @@ def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]
     """The 1-based captures of this plan that play the courtesy prelude.
 
     The prelude announces a SESSION rather than a capture
-    (:func:`~.programs.courtesy_prelude_for_phase`), so stage 1 announces its
-    first (CHECK) and its last (the entry baseline) and stage 2's walk announces
-    its first alone. Derived from the same ``index -> phase`` map the plan's
-    entries are built from.
+    (:func:`~.programs.courtesy_prelude_for_phase`). Derived from the same
+    ``index -> phase`` map the plan's entries are built from.
     """
     return tuple(
         index for index, phase in sorted(index_phase.items())
