@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 from jasper.voice.content_activity import ContentActivityTracker
-from jasper.wake_conditions import CONDITIONS
-from jasper.wake_condition_context import (
+from jasper.playback_state.wake_conditions import CONDITIONS
+from jasper.playback_state.wake_condition_context import (
     AMBIENT_FLOOR_DBFS,
     MUSIC_FLOOR_DBFS,
     classify_condition,

@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Mapping
 from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
 from .env_load import VOICE_GROUPING_ENV_FILE
 from .log_event import log_event
-from .music_sources import Source, VolumeMode, volume_mode
+from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from .platform import wire
 from .tts_routing import (
     FANIN_TTS_SOCKET,

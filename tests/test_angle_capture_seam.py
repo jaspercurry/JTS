@@ -58,7 +58,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
+from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
@@ -547,7 +547,7 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
 
 
 def _capture_ceiling() -> int:
-    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     return MAX_CAPTURE_PLAN_ATTEMPTS
 

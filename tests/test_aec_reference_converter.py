@@ -51,7 +51,7 @@ def _frames(batch) -> np.ndarray:
 
 
 def _scipy_pipeline(interleaved: np.ndarray, gain_db: float) -> np.ndarray:
-    """The conversion exactly as it read before jasper.dsp_numpy replaced it."""
+    """The conversion exactly as it read before jasper.playback_state.dsp_numpy replaced it."""
     from scipy.signal import butter, resample_poly, sosfilt
 
     left = interleaved[0::REF_CHANNELS].astype(np.float32)

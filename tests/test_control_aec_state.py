@@ -393,7 +393,7 @@ def test_toggle_to_token_maps_to_real_wake_input_legs():
     easy-to-confuse footgun). Guards _TOGGLE_TO_TOKEN against drifting onto
     the wrong leg if the registry is ever reorganized. Values are tuples
     because one UI affordance can eventually map to several concrete legs."""
-    from jasper.wake_legs import by_token, wake_input_legs
+    from jasper.playback_state.wake_legs import by_token, wake_input_legs
     wake_tokens = {leg.token for leg in wake_input_legs()}
     for toggle, tokens in aec_routes._TOGGLE_TO_TOKEN.items():
         for token in tokens:

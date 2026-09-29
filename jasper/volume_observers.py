@@ -43,10 +43,11 @@ import re
 from functools import partial
 from typing import Optional
 
-from . import busctl, librespot_state
+from . import busctl
+from jasper.playback_state import librespot_state
 from jasper.device_probe.bluealsa_probe import active_transport_path
 from .log_event import log_event
-from .music_sources import Source
+from jasper.playback_state.music_sources import Source
 from .volume_coordinator import VolumeCoordinator
 
 logger = logging.getLogger(__name__)

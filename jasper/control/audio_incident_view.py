@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ._health_fields import as_int, detail_row, duration_label, finite_number, mapping
 from ._health_sources import SOURCE_LABELS
 

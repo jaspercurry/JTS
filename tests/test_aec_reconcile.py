@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.aec_ready import read_aec_bridge_ready
 from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
 from jasper.aec.reconcile import runtime as reconcile_runtime

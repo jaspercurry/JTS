@@ -383,7 +383,7 @@ async def _reconcile_volume_curve_after_settings(
     at the next volume change or the next save that changes the floor
     (ADR-0368).
     """
-    from jasper import librespot_state
+    from jasper.playback_state import librespot_state
     from jasper.renderer import RendererClient
     from jasper.volume_coordinator import VolumeCoordinator
     from jasper.volume_persistence import VolumePersistence

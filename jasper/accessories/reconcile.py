@@ -40,13 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
-from jasper.install_profile import (
+from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
 from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.service_units import (
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,

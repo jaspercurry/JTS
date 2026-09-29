@@ -141,7 +141,7 @@ def test_only_the_44_1_khz_family_makes_the_bridge_import_scipy(
     """Every integer-ratio card must stay on the numpy kernel.
 
     scipy here is resident RSS in a `MemorySwapMax=0` slice
-    (`jasper.dsp_numpy` owns the figure), paid for the life of the daemon, and
+    (`jasper.playback_state.dsp_numpy` owns the figure), paid for the life of the daemon, and
     the numpy kernel is measurably faster at these ratios. Only 44.1 kHz
     reduces to hundreds of polyphase branches, which numpy would run in a
     Python loop inside the capture callback.
@@ -159,4 +159,4 @@ def test_a_44_1_khz_card_falls_back_to_numpy_when_scipy_is_absent(monkeypatch):
     resample, up, down = usb_resampler(44_100)
 
     assert (up, down) == (160, 441)
-    assert resample.__module__ == "jasper.dsp_numpy"
+    assert resample.__module__ == "jasper.playback_state.dsp_numpy"

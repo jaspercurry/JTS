@@ -37,7 +37,7 @@ from typing import Any, Mapping
 
 from .atomic_io import advisory_file_lock, atomic_write_json, read_json_mapping
 from .env_file import parse_env_mapping
-from .install_profile import (
+from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )

@@ -14,7 +14,7 @@ shapes instead of re-deriving them.
 from __future__ import annotations
 
 from jasper.control.audio_health import compose_audio_health
-from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from jasper.output_hardware import OutputHardwareState
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.output_topology_store import OutputTopologySnapshot

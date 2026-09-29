@@ -44,7 +44,7 @@ from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
 from jasper.json_fields import as_float
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE, JournalctlUnavailable, run_journalctl_json
-from jasper.source_state import airplay_playing
+from jasper.playback_state.source_state import airplay_playing
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@ per user attempt.
 attributes directly, and owns everything a fire leads to — the pre-roll
 freeze, the acquire buffer, peer arbitration, cues and the turn.
 
-The leg *vocabulary* (tokens, ports, kinds) lives in `jasper.wake_legs`;
+The leg *vocabulary* (tokens, ports, kinds) lives in `jasper.playback_state.wake_legs`;
 this module is the runtime that consumes it.
 """
 
@@ -32,9 +32,9 @@ from jasper.log_event import log_event
 
 from ..config import Config
 from ..mic_capture import MicCapture
-from ..wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
+from jasper.playback_state.wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from ..wake_events import CAPTURE_POST_SEC, CAPTURE_PRE_SEC
-from ..wake_legs import LegSpec, wake_input_legs
+from jasper.playback_state.wake_legs import LegSpec, wake_input_legs
 from .wake_telemetry import LEG_DB, LegFireScore
 
 logger = logging.getLogger("jasper.voice_daemon")
@@ -136,7 +136,7 @@ def _tail_frame_rms_dbfs(ring: "deque | None") -> float | None:
 class LegRuntime:
     """Live state for one wake-detection leg.
 
-    The set of legs is declared in `jasper.wake_legs`; adding a leg is a
+    The set of legs is declared in `jasper.playback_state.wake_legs`; adding a leg is a
     registry entry plus a config-driven construction in
     `jasper.voice.daemon_main`.
     """
@@ -163,7 +163,7 @@ class LegRuntime:
 
 
 # Which Config field carries each wake leg's mic device string. Kept here, a
-# voice-daemon construction concern, rather than on the jasper.wake_legs
+# voice-daemon construction concern, rather than on the jasper.playback_state.wake_legs
 # registry, which stays a pure cross-process identity table. The token and
 # field name deliberately skew: the chip-direct leg's token is "off" but its
 # device var is cfg.mic_device_raw, the operator-facing "raw" vocabulary
@@ -264,7 +264,7 @@ class WakeLegs:
         music_dbfs: Callable[[], float | None],
         mic_muted: Callable[[], bool],
     ) -> None:
-        # Wake-detection legs, keyed by jasper.wake_legs token. Assembled
+        # Wake-detection legs, keyed by jasper.playback_state.wake_legs token. Assembled
         # by jasper.voice.daemon_main, which opens each leg's mic under the
         # AsyncExitStack and builds its detector, capture ring and — for
         # "off" — a session shadow VAD.

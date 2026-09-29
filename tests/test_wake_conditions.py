@@ -5,7 +5,7 @@
 """Unit tests for the wake-condition taxonomy single source of truth."""
 from __future__ import annotations
 
-from jasper.wake_conditions import (
+from jasper.playback_state.wake_conditions import (
     CONDITIONS,
     CORPUS_DIR_BY_CONDITION,
     CORPUS_DIR_CONDITIONS,

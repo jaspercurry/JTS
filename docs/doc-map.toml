@@ -71,7 +71,7 @@ code = [
   "jasper/tools/packs.py",
   "jasper/tools/__init__.py",
   "jasper/transit/__init__.py",
-  "jasper/music_sources.py",
+  "jasper/playback_state/music_sources.py",
   "jasper/voice/catalog.py",
   "jasper/audio_hardware/dac.py",
 ]
@@ -133,7 +133,7 @@ docs = [
 id = "audio-routing-and-renderers"
 safety = "audio-output-risk"
 code = [
-  "jasper/music_sources.py",
+  "jasper/playback_state/music_sources.py",
   "jasper/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
@@ -167,6 +167,7 @@ code = [
   "jasper/fanin/**",
   "c/jts-ring-ioplug/**",
   "jasper/bluetooth/**",
+  "jasper/playback_state/source_state.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -356,7 +357,7 @@ safety = "safe-ci"
 code = [
   "jasper/spotify*.py",
   "jasper/accounts.py",
-  "jasper/librespot_state.py",
+  "jasper/playback_state/librespot_state.py",
   "jasper/tools/spotify.py",
   "jasper/web/spotify_setup.py",
   "deploy/bin/jasper-librespot-event",
@@ -365,6 +366,7 @@ code = [
   "scripts/claim-librespot.sh",
   "tests/test_spotify*.py",
   "tests/voice_eval/regression/test_spotify.py",
+  "jasper/playback_state/spotify_uri.py",
 ]
 docs = [
   "docs/multi-user-spotify.md",
@@ -630,7 +632,7 @@ safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
   "jasper/local_sources/**",
-  "jasper/install_profile.py",
+  "jasper/playback_state/install_profile.py",
   "jasper/tts_routing.py",
   "jasper/web/rooms_setup.py",
   "jasper/web/rooms_peers.py",

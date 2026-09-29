@@ -100,7 +100,7 @@ from ..spotify_router import (
     build_clients,
 )
 from ..spotify_oauth import resolved_spotify_redirect_uri
-from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
+from jasper.playback_state.spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..atomic_io import write_env_file

@@ -21,7 +21,7 @@ from jasper.fanin.latency_mode import (
     read_requested_mode as read_usb_latency_mode,
 )
 from jasper.log_event import log_event
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.systemd_probe import unit_state
 

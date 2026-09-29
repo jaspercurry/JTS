@@ -21,7 +21,7 @@ import pytest
 
 from jasper import volume_push_sources as vps_mod
 from jasper.camilla import CamillaController, CamillaUnavailable
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_persistence import VolumePersistence
 

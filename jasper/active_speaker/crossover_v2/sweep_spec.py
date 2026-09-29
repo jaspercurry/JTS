@@ -7,10 +7,10 @@
 One spec states everything a capture of one measurement kind needs: the
 recording window, the mono/48 kHz format the analysis demands, the operator
 acknowledgement, and — for a session-spanning walk — the
-:class:`~jasper.capture_protocol.CapturePlan`. It is built by a per-kind builder
+:class:`~jasper.playback_state.capture_protocol.CapturePlan`. It is built by a per-kind builder
 (:func:`build_crossover_sweep_spec` here), validated strictly and loudly at the
 boundary, and re-validated at session open before a tone can play. The plan
-shape itself is owned by :mod:`jasper.capture_protocol`.
+shape itself is owned by :mod:`jasper.playback_state.capture_protocol`.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from jasper.active_speaker.capture_geometry import (
     summed_acknowledgement_label,
 )
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
-from jasper.capture_protocol import (
+from jasper.playback_state.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
     CapturePlan,
     CapturePlanEntry,

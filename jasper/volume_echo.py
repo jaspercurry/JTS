@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from .music_sources import Source
+from jasper.playback_state.music_sources import Source
 from .volume_persistence import VolumePersistence
 from .volume_state import OutboundStamp
 

@@ -367,7 +367,7 @@ def measure_pcm_24k_mono(pcm: bytes, *, wide: bool = False) -> LoudnessMeasureme
 #: INPUT samples either side of an output sample that `upsample_2x` reads. A
 #: chunk resampled on its own is wrong within this distance of both its edges,
 #: so a caller resampling a stream in chunks has to carry that much context
-#: across every join. `jasper.dsp_numpy` sizes the taps; the value is pinned
+#: across every join. `jasper.playback_state.dsp_numpy` sizes the taps; the value is pinned
 #: against them by tests/test_tts_playout.py.
 UPSAMPLE_2X_CONTEXT = 10
 
@@ -380,9 +380,9 @@ def upsample_2x(samples: "Any") -> "Any":
     Equals ``scipy.signal.resample_poly(x, up=2, down=1)`` to within
     float rounding (worst case -332 dB RMS in float64, better than -150 dB
     through the float32 playout path); numpy-only for the RSS reason
-    ``jasper.dsp_numpy`` states (issue #3697). One dimension only.
+    ``jasper.playback_state.dsp_numpy`` states (issue #3697). One dimension only.
     """
-    from jasper.dsp_numpy import resample_poly  # lazy: import cost, numpy stays out of jasper-control and jasper-mux
+    from jasper.playback_state.dsp_numpy import resample_poly  # lazy: import cost, numpy stays out of jasper-control and jasper-mux
 
     return resample_poly(samples, 2, 1)
 

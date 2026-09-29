@@ -33,10 +33,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .atomic_io import atomic_write_text
-from .music_sources import MUSIC_SOURCES, Source
+from jasper.atomic_io import atomic_write_text
+from jasper.playback_state.music_sources import MUSIC_SOURCES, Source
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.mux_mode_persistence")
 
 
 # Persisted so a household's manual pin survives the Restart=always

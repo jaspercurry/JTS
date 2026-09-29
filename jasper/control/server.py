@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..platform.control_client import CONTROL_PORT
 from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
@@ -57,7 +57,7 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..install_profile import (
+from jasper.playback_state.install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     Capability,
     install_profile_has_capability,

@@ -7,7 +7,7 @@
 # Install profile resolution and the hardware-tier preflight for deploy/install.sh.
 
 normalize_install_profile() {
-    # Mirror of jasper.install_profile.normalize_install_profile.
+    # Mirror of jasper.playback_state.install_profile.normalize_install_profile.
     case "${1:-}" in
         ""|full)
             printf 'full\n'

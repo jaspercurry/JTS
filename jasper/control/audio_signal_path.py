@@ -30,7 +30,7 @@ from typing import Any
 from ..output_hardware import detected_hardware_adoption_precondition
 from jasper.dsp_control.output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
-from ..music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (

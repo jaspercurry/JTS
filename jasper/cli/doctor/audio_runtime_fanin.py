@@ -20,7 +20,7 @@ from jasper.dsp_control.camilla_config_contract import devices_playback_is_pipe
 from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...json_fields import finite_float
 from ...measurement_window import MEASUREMENT_FANIN_LABEL
-from ...music_sources import SOURCE_SPECS, Source
+from jasper.playback_state.music_sources import SOURCE_SPECS, Source
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence

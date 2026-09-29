@@ -75,8 +75,8 @@ from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSe
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
 from jasper.active_speaker import baseline_profile, seat_level_reference
 
-import jasper.capture_protocol as capture_protocol
-from jasper.capture_protocol import MAX_TTL_S
+import jasper.playback_state.capture_protocol as capture_protocol
+from jasper.playback_state.capture_protocol import MAX_TTL_S
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_capture, correction_crossover_backend, correction_runtime, correction_setup
 from jasper.web import correction_crossover_v2_apply as v2apply

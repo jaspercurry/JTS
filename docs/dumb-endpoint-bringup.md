@@ -16,7 +16,7 @@
 > satellite-only." Follower role is chosen at runtime by the multiroom
 > reconciler regardless of install profile. Read this doc for the Pi
 > Zero 2 W bring-up narrative, not for current install-profile state.
-> Current operational truth lives in `jasper/install_profile.py` (the
+> Current operational truth lives in `jasper/playback_state/install_profile.py` (the
 > two-profile model).
 
 This is the operator runbook for bringing up a cheap JTS endpoint such

@@ -9,11 +9,11 @@ import logging
 import time
 from typing import Any
 
-from .busctl import name_is_absent, run_busctl
-from .log_event import log_event
-from .source_state import GNOME_DEST, GNOME_PATH, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
+from jasper.busctl import name_is_absent, run_busctl
+from jasper.log_event import log_event
+from jasper.playback_state.source_state import GNOME_DEST, GNOME_PATH, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.airplay_session")
 
 REASONS = frozenset({
     "not_attempted", "cleanup_pending", "drop_acknowledged",

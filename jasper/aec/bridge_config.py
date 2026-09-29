@@ -27,7 +27,7 @@ from jasper.aec_sweep import (
     current_aec3_sweep_source,
     load_aec3_sweep_config,
 )
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.config import env_bool
 from jasper.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
 from jasper.log_event import log_event

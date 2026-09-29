@@ -32,7 +32,7 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     build_verify_program,
 )
-from jasper.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
+from jasper.playback_state.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.env_load import bounded_env_float
 from jasper.speaker_layout import measurement_target_name
 from jasper.active_speaker.session_volume_plan import (
@@ -901,7 +901,7 @@ def v2_first_begin_timeout_s() -> float:
     honoured, whatever this knob says.
     """
 
-    from jasper.capture_protocol import MAX_TTL_S  # lazy: test_correction_crossover_v2_endpoints patches capture_protocol.MAX_TTL_S
+    from jasper.playback_state.capture_protocol import MAX_TTL_S  # lazy: test_correction_crossover_v2_endpoints patches capture_protocol.MAX_TTL_S
 
     return bounded_env_float(
         "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,

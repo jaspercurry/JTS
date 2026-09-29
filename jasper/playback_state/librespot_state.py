@@ -23,9 +23,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .env_file import parse_env_lines
+from jasper.env_file import parse_env_lines
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.librespot_state")
 
 DEFAULT_PATH = "/run/librespot/state.env"
 

@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 
 DEFAULT_AEC_UDP_HOST = "127.0.0.1"
 
-# Wire ports now have a single definition in jasper.wake_legs.REGISTRY
+# Wire ports now have a single definition in jasper.playback_state.wake_legs.REGISTRY
 # (jasper.cli.aec_bridge emits on these same ports via leg_default_port).
 # These module constants are kept as the stable import surface that
 # build_ports() and its callers (web/__main__, wake_corpus_setup,

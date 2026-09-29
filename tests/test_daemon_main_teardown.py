@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice import daemon_main
 

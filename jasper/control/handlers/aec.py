@@ -182,7 +182,7 @@ _aec_commission_start_lock = threading.Lock()
 
 
 _AEC_MODE_ENV_OWNER = "JTS /aec mode control"
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
+# Operator-facing wake-leg toggle name -> jasper.playback_state.wake_legs token(s). The
 # chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
 # "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
 # production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);

@@ -10,7 +10,7 @@ from jasper.bluetooth.availability import (
 )
 from jasper.bluetooth.rfkill import BluetoothRfkillState
 from jasper.local_sources import local_source_lifecycle
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 
 
 _REQUIRED_UNITS = (

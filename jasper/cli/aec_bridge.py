@@ -49,7 +49,7 @@ Topology:
                                                           for dual-stream wake-word
                                                           detection.
 
-Every leg's token and UDP port is owned by `jasper.wake_legs`. Why UDP
+Every leg's token and UDP port is owned by `jasper.playback_state.wake_legs`. Why UDP
 rather than an snd-aloop card: see `UdpMicCapture` in jasper/mic_capture.py.
 
 Reference and mic run on independent clock domains — outputd's DAC-paced

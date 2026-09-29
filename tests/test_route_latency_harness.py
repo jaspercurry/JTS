@@ -17,7 +17,7 @@ import struct
 
 import pytest
 
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.cli import route_latency_harness as harness
 from jasper.route_latency import ref9891_pcap
 from jasper.route_latency.click_track import percentile_min_samples
@@ -35,7 +35,7 @@ from jasper.route_latency.pairing import MicDetection, TapEvent
 
 # --------------------------------------------------------------------------
 # Wire-format cross-checks — pin the duplicated raw0 constants in
-# mic_readers.py against the single source of truth in jasper.wake_legs, so
+# mic_readers.py against the single source of truth in jasper.playback_state.wake_legs, so
 # a future frozen-token/port change fails loudly here rather than silently
 # desyncing the harness's default mic source.
 # --------------------------------------------------------------------------

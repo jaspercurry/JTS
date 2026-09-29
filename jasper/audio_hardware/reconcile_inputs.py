@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from jasper import env_load, output_hardware
 from jasper.device_probe import usbgadget
 from jasper.atomic_io import atomic_write_text
-from jasper.install_profile import BUILD_MANIFEST_FILE
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 
 from . import config_txt, usb_port_role
 

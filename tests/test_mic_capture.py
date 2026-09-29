@@ -224,7 +224,7 @@ def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, 
 
 
 async def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
-    """The decimating mic path resamples on `jasper.dsp_numpy`.
+    """The decimating mic path resamples on `jasper.playback_state.dsp_numpy`.
 
     scipy is ~58 MB resident for the life of jasper-voice, whose
     `jts-mic.slice` sets `MemorySwapMax=0` (issue #3697), and the callback
@@ -247,4 +247,4 @@ async def test_mic_callback_downsamples_a_48k_card_without_scipy(monkeypatch):
     chunk = await cap._queue.get()
     assert chunk.dtype == np.int16
     assert chunk.shape == (mic_capture.MicCapture.OUTPUT_FRAME_SAMPLES,)
-    assert mic_capture.resample_poly.__module__ == "jasper.dsp_numpy"
+    assert mic_capture.resample_poly.__module__ == "jasper.playback_state.dsp_numpy"

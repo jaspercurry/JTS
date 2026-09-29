@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.source_state — the three async probes that report
+"""Tests for jasper.playback_state.source_state — the three async probes that report
 which renderer is currently producing audio.
 
 The probes wrap I/O (a librespot state file, busctl, the BlueZ system
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jasper import source_state
+from jasper.playback_state import source_state
 
 from tests._librespot_state import write_librespot_state
 

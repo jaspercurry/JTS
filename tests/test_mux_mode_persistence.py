@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.mux_mode_persistence — the durable source-selection
+"""Tests for jasper.playback_state.mux_mode_persistence — the durable source-selection
 mode file that lets a household's manual source pin survive jasper-mux's
 Restart=always deploy/restart cycle.
 
@@ -17,8 +17,8 @@ import stat
 
 import pytest
 
-from jasper.mux_mode_persistence import read_manual_source, write_mode
-from jasper.music_sources import Source
+from jasper.playback_state.mux_mode_persistence import read_manual_source, write_mode
+from jasper.playback_state.music_sources import Source
 
 
 def test_missing_file_reads_as_auto(tmp_path):

@@ -7,7 +7,7 @@
 The harness's default mic source is the AEC bridge's always-on "raw0" leg on
 localhost UDP ``:9879`` — the XVF3800's channel 2, an unprocessed room-mic
 capture (no chip DSP). raw0 is a **corpus-only** leg (``wake_input=False`` in
-``jasper.wake_legs``; pinned by
+``jasper.playback_state.wake_legs``; pinned by
 ``tests/test_route_latency_harness.py``'s wire-constant cross-check), emitted
 by ``jasper.cli.aec_bridge``. Reading it here does NOT add it as a
 wake-detection input; this module only *consumes* the already-emitted stream,
@@ -40,16 +40,16 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
-# Wire format pinned by jasper.cli.aec_bridge / jasper.wake_legs: raw0 is
+# Wire format pinned by jasper.cli.aec_bridge / jasper.playback_state.wake_legs: raw0 is
 # 1280 samples, 16 kHz mono S16_LE per UDP datagram (80 ms of audio per
 # packet at ~12.5 packets/sec). Duplicated here as literal constants (not
 # imported from aec_bridge) because that module pulls in numpy/sounddevice/
 # scipy at import time — heavy, ALSA-adjacent dependencies this harness
 # should not need just to read a UDP socket. The wire format is frozen
-# (jasper/wake_legs.py docstring: "token is FROZEN... never rename"), so
+# (jasper/playback_state/wake_legs.py docstring: "token is FROZEN... never rename"), so
 # duplicating the two integer constants carries negligible drift risk;
 # `tests/test_route_latency_harness.py` cross-checks them against
-# `jasper.wake_legs`/`jasper.cli.aec_bridge` so a future format change would
+# `jasper.playback_state.wake_legs`/`jasper.cli.aec_bridge` so a future format change would
 # fail loudly here too.
 RAW0_UDP_HOST = "127.0.0.1"
 RAW0_UDP_PORT = 9879

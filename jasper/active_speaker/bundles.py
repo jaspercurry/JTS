@@ -58,7 +58,7 @@ from jasper.paths import resolve_state_path
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
 from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
-from jasper.install_profile import BUILD_MANIFEST_FILE
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 
 logger = logging.getLogger(__name__)
 

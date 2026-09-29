@@ -812,9 +812,9 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     the topology alone, so the baseline/design candidate stack stays behind
     its active-speaker branch. jasper-voice loads no ``jasper.active_speaker``
     module: its fader primitives live in ``jasper.volume_latch``. ``scipy`` is the same
-    bargain at a much larger price (``jasper.dsp_numpy`` owns that figure):
+    bargain at a much larger price (``jasper.playback_state.dsp_numpy`` owns that figure):
     the AEC bridge's steady-state resampling and high-pass are
-    ``jasper.dsp_numpy``. ``sounddevice`` leaves the bridge's import graph for
+    ``jasper.playback_state.dsp_numpy``. ``sounddevice`` leaves the bridge's import graph for
     the reason it leaves the doctor's: loading PortAudio is the capture
     threads' cost, paid where they open a device. The smallest supported box
     is a 415 MB Pi Zero 2 W (issue #3697).

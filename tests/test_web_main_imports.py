@@ -106,7 +106,7 @@ def test_wizard_availability_follows_the_capability_not_the_profile(
     derivation and not today's rows: a tier without WAKE_DETECTION gets
     none of the wake wizards, whichever profile it is.
     """
-    from jasper import install_profile
+    from jasper.playback_state import install_profile
     from jasper.web import __main__ as web_main
 
     granted = frozenset(getattr(install_profile.Capability, n) for n in grants)
@@ -122,7 +122,7 @@ def test_wizard_availability_follows_the_capability_not_the_profile(
 
 
 def test_streambox_socket_and_nginx_name_one_port_set():
-    from jasper.install_profile import Capability
+    from jasper.playback_state.install_profile import Capability
     from jasper.web import __main__ as web_main
 
     wake_ports = {

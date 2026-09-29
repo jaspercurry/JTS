@@ -197,7 +197,7 @@ def _assess_wake_legs(
     """Compare configured wake-leg intent against what jasper-voice actually
     opened. Pure — the runtime set is passed in.
 
-    Maps the operator/config vocabulary to jasper.wake_legs tokens: the
+    Maps the operator/config vocabulary to jasper.playback_state.wake_legs tokens: the
     primary/session master is "on", the "raw" toggle is the chip-direct "off"
     leg, "dtln" is "dtln", and the optional XVF3800 fixed hardware-AEC beam
     detectors are "chip_aec_150" / "chip_aec_210". `armed_runtime` is None

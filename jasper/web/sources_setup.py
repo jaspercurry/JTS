@@ -18,7 +18,7 @@ from ..platform import systemd, wire
 from ..platform.uds import mux_socket_command
 from ..local_sources import status as source_status
 from ..log_event import log_event
-from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS, Source
 from ..source_intent import request_source_intent, source_intent_enabled
 from ._common import (
     JsonBodyError,

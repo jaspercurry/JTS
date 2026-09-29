@@ -134,7 +134,7 @@ async def test_actual_fire_ids_and_delayed_observers_stay_with_their_turn(tmp_pa
     from contextlib import closing
     from datetime import datetime, timezone
     from jasper import wake_events
-    from jasper.wake_condition_context import classify_condition
+    from jasper.playback_state.wake_condition_context import classify_condition
 
     class FrozenDateTime(datetime):
         @classmethod

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Numeric-equivalence pins for jasper.dsp_numpy.
+"""Numeric-equivalence pins for jasper.playback_state.dsp_numpy.
 
 These kernels replaced live `scipy.signal` calls on the AEC bridge's
 reference path and the assistant's TTS playout path, so "close enough"
@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
+from jasper.playback_state.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 
 REF_RATE = 48_000
 MIC_RATE = 16_000

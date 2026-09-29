@@ -19,7 +19,7 @@ from jasper.assistant_volume import (
     EffectiveVolumeContext,
     volume_context_publisher_for_runtime,
 )
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
 from jasper.volume_persistence import VolumePersistence

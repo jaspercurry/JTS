@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .. import librespot_state
+from jasper.playback_state import librespot_state
 from ..accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
 from ..renderer import RendererClient

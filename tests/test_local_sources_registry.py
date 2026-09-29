@@ -11,7 +11,7 @@ from jasper.local_sources import (
     local_source_lifecycles,
     local_source_park_units,
 )
-from jasper.music_sources import (
+from jasper.playback_state.music_sources import (
     MUSIC_SOURCE_SPECS,
     SOURCE_TO_ACTIVE_KEY,
     Source,

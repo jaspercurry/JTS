@@ -29,7 +29,7 @@ from typing import Any
 
 from jasper.control._health_fields import read_int_file, read_text_file
 from jasper.control.system_metrics import read_thermal_zone_temp_c
-from jasper.install_profile import BUILD_MANIFEST_FILE
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 from jasper.log_event import log_event
 from jasper.service_units import CAMILLA_SERVICE, read_unit_states, unit_uptime_sec
 

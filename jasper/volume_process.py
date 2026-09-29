@@ -20,7 +20,7 @@ from .volume_persistence import VolumePersistence, configured_path as volume_sta
 
 async def env_canonical_target_db() -> float:
     """Read current household intent through the active source coordinator."""
-    from jasper import librespot_state  # lazy: import cost, the actuator graph loads only when a swap releases its duck
+    from jasper.playback_state import librespot_state  # lazy: import cost, the actuator graph loads only when a swap releases its duck
     from jasper.camilla import primary_controller  # lazy: test patch boundary (tests/test_volume_coordinator.py)
     from jasper.renderer import RendererClient  # lazy: import cost, the actuator graph loads only when a swap releases its duck
     from jasper.volume_coordinator import VolumeCoordinator  # lazy: import cost, the actuator graph loads only when a swap releases its duck

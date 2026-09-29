@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
 from .log_event import log_event
-from .music_sources import Source, VolumeMode, volume_mode
+from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from .volume_curve import guard_in_effect, main_mute_for_level, percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 

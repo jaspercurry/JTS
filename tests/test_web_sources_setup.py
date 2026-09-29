@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.web import _common
 from jasper.web import sources_setup as mod
 from tests._web_test_helpers import assert_canonical_page

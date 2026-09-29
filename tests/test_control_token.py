@@ -23,7 +23,7 @@ import pytest
 
 from jasper.cli import control_token as cli
 from jasper.control import control_token
-from jasper.install_profile import system_capabilities_for_profile
+from jasper.playback_state.install_profile import system_capabilities_for_profile
 from jasper.web import chrome
 from jasper.web.landing import render_landing
 from tests._web_test_helpers import assert_verify_uses_constant_time_compare
