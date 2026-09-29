@@ -538,28 +538,38 @@ class VolumeFloorToneSession:
                         # release, and the one that lets go of a late win.
                         await hold.release()
         else:
-            async with self._camilla_op():
-                with self._lock:
-                    active = self._runner is runner and self._generation == generation
-                if not active:
-                    return _payload(floor_db=floor_db, status="stale", active=False)
-                camilla = camilla_factory()
-                # The claim is held; only the level it sits at moves. One
-                # settle, so the tone steps between floors instead of jumping
-                # to the household level and back down.
-                owner = volume_owner()
-                if owner is not None and self._claim is not None:
-                    self._claim = await owner.relevel(
-                        self._claim, percent_to_db(1, floor_db=floor_db),
-                    )
-                await _unmute(camilla, context="floor_tone_update_unmute")
-                with self._lock:
-                    if self._runner is runner and self._generation == generation:
-                        self._floor_db = floor_db
-                    else:
-                        return _payload(
-                            floor_db=floor_db, status="stale", active=False,
+            try:
+                async with self._camilla_op():
+                    with self._lock:
+                        active = self._runner is runner and self._generation == generation
+                    if not active:
+                        return _payload(floor_db=floor_db, status="stale", active=False)
+                    camilla = camilla_factory()
+                    # The claim is held; only the level it sits at moves. One
+                    # settle, so the tone steps between floors instead of
+                    # jumping to the household level and back down.
+                    owner = volume_owner()
+                    if owner is not None and self._claim is not None:
+                        self._claim = await owner.relevel(
+                            self._claim, percent_to_db(1, floor_db=floor_db),
                         )
+                    await _unmute(camilla, context="floor_tone_update_unmute")
+                    with self._lock:
+                        if self._runner is runner and self._generation == generation:
+                            self._floor_db = floor_db
+                        else:
+                            return _payload(
+                                floor_db=floor_db, status="stale", active=False,
+                            )
+            except (OSError, RuntimeError, ValueError, TypeError):
+                # The route answers these 502, and the page shows that as
+                # stopped and sends no stop: the tone, its claim and the
+                # writer lock stop here.
+                with self._lock:
+                    ours = self._runner is runner and self._generation == generation
+                if ours:
+                    await self.stop(camilla_factory=camilla_factory, reason="update_failed")
+                raise
 
         if started_runner is not None:
             await asyncio.sleep(VOLUME_FLOOR_TONE_STARTUP_CHECK_S)

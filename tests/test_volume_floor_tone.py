@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The floor-tone restore's ``main_mute`` writes, through the one writer."""
+"""The floor tone's ``main_mute`` writes, through the one writer, and what a failed step lets go."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ import logging
 
 import pytest
 
+from jasper.atomic_io import flock_held
 from jasper.audio_control.volume_carrier import CamillaCarrier
+from jasper.dsp_control.dsp_apply import dsp_apply_lock_path
 from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.web import volume_floor_tone
 
@@ -91,4 +93,25 @@ async def test_a_start_whose_unmute_fails_fails_the_start(audition, caplog):
     context = "floor_tone_start_unmute"
     assert event_field_maps(caplog, "volume.main_mute", context=context) == [
         {"muted": "false", "context": context, "result": "failed"},
+    ]
+
+
+async def test_an_update_that_fails_stops_the_tone(audition, tmp_path, caplog):
+    session, camilla, owner = audition
+    caplog.set_level(logging.INFO, logger="jasper")
+    await _start(session, camilla)
+    camilla.mute_accepted = False
+
+    with pytest.raises(RuntimeError):
+        await session.start_or_update(
+            {"volume_floor_db": -30.0},
+            camilla_factory=lambda: camilla,
+            runner_factory=_SilentTone,
+        )
+
+    assert owner.declared_level_db() == pytest.approx(HOUSEHOLD_DB)
+    assert await camilla.get_volume_db() == pytest.approx(HOUSEHOLD_DB)
+    assert flock_held(dsp_apply_lock_path(tmp_path), missing=False) is False
+    assert event_field_maps(caplog, "sound.volume_floor_tone", action="stop") == [
+        {"action": "stop", "reason": "update_failed", "status": "stopped"},
     ]
