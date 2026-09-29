@@ -34,6 +34,7 @@ from typing import Any, Mapping
 
 from jasper.active_speaker.seat_level_reference import DEFAULT_TARGET_DB_SPL
 from jasper.audio_measurement import household_mic
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -236,10 +237,10 @@ def household_mic_summary() -> dict[str, Any]:
     """
     found = household_mic.resolved_household_mic()
     if found is None:
-        return {"available": False}
+        return unavailable("mic_calibration_unavailable")
     record, resolved = found
     return {
-        "available": True,
+        "status": "available",
         "label": record.label,
         "serial_display": record.serial_display or "",
         "calibration_file": resolved.raw_path,
@@ -276,7 +277,7 @@ def seat_level_start_payload(body: Mapping[str, Any]) -> dict[str, Any]:
             "detail": "target_db_spl must be finite",
         }
     mic = household_mic_summary()
-    if not mic["available"]:
+    if mic["status"] != "available":
         return {
             "status": "refused",
             "reason": "mic_calibration_unavailable",

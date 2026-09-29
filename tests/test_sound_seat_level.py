@@ -101,7 +101,7 @@ def test_household_mic_summary_unavailable(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(
         seat_level.household_mic, "resolved_household_mic", lambda: None
     )
-    assert seat_level.household_mic_summary() == {"available": False}
+    assert seat_level.household_mic_summary() == {"status": "unavailable", "reason": "mic_calibration_unavailable"}
 
 
 def test_household_mic_summary_available(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,7 +113,7 @@ def test_household_mic_summary_available(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda: (record, resolved),
     )
     assert seat_level.household_mic_summary() == {
-        "available": True,
+        "status": "available",
         "label": "UMIK-2",
         "serial_display": "3219",
         "calibration_file": "/var/lib/jasper/mic-cal/umik2.txt",
