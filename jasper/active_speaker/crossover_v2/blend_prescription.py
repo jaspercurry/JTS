@@ -267,10 +267,8 @@ class BlendPrescription:
     #: or in any caller reads it.
     rationale: str = ""
     #: How many characters of the submitted rationale were dropped to fit
-    #: :data:`RATIONALE_MAX_CHARS`. ``None`` on documents read back from a
-    #: bank that predates the field; ``0`` means the whole rationale was
-    #: banked.
-    rationale_dropped_chars: int | None = None
+    #: :data:`RATIONALE_MAX_CHARS`.
+    rationale_dropped_chars: int = 0
     answers_packet: bool | None = None
 
     @property
