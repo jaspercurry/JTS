@@ -65,19 +65,10 @@ def _make_conn(
     return conn, factory
 
 
-async def _wait_until(predicate, timeout: float = 2.0):
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError(f"predicate never became true within {timeout}s")
-
-
 async def _begin_response(conn, wire):
     turn = conn._active_turn
     await turn.end_input()
-    await _wait_until(lambda: turn._response_id is not None)
+    await wait_until(lambda: turn._response_id is not None, timeout=2.0)
     wire.sent.clear()
 
 
@@ -385,7 +376,7 @@ async def test_setup_acknowledgement_controls_readiness(conn_cls, outcome, monke
     conn._registry = ToolRegistry()
     monkeypatch.setattr(openai_session, "SESSION_SETUP_TIMEOUT_SEC", 0.1)
     opening = asyncio.create_task(conn._open_session())
-    await _wait_until(lambda: bool(wire.sent))
+    await wait_until(lambda: bool(wire.sent), timeout=2.0)
     assert not conn._connected_event.is_set()
     assert conn.is_paused()
     wire.feed({"type": "session.created"})
@@ -881,9 +872,9 @@ async def test_turn_release_reports_transcript_sizes_and_never_the_text(caplog):
             "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
         })
 
-        await _wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
+        await wait_until(lambda: turn.server_turn_complete(), timeout=2.0)
         assert turn.assistant_transcript() == "Transport error."
-        await _wait_until(lambda: turn.user_transcript() != "", timeout=2.0)
+        await wait_until(lambda: turn.user_transcript() != "", timeout=2.0)
         await turn.release()
 
         (record,) = event_records(caplog, "provider.turn_ended")
@@ -910,7 +901,7 @@ async def test_user_audio_transcript_is_exposed_on_active_turn(caplog):
             "type": "conversation.item.input_audio_transcription.completed",
             "transcript": "turn on the kitchen lights",
         })
-        await _wait_until(
+        await wait_until(
             lambda: turn.user_transcript() == "turn on the kitchen lights",
             timeout=2.0,
         )
@@ -936,7 +927,7 @@ async def test_user_audio_transcript_dedupes_progressive_completions():
                 "type": "conversation.item.input_audio_transcription.completed",
                 "transcript": transcript,
             })
-        await _wait_until(
+        await wait_until(
             lambda: turn.user_transcript() == "Where's the next bus?",
             timeout=2.0,
         )
@@ -961,7 +952,7 @@ async def test_user_audio_transcript_preserves_distinct_completions():
                 "type": "conversation.item.input_audio_transcription.completed",
                 "transcript": transcript,
             })
-        await _wait_until(
+        await wait_until(
             lambda: turn.user_transcript()
             == "turn on the kitchen lights set them to fifty percent",
             timeout=2.0,
@@ -1102,7 +1093,7 @@ async def test_function_call_round_trip():
         })
         # Wait for the tool dispatch to complete and the reply events
         # to land in sess.sent.
-        await _wait_until(
+        await wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create"
                 and e.get("item", {}).get("type") == "function_call_output"
@@ -1180,7 +1171,7 @@ async def test_unserializable_tool_result_does_not_kill_the_turn(caplog):
         # A function_call_output for call_bad is still sent (with an
         # error output), and response.create still fires — the turn is
         # not silently dropped.
-        await _wait_until(
+        await wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create"
                 and e.get("item", {}).get("type") == "function_call_output"
@@ -1205,7 +1196,7 @@ async def test_unserializable_tool_result_does_not_kill_the_turn(caplog):
         assert record.name == "jasper.voice.openai_session"
         assert record.levelno == logging.WARNING
 
-        await _wait_until(
+        await wait_until(
             lambda: any(e.get("type") == "response.create" for e in sess.sent),
             timeout=2.0,
         )
@@ -1271,7 +1262,7 @@ async def test_response_create_fired_only_once_per_tool_round_with_multiple_call
             },
         })
         # Wait for both function_call_output items to land.
-        await _wait_until(
+        await wait_until(
             lambda: sum(
                 1 for e in sess.sent
                 if e.get("type") == "conversation.item.create"
@@ -1356,7 +1347,7 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
             },
         })
         # Wait for the function_call_output to land.
-        await _wait_until(
+        await wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create"
                 and e.get("item", {}).get("type") == "function_call_output"
@@ -1524,7 +1515,7 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
 
         # call_2 (get_volume) is still blocked on volume_may_return, so
         # this can only be observing call_1's send.
-        await _wait_until(
+        await wait_until(
             lambda: any(e.get("item", {}).get("call_id") == "call_1" for e in sess.sent),
             timeout=2.0,
         )
@@ -1537,7 +1528,7 @@ async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
 
         volume_may_return.set()
         # The round still runs to completion off that same milestone.
-        await _wait_until(
+        await wait_until(
             lambda: any(e.get("type") == "response.create" for e in sess.sent),
             timeout=2.0,
         )
@@ -1573,7 +1564,7 @@ async def test_unknown_tool_call_returns_error_payload():
                 ],
             },
         })
-        await _wait_until(
+        await wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create" for e in sess.sent
             ),
@@ -1612,12 +1603,12 @@ async def test_clean_iteration_exit_triggers_reconnect(caplog):
         # iteration end.
         first.feed_iter_stop()
 
-        await _wait_until(lambda: len(factory.conns) >= 2, timeout=3.0)
+        await wait_until(lambda: len(factory.conns) >= 2, timeout=3.0)
         assert event_fields(caplog, "provider.session_closed") == {
             "provider": conn.PROVIDER_NAME, "reason": "clean_close",
         }
         assert event_records(caplog, "provider.session_closed")[0].levelno == logging.WARNING
-        await _wait_until(
+        await wait_until(
             lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
         )
         # Connection is usable again on the fresh session.
@@ -1747,7 +1738,7 @@ async def test_grok_text_delta_normalised_to_openai_event_name():
             sess = factory.conns[0]
             sess.feed({"type": "response.text.delta", "delta": "hi"})
             sess.feed({"type": "response.text.done", "text": "hi"})
-            await _wait_until(
+            await wait_until(
                 lambda: "response.output_text.delta" in captured,
                 timeout=2.0,
             )
@@ -1787,7 +1778,7 @@ async def test_proactive_watchdog_fires_before_cap_when_idle():
         assert len(factory.conns) == 1
         # After ~50 ms the watchdog should set _reconnect_event, the
         # supervisor should reconnect, and a SECOND session should open.
-        await _wait_until(lambda: len(factory.conns) >= 2, timeout=2.0)
+        await wait_until(lambda: len(factory.conns) >= 2, timeout=2.0)
         assert len(factory.conns) >= 2
     finally:
         await conn.stop()
@@ -1962,7 +1953,7 @@ async def test_response_status_controls_completion_and_tool_execution(conn_cls, 
         await conn._dispatch_event("response.done", event)
         await conn._dispatch_event("response.done", event)
         if status == "completed" and with_tools:
-            await _wait_until(lambda: any(e["type"] == "response.create" for e in wire.sent))
+            await wait_until(lambda: any(e["type"] == "response.create" for e in wire.sent), timeout=2.0)
         assert calls == ([True] if status == "completed" and with_tools else [])
         assert turn.server_turn_complete() is (status == "completed" and not with_tools)
         assert turn.turn_lost() is (status in ("failed", "cancelled", "incomplete"))
@@ -2179,7 +2170,7 @@ async def test_reconnect_discards_ownership_and_late_release(pending_ack):
         else:
             await _begin_response(conn, old_wire)
             old_wire.feed_error(ConnectionError("lost"))
-            await _wait_until(lambda: len(factory.conns) == 2 and conn._connected_event.is_set())
+            await wait_until(lambda: len(factory.conns) == 2 and conn._connected_event.is_set(), timeout=2.0)
         fresh = await conn.acquire_turn()
         fresh_wire = factory.conns[-1]
         assert fresh_wire is not old_wire
@@ -2228,7 +2219,7 @@ async def test_release_cleanup_keeps_its_original_socket_during_reconnect():
         await asyncio.wait_for(entered.wait(), 1)
         await conn._teardown_session()
         opening = asyncio.create_task(conn._open_session())
-        await _wait_until(lambda: len(factory.conns) == 2)
+        await wait_until(lambda: len(factory.conns) == 2, timeout=2.0)
         resume.set()
         await asyncio.gather(release, opening)
         assert [e["type"] for e in factory.conns[-1].sent] == ["session.update"]
@@ -2266,7 +2257,7 @@ async def test_closing_receive_cannot_request_another_reconnect(conn_cls, ending
     try:
         await asyncio.wait_for(entered.wait(), 1)
         request_planned_reopen(conn)
-        await _wait_until(lambda: conn._connected_event.is_set())
+        await wait_until(lambda: conn._connected_event.is_set(), timeout=2.0)
         assert len(wires) == 2
         assert not conn._reconnect_event.is_set()
     finally:
