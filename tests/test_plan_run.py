@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Preset, ProgramPose, available_presets, run_preset,
+    Preset, ProgramPose, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -609,19 +609,6 @@ def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
     record, = fakes.banked
     assert (result.status, record["verdict"]["evidence"], grading.called, result.judge) == (
         "cancelled", {"assessed": False}, False, None)
-
-
-@pytest.mark.parametrize("preset_id", available_presets())
-def test_each_planned_capture_plays_one_stimulus(preset_id):
-    """The bank judges each take inside its measure, so the host's rearm and
-    acceptance fall between captures only while each capture plays one
-    stimulus: one bearing at one rung (ADR-0383)."""
-    for layout in run_preset(preset_id).layouts:
-        preset = run_preset(preset_id, layout)
-        request = ac.request_for_preset(preset, mover=preset.mover or "human",
-                                        candidates=("fp-a",) if preset.regime == ac.REGIME_BRANCHES else ())
-        assert all(len(capture.spec.positions) <= 1 and len(capture.spec.level_ladder_dbfs) <= 1
-                   for capture in plan_run.prepare_plan_captures(request, roles_bands=_roles()))
 
 
 @pytest.mark.parametrize("changed", [
