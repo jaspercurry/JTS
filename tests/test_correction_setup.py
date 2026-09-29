@@ -532,40 +532,66 @@ def test_capture_stop_callback_is_atomic_with_starting_state():
     finally:
         correction_capture._set_capture_slot(None)
 
-def test_run_async_timeout_waits_for_coroutine_cleanup():
-    started = threading.Event()
-    cleanup_started = threading.Event()
-    release_cleanup = threading.Event()
-    finished = threading.Event()
-    failures = []
+def _time_out_after_start(monkeypatch, started: threading.Event) -> None:
+    """run_async's timeout starts only once ``started`` is set, so it fires
+    mid-coroutine, never before the task's first step."""
+    schedule = asyncio.run_coroutine_threadsafe
 
-    async def operation():
+    def schedule_then_wait_for_start(coro, loop):
+        fut = schedule(coro, loop)
+        assert started.wait(DEFAULT_SIGNAL_TIMEOUT_S)
+        return fut
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", schedule_then_wait_for_start)
+
+def test_run_async_timeout_returns_after_a_started_coroutine_drains(monkeypatch):
+    started = threading.Event()
+    finalized = threading.Event()
+
+    async def body():
         started.set()
         try:
             await asyncio.Event().wait()
         finally:
-            cleanup_started.set()
-            await asyncio.to_thread(release_cleanup.wait)
+            await asyncio.sleep(0.05)
+            finalized.set()
 
-    def invoke():
+    _time_out_after_start(monkeypatch, started)
+    with pytest.raises(concurrent.futures.TimeoutError):
+        correction_runtime.run_async(body(), timeout=0.01)
+    assert finalized.is_set()
+
+def test_run_async_timeout_before_the_first_step_abandons_the_coroutine():
+    loop = correction_runtime.ensure_loop()
+    release_loop = threading.Event()
+    ran = threading.Event()
+    raised: list[BaseException] = []
+
+    async def body():
+        ran.set()
+
+    coro = body()
+
+    def call():
         try:
-            correction_runtime.run_async(operation(), timeout=0.05)
-        except concurrent.futures.TimeoutError:
-            pass
-        except (OSError, RuntimeError, ValueError) as exc:
-            failures.append(exc)
-        finally:
-            finished.set()
+            correction_runtime.run_async(coro, timeout=0.01)
+        except concurrent.futures.TimeoutError as exc:
+            raised.append(exc)
 
-    worker = threading.Thread(target=invoke, daemon=True)
-    worker.start()
-    assert started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-    assert cleanup_started.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-    assert not finished.is_set()
-    release_cleanup.set()
-    assert finished.wait(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-    worker.join(timeout=DEFAULT_SIGNAL_TIMEOUT_S)
-    assert failures == []
+    # Hold the loop past the join, so the timeout's cancel lands before the
+    # task's first step and the caller must return without the loop.
+    loop.call_soon_threadsafe(release_loop.wait, DEFAULT_SIGNAL_TIMEOUT_S)
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    caller.join(timeout=5.0)
+    returned = not caller.is_alive()
+    release_loop.set()
+    # One round trip, so the loop has run the cancelled task before the checks.
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(DEFAULT_SIGNAL_TIMEOUT_S)
+    assert returned
+    assert len(raised) == 1
+    assert not ran.is_set()
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
 
 def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
     prior_loop = correction_runtime._loop
@@ -642,18 +668,21 @@ def test_ensure_loop_hands_concurrent_callers_one_running_loop(monkeypatch):
                 loop.close()
 
 def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
+    started = threading.Event()
     cleanup_started = threading.Event()
     release_cleanup = threading.Event()
     drain_alarm = threading.Event()
     finished = threading.Event()
 
     async def operation():
+        started.set()
         try:
             await asyncio.Event().wait()
         finally:
             cleanup_started.set()
             await asyncio.to_thread(release_cleanup.wait)
 
+    _time_out_after_start(monkeypatch, started)
     monkeypatch.setattr(
         correction_runtime,
         "RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S",

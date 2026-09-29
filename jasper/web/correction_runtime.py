@@ -27,6 +27,7 @@ from jasper.platform.log_event import log_event
 
 from ._common import (
     JsonBodyError,
+    close_awaitable,
     read_json_object,
 )
 
@@ -140,8 +141,13 @@ def run_async(coro, *, timeout: float | None = 60.0):
     pass shorter timeouts.
     """
     drained = threading.Event()
+    # Never released: _tracked takes it to run coro, and a timed-out caller
+    # takes it to abandon coro unstarted. The first to take it decides.
+    start_token = threading.Lock()
 
     async def _tracked():
+        if not start_token.acquire(blocking=False):
+            return None
         try:
             return await coro
         finally:
@@ -156,6 +162,11 @@ def run_async(coro, *, timeout: float | None = 60.0):
         # caller has already reported failure. Owning coroutines retain their
         # bounded/shielded rollback in ``finally`` blocks.
         fut.cancel()
+        if start_token.acquire(blocking=False):
+            # coro never ran a statement, so no graph, volume or claim changed:
+            # there is nothing to drain.
+            close_awaitable(coro)
+            raise
         if not drained.wait(RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S):
             log_event(
                 logger,

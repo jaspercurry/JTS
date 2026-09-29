@@ -22,7 +22,6 @@ import io
 import json
 import logging
 import re
-import threading
 from contextlib import nullcontext
 from http import HTTPStatus
 from pathlib import Path
@@ -55,23 +54,6 @@ def _saved_passive_layout(tmp_path, monkeypatch):
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     save_output_topology(_full_range_stereo(), path)
-
-
-def test_run_async_timeout_cancels_loop_task():
-    import asyncio
-    import concurrent.futures
-
-    cancelled = threading.Event()
-
-    async def never_finishes():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    with pytest.raises(concurrent.futures.TimeoutError):
-        correction_runtime.run_async(never_finishes(), timeout=0.01)
-    assert cancelled.wait(timeout=2)
 
 
 def _render() -> str:
