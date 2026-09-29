@@ -377,12 +377,26 @@ def _bind_record(
                 ),
             },
         )
+    return record_captures(doc, roles, root, manifest, record_path=sidecar, wav=wav, program=program,
+                           program_sha256=str(sha or ""), capture_sha256=capture_sha,
+                           program_audio=program_audio, clocked=clocked)
+
+
+def record_captures(
+    doc: Mapping[str, Any], roles: tuple[str, ...], root: Path, manifest: Mapping[str, Any] | None, *,
+    record_path: Path, wav: Path, program: Path | None = None, program_sha256: str = "",
+    capture_sha256: str = "", program_audio: dict[str, tuple[np.ndarray, int]] | None = None,
+    clocked: bool = True,
+) -> list[PoseCapture]:
+    """One record's capture per role, from its banked fields. A role the take
+    kept an impulse for is read from it; ``wav`` is opened only to rebuild a
+    role it kept none for, which ``clocked`` refuses."""
     band = radiated_band_of(doc, manifest)
     if band is None:
         raise EvidenceUnavailable(
             REFUSE_RADIATED_BAND_MISSING,
             {
-                "sidecar": sidecar.name,
+                "sidecar": record_path.name,
                 "note": (
                     "a graded band is intersected with the band this "
                     "capture's DUT radiates; without it none is honest"
@@ -394,16 +408,16 @@ def _bind_record(
     except TakeImpulsesUnreadable as exc:
         raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
     curves = {role: _role_curve(doc, manifest, role) for role in roles}
-    responses = [_capture_response(doc, role, wav, program, program_audio, kept=kept, curve=curves[role],
-                                   clocked=clocked) for role in roles]
+    responses = [_capture_response(doc, role, wav, program, {} if program_audio is None else program_audio,
+                                   kept=kept, curve=curves[role], clocked=clocked) for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
     return [
         PoseCapture(
-            capture_id=document_capture_id(doc) or sidecar.stem,
+            capture_id=document_capture_id(doc) or record_path.stem,
             phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
             wav=wav,
             program=program,
-            program_sha256=str(sha or ""),
+            program_sha256=program_sha256,
             azimuth_deg=finite_float(doc.get("position_deg")),
             vertical_deg=finite_float(doc.get("vertical_deg")),
             mark_distance_m=finite_float(doc.get("mark_distance_m")),
@@ -416,9 +430,9 @@ def _bind_record(
             pose_driver=_doc_pose_driver(doc),
             candidate_id=str(doc.get("candidate_id") or ""),
             graph_fingerprint=played_graph_fingerprint(doc),
-            capture_sha256=capture_sha,
+            capture_sha256=capture_sha256,
             preprocessing=preprocessing,
-            record_path=sidecar,
+            record_path=record_path,
             record_document=doc,
             curve=curves[role],
         )

@@ -27,6 +27,7 @@ import numpy as np
 import pytest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
 from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
+from tests.run_manifest_fixture import write_bundle_manifest
 from jasper.cli.round_views import ARTIFACT_BY_VIEW, main
 from jasper.active_speaker.candidate_parts import COMPOSITION_KIND
 from jasper.active_speaker.round_bank import bank_round
@@ -1564,14 +1565,12 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     program, state = compose(-16.0)
     write_program_wav(artifacts / "measure_program.wav", program)
     (session / "crossover-v2-state.json").write_text(json.dumps(state))
-    feature, ring = feature_bundle(tmp_path / "feature", _resonant_ir(3.0), phases=("lateral",))
-    feature_program = next(feature.glob("evidence/v1/artifacts/**/lateral_program.wav"))
-    shutil.copyfile(feature_program, artifacts / "lateral_program.wav")
-    feature_doc = json.loads(next((ring / "sidecar").glob("*.json")).read_text())
-    feature_doc.update(kind=POSITION_EVIDENCE_KIND, run_id=capture_id, take_id="lateral",
-                       captured_at=1788135641.4, wav_path="summed/lateral.wav", position_deg=15)
-    (positions / "lateral.json").write_text(json.dumps(feature_doc))
-    shutil.copyfile(next((ring / "wav").glob("*.wav")), captured.with_name("lateral.wav"))
+    feature, feature_positions = feature_bundle(tmp_path / "feature", _resonant_ir(3.0), phases=("lateral",),
+                                                position_deg=15)
+    shutil.copytree(feature / "impulses", session / "impulses")
+    for record in feature_positions.glob("*.json"):
+        shutil.copyfile(record, positions / record.name)
+    write_bundle_manifest(session, selected={record.stem for record in feature_positions.glob("*.json")})
     bank = bank_round(session, campaign_root=tmp_path / "bank",
                       applied_profile_path=tmp_path / "applied-profile.json")
     shutil.rmtree(session)

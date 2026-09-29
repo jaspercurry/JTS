@@ -14,30 +14,35 @@ against, which is exactly why the instrument carries controls at all.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
-import shutil
-import wave
+from dataclasses import replace
 from pathlib import Path
-from typing import Callable, get_args
+from types import SimpleNamespace
+from typing import Any, get_args
 
 import numpy as np
 import pytest
 
 from jasper.audio_measurement import excess_phase as ep
 from jasper.audio_measurement.deconv import magnitude_response
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import NO_KEPT_TAKES, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import f_trusted_floor_hz
+from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_verify_program, render_program_pcm
+from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, analyze_program_capture
+from jasper.audio_measurement.program_analysis import dispatch as analysis_dispatch
+from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from jasper.audio_measurement.quality_model import TrustLevel
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
+from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
+from jasper.active_speaker.bundles import BUNDLE_SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import feature_classifier as fx
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CLASSIFICATION_ARTIFACT,
     build_crossover_evidence_packet,
     packet_feature_classifications,
-    round_artifact_dir,
-    round_program_dir,
 )
 from jasper.active_speaker.crossover_v2.feature_classification import (
     CLASSIFICATIONS,
@@ -67,28 +72,20 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
     WINDOW_UNRESOLVED,
     frame_descriptor,
 )
-from jasper.active_speaker.crossover_v2.round_captures import (
-    REFUSE_RADIATED_BAND_MISSING,
-)
 from jasper.active_speaker.crossover_v2.gate_sweep import analysis_grid as sweep_grid
-from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
+from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
+from jasper.active_speaker.measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER
 from jasper.cli import round_views as cli
+from tests.crossover_v2_banked_round import bank_executor_take
 from tests.run_manifest_fixture import write_bundle_manifest
 
 SR = 48000
 SESSION_ID = "bundle5essi0n"
 RESONANCE_HZ = 3000.0
-
-
-def _sweep(seconds: float = 1.0, f0: float = 20.0, f1: float = 20000.0) -> np.ndarray:
-    n = int(seconds * SR)
-    t = np.arange(n) / SR
-    k = math.log(f1 / f0)
-    x = np.sin(2 * np.pi * f0 * seconds / k * (np.exp(t * k / seconds) - 1.0))
-    fade = int(0.01 * SR)
-    x[:fade] *= np.hanning(fade * 2)[:fade]
-    x[-fade:] *= np.hanning(fade * 2)[fade:]
-    return x * 0.5
+#: A kept impulse holds the deconvolution pre-guard before its sweep's
+#: scheduled start and the verify tail after it (ADR-0354).
+_ORIGIN = round(DECONV_PRE_GUARD_S * SR)
+_KEPT_SAMPLES = _ORIGIN + round(DEFAULT_VERIFY_TAIL_S * SR) + 1
 
 
 def _flat_ir() -> np.ndarray:
@@ -104,26 +101,28 @@ def _resonant_ir(gain_db: float, q: float = 6.0, f0: float = RESONANCE_HZ) -> np
     return np.asarray(lfilter(b, a, _flat_ir()), dtype=np.float64)
 
 
-def _write_wav(path: Path, x: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(SR)
-        handle.writeframes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes())
-
-
-#: Leading silence per phase, so this fixture's phases carry DIFFERENT program
-#: bytes the way production's do — a position group's sweep is the verify one
-#: minus the courtesy prelude (``crossover_v2.programs``). A capture binds to
-#: the program whose bytes it heard (#3504), and phases sharing one waveform
-#: could not tell that binding from a phase-label one.
-_PROGRAM_LEAD_SAMPLES = {"verify": 240, "cloud_verify": 480}
-
-
-def _program_for(phase: str) -> np.ndarray:
-    lead = np.zeros(_PROGRAM_LEAD_SAMPLES.get(phase, 0))
-    return np.concatenate([lead, _sweep()])
+def _bank_take(
+    bundle: Path, take_id: str, *, phase: str, ir: np.ndarray, rng: np.random.Generator,
+    role: str = "summed", curves: list[dict] | None = None, position_deg: int | None = None,
+    vertical_deg: int = 0, captured_at: str = "2026-09-29T00:00:00Z",
+) -> None:
+    """One speaker take banked as the host banks it: its record, and the
+    impulse its analysis kept, with the recording's noise floor under it."""
+    samples = rng.normal(0.0, 3e-5, _KEPT_SAMPLES)
+    samples[_ORIGIN:_ORIGIN + ir.size] += ir
+    response = SimpleNamespace(role=role, repeat_index=None, repeat_responses=(), impulse=RecordedImpulse(
+        samples.astype(np.float32), SR, origin_index=_ORIGIN, segment_id="sweep_verify"))
+    analysis = SimpleNamespace(driver_responses=() if role == "summed" else (response,),
+                               summed_response=response if role == "summed" else None)
+    positions = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST/positions"
+    positions.mkdir(parents=True, exist_ok=True)
+    (positions / f"{take_id}.json").write_text(json.dumps({
+        "kind": POSITION_EVIDENCE_KIND, "phase": phase, "measurement_purpose": PURPOSE_SPEAKER,
+        "take_id": take_id, "captured_at": captured_at, "position_deg": position_deg,
+        "vertical_deg": vertical_deg, "wav_path": f"summed/summed_{take_id}.wav",
+        "curves": [{"role": role, "band_hz": [150.0, 20000.0]}] if curves is None else curves,
+        IMPULSES_KEY: write_take_impulses(bundle, take_id, analysis, recording=None),
+    }))
 
 
 def _bundle(
@@ -131,74 +130,29 @@ def _bundle(
     ir: np.ndarray,
     *,
     phases: tuple[str, ...] = ("verify", "cloud_verify", "cloud_verify"),
-    session_id: str = SESSION_ID,
     seed: int = 11,
-    band_hz: tuple[float, float] | None = (150.0, 20000.0),
-    bank_shape: bool = False,
-    stimulus_sha: Callable[[str, dict[str, str]], str | None] | None = None,
+    role: str = "summed",
+    position_deg: int | None = None,
 ) -> tuple[Path, Path]:
-    """A commissioning bundle plus a capture ring, of one synthetic speaker.
+    """A commissioning bundle of one synthetic speaker, every take kept.
 
-    ``bank_shape=True`` banks the program WAVs the way
-    ``scripts/bank-crossover-round.sh`` pulls a live Pi session bundle: in a
-    SIBLING ``crossover_v2/<capture>/`` directory next to — not inside —
-    ``evidence/``, rather than beside the JSON receipts. ``round_dir`` itself
-    still has to exist either way, empty or not, for
-    :func:`~jasper.active_speaker.crossover_v2.evidence_packet.round_artifact_dir`
-    to find it at all.
-
-    Every sidecar banks ``provenance.stimulus.wav_sha256`` over the bytes of
-    the program its capture was made against, as the play seam does.
-    ``stimulus_sha`` overrides that: it is handed the sidecar's phase and the
-    phase→digest map, and a ``None`` return omits the field entirely.
+    Returns the bundle and the directory its take records are in.
     """
     rng = np.random.default_rng(seed)
     bundle = root / "bundle"
-    round_dir = bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST"
-    programs_dir = (bundle / "crossover_v2/wired-TEST") if bank_shape else round_dir
-    dumps = bundle / "ring"
-    round_dir.mkdir(parents=True, exist_ok=True)
-    shas: dict[str, str] = {}
-    for phase in set(phases) | {"verify", "cloud_verify"}:
-        path = programs_dir / f"{phase}_program.wav"
-        _write_wav(path, _program_for(phase))
-        shas[phase] = hashlib.sha256(path.read_bytes()).hexdigest()
-    bundle.mkdir(parents=True, exist_ok=True)
-    (bundle / "info.json").write_text(json.dumps({"session_id": session_id}))
-
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps(
+        {"session_id": SESSION_ID, "bundle_schema_version": BUNDLE_SCHEMA_VERSION}))
     for index, phase in enumerate(phases):
-        program = _program_for(phase)
-        captured = np.convolve(program, ir)[: program.size + 2048]
-        captured = captured + rng.normal(0, 3e-4, captured.size)
-        captured = captured / np.max(np.abs(captured)) * 0.8
-        name = f"{1787000000000000 + index * 50_000_000}_{phase}_mic"
-        _write_wav(dumps / "wav" / f"{name}.wav", captured)
-        (dumps / "sidecar").mkdir(parents=True, exist_ok=True)
-        doc: dict = {
-            "phase": phase,
-            "jts_session_identity": {"session_id": session_id},
-            # The band the DUT radiates, exactly as a real summed sidecar
-            # banks it. The window ladder normalises on a reference band
-            # intersected with this one and refuses without it (E5, #1969).
-            "curves": [
-                {"role": "summed", "band_hz": list(band_hz or ())}
-            ],
-        }
-        if band_hz is None:
-            doc.pop("curves")
-        banked = shas[phase] if stimulus_sha is None else stimulus_sha(phase, shas)
-        if banked is not None:
-            doc["provenance"] = {"stimulus": {"wav_sha256": banked}}
-        (dumps / "sidecar" / f"{name}.json").write_text(json.dumps(doc))
-    return bundle, dumps
+        _bank_take(bundle, f"{phase}_{index:02d}_a01", phase=phase, ir=ir, rng=rng, role=role,
+                   position_deg=position_deg, captured_at=f"2026-09-29T00:00:{index:02d}Z")
+    write_bundle_manifest(bundle)
+    return bundle, bundle / "evidence/v1/artifacts/crossover_v2/wired-TEST/positions"
 
 
 def _classify(root: Path, ir: np.ndarray, **kwargs) -> dict:
-    bundle, dumps = _bundle(root, ir, **kwargs)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    return fx.classify_round(captures)
+    bundle, _ = _bundle(root, ir, **kwargs)
+    return fx.classify_round(fx.load_kept_captures(bundle))
 
 
 @pytest.fixture(autouse=True)
@@ -306,10 +260,8 @@ def test_a_reflection_inside_the_window_is_classified_as_the_room(tmp_path):
     cloud still has.
     """
     ir = ep.add_delayed_copy(_flat_ir(), _ROOM_ARRIVAL_GAIN, _ROOM_ARRIVAL_MS, SR)
-    bundle, dumps = _bundle(tmp_path, ir)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, ir)
+    captures = fx.load_kept_captures(bundle)
     # Pinned rather than detected: the comb has dozens of rungs across the
     # band and this test is about ONE of them, not about the detector.
     artifact = fx.classify_round(captures, at=[RESONANCE_HZ])
@@ -355,10 +307,8 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     primary — the window the phase test, the detector and the trusted band are
     read through — exactly where it was.
     """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
+    captures = fx.load_kept_captures(bundle)
     artifact = fx.classify_round(captures, at=[RESONANCE_HZ], gates_ms=_WIDE_LADDER_MS)
     assert artifact["measurement"]["gate_ladder_ms"] == list(_WIDE_LADDER_MS)
     assert artifact["measurement"]["gate_ms_primary"] == fx.DEFAULT_GATE_MS
@@ -377,36 +327,24 @@ def test_a_commanded_gate_ladder_reports_per_rung_facts(tmp_path):
     assert set(row["excess_loss_vs_null"]) == {"11"}
 
 
-def test_a_round_banking_no_radiated_band_refuses_the_ladder_not_the_round(
-    tmp_path,
-):
-    """The LADDER is refused by name; every other fact still reports.
+@pytest.mark.parametrize(("strip", "field"), [
+    pytest.param(lambda record: record.update(curves=[]), "curves", id="no_band"),
+    pytest.param(lambda record: record.pop(IMPULSES_KEY), IMPULSES_KEY, id="no_impulse"),
+])
+def test_a_kept_take_missing_what_classification_reads_refuses_by_that_field(tmp_path, strip, field):
+    """No current writer banks a kept take without its band or its impulse, so
+    one refuses the round by the field, never degraded or rebuilt from its
+    recording (#2902, ADR-0392)."""
+    bundle, positions = _bundle(tmp_path, _resonant_ir(+3.0))
+    path = sorted(positions.glob("*.json"))[0]
+    record = json.loads(path.read_text())
+    strip(record)
+    path.write_text(json.dumps(record))
 
-    The ladder normalises each capture on a reference band intersected with
-    the band its own DUT radiates, and no declared band substitutes for one
-    the capture did not bank (E5, #1969). That costs the window verdict, and
-    it costs nothing else: the phase class, the decay reads and the per-pose
-    facts are all still measured, and the refusal is named in the artifact and
-    in every row rather than showing up as a suspiciously stable window.
-    """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), band_hz=None)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    assert all(capture.radiated_band_hz is None for capture in captures)
-
-    artifact = fx.classify_round(captures, at=[RESONANCE_HZ])
-    refusal = artifact["measurement"]["gate_ladder_refused"]
-    assert refusal["reason"] == REFUSE_RADIATED_BAND_MISSING
-    assert refusal["captures"] == [capture.wav.name for capture in captures]
-    row = artifact["rows"][0]
-    assert row["gate_verdict"] == UNRESOLVED
-    assert row["classification"] == UNRESOLVED
-    assert row["gate_rungs"] == {}
-    assert row["gate_sensitivity"]["ladder_refused"] == refusal
-    # The phase test never needed the ladder and still answers.
-    assert row["egd_verdict"] == EGD_MIN_PHASE
-    assert row["depth_db"] > 0.5
+    with pytest.raises(EvidenceUnavailable) as caught:
+        fx.load_kept_captures(bundle)
+    assert caught.value.reason == TAKE_CURVES_NOT_BANKED
+    assert (caught.value.detail["take_id"], caught.value.detail["field"]) == (record["take_id"], field)
 
 
 def test_the_fdw_rungs_carry_pooled_db_and_centre_hz_for_both_cycle_counts(
@@ -448,10 +386,8 @@ def test_fdw_5_excludes_a_reflection_the_fixed_gate_retains(tmp_path):
     ir = ep.add_delayed_copy(
         _flat_ir(), _FDW_REFLECTION_GAIN, _FDW_REFLECTION_MS, SR
     )
-    bundle, dumps = _bundle(tmp_path, ir)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, ir)
+    captures = fx.load_kept_captures(bundle)
     artifact = fx.classify_round(captures, at=[_FDW_HF_NULL_HZ])
     row = artifact["rows"][0]
 
@@ -494,7 +430,7 @@ def test_the_cli_gates_ms_flag_reaches_the_banked_artifact(tmp_path, capsys):
     ladder compares its own shortest and longest valid rungs instead of
     everything against the primary.
     """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
         "classify-features", str(bundle),
         "--at", str(RESONANCE_HZ),
@@ -516,7 +452,7 @@ def test_a_single_rung_ladder_refuses_the_ladder_by_name_and_still_classifies(
     named ladder refusal a round with no radiated band gets, and every other
     fact still reports.
     """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main([
         "classify-features", str(bundle),
         "--at", str(RESONANCE_HZ), "--gates-ms", "7",
@@ -545,7 +481,7 @@ def test_the_pose_each_ladder_row_belongs_to_is_banked_once_for_the_round(
     """
     banked = peak_artifact["measurement"]["gate_ladder_poses"]
     assert banked, peak_artifact["measurement"]["gate_ladder_refused"]
-    assert [pose["capture_wav"] for pose in banked] == (
+    assert [pose["capture_id"] for pose in banked] == (
         peak_artifact["measurement"]["captures"]
     )
 
@@ -725,19 +661,16 @@ def test_a_ladder_that_did_not_run_never_vouches_for_a_filter():
     """An unrun window test is ``ambiguous``, and never ``STABLE``.
 
     ``STABLE`` is a finding -- the feature survived the ladder -- and it is
-    half of what a ``defect-*`` verdict vouches a filter with. A round whose
-    captures bank no radiated band, or that has one pose, gets no ladder at
-    all, and reading that silence as a pass would vouch for a filter aimed at
-    a feature nothing checked for the room.
+    half of what a ``defect-*`` verdict vouches a filter with. A round with
+    one pose, or a ladder of one rung, gets no ladder at all, and reading that
+    silence as a pass would vouch for a filter aimed at a feature nothing
+    checked for the room.
     """
-    composed = _composed(ladder_refusal={"reason": REFUSE_RADIATED_BAND_MISSING})
+    composed = _composed(ladder_refusal={"reason": fx.GATE_LADDER_NEEDS_TWO_RUNGS})
     assert composed["gate_verdict"] == UNRESOLVED
     assert composed["classification"] == UNRESOLVED
     assert composed["egd_verdict"] == EGD_MIN_PHASE
-    assert (
-        composed["gate_sensitivity"]["ladder_refused"]["reason"]
-        == REFUSE_RADIATED_BAND_MISSING
-    )
+    assert composed["gate_sensitivity"]["ladder_refused"]["reason"] == fx.GATE_LADDER_NEEDS_TWO_RUNGS
 
 
 def test_a_flat_speaker_refuses_by_name(tmp_path):
@@ -917,14 +850,10 @@ def test_failing_controls_withhold_the_phase_class_and_nothing_else(
 
 @pytest.mark.parametrize("repeated", [False, True])
 def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path, repeated):
-    bundle, ring = _bundle(tmp_path, _resonant_ir(+3.0), phases=("lateral",) * (2 if repeated else 1))
-    for sidecar in (ring / "sidecar").glob("*.json"):
-        doc = json.loads(sidecar.read_text())
-        doc["position_deg"] = 15
-        doc["curves"][0]["role"] = "woofer"
-        sidecar.write_text(json.dumps(doc))
-    directory, _ = round_artifact_dir(bundle)
-    captures = fx.load_round_captures(directory, ring, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0), phases=("lateral",) * (2 if repeated else 1),
+                        role="woofer", position_deg=15)
+    captures = fx.load_kept_captures(bundle)
+    assert {capture.preprocessing["role"] for capture in captures} == {"woofer"}
     result = fx.classify_round(captures, at=[RESONANCE_HZ])
     assert result["rows"]
     assert all("egd_verdict" in row and "gate_verdict" in row for row in result["rows"])
@@ -932,259 +861,94 @@ def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path
     assert result["timing_scatter"]["n_pairs"] == int(repeated)
 
 
-@pytest.mark.parametrize(
-    ("rewrite", "expected_reason", "expected_capture_reason"),
-    [
-        pytest.param(
-            {"phase": "measure"},
-            fx.ROUND_SHAPE_INADMISSIBLE,
-            fx.CAPTURE_PHASE_NOT_ADMISSIBLE,
-            id="round_shape",
-        ),
-        pytest.param(
-            {"jts_session_identity": {"session_id": "someone-else"}},
-            fx.NO_ADMISSIBLE_CAPTURES,
-            fx.CAPTURE_OTHER_SESSION,
-            id="no_capture_for_this_round",
-        ),
-    ],
-)
-def test_the_two_ways_to_reach_no_capture_refuse_under_different_names(
-    tmp_path, rewrite, expected_reason, expected_capture_reason
-):
-    """#3480: one slug covered two situations with two different remedies.
+@pytest.mark.parametrize(("phases", "manifest", "expected"), [
+    pytest.param((), "kept", fx.NO_ADMISSIBLE_CAPTURES, id="no_take"),
+    pytest.param(("measure",), "kept", fx.ROUND_SHAPE_INADMISSIBLE, id="no_take_of_a_classified_phase"),
+    pytest.param(("lateral",), "refused", NO_KEPT_TAKES, id="every_take_refused"),
+    pytest.param(("lateral",), None, NO_KEPT_TAKES, id="an_older_bank_with_no_run_manifest"),
+])
+def test_each_way_to_reach_no_kept_take_refuses_under_its_own_name(tmp_path, capsys, phases, manifest, expected):
+    """#3480: one slug covered situations with different remedies.
 
-    A ring holding this round's captures in a shape the instrument cannot read
-    (``measure`` is per-driver, not the summed post-apply response) is
-    plannable-around — point at a verify-shaped round. A ring holding no
-    capture of this round at all is about the ring or the bundle it was scoped
-    to, and no round shape would satisfy it. The driver on the campaign's
-    second night burned its question on the first while reading the second's
-    name, so the two must not share one.
+    A bundle that banked no take is the wrong round. One whose takes are all of
+    a phase classification cannot read (``measure`` is per-driver, not the
+    summed response) needs a verify or lateral round. One whose verify or
+    lateral takes the round kept none of, each refused or replaced or no run
+    manifest selecting it, is the right shape and says so.
     """
-    bundle, dumps = _bundle(
-        tmp_path, _resonant_ir(+3.0), phases=("verify", "cloud_verify")
-    )
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    for sidecar in (dumps / "sidecar").glob("*.json"):
-        doc = json.loads(sidecar.read_text())
-        doc.update(rewrite)
-        sidecar.write_text(json.dumps(doc))
+    bundle, positions = _bundle(tmp_path, _resonant_ir(+3.0), phases=phases)
+    if manifest == "refused":
+        write_bundle_manifest(bundle, refused={path.stem for path in positions.glob("*.json")})
+    elif manifest is None:
+        next(bundle.glob("evidence/v1/artifacts/crossover_v2/*/run_manifest.json")).unlink()
 
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-
-    assert caught.value.reason == expected_reason
-    assert caught.value.reason in fx.CLASSIFICATION_REFUSAL_REASONS
-    # The per-capture table: every sidecar the ring listed, and why each one
-    # is not classifiable. A refusal that names a count contradicts the ring
-    # listing the operator was just handed; this names the captures.
-    census = caught.value.detail["captures"]
-    assert len(census) == 2
-    assert {row["reason"] for row in census} == {expected_capture_reason}
-    assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
-    assert not any(row["admissible"] for row in census)
-    assert all(row["sidecar"] for row in census)
+    assert cli.main(["classify-features", str(bundle)]) == cli.EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason"] == expected
+    assert json.loads(answer["detail"])["phases_seen"] == dict.fromkeys(phases, 1)
 
 
-def _lose_every_wav(dumps: Path) -> None:
-    """The ring listed the sidecars; the takes they name are not beside them."""
-    for wav in (dumps / "wav").glob("*.wav"):
-        wav.unlink()
+def test_only_the_kept_speaker_takes_are_read(tmp_path):
+    """A refused or superseded take is not the speaker's, and neither is
+    another purpose's: only what the run manifest kept for a speaker is read."""
+    bundle, positions = _bundle(tmp_path, _resonant_ir(+3.0), phases=("lateral",) * 3)
+    room = positions / "lateral_02_a01.json"
+    record = json.loads(room.read_text())
+    room.write_text(json.dumps({**record, "measurement_purpose": PURPOSE_ROOM}))
+    write_bundle_manifest(bundle, refused={"lateral_01_a01"})
+
+    assert [capture.capture_id for capture in fx.load_kept_captures(bundle)] == ["lateral_00_a01"]
 
 
-def _strip_every_stamp(dumps: Path) -> None:
-    """The bank step wrote dump names without the microsecond stamp."""
-    for index, sidecar in enumerate(sorted((dumps / "sidecar").glob("*.json"))):
-        stem = f"{sidecar.stem.split('_', 1)[1]}{index}"
-        (dumps / "wav" / f"{sidecar.stem}.wav").rename(dumps / "wav" / f"{stem}.wav")
-        sidecar.rename(sidecar.with_name(f"{stem}.json"))
+#: How far a number in the artifact may move between a take's kept impulse and
+#: a full-precision decode of its recording: the kept impulse is that decode
+#: rounded to float32, which moves these readings by parts in a million.
+_FRESH_DECODE_REL_TOL = 1e-4
+_FRESH_DECODE_ABS_TOL = 1e-6
 
 
-@pytest.mark.parametrize(
-    ("break_ring", "expected_capture_reason"),
-    [
-        pytest.param(_lose_every_wav, fx.CAPTURE_WAV_MISSING, id="wav_missing"),
-        pytest.param(_strip_every_stamp, fx.CAPTURE_UNSTAMPED_NAME, id="unstamped"),
-    ],
-)
-def test_a_ring_that_lost_this_rounds_takes_blames_the_ring_not_the_round_shape(
-    tmp_path, break_ring, expected_capture_reason
-):
-    """The third way to reach no capture, and the one #3480 was actually about.
-
-    Every sidecar here is this session's and names an admissible phase — the
-    round IS verify-shaped, and the remedy ``round_shape_inadmissible``
-    documents (point at a verify-shaped round) is the one move that cannot
-    help. A slug read off ``phases_seen`` alone cannot tell this from a
-    MEASURE-only round; a slug read off the census can.
-    """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    break_ring(dumps)
-
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-
-    assert caught.value.reason == fx.CAPTURES_UNREADABLE
-    assert caught.value.reason in fx.CLASSIFICATION_REFUSAL_REASONS
-    census = caught.value.detail["captures"]
-    assert len(census) == len(list((dumps / "sidecar").glob("*.json")))
-    assert {row["reason"] for row in census} == {expected_capture_reason}
-    assert not any(row["admissible"] for row in census)
-    # The shape the round WAS measured in is still on the refusal, and it is an
-    # admissible one -- which is what makes the round shape the wrong remedy.
-    assert set(caught.value.detail["phases_seen"]) <= set(fx.ADMISSIBLE_PHASES)
-    assert caught.value.detail["note"]
+def _assert_same_answer(kept: Any, fresh: Any) -> None:
+    """Every verdict, flag and name equal, every number within the tolerances above."""
+    if isinstance(kept, dict):
+        assert kept.keys() == fresh.keys()
+        for key in kept:
+            _assert_same_answer(kept[key], fresh[key])
+    elif isinstance(kept, list):
+        assert len(kept) == len(fresh)
+        for one, other in zip(kept, fresh):
+            _assert_same_answer(one, other)
+    elif isinstance(kept, float):
+        assert math.isclose(kept, fresh, rel_tol=_FRESH_DECODE_REL_TOL, abs_tol=_FRESH_DECODE_ABS_TOL), (kept, fresh)
+    else:
+        assert kept == fresh
 
 
-def test_a_capture_whose_program_is_missing_refuses_the_whole_round(tmp_path):
-    """Half a round classified is a different answer, silently."""
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    # ``_play`` banks the first summed-sweep phase's bytes a second time under
-    # this name, so it shares verify's hash and is invisible in the binding map.
-    shutil.copy(round_dir / "verify_program.wav", round_dir / "summed_program.wav")
-    (round_dir / "cloud_verify_program.wav").unlink()
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    detail = caught.value.detail
-    assert caught.value.reason == fx.PROGRAM_MISSING
-    assert detail["phases"] == ["cloud_verify"]
-    assert detail["matched_by"] == "provenance.stimulus.wav_sha256"
-    assert detail["programs_present"] == ["summed_program.wav", "verify_program.wav"]
+def test_a_kept_take_classifies_as_a_fresh_decode_of_its_recording_does(tmp_path, monkeypatch):
+    """What the view relies on (ADR-0392): the impulse a take kept is its
+    analysis's own impulse, stored as float32, so classifying it gives what
+    classifying a fresh full-precision decode of the take's recording gives."""
+    program = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
+    heard = np.convolve(render_program_pcm(program)[:, 0].astype(np.float64) * 0.3, _resonant_ir(+3.0))
+    heard = np.pad(heard, (800, SR))
+    heard += np.random.default_rng(3).normal(0, 3e-4, heard.size)
+    record = bank_executor_take(tmp_path, monkeypatch, program=program,
+                                recording=(heard * (2**31 - 1)).astype(np.int32),
+                                raw_record={"measurement_status": "captured", "program_phase": fx.PHASE_LATERAL})
+    bundle, = (tmp_path / "sessions").iterdir()
+    capture, = fx.load_kept_captures(bundle)
 
+    def full_precision(full_ir, origin_index, segment, sample_rate, *, clock_shift_samples=0.0):
+        kept = recorded_impulse(full_ir, origin_index, segment, sample_rate, clock_shift_samples=clock_shift_samples)
+        return replace(kept, samples=np.asarray(full_ir[:kept.samples.size], dtype=np.float64))
 
-def test_a_capture_binds_to_the_program_whose_bytes_it_heard_not_its_phase_label(
-    tmp_path,
-):
-    """#3504: the phase LABEL on a sidecar does not name the program played.
-
-    ``provenance.stimulus.phase`` reads ``verify`` for every cloud position by
-    construction, and the round directory holds two different sweeps under two
-    phase names. Only the banked content hash says which of them was emitted,
-    so every capture here binds to ``verify_program.wav`` however its own
-    sidecar is labelled.
-    """
-    bundle, dumps = _bundle(
-        tmp_path, _flat_ir(), stimulus_sha=lambda phase, shas: shas["verify"]
-    )
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    verify = round_dir / "verify_program.wav"
-    assert verify.read_bytes() != (round_dir / "cloud_verify_program.wav").read_bytes()
-
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-
-    assert {cap.phase for cap in captures} == {"verify", "cloud_verify"}
-    assert {cap.program for cap in captures} == {verify}
-
-
-@pytest.mark.parametrize(
-    ("stimulus_sha", "expected_reason", "expected_capture_reason", "expected_digest"),
-    [
-        pytest.param(
-            lambda phase, shas: None,
-            fx.CAPTURES_UNREADABLE,
-            fx.CAPTURE_PROGRAM_UNIDENTIFIED,
-            None,
-            id="no_hash_banked",
-        ),
-        pytest.param(
-            lambda phase, shas: "0" * 64,
-            fx.PROGRAM_MISSING,
-            fx.CAPTURE_PROGRAM_MISSING,
-            "0" * 12,
-            id="hash_no_program_carries",
-        ),
-    ],
-)
-def test_a_stimulus_hash_that_binds_to_no_program_refuses_by_name(
-    tmp_path, stimulus_sha, expected_reason, expected_capture_reason, expected_digest
-):
-    """#3504 itself: without proven bytes there is nothing to deconvolve.
-
-    No banked hash and a hash no program carries are one failure — nothing
-    says which program played — refused by name, never guessed at by label.
-    """
-    bundle, dumps = _bundle(tmp_path, _flat_ir(), stimulus_sha=stimulus_sha)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-
-    assert caught.value.reason == expected_reason
-    census = caught.value.detail["captures"]
-    # The row names the digest it matched against, so a refusal is checkable
-    # from its own payload.
-    assert {row["stimulus_wav_sha256_12"] for row in census} == {expected_digest}
-    assert {row["reason"] for row in census} == {expected_capture_reason}
-    assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
-    assert not any(row["admissible"] for row in census)
-
-
-def _lose_a_program(round_dir: Path, dumps: Path) -> None:
-    (round_dir / "cloud_verify_program.wav").unlink()
-
-
-@pytest.mark.parametrize(
-    ("break_round", "expected_reason", "expected_capture_reason"),
-    [
-        pytest.param(
-            _lose_a_program,
-            fx.PROGRAM_MISSING,
-            fx.CAPTURE_PROGRAM_MISSING,
-            id="program_missing",
-        ),
-    ],
-)
-def test_every_refusal_this_loader_raises_names_the_captures_the_ring_listed(
-    tmp_path, break_round, expected_reason, expected_capture_reason
-):
-    """The census promise in the loader's docstring is unconditional or noise.
-
-    #3480 is a refusal whose count contradicts the ring listing the operator
-    was just handed. Two of this loader's three refusals were raised before the
-    census it had already built was attached — so the old shape survived in
-    exactly the refusals a per-driver or half-banked round reaches.
-    """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    break_round(round_dir, dumps)
-
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-
-    assert caught.value.reason == expected_reason
-    census = caught.value.detail["captures"]
-    # One row per sidecar the ring listed, counted off the ring itself rather
-    # than restated here: a census shorter than the listing is #3480 again.
-    assert len(census) == len(list((dumps / "sidecar").glob("*.json")))
-    assert expected_capture_reason in {row["reason"] for row in census}
-    assert {row["reason"] for row in census} <= fx.CAPTURE_ADMISSIBILITY_REASONS
-    assert all(row["sidecar"] for row in census)
-
-
-def test_another_round_in_the_same_ring_is_not_pooled_in(tmp_path):
-    """A ring holding two rounds is split by the bundle's own session id."""
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    stranger = dumps / "sidecar" / "1787000000888888_verify_mic.json"
-    stranger.write_text(
-        json.dumps(
-            {"phase": "verify", "jts_session_identity": {"session_id": "someone-else"}}
-        )
-    )
-    _write_wav(dumps / "wav" / f"{stranger.stem}.wav", _sweep())
-    ours = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
-    assert len(ours) == 3
-    assert all(stranger.stem not in cap.wav.name for cap in ours)
+    monkeypatch.setattr(analysis_dispatch, "recorded_impulse", full_precision)
+    samples, rate = decode_wav_to_mono((bundle / record["wav_path"]).read_bytes())
+    decoded = analyze_program_capture(program, samples, rate).summed_response.impulse
+    np.testing.assert_array_equal(capture.ir, decoded.samples.astype(np.float32))
+    fresh = replace(capture, ir=decoded.samples, peak_idx=int(np.argmax(np.abs(decoded.samples))),
+                    preprocessing={**capture.preprocessing, "pre_guard_samples": decoded.origin_index,
+                                   "clock_shift_samples": decoded.clock_shift_samples})
+    _assert_same_answer(fx.classify_round([capture], at=[RESONANCE_HZ]), fx.classify_round([fresh], at=[RESONANCE_HZ]))
 
 
 # --------------------------------------------------------------------------- #
@@ -1338,7 +1102,7 @@ def test_the_operator_summary_is_one_line_per_row_under_any_disclosure(
 
 
 def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
-    """No repeated angle means no pair, and an unmeasured dimension says so."""
+    """No repeated pose means no pair, and an unmeasured dimension says so."""
     timing = peak_artifact["timing_scatter"]
     assert timing["available"] is False
     assert timing["n_pairs"] == 0
@@ -1386,10 +1150,8 @@ def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
     numbers are ``None``, never a fabricated 0 dB, and it is out of the sigma
     rather than in it as one.
     """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
+    captures = fx.load_kept_captures(bundle)
     present = [
         _pose_curve(_resonant_ir(+3.0), pose_id="lateral_00_a01", position_deg=-15),
         _pose_curve(_resonant_ir(+3.0), pose_id="lateral_01_a01", position_deg=15),
@@ -1443,32 +1205,6 @@ def test_no_lateral_poses_reads_as_not_run(peak_artifact):
     )
 
 
-def _bank_lateral_pose(
-    bundle: Path, *, take_id: str, position_deg: int, curves: list[dict],
-    vertical_deg: int = 0, capture: str = "wired-TEST",
-) -> None:
-    """Directly write a banked lateral speaker take's ``positions/<take_id>.json``,
-    real-shaped without going through the retention engine.
-    """
-    from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-
-    positions_dir = (
-        bundle / "evidence/v1/artifacts/crossover_v2" / capture / "positions"
-    )
-    positions_dir.mkdir(parents=True, exist_ok=True)
-    (positions_dir / f"{take_id}.json").write_text(
-        json.dumps({
-            "kind": POSITION_EVIDENCE_KIND,
-            "phase": fx.PHASE_LATERAL,
-            "measurement_purpose": PURPOSE_SPEAKER,
-            "take_id": take_id,
-            "position_deg": position_deg,
-            "vertical_deg": vertical_deg,
-            "curves": curves,
-        })
-    )
-
-
 def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     """6.2: the reuse this ticket requires, end to end -- ``load_round_pose_curves``
     reaches a REAL banked take file through the same reader
@@ -1481,19 +1217,20 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     the superseded attempt would read unresolved.
 
     The stop is a RAISED seat, so the entry's pose key carries both halves
-    of the pose -- bearing and elevation -- off the banked file.
+    of the pose -- bearing and elevation -- off the banked file, and so does
+    the take the window ladder read.
     """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     superseded = _pose_curve(
         _flat_ir(), pose_id="ignored", position_deg=-20, band_hz=(20.0, 500.0)
     )
     curve = _pose_curve(_resonant_ir(+3.0), pose_id="ignored", position_deg=-20)
+    rng = np.random.default_rng(5)
     for take_id, banked_curve in (
         ("lateral_00_a01", superseded), ("lateral_00_a02", curve),
     ):
-        _bank_lateral_pose(
-            bundle,
-            take_id=take_id,
+        _bank_take(
+            bundle, take_id, phase=fx.PHASE_LATERAL, ir=_resonant_ir(+3.0), rng=rng, role="woofer",
             position_deg=-20,
             vertical_deg=10,
             curves=[{
@@ -1521,10 +1258,12 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     assert pose["position_deg"] == -20
     assert pose["vertical_deg"] == 10
     assert pose["resolved"] is True
+    (ladder_pose,) = banked["measurement"]["gate_ladder_poses"]
+    assert (ladder_pose["azimuth_deg"], ladder_pose["vertical_deg"]) == (-20, 10)
 
 
 # --------------------------------------------------------------------------- #
-# 6.3: narrow-band decay, from the IRs this instrument already deconvolves
+# 6.3: narrow-band decay, from the impulses the takes kept
 # --------------------------------------------------------------------------- #
 
 #: Tolerance the injected-ring control's recovered time must land within,
@@ -1537,22 +1276,25 @@ _DECAY_CONTROL_REL_TOL = 0.25
 _DECAY_RESONANCE_TAU_S = 0.02
 
 
-def _decaying_sinusoid_ir(
-    fc: float, tau_s: float, *, peak: int = 200, seconds: float = 0.6
-) -> np.ndarray:
-    """An impulse plus a decaying sinusoid of analytically KNOWN ring time.
+def _kept_impulse_ir(fc: float, tau_s: float, *, ring: float = 0.5, noise: float = 1e-5) -> np.ndarray:
+    """A kept impulse's shape: noise through the deconvolution pre-guard and
+    after, then at its origin an impulse plus a decaying sinusoid of
+    analytically KNOWN ring time.
 
     Time-to-``DECAY_TARGET_DROP_DB`` of ``exp(-t/tau)`` is exactly
     ``tau * ln(10^(DECAY_TARGET_DROP_DB/20))`` -- ``tau * ln(10)`` at the
-    shipped 20 dB target -- which is the known answer the control below
-    grades :func:`fx._decay_read` against.
+    shipped 20 dB target -- which is the known answer the controls below
+    grade :func:`fx._decay_read` against.
     """
-    n = int(seconds * SR)
-    ir = np.zeros(n)
-    ir[peak] = 1.0
-    t = np.arange(n - peak) / SR
-    ir[peak:] += 0.5 * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
+    ir = np.random.default_rng(5).normal(0.0, noise, _KEPT_SAMPLES)
+    ir[_ORIGIN] += 1.0
+    t = np.arange(_KEPT_SAMPLES - _ORIGIN) / SR
+    ir[_ORIGIN:] += ring * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
     return ir
+
+
+def _centre_decay(ir: np.ndarray) -> dict:
+    return fx._decay_read(fx._DecayHost.of(ir, SR), fx._decay_bands_hz(RESONANCE_HZ)["center"])
 
 
 def test_decay_recovers_an_injected_rings_known_time():
@@ -1560,9 +1302,7 @@ def test_decay_recovers_an_injected_rings_known_time():
     style: inject a ring of a KNOWN time constant and read it back within
     tolerance.
     """
-    ir = _decaying_sinusoid_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S)
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S))
     expected_ms = _DECAY_RESONANCE_TAU_S * math.log(10) * 1000.0
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] == pytest.approx(
@@ -1575,27 +1315,30 @@ def test_decay_reads_fast_on_a_clean_impulse():
     bandwidth-bound ring-down must read far faster than a real resonance —
     the "6-10 ms just outside" half of the campaign's own contrast.
     """
-    ir = np.zeros(int(0.6 * SR))
-    ir[200] = 1.0
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S, ring=0.0))
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] is not None
     assert result["time_to_neg20_db_ms"] < 10.0
 
 
-def test_decay_reports_below_floor_for_a_steady_tone():
-    """An undamped sinusoid never decays, so the -20 dB point is
-    unreachable above its own tail — reported as ``below_floor``, never a
-    fabricated time.
-    """
-    n = int(0.6 * SR)
-    t = np.arange(n) / SR
-    ir = 0.5 * np.sin(2 * np.pi * RESONANCE_HZ * t)
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+def test_a_band_as_noisy_as_its_peak_reports_below_floor():
+    """A band whose noise before the arrival sits within the target drop of its
+    peak cannot show that drop: ``below_floor``, never a fabricated time."""
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S, ring=0.0, noise=0.02))
     assert result["below_floor"] is True
     assert result["time_to_neg20_db_ms"] is None
+
+
+def test_a_decay_still_ringing_at_the_end_of_the_kept_window_reads_its_time():
+    """The floor is the take's noise before its arrival, never its tail: a
+    kept impulse ends 0.5 s after its sweep's start, where a slow room mode is
+    still decaying, so a floor read there would sit above the target and hide
+    a time the window holds (ADR-0392)."""
+    tau_s = 0.195
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, tau_s))
+    assert result["noise_floor_db"] < -60.0
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] == pytest.approx(tau_s * math.log(10) * 1000.0, rel=_DECAY_CONTROL_REL_TOL)
 
 
 def test_the_artifact_carries_the_decay_field_with_units(peak_artifact):
@@ -1660,10 +1403,8 @@ def test_the_classifiable_band_keeps_a_feature_off_the_edge():
 
 def test_a_requested_frequency_outside_that_band_is_not_classified(tmp_path):
     """``--at`` is a request, not an override of what the gate can resolve."""
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    captures = fx.load_round_captures(round_dir, dumps, session_id=SESSION_ID)
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
+    captures = fx.load_kept_captures(bundle)
     with pytest.raises(EvidenceUnavailable) as caught:
         fx.classify_round(captures, at=[15500.0])
     assert caught.value.reason == fx.NO_FEATURES_DETECTED
@@ -1698,7 +1439,7 @@ def test_a_quiet_delayed_copy_stays_minimum_phase():
 
 
 def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     answer = json.loads(capsys.readouterr().out)
@@ -1717,126 +1458,14 @@ def test_the_cli_files_the_verdict_where_the_packet_reads_it(tmp_path, capsys):
     )
 
 
-@pytest.mark.parametrize("ordinal_names", [False, True])
-def test_the_cli_classifies_a_bank_shape_round(tmp_path, capsys, ordinal_names):
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
-    if ordinal_names:
-        programs = list((bundle / "crossover_v2/wired-TEST").glob("*_program.wav"))
-        assert programs
-        for path in programs:
-            path.rename(path.with_name(path.name.replace("_program.wav", "_00_program.wav")))
-    code = cli.main(["classify-features", str(bundle)])
-    assert code == cli.EXIT_OK
-    assert read_feature_verdicts(_filed(capsys.readouterr().out))[0].classification == DEFECT_CUTTABLE
-
-
-def test_bank_and_receipts_shapes_resolve_to_the_same_captures(tmp_path):
-    """Same synthetic speaker, banked two ways -- the classifier reads it alike.
-
-    Mutation check: break the sibling fallback in
-    ``evidence_packet.round_program_dir`` (for example, make it always
-    return ``round_dir``) and this test's OWN
-    ``bank_programs_dir != bank_round_dir`` guard fails first -- proving the
-    resolver stopped resolving to the sibling at all. That guard, not
-    ``PROGRAM_MISSING``, is the failure mode here:
-    ``test_the_cli_classifies_a_bank_shape_round`` is the one that then
-    fails downstream with ``PROGRAM_MISSING``, end to end through the CLI.
-    """
-    ir = _resonant_ir(+3.0)
-    receipts_bundle, receipts_dumps = _bundle(tmp_path / "receipts", ir)
-    bank_bundle, bank_dumps = _bundle(tmp_path / "bank", ir, bank_shape=True)
-
-    receipts_round_dir, _ = round_artifact_dir(receipts_bundle)
-    bank_round_dir, _ = round_artifact_dir(bank_bundle)
-    assert receipts_round_dir is not None
-    assert bank_round_dir is not None
-
-    receipts_captures = fx.load_round_captures(
-        receipts_round_dir, receipts_dumps, session_id=SESSION_ID
-    )
-    bank_programs_dir = round_program_dir(
-        bank_bundle, bank_round_dir, fx.ADMISSIBLE_PHASES
-    )
-    assert bank_programs_dir != bank_round_dir, "must resolve to the sibling dir"
-    bank_captures = fx.load_round_captures(
-        bank_programs_dir, bank_dumps, session_id=SESSION_ID
-    )
-
-    assert [c.phase for c in bank_captures] == [c.phase for c in receipts_captures]
-    assert [c.program.name for c in bank_captures] == [
-        c.program.name for c in receipts_captures
-    ]
-    # Same synthetic speaker, same seed, on both sides: the verdicts must
-    # match exactly, not just the phase/program bookkeeping around them.
-    assert fx.classify_round(bank_captures) == fx.classify_round(receipts_captures)
-
-
-def test_a_partially_banked_receipts_round_is_not_rescued_by_the_sibling(tmp_path):
-    """round_dir holds only verify's program -- a genuinely incomplete round.
-
-    Mutation pin for the any-vs-all precedence in
-    ``evidence_packet.round_program_dir`` (SF3, #2796 gate): its ``any(...)``
-    checks, mutated to ``all(...)``, let all 34 tests in this file pass
-    anyway -- none of them had a round_dir carrying SOME but not ALL of the
-    admissible phases. This one does: round_dir carries verify_program.wav
-    only, the sibling carries both, and the ring holds cloud_verify captures
-    too. A rescue from the sibling would silently paper over that gap, so
-    the resolver must still pick round_dir (it has "any") and
-    load_round_captures must still refuse PROGRAM_MISSING for the phase
-    round_dir is actually missing.
-    """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
-    round_dir, _ = round_artifact_dir(bundle)
-    assert round_dir is not None
-    sibling = bundle / "crossover_v2/wired-TEST"
-    shutil.copy(sibling / "verify_program.wav", round_dir / "verify_program.wav")
-
-    programs_dir = round_program_dir(bundle, round_dir, fx.ADMISSIBLE_PHASES)
-    assert programs_dir == round_dir, "any(...) must win over the sibling"
-
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_round_captures(programs_dir, dumps, session_id=SESSION_ID)
-    assert caught.value.reason == fx.PROGRAM_MISSING
-    assert caught.value.detail["phases"] == ["cloud_verify"]
-
-
-def test_a_program_missing_refusal_names_the_directory_it_actually_read(
-    tmp_path, capsys
-):
-    """SF2, #2796 gate: a doctored real bundle showed
-    ``programs_present: ['verify']`` about a directory holding zero WAVs --
-    because the message named ``round_dir`` while the count came from
-    whichever directory the resolver actually read (here, the sibling, not
-    round_dir). The published refusal must name that directory, or this
-    instrument's own refusal starts the very wrong-directory hunt it exists
-    to end.
-    """
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0), bank_shape=True)
-    (bundle / "crossover_v2/wired-TEST/cloud_verify_program.wav").unlink()
-    code = cli.main(["classify-features", str(bundle)])
-    assert code == cli.EXIT_REFUSED
-    captured = capsys.readouterr()
-    assert "crossover_v2/wired-TEST" in captured.err
-    payload = json.loads(captured.out)
-    assert payload["reason"] == fx.PROGRAM_MISSING
-    # The exact shape the gate demonstrated on a real bundle: programs_present
-    # names only what the SIBLING carried, and the record must now also say
-    # that the sibling -- not evidence/'s round_dir -- is what was read.
-    detail = json.loads(payload["detail"])
-    assert detail["programs_present"] == ["verify_program.wav"]
-    assert detail["programs_dir"].endswith("crossover_v2/wired-TEST")
-
-
 def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     """A refusal must not leave a file a later reader would act on."""
-    bundle, dumps = _bundle(tmp_path, _flat_ir())
+    bundle, _ = _bundle(tmp_path, _flat_ir())
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_REFUSED
     assert not list(tmp_path.rglob(f"*{CLASSIFICATION_ARTIFACT}"))
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == fx.NO_FEATURES_DETECTED
-    assert payload["reason"] in fx.CLASSIFICATION_REFUSAL_REASONS
-    assert "programs_dir" in json.loads(payload["detail"])
 
 
 def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
@@ -1850,7 +1479,7 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     cannot distinguish from a broken round.
     """
     monkeypatch.setattr(fx.controls, "CONTROL_MAX_FALSE_POSITIVE_US", 0.0)
-    bundle, dumps = _bundle(tmp_path, _resonant_ir(+3.0))
+    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     code = cli.main(["classify-features", str(bundle)])
     assert code == cli.EXIT_OK
     captured = capsys.readouterr()
@@ -1863,25 +1492,11 @@ def test_failed_controls_exit_zero_and_bank_their_own_disclosure(
     assert fx.CONTROLS_FAILED_DISCLOSURE in captured.err
 
 
-def test_a_bundle_with_two_rounds_is_refused_rather_than_guessed_at(tmp_path, capsys):
-    bundle, dumps = _bundle(tmp_path, _flat_ir())
-    (bundle / "evidence/v1/artifacts/crossover_v2/wired-OTHER").mkdir(parents=True)
-    assert cli.main(
-        ["classify-features", str(bundle)]
-    ) == cli.EXIT_UNREADABLE
-    err = capsys.readouterr().err
-    # Nit from the #2796 gate: the both-shapes guidance belongs on the
-    # "structure missing entirely" refusal, not here -- this bundle's
-    # structure is fine, the problem is which of two rounds to read, and
-    # "check for a second accepted shape" would be misleading advice.
-    assert "bank-crossover-round.sh" not in err
-
-
-def test_the_wav_leaf_directory_is_not_a_readable_round(tmp_path, capsys):
-    """The WAV leaf was mistaken for the bundle during a real round replay."""
-    bundle, _ = _bundle(tmp_path, _flat_ir(), bank_shape=True)
-    programs_leaf = bundle / "crossover_v2/wired-TEST"
-    assert programs_leaf.is_dir()
-    code = cli.main(["classify-features", str(programs_leaf)])
+def test_a_leaf_directory_is_not_a_readable_round(tmp_path, capsys):
+    """A WAV leaf was mistaken for the bundle during a real round replay."""
+    bundle, _ = _bundle(tmp_path, _flat_ir())
+    leaf = bundle / "impulses"
+    assert leaf.is_dir()
+    code = cli.main(["classify-features", str(leaf)])
     assert code == cli.EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == cli.REASON_UNREADABLE

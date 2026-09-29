@@ -22,6 +22,7 @@ from jasper.audio_measurement.excess_phase import (
     NEIGHBOURHOOD_OCT,
 )
 from jasper.audio_measurement.gating import analytic_envelope
+from jasper.audio_measurement.impulse_reading import NOISE_BEFORE_ONSET_MS, impulse_shape
 
 from ..feature_classification import (
     GATE_MOVED,
@@ -42,19 +43,13 @@ from ..gate_sweep import (
     frame_descriptor,
     sweep_features,
 )
-from ..round_captures import (
-    REFUSE_RADIATED_BAND_MISSING,
-    PoseCapture,
-)
-from .captures import (
-    RoundCapture,
-    RoundPoseCurve,
-)
+from ..round_captures import PoseCapture
+from ..take_reading import TakeRead
+from .captures import RoundPoseCurve
 
 #: A ladder of one rung. The window verdict compares the shortest and longest
-#: resolution-valid rung, so one rung compares with nothing. Deliberately
-#: not a :data:`CLASSIFICATION_REFUSAL_REASONS` member: it costs the window
-#: verdict and nothing else.
+#: resolution-valid rung, so one rung compares with nothing. Not a refusal:
+#: it costs the window verdict and nothing else.
 GATE_LADDER_NEEDS_TWO_RUNGS = "gate_ladder_needs_two_rungs"
 
 #: The engine declined this ladder or a bin on it for a reason of its own
@@ -82,18 +77,9 @@ DECAY_TARGET_DROP_DB = 20.0
 #: centre band.
 DECAY_FLANK_SKIRT_OFFSET_OCT = 1.0 / 3.0
 
-#: Fraction of a band-limited envelope's own tail read for its noise floor.
-#: The IRs this reads are the full deconvolved capture, not a gated
-#: fragment, so any decay this instrument could report has long since
-#: finished by the last fifth of it.
-DECAY_NOISE_FLOOR_TAIL_FRACTION = 0.2
-
 
 def _sweep_ladder(
-    captures: Sequence[RoundCapture],
-    irs: Sequence[np.ndarray],
-    peaks: Sequence[int],
-    sample_rate: int,
+    captures: Sequence[PoseCapture],
     features: Sequence[float],
     rungs_ms: Sequence[float],
 ) -> tuple[
@@ -107,60 +93,16 @@ def _sweep_ladder(
     Returns ``(by_feature, frame, poses, refusal)``. ``refusal`` is ``None``
     when the ladder ran; otherwise it names why it could not and
     ``by_feature`` is empty — the LADDER is refused for the round, never the
-    classification. A round with one capture, with sidecars banking no
-    radiated band, or with a ladder of one rung still gets its phase class,
-    its decay reads and its per-pose facts, and every row says so by name
-    rather than reading :data:`GATE_STABLE` off a test that never ran.
+    classification. A round with one capture, or a ladder of one rung, still
+    gets its phase class, its decay reads and its per-pose facts, and every
+    row says so by name rather than reading :data:`GATE_STABLE` off a test
+    that never ran.
 
     ``poses`` is who each pose row of every feature IS, banked once for the
     round beside the frame, in the order those rows are in.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, analysis_grid())
-    # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
-    # disclosure: it names the capture a pose row was read from, and none of
-    # it moves a number.
-    poses: list[PoseCapture] = []
-    unbanded: list[str] = []
-    for capture, ir, peak in zip(captures, irs, peaks):
-        band = capture.radiated_band_hz
-        if band is None:
-            unbanded.append(capture.wav.name)
-            continue
-        poses.append(
-            PoseCapture(
-                capture_id=capture.wav.stem,
-                phase=capture.phase,
-                wav=capture.wav,
-                program=capture.program,
-                program_sha256="",
-                azimuth_deg=(
-                    None if capture.degrees is None else float(capture.degrees)
-                ),
-                vertical_deg=None,
-                mark_distance_m=None,
-                radiated_band_hz=band,
-                sample_rate=sample_rate,
-                ir=ir,
-                peak_idx=peak,
-            )
-        )
-    if unbanded:
-        return (
-            {},
-            frame,
-            [],
-            {
-                "reason": REFUSE_RADIATED_BAND_MISSING,
-                "captures": unbanded,
-                "note": (
-                    "the ladder normalises each capture on a reference band "
-                    "intersected with the band its own DUT radiates, and no "
-                    "declared band substitutes for one the capture did not "
-                    "bank (E5, #1969)"
-                ),
-            },
-        )
     banked_poses = [
         {
             "pose_key": pose.pose_key,
@@ -171,7 +113,7 @@ def _sweep_ladder(
             "mark_distance_m": pose.mark_distance_m,
             "capture_wav": pose.wav.name if pose.wav is not None else None,
         }
-        for pose in poses
+        for pose in captures
     ]
     if len(rungs) < 2:
         # The engine raises on this, and a ladder is not worth the round: a
@@ -190,7 +132,7 @@ def _sweep_ladder(
             },
         )
     try:
-        swept = sweep_features(poses, rungs_ms=rungs, at_hz=list(features))
+        swept = sweep_features(captures, rungs_ms=rungs, at_hz=list(features))
     except EvidenceUnavailable as refusal:
         return {}, frame, banked_poses, {"reason": refusal.reason, **refusal.detail}
     except ValueError as exc:
@@ -213,33 +155,37 @@ def _sweep_ladder(
 
 
 def _timing_scatter(
-    captures: Sequence[RoundCapture],
+    captures: Sequence[PoseCapture],
     irs: Sequence[np.ndarray],
     peaks: Sequence[int],
     sample_rate: int,
     trusted_band_hz: tuple[float, float],
 ) -> dict[str, Any]:
-    """Arrival-time scatter between captures at the SAME angle.
+    """Arrival-time scatter between captures at the SAME pose.
 
-    The raw arrival spread is dominated by the capture's capture-start offset,
-    which every other test removes by re-finding the peak. The SUB-SAMPLE
-    residual is what survives into a phase comparison, measured by
-    cross-spectrum phase slope over the direct-sound window. It needs an
-    angle visited twice; with no pair the result says NOT RUN and carries no
-    numbers, a dimension that did not run being a different fact from one
-    that measured zero.
+    Each raw arrival is read on its take's own clock, from its sweep's
+    scheduled start (ADR-0355), and those clocks differ between takes. The
+    SUB-SAMPLE residual is what survives into a phase comparison, measured by
+    cross-spectrum phase slope over the direct-sound window. It needs a pose
+    with a declared bearing visited twice; with no pair the result says NOT
+    RUN and carries no numbers, a dimension that did not run being a
+    different fact from one that measured zero.
     """
-    arrivals = [peak / sample_rate * 1e3 for peak in peaks]
+    arrivals: list[float] = []
+    for capture in captures:
+        arrival = TakeRead(capture, str(capture.preprocessing["role"])).arrival_ms
+        assert arrival is not None
+        arrivals.append(arrival)
     spread = {
         "min_ms": float(min(arrivals)),
         "max_ms": float(max(arrivals)),
         "spread_ms": float(max(arrivals) - min(arrivals)),
     }
 
-    by_angle: dict[int, list[int]] = {}
+    by_pose: dict[str, list[int]] = {}
     for index, capture in enumerate(captures):
-        if capture.degrees is not None:
-            by_angle.setdefault(capture.degrees, []).append(index)
+        if capture.azimuth_deg is not None:
+            by_pose.setdefault(capture.pose_key, []).append(index)
 
     half = int(round(DIRECT_SOUND_HALF_WINDOW_MS * 1e-3 * sample_rate))
 
@@ -248,7 +194,7 @@ def _timing_scatter(
         return irs[index][start : peaks[index] + half]
 
     residuals: list[float] = []
-    for indexes in (by_angle[angle] for angle in sorted(by_angle)):
+    for indexes in (by_pose[pose] for pose in sorted(by_pose)):
         for i in range(len(indexes)):
             for j in range(i + 1, len(indexes)):
                 a, b = _direct(indexes[i]), _direct(indexes[j])
@@ -267,7 +213,7 @@ def _timing_scatter(
             "n_pairs": 0,
             "raw_arrival_ms": spread,
             "note": (
-                "NOT RUN: no angle was captured twice, so no pair of captures "
+                "NOT RUN: no pose was captured twice, so no pair of captures "
                 "shares a geometry to difference. This is an unmeasured "
                 "dimension, not a measured zero."
             ),
@@ -426,59 +372,62 @@ def _decay_bands_hz(fc: float) -> dict[str, tuple[float, float]]:
 
 @dataclass(frozen=True)
 class _DecayHost:
-    """One IR's forward FFT, computed once — every band read shares it.
+    """One IR's forward FFT, computed once — every band read shares it — and
+    the noise before its arrival that every band's floor is read from.
 
     The per-band work is only the mask and the inverse transform; the
     spectrum itself is feature-independent, and a round reads three bands
     per feature off the same host IR.
     """
 
-    n: int
     sample_rate: int
-    spectrum: np.ndarray
-    freqs: np.ndarray
+    ir: tuple[np.ndarray, int]
+    noise: tuple[np.ndarray, int]
 
     @classmethod
     def of(cls, ir: np.ndarray, sample_rate: int) -> "_DecayHost":
-        return cls(
-            n=ir.size,
-            sample_rate=sample_rate,
-            spectrum=np.fft.rfft(ir),
-            freqs=np.fft.rfftfreq(ir.size, d=1.0 / sample_rate),
-        )
+        """``ir`` must hold :data:`NOISE_BEFORE_ONSET_MS` before its onset: a
+        kept impulse holds 250 ms before its sweep's scheduled start (ADR-0354).
+        Its tail is no floor, because a room can still be decaying there
+        (ADR-0392)."""
+        onset = impulse_shape(ir, sample_rate).onset_index
+        far, near = (round(ms * sample_rate / 1000) for ms in NOISE_BEFORE_ONSET_MS)
+        if onset < far:
+            raise ValueError(f"the impulse holds {onset} samples before its onset, not the {far} its floor needs")
+        return cls(sample_rate=sample_rate, ir=(np.fft.rfft(ir), ir.size),
+                   noise=(np.fft.rfft(ir[onset - far:onset - near]), far - near))
 
 
 def _band_limited_envelope(
-    host: _DecayHost, band_hz: tuple[float, float]
+    transform: tuple[np.ndarray, int], sample_rate: int, band_hz: tuple[float, float]
 ) -> np.ndarray:
-    """The analytic envelope of the host IR restricted to ``band_hz``.
+    """The analytic envelope of a signal, given its ``(rfft, length)``,
+    restricted to ``band_hz``.
 
-    An FFT-domain brick-wall mask, zero outside the band: the IR here is the
-    module's own reflection-free deconvolution, already long and clean, so no
-    taper is needed. :func:`~jasper.audio_measurement.gating.analytic_envelope`
-    is REUSED, not duplicated.
+    An FFT-domain brick-wall mask, zero outside the band.
+    :func:`~jasper.audio_measurement.gating.analytic_envelope` is REUSED, not
+    duplicated.
     """
-    mask = (host.freqs >= band_hz[0]) & (host.freqs <= band_hz[1])
-    band_limited = np.fft.irfft(host.spectrum * mask, n=host.n)
-    return analytic_envelope(band_limited)
+    spectrum, n = transform
+    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate)
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    return analytic_envelope(np.fft.irfft(spectrum * mask, n=n))
 
 
 def _decay_read(host: _DecayHost, band_hz: tuple[float, float]) -> dict[str, Any]:
     """Time-to-``DECAY_TARGET_DROP_DB`` in one band, or an honest non-answer.
 
-    ``noise_floor_db`` is the envelope's own late-tail level, dB relative to
-    THIS band's own peak, so it is directly comparable to
+    ``noise_floor_db`` is the band's level in the noise before the arrival, dB
+    relative to THIS band's own peak, so it is directly comparable to
     :data:`DECAY_TARGET_DROP_DB`. ``below_floor`` is a property of that
     number alone. ``time_to_neg20_db_ms`` is ``None`` whenever
     ``below_floor`` is true OR the envelope never reaches the target within
     the IR's own length — never a fabricated time.
     """
-    envelope = _band_limited_envelope(host, band_hz)
+    envelope = _band_limited_envelope(host.ir, host.sample_rate, band_hz)
     peak_idx = int(np.argmax(envelope))
     peak_level = float(envelope[peak_idx])
-    tail_start = int(envelope.size * (1.0 - DECAY_NOISE_FLOOR_TAIL_FRACTION))
-    tail = envelope[tail_start:]
-    floor_level = float(np.median(tail)) if tail.size else 0.0
+    floor_level = float(np.median(_band_limited_envelope(host.noise, host.sample_rate, band_hz)))
     noise_floor_db = 20.0 * math.log10(
         max(floor_level, 1e-300) / max(peak_level, 1e-300)
     )

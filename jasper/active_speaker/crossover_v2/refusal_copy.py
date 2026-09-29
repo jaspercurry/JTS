@@ -387,6 +387,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("measure_classification_round", "Measure a verify or lateral round"): {
         evidence_reasons.CAPTURE_PHASE_NOT_ADMISSIBLE: "This recording's phase cannot be used for feature classification.",
+        evidence_reasons.NO_KEPT_TAKES: "The round kept none of its verify or lateral takes for the speaker.",
         evidence_reasons.ROUND_SHAPE_INADMISSIBLE: "The round banked no recording shape that feature classification can use.",
     },
     ("bank_round", "Bank this round again from its session"): {

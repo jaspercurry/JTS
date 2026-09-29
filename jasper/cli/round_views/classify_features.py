@@ -7,12 +7,12 @@
 * ``classify-features <bundle-dir>`` — classify one banked
   round's spectral features, known-answer controls first, and file
   ``feature_classification.json`` beside the round, never inside its
-  evidence. ``<bundle-dir>`` is a commissioning bundle; the round inside it
-  and the ``<phase>_program.wav`` files its captures bind to are resolved by
-  the rules the packet's own reader uses. Offline: nothing is
-  re-measured and no capture is re-taken. The answer names
-  ``classifiable_band_hz`` — the span a verdict can be about the SPEAKER
-  rather than about the band edge — on success as well as in the refusal.
+  evidence. ``<bundle-dir>`` is a commissioning bundle; each of its kept
+  speaker takes is read through the impulse its analysis kept, and no
+  recording is opened (ADR-0392). Offline: nothing is re-measured and no
+  capture is re-taken. The answer names ``classifiable_band_hz`` — the span
+  a verdict can be about the SPEAKER rather than about the band edge — on
+  success as well as in the refusal.
 """
 
 from __future__ import annotations
@@ -21,27 +21,15 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.evidence_packet import (
-    NO_ROUND_ARTIFACTS_REASON,
-    round_artifact_dir,
-    round_program_dir,
-)
 from jasper.active_speaker.crossover_v2.feature_classifier import (
-    ADMISSIBLE_PHASES,
     DEFAULT_GATE_MS,
     classify_round,
-    load_round_captures,
+    load_kept_captures,
     load_round_pose_curves,
     summary_lines,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
-from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.cli._refusal import (
-    EXIT_UNREADABLE,
-    StageFailed,
-    stage,
-)
+from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW,
@@ -54,49 +42,18 @@ from ._common import (
     subject,
 )
 
-#: Said on "no round artifacts at all" and on nothing else: a bundle stopped
-#: for carrying more than one round has the right structure already, and
-#: sending that operator to look for a second accepted shape is misleading.
-_BOTH_SHAPES = (
-    " — bundle_dir must hold info.json beside "
-    "evidence/v1/artifacts/crossover_v2/<capture>/, either the "
-    "campaign-receipts shape (program WAVs filed right there) or the shape "
-    "bank-crossover-round.sh pulls (program WAVs in a sibling "
-    "crossover_v2/<capture>/ directory instead)"
-)
 
-
-def _round_dir(bundle_dir: Path) -> Path:
-    """This bundle's one round directory. A failure here is the ROUND."""
-    round_dir, why = round_artifact_dir(bundle_dir)
-    if round_dir is None:
-        # Unreadable, not refused, for "more than one round" too: the fix is to
-        # point at one round, and that is an input fix, not a named refusal.
-        detail = why + (_BOTH_SHAPES if why == NO_ROUND_ARTIFACTS_REASON else "")
-        raise StageFailed(
-            EXIT_UNREADABLE, ValueError(f"cannot read the round: {detail}")
-        )
-    return round_dir
-
-
-def _classify(args: argparse.Namespace, programs_dir: Path) -> dict[str, Any]:
-    """Everything the LOAD stage owns: the ring, the captures, the verdict."""
-    captures = load_round_captures(
-        programs_dir,
-        args.bundle_dir / CAPTURE_RING_DIR,
-        session_id=bundle_session_id(args.bundle_dir),
-        walk_logs=tuple(args.walk_logs),
-    )
-    # Best-effort and always attempted: a round with no lateral walk returns
-    # empty rather than raising, and classify_round reports that as its own
-    # NOT-RUN fact rather than needing a flag to ask for it.
-    pose_curves = load_round_pose_curves(args.bundle_dir)
+def _classify(args: argparse.Namespace) -> dict[str, Any]:
+    """Everything the LOAD stage owns: the kept takes, the pose curves, the verdict."""
     return classify_round(
-        captures,
+        load_kept_captures(args.bundle_dir),
         at=args.at,
         gate_ms=args.gate_ms,
         gates_ms=tuple(args.gates_ms) if args.gates_ms else None,
-        pose_curves=pose_curves,
+        # Best-effort and always attempted: a round with no lateral walk returns
+        # empty rather than raising, and classify_round reports that as its own
+        # NOT-RUN fact rather than needing a flag to ask for it.
+        pose_curves=load_round_pose_curves(args.bundle_dir),
     )
 
 
@@ -104,17 +61,7 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs,
                    banked_round_of(args.bundle_dir) or args.bundle_dir)
     args.bundle_dir = inputs.session_dir
-    round_dir = _round_dir(args.bundle_dir)
-    programs_dir = round_program_dir(args.bundle_dir, round_dir, ADMISSIBLE_PHASES)
-    try:
-        artifact = stage(
-            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir
-        )
-    except EvidenceUnavailable as refusal:
-        # The instrument's own reason, and the directory actually read: a
-        # refusal that named neither starts a wrong-directory hunt.
-        refusal.detail["programs_dir"] = str(programs_dir)
-        raise
+    artifact = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args)
 
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)
@@ -147,10 +94,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     classify.add_argument(
         "bundle_dir", type=Path, metavar=_BUNDLE_DIR_METAVAR,
         help="banked round or its commissioning bundle",
-    )
-    classify.add_argument(
-        "--walk-log", type=Path, action="append", default=[], dest="walk_logs",
-        help="turntable walk trail, repeatable; fallback for captures without a banked angle",
     )
     classify.add_argument(
         "--at", type=float, action="append", default=None, metavar="HZ",
