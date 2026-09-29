@@ -45,7 +45,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL, open_bundle
-from jasper.atomic_io import env_lock_path, flock_held
+from jasper.platform.atomic_io import env_lock_path, flock_held
 from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired

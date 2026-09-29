@@ -38,8 +38,8 @@ from jasper.active_speaker.audition import (
     set_compare_state, start_web_audition_holder,
 )
 from jasper.platform.systemd import no_hold
-from jasper.log_event import log_event
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.profile import (
     PROFILE_LIBRARY_PATH,
     PROFILE_PATH,

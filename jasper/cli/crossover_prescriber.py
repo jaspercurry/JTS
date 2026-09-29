@@ -52,8 +52,8 @@ from jasper.active_speaker.output_contract import classify_output_contract, rear
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import sha256_file
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.json_fields import sha256_file
 from jasper.audio_routes.output_topology_store import load_output_topology
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 

@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.wake_conditions import CONDITIONS, DISTANCES
 
 from . import active_session

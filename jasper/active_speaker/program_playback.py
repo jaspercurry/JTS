@@ -24,7 +24,7 @@ from jasper.audio_measurement.admission.playback import (
     verified_wav_source,
 )
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .program_admission import ProgramAdmission
 

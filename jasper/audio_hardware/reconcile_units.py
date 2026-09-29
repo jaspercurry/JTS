@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.reconcile_common import _Abort, _log_token
-from jasper.service_units import (
+from jasper.platform.service_units import (
     AEC_RECONCILE_SERVICE,
     FANIN_SERVICE,
     JASPER_VOICE_SERVICE,

@@ -12,7 +12,7 @@ import time
 from copy import deepcopy
 from typing import Any, Callable
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ..movers import MOVER_HUMAN
 from ..round_copy import pose_name

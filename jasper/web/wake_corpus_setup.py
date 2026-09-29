@@ -66,7 +66,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from jasper.control.restart_broker import manage_units
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
@@ -125,7 +125,7 @@ from jasper.web._common import (
     send_json_response,
 )
 from jasper.web.chrome import canonical_header, canonical_page, json_island, toggle_html
-from jasper.logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 

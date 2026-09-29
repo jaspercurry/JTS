@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from ...env_load import PEERING_ENV_PATH, parse_bool_value, read_env_file_state
+from jasper.platform.env_load import PEERING_ENV_PATH, parse_bool_value, read_env_file_state
 from ...identity.reader import PEER_ID_FILE
 from ._registry import doctor_check
 from ._shared import CheckResult, run

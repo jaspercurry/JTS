@@ -20,8 +20,8 @@ from typing import Any, Iterable, Mapping
 
 from .gating import ENTANGLEMENT_SOURCE_DECLARED, f_entanglement_floor_hz
 from .null_walk import DEFAULT_SOUND_SPEED_M_S
-from ..atomic_io import atomic_write_json
-from ..json_fields import finite_float
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.json_fields import finite_float
 
 DEFAULT_PATH = "/var/lib/jasper/measurement_geometry.json"
 

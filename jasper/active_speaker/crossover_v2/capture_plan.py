@@ -33,8 +33,8 @@ from jasper.audio_measurement.program import (
     build_verify_program,
 )
 from jasper.playback_state.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
-from jasper.env_load import bounded_env_float
-from jasper.speaker_layout import measurement_target_name
+from jasper.platform.env_load import bounded_env_float
+from jasper.platform.speaker_layout import measurement_target_name
 from jasper.active_speaker.session_volume_plan import (
     DEFAULT_WALL_CLOCK_CEILING_S,
     MAX_WALL_CLOCK_CEILING_S,

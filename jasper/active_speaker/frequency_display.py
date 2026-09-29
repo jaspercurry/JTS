@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 
 def merge_display_intervals(intervals: Iterable[Any]) -> list[list[float]]:

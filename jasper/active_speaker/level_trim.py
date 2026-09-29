@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from jasper.json_fields import issue
+from jasper.platform.json_fields import issue
 
 from ._common import coerce_finite_float
 from .driver_pad import effective_sensitivity_db

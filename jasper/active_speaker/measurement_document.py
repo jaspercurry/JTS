@@ -19,7 +19,7 @@ from .frequency_view import (
     frequency_series,
 )
 from .prediction_document import CAPTURE_PREDICTION_KIND, frequency_run_from_capture_prediction
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 
 def _whole_degrees(value: Any) -> int | None:

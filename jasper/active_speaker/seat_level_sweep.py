@@ -17,7 +17,7 @@ from jasper.audio_measurement.program import PROGRAM_SAMPLE_RATE_HZ, ExcitationP
 from jasper.audio_measurement.snr_policy import framed_ambient_band_report
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredSplMonitor, make_wired_recorder, select_capture_channel
 from jasper.platform.route_health import snapshot_route_health
-from jasper.volume_latch import read_fader_db
+from jasper.platform.volume_latch import read_fader_db
 
 from .auto_level import reading_budget
 from .capture_provenance import stimulus_peak_dbfs

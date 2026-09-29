@@ -50,10 +50,10 @@ from jasper.audio_measurement.admission.excitation_artifacts import (
     create_admission_authority,
     open_admission_authority,
 )
-from jasper.json_fields import sha256_file
-from jasper.log_event import log_event
+from jasper.platform.json_fields import sha256_file
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology import OutputTopology, canonical_fingerprint
-from jasper.paths import resolve_state_path
+from jasper.platform.paths import resolve_state_path
 
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID

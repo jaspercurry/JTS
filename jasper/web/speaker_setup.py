@@ -37,12 +37,12 @@ from ..identity.speaker_name import (
     validate_room,
     write_state,
 )
-from ..atomic_io import atomic_write_text
-from ..env_load import SPEAKER_NAME_ENV_PATH
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.env_load import SPEAKER_NAME_ENV_PATH
 from ..identity.reader import resolve_hostname
 from ..control.restart_broker import manage_units
 from ..net import control_advert
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..identity.speaker_name_discovery import NameConflict, find_name_conflicts
 from jasper.audio_routes.source_intent import kick_source_reconcile
 from ._common import (
@@ -56,7 +56,7 @@ from ._common import (
     send_see_other,
 )
 from .chrome import canonical_banner, canonical_header, canonical_page
-from ..service_units import (
+from jasper.platform.service_units import (
     FANIN_SERVICE,
     JASPER_VOICE_SERVICE,
     LIBRESPOT_SERVICE,

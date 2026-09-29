@@ -27,8 +27,8 @@ from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.platform.control_client import read_output_volume
 from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
-from jasper.json_fields import finite_float
-from jasper.log_event import log_event
+from jasper.platform.json_fields import finite_float
+from jasper.platform.log_event import log_event
 
 from . import refusal_copy as reasons
 from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict

@@ -316,7 +316,7 @@ def test_the_converged_arm_says_so_on_the_operator_stdout_line(
     from jasper.fanin.coupling_reconcile import CouplingResult
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(tmp_path / "entry.lock"))
     monkeypatch.setattr(
         cr,
@@ -933,7 +933,7 @@ def test_an_ordinary_arm_prints_no_detail(tmp_path, monkeypatch, capsys):
     from jasper.fanin.coupling_reconcile import CouplingResult
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(tmp_path / "entry.lock"))
     monkeypatch.setattr(
         cr,

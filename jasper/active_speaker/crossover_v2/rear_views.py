@@ -58,7 +58,7 @@ from jasper.audio_measurement.seat_figures import (
     BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, across_positions, band_level_changes,
     comparison_band, late_energy_change, position_figures, reference_curve_db, repeat_spread,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for

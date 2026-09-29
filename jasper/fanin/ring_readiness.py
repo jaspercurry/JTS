@@ -40,8 +40,8 @@ from jasper.dsp_control.camilla_config_contract import (
     devices_playback_is_pipe,
     parse_camilla_devices_config,
 )
-from jasper.env_file import env_value, read_value
-from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+from jasper.platform.env_file import env_value, read_value
+from jasper.platform.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.dsp_control.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
@@ -59,7 +59,7 @@ from jasper.multiroom.grouping_ring import (
     GROUPING_RING_FORMAT,
     GROUPING_RING_PCM,
 )
-from jasper.paths import crossover_statefile
+from jasper.platform.paths import crossover_statefile
 
 
 # A ring readiness gate returns (ok, detail) and fails CLOSED.

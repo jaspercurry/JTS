@@ -57,7 +57,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
     packet_driver_passbands_hz,
     packet_feature_classifications,
 )
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 from jasper.active_speaker.crossover_v2.feature_classification import (
     DEFECT_BOOSTABLE,
     DEFECT_CUTTABLE,
@@ -77,7 +77,7 @@ from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     linearization_filters_by_role,
 )
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q
 
 from tests.test_crossover_v2_blend_prescription import _bundle
 from tests.test_active_speaker_measured_crossover_candidate import _candidate

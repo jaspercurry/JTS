@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from jasper.audio_routes.volume_curve import db_to_percent, percent_to_db
-from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
+from jasper.platform.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
 from jasper.service_state.volume_persistence import (
     VolumePersistence,
     VolumeRecord,
@@ -142,7 +142,7 @@ async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
             raise AssertionError("a lock that never acquired cannot release")
 
     monkeypatch.setattr(
-        "jasper.atomic_io.advisory_file_lock",
+        "jasper.platform.atomic_io.advisory_file_lock",
         lambda *args, **kwargs: TimeoutLock(),
     )
     persistence = VolumePersistence(_path(tmp_path))

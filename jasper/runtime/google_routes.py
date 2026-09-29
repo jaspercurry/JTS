@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 from jasper.service_state import location_state
 from jasper.identity.reader import DEFAULT_HOSTNAME, resolve_hostname
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.tools import fence_untrusted
 
 logger = logging.getLogger("jasper.google_routes")

@@ -13,8 +13,8 @@ from google import genai
 from google.genai import types
 from google.genai.live import AsyncSession
 
-from ..log_event import log_event
-from ..secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 from ._base import BaseLiveConnection, BaseLiveTurn, ToolCall
 from ._supervisor import (
     await_connected,

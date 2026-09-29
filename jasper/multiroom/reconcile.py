@@ -33,30 +33,30 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .. import atomic_io
+from jasper.platform import atomic_io
 from jasper.service_state import tts_routing as _tts_routing
 from jasper.audio_control.camilla import CamillaUnavailable
 from ..control import restart_broker
 from jasper.dsp_control.dsp_apply import DspApplyError
-from ..env_load import (
+from jasper.platform.env_load import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     AIRPLAY_GROUPING_ENV_FILE,
     OUTPUTD_GROUPING_ENV_FILE,
     VOICE_GROUPING_ENV_FILE,
 )
 from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV, RING_ACTIVE_PLAYBACK_DEVICE
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_control.ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
-from ..service_units import (
+from jasper.platform.service_units import (
     AEC_RECONCILE_SERVICE, CAMILLA_SERVICE, OUTPUTD_SERVICE,
     SHAIRPORT_SYNC_SERVICE, run_systemctl,
 )
-from ..source_intent_units import (
+from jasper.platform.source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
     operation_ceiling_sec,
 )
-from ..source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
-from ..systemd_probe import state_is_live, unit_query, unit_state
+from jasper.platform.source_intent_units import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
+from jasper.platform.systemd_probe import state_is_live, unit_query, unit_state
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES, OUTPUTD_DAC_CONTENT_CHANNEL_ENV
@@ -86,7 +86,7 @@ from .reconcile_plan import (
     plan,
 )
 from .tts_route import VOICE_PARK_ENV
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +345,7 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     return ``None`` with one warning. Completed commands are classified by their
     explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
     masquerade as disabled or inactive. Classification itself lives in
-    jasper.systemd_probe (shared with jasper.audio_routes.source_intent); this wrapper
+    jasper.platform.systemd_probe (shared with jasper.audio_routes.source_intent); this wrapper
     keeps only the observability this caller wants on an unresolved probe.
     """
     result = unit_state(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)

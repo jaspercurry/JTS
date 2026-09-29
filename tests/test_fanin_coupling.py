@@ -365,7 +365,7 @@ def test_ring_wire_formats_are_exactly_the_two_the_ioplug_accepts():
     """
     from pathlib import Path
 
-    from jasper.ring_header import RING_SAMPLE_FORMAT_NAMES
+    from jasper.platform.ring_header import RING_SAMPLE_FORMAT_NAMES
 
     c_src = (
         Path(__file__).resolve().parents[1]

@@ -34,7 +34,7 @@ import sys
 
 from .factory import build_env_cue_manager
 from .registry import find as find_cue
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 
 def _warn(message: str, *, err: str = "") -> None:

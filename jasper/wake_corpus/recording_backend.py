@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.audio_routes.aec_sweep import AEC3_SWEEP_SOURCE_XVF
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.service_state.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,

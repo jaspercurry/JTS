@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper.env_load import ENV_FILES
+from jasper.platform.env_load import ENV_FILES
 
 ROOT = Path(__file__).resolve().parents[1]
 UNIT_DIR = ROOT / "deploy" / "systemd"
@@ -47,7 +47,7 @@ def test_env_files_covers_every_unit_environmentfile():
         "ENV_FILES is missing persistent env file(s) that a systemd unit "
         f"sources: {sorted(missing)}. A CLI building Config.from_env() would "
         "see less config than the running system (this is how jasper-doctor "
-        "missed transit/HA/weather/peering). Add them to jasper.env_load.ENV_FILES."
+        "missed transit/HA/weather/peering). Add them to jasper.platform.env_load.ENV_FILES."
     )
 
 

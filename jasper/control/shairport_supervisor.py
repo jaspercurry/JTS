@@ -32,12 +32,12 @@ import logging
 import time
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.multiroom import config as grouping_config
 from jasper.multiroom.effective_role import effective_local_sources_park_reason
-from jasper.service_units import SHAIRPORT_SYNC_SERVICE
+from jasper.platform.service_units import SHAIRPORT_SYNC_SERVICE
 from jasper.playback_state.source_state import airplay_playbackstatus_observed
-from jasper.systemd_probe import async_unit_probe
+from jasper.platform.systemd_probe import async_unit_probe
 
 from . import restart_broker
 from .supervisor_runtime import (

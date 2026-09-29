@@ -30,13 +30,13 @@ import threading
 import time
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.audio_control import debug_mode
-from ..atomic_io import locked_update_env_file
+from jasper.platform.atomic_io import locked_update_env_file
 from jasper.audio_control.debug_mode import EXPIRES_KEY, SUBSYSTEMS, env_key
-from ..env_file import read_env_file
-from .. import systemd_probe
+from jasper.platform.env_file import read_env_file
+from jasper.platform import systemd_probe
 from . import restart_broker
 
 logger = logging.getLogger(__name__)

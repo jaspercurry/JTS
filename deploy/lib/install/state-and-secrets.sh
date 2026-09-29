@@ -83,7 +83,7 @@ heal_shared_state_modes() {
     # file type aborts install loudly without touching its target.
     #
     # Spec kinds: `f` regular file, `d` directory — both re-group only, because
-    # every writer publishes them through jasper.atomic_io (tempfile + replace),
+    # every writer publishes them through jasper.platform.atomic_io (tempfile + replace),
     # which needs write on the DIRECTORY rather than on the old inode. `w` is
     # the exception: a file its writer modifies IN PLACE, so the OWNER has to
     # move with the writer as well.
@@ -159,7 +159,7 @@ for spec in sys.argv[3:]:
     kind, mode_text, path = spec.split(":", 2)
     if kind == "l":
         # A record's advisory lock sibling, named the one way the stores name
-        # it (jasper.atomic_io callers: ".<record>.lock"), so install does not
+        # it (jasper.platform.atomic_io callers: ".<record>.lock"), so install does not
         # respell a filename Python owns. Group-WRITABLE, because taking an
         # advisory lock opens the file for write. See ADR-0288.
         head, base = os.path.split(path)

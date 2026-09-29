@@ -48,8 +48,8 @@ import logging
 import time as _time
 from typing import TYPE_CHECKING, Any
 
-from jasper.log_event import log_event
-from jasper.secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 
 from ._base import (
     OPENAI_AUDIO_RATE_HZ,

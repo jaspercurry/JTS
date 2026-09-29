@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from jasper.atomic_io import read_regular_bytes_nofollow
+from jasper.platform.atomic_io import read_regular_bytes_nofollow
 from jasper.audio_measurement.ramp import capped_gap_step_db
 from jasper.mics import xvf3800
 

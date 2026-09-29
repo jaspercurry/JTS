@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
 from jasper.active_speaker.fader_hold import MeasurementFaderDrift, hold_fader_at
-from jasper.volume_latch import READBACK_TOLERANCE_DB, fader_matches
+from jasper.platform.volume_latch import READBACK_TOLERANCE_DB, fader_matches
 from jasper.audio_measurement.program import (
     FrequencyBand,
     RoleBand,

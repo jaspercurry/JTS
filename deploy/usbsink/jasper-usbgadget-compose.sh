@@ -86,11 +86,11 @@ _jasper_usbgadget_env_value() {
     # direction. Never source/eval: this runs as root, and sourcing turns an
     # inert config value into a code path.
     #
-    # Mode 0 mirrors jasper.env_load.parse_env_text; mode 1 adds
+    # Mode 0 mirrors jasper.platform.env_load.parse_env_text; mode 1 adds
     # jasper.identity.speaker_name's shlex rules on top — `KEY=` with no spacing, and an
     # unquoted value ends at the first whitespace or `#`.
     #
-    # This NARROWS jasper.atomic_io.read_regular_bytes_nofollow, it does not
+    # This NARROWS jasper.platform.atomic_io.read_regular_bytes_nofollow, it does not
     # mirror it: the cap counts bytes as read (trailing X so command
     # substitution keeps newlines, NUL to newline so it still counts; bash's
     # own locale is C here, unexported, so ${#text} is a byte count), but
@@ -231,7 +231,7 @@ jasper_usbgadget_desired() {
     #
     # An assignment already in the environment wins over the file, exactly as
     # it does for the gadget unit (systemd's EnvironmentFile= never overrides an
-    # inherited value) and for jasper.env_load's setdefault union. Only a caller
+    # inherited value) and for jasper.platform.env_load's setdefault union. Only a caller
     # that inherited nothing falls through to the file read.
     local net_raw
     if [[ -n "${JASPER_USB_NETWORK+x}" ]]; then

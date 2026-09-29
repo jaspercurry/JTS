@@ -18,7 +18,7 @@ from typing import (
     runtime_checkable,
 )
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..tools import ToolRegistry
 
 if TYPE_CHECKING:

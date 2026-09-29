@@ -17,7 +17,7 @@ tests/test_sound_camilla_yaml_golden.py.
 
 from __future__ import annotations
 
-from jasper.biquad import FilterSpec, PeqFilter
+from jasper.platform.biquad import FilterSpec, PeqFilter
 from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
 
 

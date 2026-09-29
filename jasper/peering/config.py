@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
 
-from jasper.atomic_io import atomic_write_text
-from jasper.env_load import (
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.env_load import (
     PEERING_ENV_PATH as PEERING_ENV_FILE,
     parse_bool_value,
     read_env_file_or_warn,

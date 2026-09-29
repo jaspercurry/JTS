@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, overload
 
-from jasper.env_file import parse_env_mapping, read_env_file_text
+from jasper.platform.env_file import parse_env_mapping, read_env_file_text
 
 
 #: The operator-owned base layer every daemon unit loads first.

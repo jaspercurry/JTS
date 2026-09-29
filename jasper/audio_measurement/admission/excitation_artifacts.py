@@ -16,9 +16,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import fsync_directory
-from jasper.json_fields import canonical_json_bytes, json_fingerprint, require_sha256_hex
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import fsync_directory
+from jasper.platform.json_fields import canonical_json_bytes, json_fingerprint, require_sha256_hex
+from jasper.platform.log_event import log_event
 
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 

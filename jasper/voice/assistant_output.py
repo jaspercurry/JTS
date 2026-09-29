@@ -20,7 +20,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.runtime_config.assistant_loudness import (
     active_voice_identity,

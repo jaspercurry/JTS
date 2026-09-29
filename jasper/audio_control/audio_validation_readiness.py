@@ -18,8 +18,8 @@ from jasper.chip_aec.policy import (
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
-from jasper.env_load import parse_env_file
-from jasper.service_units import (
+from jasper.platform.env_load import parse_env_file
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,

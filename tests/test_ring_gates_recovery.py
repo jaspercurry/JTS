@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper import ring_header
+from jasper.platform import ring_header
 from jasper.fanin.ring_readiness import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
@@ -41,7 +41,7 @@ from tests.test_fanin_coupling_reconcile import (
 # Captured at import, BEFORE any fixture can stub the module attribute — see
 # :func:`_real_caps_record_compare`.
 from jasper.audio_control.ring_assets import ring_ioplug_wire_supported as _REAL_WIRE_SUPPORTED
-from jasper.ring_header import (
+from jasper.platform.ring_header import (
     RING_SAMPLE_FORMAT_NAMES,
     RING_SAMPLE_FORMAT_S16LE,
 )

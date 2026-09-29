@@ -27,7 +27,7 @@ import numpy as np
 
 from jasper.audio_measurement.peq import design_peq, predicted_response
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.biquad import SHELF_Q
+from jasper.platform.biquad import SHELF_Q
 
 from .branch_chain import chain_response, branch_headroom_db
 from .branch_target import (
@@ -491,7 +491,7 @@ def complex_correction_response(
     omitting the filters entirely (measured on JTS3, #1667: 2.0 dB
     mistracking vs. 1.7 dB uncorrected, vs. ~0.5 dB for this complex model).
     Every entry is the exact RBJ biquad CamillaDSP realizes, IMPORTED from
-    :func:`jasper.biquad.filter_response_complex` rather than
+    :func:`jasper.platform.biquad.filter_response_complex` rather than
     re-derived. Apply in the LINEAR domain: ``W_lin = W *
     complex_correction_response(...)``.
     """

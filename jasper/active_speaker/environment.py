@@ -26,8 +26,8 @@ from jasper.dsp_control.camilla_config_contract import (
     parse_camilla_devices_config,
 )
 from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
-from jasper.json_fields import issue as _issue
-from jasper.paths import camilla_statefile
+from jasper.platform.json_fields import issue as _issue
+from jasper.platform.paths import camilla_statefile
 
 from .camilla_yaml import (
     ACTIVE_PARKED_SOURCE,

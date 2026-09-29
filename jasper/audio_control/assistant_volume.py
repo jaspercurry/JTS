@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Mapping
 
 from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
-from jasper.env_load import VOICE_GROUPING_ENV_FILE
-from jasper.log_event import log_event
+from jasper.platform.env_load import VOICE_GROUPING_ENV_FILE
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from jasper.platform import wire
 from jasper.service_state.tts_routing import (

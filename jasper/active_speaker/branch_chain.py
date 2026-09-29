@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from jasper.biquad import (
+from jasper.platform.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
     FilterSpec,
     filter_response_complex, freq_trig,
@@ -101,7 +101,7 @@ def _evaluation_grid(
     20 Hz/20 kHz grid reads a +12 dB Lowshelf at 30 Hz as 9.69 dB). Tamper hardening, not
     optional: a peak on a fixed log grid is blind to anything narrower than its spacing (a
     +12 dB Q-2000 Peaking filter between two bins reads -0.0 dB). A centre goes in at its
-    OWN frequency up to NYQUIST, not merely :data:`~jasper.biquad.EVALUABLE_HZ_MAX`; one at
+    OWN frequency up to NYQUIST, not merely :data:`~jasper.platform.biquad.EVALUABLE_HZ_MAX`; one at
     or above Nyquist is left to the background grid, reading the mirrored extremum to
     within 0.103 dB. Each adjacent centre pair's geometric midpoint goes in too -- centres
     alone under-read a between-centres peak by up to 0.58 dB.

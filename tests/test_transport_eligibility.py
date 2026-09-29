@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import env_load
+from jasper.platform import env_load
 from jasper.cli.doctor import audio_runtime_ring
 from jasper.control import transport_eligibility
 from jasper.control.audio_signal_path import (

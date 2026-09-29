@@ -35,8 +35,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from jasper.runtime_config.assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
-from ..json_fields import age_seconds
-from ..log_event import log_event
+from jasper.platform.json_fields import age_seconds
+from jasper.platform.log_event import log_event
 from .generator import (
     CHIME_MODEL,
     backend_model,

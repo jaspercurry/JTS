@@ -18,9 +18,9 @@ from jasper.runtime_config.audio_profile_state import (
     probe_xvf_mic as _probe_xvf_mic,
 )
 from jasper.platform import control_client as control
-from jasper.env_load import env_file_path, parse_env_file, DEFAULT_AEC_MODE_PATH
-from jasper.log_event import log_event
-from jasper.systemd_probe import UNKNOWN as UNKNOWN_STATE, unit_states
+from jasper.platform.env_load import env_file_path, parse_env_file, DEFAULT_AEC_MODE_PATH
+from jasper.platform.log_event import log_event
+from jasper.platform.systemd_probe import UNKNOWN as UNKNOWN_STATE, unit_states
 from jasper.audio_routes.output_hardware import published_dac_id
 from jasper.platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,

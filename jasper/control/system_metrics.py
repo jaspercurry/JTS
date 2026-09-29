@@ -38,8 +38,8 @@ from pathlib import Path
 from typing import Any
 
 from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
-from ..memory_policy import disk_usage, memory_pressure, meminfo_fields
-from ..service_units import (
+from jasper.platform.memory_policy import disk_usage, memory_pressure, meminfo_fields
+from jasper.platform.service_units import (
     EXTRA_SERVICE_GROUPS,
     JASPER_SERVICE_GROUPS,
     read_unit_states,

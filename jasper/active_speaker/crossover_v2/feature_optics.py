@@ -18,7 +18,7 @@ from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.excess_phase import (
     FEATURE_HALF_OCT, NEIGHBOURHOOD_OCT,
 )
-from jasper.biquad import biquad_coeffs
+from jasper.platform.biquad import biquad_coeffs
 
 __all__ = [
     "CENTRE_SEARCH_OCT",

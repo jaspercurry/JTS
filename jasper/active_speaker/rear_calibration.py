@@ -14,7 +14,7 @@ from typing import Any, Callable
 import yaml
 
 from jasper.audio_routes.camilla_emit import emit_delay_filter, emit_gain_filter, emit_mixer
-from jasper.json_fields import CodedFieldError, JsonFields, finite_float
+from jasper.platform.json_fields import CodedFieldError, JsonFields, finite_float
 
 KIND = "jts_rear_calibration"
 PHASE_CONVENTION = "positive_delay_has_negative_phase"

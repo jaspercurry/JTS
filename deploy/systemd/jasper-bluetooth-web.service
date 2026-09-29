@@ -62,7 +62,7 @@ ReadWritePaths=/var/lib/jasper
 MemoryHigh=100M
 MemoryMax=160M
 
-# OOM wizard tier — see jasper/_oom_adj.py
+# OOM wizard tier — see jasper/platform/_oom_adj.py
 OOMScoreAdjust=200
 
 [Install]

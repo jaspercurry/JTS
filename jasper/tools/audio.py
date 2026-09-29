@@ -9,7 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import tool
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..platform.control_client import AsyncControlClient, ControlError
 
 if TYPE_CHECKING:

@@ -14,7 +14,7 @@ import numpy as np
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from ..measurement_analysis import analyzed_measurements
 from ..measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, validated_pose

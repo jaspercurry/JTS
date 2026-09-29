@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jasper.busctl import BusctlResult, run_busctl
+from jasper.platform.busctl import BusctlResult, run_busctl
 from jasper.tools.transport import (
     _airplay_remote_available,
     _mpris_call,

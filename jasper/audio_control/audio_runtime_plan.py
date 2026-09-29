@@ -76,7 +76,7 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_TARGET_LEVEL,
     read_camilla_devices_config,
 )
-from jasper.env_load import (
+from jasper.platform.env_load import (
     BASE_ENV_PATH,
     FANIN_ENV_PATH,
     GROUPING_ENV_FILE,
@@ -99,7 +99,7 @@ from jasper.dsp_control.fanin_coupling import (
 )
 from jasper.multiroom import config as grouping_config
 from jasper.audio_routes.output_hardware import load_state as load_output_hardware_state
-from jasper.json_fields import json_fingerprint, sha256_file
+from jasper.platform.json_fields import json_fingerprint, sha256_file
 from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
@@ -775,7 +775,7 @@ def build_audio_runtime_plan_from_system(
 ) -> AudioRuntimePlan:
     """Build the plan from the same persistent files the daemons load.
 
-    ``base_env_path`` resolves through :func:`jasper.env_load.env_file_path`
+    ``base_env_path`` resolves through :func:`jasper.platform.env_load.env_file_path`
     at call time when unset, so the plan reads the same ``JASPER_ENV_FILE``
     base layer as ``outputd_reconciled_env`` and the rest of ``env_load``.
     """

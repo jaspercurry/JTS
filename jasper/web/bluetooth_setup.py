@@ -63,10 +63,10 @@ from ..bluetooth.adapter import (
 )
 from ..bluetooth.engine import BluetoothEngine
 from ..bluetooth.models import BluetoothActionResult
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..local_sources import local_source_lifecycle
 from jasper.playback_state.music_sources import Source
-from ..service_units import read_unit_states, unit_active, unit_loaded
+from jasper.platform.service_units import read_unit_states, unit_active, unit_loaded
 from jasper.audio_routes.source_intent import (
     request_source_intent,
     source_intent_enabled,

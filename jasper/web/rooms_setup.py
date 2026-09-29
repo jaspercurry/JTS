@@ -62,8 +62,8 @@ from ..multiroom.airplay_latency import with_airplay_latency_fit
 from ..multiroom.config import TRIM_DB_MIN, TRIM_DB_MAX
 from ..multiroom.state import read_grouping_state
 from ..peering import config as peering_config
-from ..log_event import log_event
-from ..atomic_io import locked_transform_env_file
+from jasper.platform.log_event import log_event
+from jasper.platform.atomic_io import locked_transform_env_file
 from . import rooms_peers
 from ._common import (
     begin_request,

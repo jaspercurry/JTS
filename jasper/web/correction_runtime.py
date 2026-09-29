@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ._common import (
     JsonBodyError,

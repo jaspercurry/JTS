@@ -25,9 +25,9 @@ import time as _time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, ClassVar
 
-from jasper.backoff import ReconnectNudge
-from jasper.log_event import log_event
-from jasper.secret_redaction import redact_secrets
+from jasper.platform.backoff import ReconnectNudge
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 
 from ..tools import ToolRegistry, dispatch_tool
 from ._supervisor import (

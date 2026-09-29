@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jasper.atomic_io import write_env_file
-from jasper.env_file import read_env_file
-from jasper.env_load import parse_bool_value, read_env_file_state, CONVERSATION_HISTORY_ENV_PATH
+from jasper.platform.atomic_io import write_env_file
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import parse_bool_value, read_env_file_state, CONVERSATION_HISTORY_ENV_PATH
 
 logger = logging.getLogger("jasper.conversation_history")
 

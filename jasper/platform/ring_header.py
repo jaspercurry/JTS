@@ -45,7 +45,7 @@ _RING_OFF_READER_HEARTBEAT_NS = 80  # u64
 #   - ``reader_pid`` separates "no reader has ever attached" (0 with a zero
 #     heartbeat) from "a reader attached and stopped beating" (a pid with a
 #     stale heartbeat). Both leave the reader not-live; only the second is a
-#     fault. ``jasper.ring_header.ring_flow_state`` uses the split.
+#     fault. ``jasper.platform.ring_header.ring_flow_state`` uses the split.
 #   - ``writer_epoch`` counts writer REATTACHES, so a flapping writer is legible
 #     without differencing journal lines.
 _RING_OFF_WRITER_EPOCH = 32  # u64
@@ -114,7 +114,7 @@ class RingHeader:
     # RUNTIME, not geometry: CLOCK_MONOTONIC ns, 0 when never stamped. The
     # writer stamps its own every publish/wait tick; the reader stamps its own
     # every DAC period, filled or not. The observer uses ``time.monotonic_ns()``
-    # on the same box; see :func:`jasper.ring_header.ring_stall_verdict`.
+    # on the same box; see :func:`jasper.platform.ring_header.ring_stall_verdict`.
     # Freshness needs one sample, without a sampling window.
     writer_heartbeat_ns: int = 0
     reader_heartbeat_ns: int = 0

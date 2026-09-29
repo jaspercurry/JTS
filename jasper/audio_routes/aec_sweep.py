@@ -26,10 +26,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
-from jasper.env_load import parse_bool_value
-from jasper.json_fields import canonical_json_bytes
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.env_load import parse_bool_value
+from jasper.platform.json_fields import canonical_json_bytes
+from jasper.platform.log_event import log_event
 
 
 AEC3_SWEEP_ENV_FLAG = "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"

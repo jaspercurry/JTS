@@ -34,7 +34,7 @@ from typing import Any, Mapping
 
 from jasper.active_speaker.seat_level_reference import DEFAULT_TARGET_DB_SPL
 from jasper.audio_measurement import household_mic
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

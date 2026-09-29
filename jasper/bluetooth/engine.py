@@ -30,7 +30,7 @@ from dbus_next import BusType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .adapter import (
     BLUEZ_CALL_TIMEOUT_SEC,

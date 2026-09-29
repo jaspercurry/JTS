@@ -18,7 +18,7 @@ from jasper.sound.settings import (
     resolve_settings_path,
     SETTINGS_PATH,
 )
-from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_FLOOR_MAX_DB, VOLUME_FLOOR_MIN_DB
+from jasper.platform.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_FLOOR_MAX_DB, VOLUME_FLOOR_MIN_DB
 
 
 def test_defaults_are_the_do_nothing_state():

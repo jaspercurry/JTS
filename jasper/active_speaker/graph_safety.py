@@ -11,7 +11,7 @@ fail-closed predicates then run on the view, so the logic is shared while each
 source keeps its parsing semantics. Everything is pure: an unparseable graph, a
 missing filter or a mismatched wiring yields ``parsed_ok=False``/``False``, so a
 caller can never read "safe" out of a graph it could not prove safe. A leaf
-(stdlib and ``jasper.json_fields`` only — callers own the ``yaml.safe_load`` and
+(stdlib and ``jasper.platform.json_fields`` only — callers own the ``yaml.safe_load`` and
 pass in filter names), and the single home of the shared scalar matchers no
 verifier may re-implement.
 """
@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import as_float
+from jasper.platform.json_fields import as_float
 
 # --------------------------------------------------------------------------- #
 # Scalar / inline-collection text parsing (the emitted-config dialect).

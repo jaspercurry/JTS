@@ -9,8 +9,8 @@ from typing import Any, Collection, Mapping
 
 import yaml
 
-from jasper.log_event import log_event
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.log_event import log_event
+from jasper.platform.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,

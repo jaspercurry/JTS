@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper import paths
+from jasper.platform import paths
 from jasper.active_speaker.environment import parse_camilla_statefile_config_path
 from jasper.active_speaker.graph_types import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,

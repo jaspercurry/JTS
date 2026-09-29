@@ -22,7 +22,7 @@ from jasper.audio_measurement.interference_nulls import (
     branch_gap_null_depth_ceiling_db,
     feature_position_variance,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .crossover_v2.commanded import profile_crossover_regions

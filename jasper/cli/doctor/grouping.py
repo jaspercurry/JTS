@@ -12,9 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ...env_file import parse_env_mapping
-from ...env_load import parse_bool_value
-from ...service_units import JASPER_VOICE_SERVICE
+from jasper.platform.env_file import parse_env_mapping
+from jasper.platform.env_load import parse_bool_value
+from jasper.platform.service_units import JASPER_VOICE_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -518,7 +518,7 @@ def check_grouping_rate_adjust() -> CheckResult:
     catches every generator and a config generated BEFORE the bond formed
     (stale → still rate_adjust on; the reconciler regenerates on bond
     form, so a warn here means that apply failed — check its journal)."""
-    from ...paths import camilla_statefile
+    from jasper.platform.paths import camilla_statefile
     from ...multiroom.config import is_active_member
     from ...multiroom.grouping_env import is_active_speaker_box
     from .correction import (
@@ -645,7 +645,7 @@ def check_grouping_leader_pipe() -> CheckResult:
     budget fit (:func:`_airplay_latency_fit_finding`) — a silent pipe makes
     that timing fact moot, so it only rides an ``ok`` verdict.
     """
-    from ...paths import camilla_statefile
+    from jasper.platform.paths import camilla_statefile
     from ...multiroom.config import is_active_leader
     from jasper.dsp_control.camilla_config_contract import playback_is_pipe
     from ...multiroom.snapfifo import SNAPFIFO
@@ -707,7 +707,7 @@ def _outputd_grouping_env_or_error() -> tuple[dict[str, str] | None, OSError | N
     exists but could not be read. ``(mapping, None)`` — parsed, possibly
     empty.
     """
-    from ...env_load import OUTPUTD_GROUPING_ENV_FILE  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
+    from jasper.platform.env_load import OUTPUTD_GROUPING_ENV_FILE  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
 
     def read() -> tuple[dict[str, str] | None, OSError | None]:
         path = Path(OUTPUTD_GROUPING_ENV_FILE)
@@ -737,7 +737,7 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
     as #2387 wearing a different hat, and a doctor that cannot read its
     authority must say so.
     """
-    from ...env_load import VOICE_GROUPING_ENV_FILE, read_env_file_state
+    from jasper.platform.env_load import VOICE_GROUPING_ENV_FILE, read_env_file_state
 
     unit_env: dict[str, str] | None = None
     error = ""
@@ -764,7 +764,7 @@ def check_grouping_channel_pick() -> CheckResult:
     is gone). A missing or drifted env is SILENT (the speaker plays the
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
-    from ...env_load import (  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
+    from jasper.platform.env_load import (  # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE at call time
         OUTPUTD_GROUPING_ENV_FILE,
     )
     from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
@@ -896,7 +896,7 @@ def check_grouping_tts_lane() -> CheckResult:
     The route matrix wires grouping-voice.env and grouping-outputd.env so the
     voice socket, voice park flag, and outputd TTS server state agree."""
     # lazy: tests patch env_load.OUTPUTD_GROUPING_ENV_FILE / VOICE_GROUPING_ENV_FILE at call time
-    from ...env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
+    from jasper.platform.env_load import OUTPUTD_GROUPING_ENV_FILE, VOICE_GROUPING_ENV_FILE
     from ...multiroom.config import is_active_member
     from ...multiroom.grouping_env import output_topology_state
     from ...multiroom.tts_route import (

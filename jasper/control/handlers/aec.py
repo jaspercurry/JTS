@@ -21,9 +21,9 @@ from jasper.runtime_config.audio_profile_state import (
     normalize_audio_input_profile,
     profile_env_updates,
 )
-from ...atomic_io import locked_update_env_file
-from ...log_event import log_event
-from ...service_units import JASPER_VOICE_SERVICE
+from jasper.platform.atomic_io import locked_update_env_file
+from jasper.platform.log_event import log_event
+from jasper.platform.service_units import JASPER_VOICE_SERVICE
 from jasper.audio_routes.usb_mic import (
     read_usb_mic_leg,
     usb_mic_leg_choices,

@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable, Coroutine, Iterable
 from inspect import isawaitable
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.voice_daemon")
 

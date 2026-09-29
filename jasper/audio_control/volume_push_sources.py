@@ -15,7 +15,7 @@ import logging
 from functools import partial
 from typing import TYPE_CHECKING
 
-from jasper import busctl
+from jasper.platform import busctl
 from jasper.device_probe.bluealsa_probe import active_transport_path
 from jasper.service_state.spotify_router import DEVICES_TIMEOUT_SEC
 from jasper.audio_control.volume_scales import (

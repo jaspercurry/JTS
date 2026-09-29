@@ -134,7 +134,7 @@ id = "audio-routing-and-renderers"
 safety = "audio-output-risk"
 code = [
   "jasper/playback_state/music_sources.py",
-  "jasper/busctl.py",
+  "jasper/platform/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/audio_control/renderer.py",
@@ -143,7 +143,7 @@ code = [
   "jasper/dsp_control/camilla_latency.py",
   "jasper/audio_routes/output_hardware.py",
   "jasper/audio_routes/output_topology.py",
-  "jasper/speaker_layout.py",
+  "jasper/platform/speaker_layout.py",
   "deploy/alsa/**",
   "deploy/lib/jasper-asound-render.sh",
   "deploy/camilladsp/**",
@@ -327,14 +327,13 @@ id = "volume-and-sound"
 safety = "audio-output-risk"
 code = [
   "jasper/control/state_aggregate.py",
-  "jasper/volume_*.py",
   "jasper/audio_control/volume_coordinator.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
   "jasper/audio_routes/camilla_stereo_prefix.py",
   # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
   # that preference EQ, headroom and the tuning fits all predict with.
-  "jasper/biquad.py",
+  "jasper/platform/biquad.py",
   # Shared with audio-routing-and-renderers: it owns the device defaults and
   # the volume_limit door.
   "jasper/dsp_control/camilla_config_contract.py",
@@ -363,6 +362,8 @@ code = [
   "jasper/audio_control/volume_state.py",
   "jasper/audio_routes/volume_curve.py",
   "jasper/audio_routes/volume_diagnostics.py",
+  "jasper/platform/volume_floor.py",
+  "jasper/platform/volume_latch.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -748,8 +749,8 @@ docs = [
 id = "resilience-and-system-dashboard"
 safety = "boot-risk"
 code = [
-  "jasper/_oom_adj.py",
-  "jasper/watchdog.py",
+  "jasper/platform/_oom_adj.py",
+  "jasper/platform/watchdog.py",
   "jasper/audio_control/debug_mode.py",
   "jasper/runtime/flight_recorder.py",
   "jasper/control/debug_control.py",

@@ -11,7 +11,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 import yaml
 
-from jasper.biquad import FilterSpec
+from jasper.platform.biquad import FilterSpec
 from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker._common import MeasurementGraphRefused

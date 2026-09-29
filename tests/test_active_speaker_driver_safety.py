@@ -12,7 +12,7 @@ import re
 
 import pytest
 
-from jasper.json_fields import CodedFieldError
+from jasper.platform.json_fields import CodedFieldError
 from jasper.active_speaker.design_draft import (
     build_design_draft,
     design_draft_view,

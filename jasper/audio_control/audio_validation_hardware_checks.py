@@ -10,7 +10,7 @@ import os
 from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from jasper.service_units import (
+from jasper.platform.service_units import (
     CAMILLA_SERVICE,
     FANIN_SERVICE,
     OUTPUTD_SERVICE,

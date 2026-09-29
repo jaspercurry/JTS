@@ -27,8 +27,8 @@ import struct
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
-from jasper.json_fields import as_float
-from jasper.log_event import log_event
+from jasper.platform.json_fields import as_float
+from jasper.platform.log_event import log_event
 
 from .config import MULTICAST_GROUP, MULTICAST_PORT, MULTICAST_TTL
 from .rank import WakeReport

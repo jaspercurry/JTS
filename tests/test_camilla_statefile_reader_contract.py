@@ -4,7 +4,7 @@
 
 """One owner for the CamillaDSP statefile's ``config_path`` (issue #2848).
 
-``jasper.paths.camilla_statefile`` owns the ``JASPER_CAMILLA_STATEFILE``
+``jasper.platform.paths.camilla_statefile`` owns the ``JASPER_CAMILLA_STATEFILE``
 override over the shipped default statefile path, and
 ``jasper.active_speaker.environment`` the ``config_path:`` parse. Three private
 readers each held their own copy of all three facts —
@@ -46,7 +46,7 @@ from jasper.audio_control import audio_runtime_plan as audio_plan
 from jasper.active_speaker import environment as env_mod
 from jasper.cli.doctor import correction as doctor_correction
 from jasper.multiroom import leader_config
-from jasper.paths import DEFAULT_CAMILLA_STATEFILE, camilla_statefile
+from jasper.platform.paths import DEFAULT_CAMILLA_STATEFILE, camilla_statefile
 
 
 def _pipe_wired_config(tmp_path: Path) -> Path:
@@ -185,7 +185,7 @@ def test_converge_passes_the_owner_resolved_statefile(
 
     ``converge._reemit_graph_at_ring`` never parses ``config_path``, but it does
     have to name the statefile ``applied_profile_displacement`` reads. Both
-    resolve through ``jasper.paths.camilla_statefile``, so an operator override
+    resolve through ``jasper.platform.paths.camilla_statefile``, so an operator override
     moves them together.
 
     An empty override is no override: it names the shipped default, as the

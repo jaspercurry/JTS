@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .angle_capture import ARM_ENVELOPE_DEG
 from .movers import MOVER_ARM

@@ -40,7 +40,7 @@ User=jasper-web
 Group=jasper
 SupplementaryGroups=audio jts-ring
 
-# OOM wizard tier — see jasper/_oom_adj.py. The correction-lane aplay children
+# OOM wizard tier — see jasper/platform/_oom_adj.py. The correction-lane aplay children
 # inherit this +200, and that is the intended victim ordering: a measurement
 # pass dies before the daemons that keep music playing.
 OOMScoreAdjust=200
@@ -59,7 +59,7 @@ NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper /var/lib/camilladsp
 # Deliberately tight: correction profiles, capture bundles, and measurement
 # artifacts stay owner-only. Every file shared across daemons is published by
-# jasper.atomic_io with an explicit mode, so this governs only the private
+# jasper.platform.atomic_io with an explicit mode, so this governs only the private
 # set.
 UMask=0077
 # audition.py writes /run/jasper-active-speaker/audition.json as jasper-web.

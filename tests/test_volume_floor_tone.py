@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from jasper.atomic_io import flock_held
+from jasper.platform.atomic_io import flock_held
 from jasper.audio_control.volume_carrier import CamillaCarrier
 from jasper.dsp_control.dsp_apply import dsp_apply_lock_path
 from jasper.audio_resources.volume_owner import install_volume_owner

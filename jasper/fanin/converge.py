@@ -24,10 +24,10 @@ import logging
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.fanin import ring_readiness as rr
 from jasper.fanin.coupling_reconcile import start_audio_hardware_reconcile
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology import OutputTopologyError
 from jasper.audio_routes.output_topology_store import load_output_topology_strict
-from jasper.paths import camilla_statefile
+from jasper.platform.paths import camilla_statefile
 
 logger = logging.getLogger(__name__)
 

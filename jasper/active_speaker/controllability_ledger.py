@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 __all__ = ["ROUND_RECEIPT_GLOB", "read_controllability_ledger"]
 

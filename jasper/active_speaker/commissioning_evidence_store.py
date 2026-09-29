@@ -28,14 +28,14 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_json, fsync_directory
+from jasper.platform.atomic_io import atomic_write_json, fsync_directory
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.admission.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionAuthority,
 )
-from jasper.json_fields import canonical_json_bytes
+from jasper.platform.json_fields import canonical_json_bytes
 
 from .bundles import (
     ensure_directory_mode,

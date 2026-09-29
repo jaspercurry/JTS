@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 from ..feature_classification import (
     LAB_ROW_FIELDS,

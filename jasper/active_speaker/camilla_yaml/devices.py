@@ -17,9 +17,9 @@ from jasper.dsp_control.fanin_coupling import (
     RING_PCM_DEVICES,
     resolve_ring_wire,
 )
-from jasper.json_fields import JsonFields
+from jasper.platform.json_fields import JsonFields
 
-from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
+from jasper.platform.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from ..profile import ActiveSpeakerConfigError
 

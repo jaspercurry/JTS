@@ -15,7 +15,7 @@ import numpy as np
 
 from .flat_spec import REFERENCE_BAND_HZ, evaluate_flat_spec
 from .frequency_view import FrequencySeries, FrequencyViewError
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 
 def band_limited_curve(curve: Mapping[str, Any]) -> tuple[Any, Any]:

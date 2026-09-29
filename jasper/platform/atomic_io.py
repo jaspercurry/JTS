@@ -33,12 +33,12 @@ from uuid import uuid4
 
 import fcntl
 
-from jasper.env_file import parse_env_mapping
-from jasper.env_file import remove as env_remove
-from jasper.env_file import upsert as env_upsert
-from jasper.log_event import log_event
+from jasper.platform.env_file import parse_env_mapping
+from jasper.platform.env_file import remove as env_remove
+from jasper.platform.env_file import upsert as env_upsert
+from jasper.platform.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.atomic_io")
 
 __all__ = [
     "CONFIG_FILE_MODE",
@@ -549,7 +549,7 @@ def format_env_text(values: Mapping[str, str], *, owner: str | None = None) -> s
     ``ValueError`` for a value carrying a newline rather than emitting a line
     that would split into a bogus second assignment. ``owner``, when given,
     prepends a ``# Written by {owner}.`` header line — a systemd
-    ``EnvironmentFile=`` parser and :func:`jasper.env_file.parse_env_lines`
+    ``EnvironmentFile=`` parser and :func:`jasper.platform.env_file.parse_env_lines`
     both skip ``#`` lines, so this never changes the parsed values.
     """
     lines: list[str] = []
@@ -573,7 +573,7 @@ def write_env_file(
 
     A whole-file replace, so a reader never sees a torn file — but two writers
     that each read, change one key, and publish do lose each other's key. Use
-    :func:`jasper.atomic_io.locked_update_env_file` where writers race (the
+    :func:`jasper.platform.atomic_io.locked_update_env_file` where writers race (the
     threaded wizard server's own ``/save`` handlers do).
 
     ``mode`` defaults to 0600 because these files carry API keys and OAuth
@@ -695,7 +695,7 @@ def locked_update_env_file(
     :data:`SHARED_LOCK_MODE`. ``owner``, when given, is forwarded to
     :func:`format_env_text` so a racing writer keeps the same header a
     :func:`write_env_file` caller would get. The old file is
-    read with :func:`jasper.env_file.parse_env_mapping`, so the returned
+    read with :func:`jasper.platform.env_file.parse_env_mapping`, so the returned
     mapping carries values systemd would see — a quoted value written by
     another writer (``deploy/lib/jasper-env-file.sh`` quotes) arrives
     resolved, not with its quotes.
@@ -792,7 +792,7 @@ def locked_upsert_env_file(
     :func:`locked_transform_env_file`: those round-trip through a
     ``dict[str, str]`` and drop a co-reader's comments, blank lines and
     assignment order, which the reconcilers that own a few keys in a file
-    several units read must keep (see :mod:`jasper.env_file`). ``build_actions``
+    several units read must keep (see :mod:`jasper.platform.env_file`). ``build_actions``
     runs against the FRESH text read while the lock is held, not a stale
     pre-lock snapshot, so a concurrent writer's key is folded in rather than
     lost (ADR-0235 G8). The lock is the one ``jasper_env_lock_path`` in

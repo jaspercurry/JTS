@@ -40,7 +40,7 @@ from jasper.audio_measurement.program import (
     is_level_probe,
     segment_emitted_band_hz,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .check import (
     _aggregate_linearity_ok,
     _aggregate_tri_state_ok,

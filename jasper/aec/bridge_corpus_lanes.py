@@ -30,7 +30,7 @@ from jasper.audio_routes.aec_sweep import (
     USB_AEC3_SWEEP_BASELINE_LABEL,
     USB_AEC3_SWEEP_BASELINE_OVERRIDES,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.aec.bridge_config import BridgeConfig, env_bool
 from jasper.aec.bridge_engines import (
     Aec3Engine,

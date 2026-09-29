@@ -41,7 +41,7 @@ from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.dsp_control.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,

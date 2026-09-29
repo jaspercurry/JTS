@@ -36,7 +36,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import (
+from jasper.platform.atomic_io import (
     advisory_file_lock_async,
     atomic_write_json,
     atomic_write_text,
@@ -46,9 +46,9 @@ from jasper.dsp_control.camilla_config_contract import (
     VolumeLimitViolation,
     check_volume_limit,
 )
-from jasper.json_fields import finite_float, sha256_file, utc_now_iso
-from jasper.log_event import log_event
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
+from jasper.platform.json_fields import finite_float, sha256_file, utc_now_iso
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
 logger = logging.getLogger("jasper.dsp_apply")
 

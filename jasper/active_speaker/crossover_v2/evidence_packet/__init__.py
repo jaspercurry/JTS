@@ -27,7 +27,7 @@ from typing import Any
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 from ...installation import installation_evidence
 from ..driver_prescription import driver_passbands_from_safety_profile

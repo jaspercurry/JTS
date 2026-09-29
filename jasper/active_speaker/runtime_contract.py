@@ -16,7 +16,7 @@ from typing import (
 
 import yaml
 
-from jasper.json_fields import issue as _issue
+from jasper.platform.json_fields import issue as _issue
 from jasper.sound.flat_verifier import (
     _flat_graph_allowed,
     _flat_hard_muted_outputs,

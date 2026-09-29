@@ -15,7 +15,7 @@ import os
 import re
 
 from ...audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
-from ...json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from ...platform.status_socket import OUTPUTD_STALE_MS, OUTPUTD_STATUS_SOCKET
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -29,7 +29,7 @@ from .audio_runtime_fanin import (
     asound_pcm_block,
     assistant_gain_fault,
 )
-from ...service_units import OUTPUTD_SERVICE
+from jasper.platform.service_units import OUTPUTD_SERVICE
 
 REASON_OUTPUTD_UNIT_MISSING = "outputd_unit_missing"
 REASON_OUTPUTD_UNIT_NOT_ENABLED = "outputd_unit_not_enabled"
@@ -90,12 +90,12 @@ _ASOUND_BLOCK_TYPE_RE = re.compile(r"^[ \t]*type[ \t]+(\S+)", re.MULTILINE)
 def outputd_reconciled_env() -> dict[str, str]:
     """outputd's env as its own unit layers it, read once per doctor run.
 
-    :func:`jasper.env_load.outputd_reconciled_env` plus the
+    :func:`jasper.platform.env_load.outputd_reconciled_env` plus the
     ``JASPER_OUTPUTD_ENV_FILE`` operator seam; nothing else.
     """
 
     def read() -> dict[str, str]:
-        from ... import env_load
+        from jasper.platform import env_load
 
         return env_load.outputd_reconciled_env(
             os.environ.get("JASPER_OUTPUTD_ENV_FILE") or None
@@ -523,7 +523,7 @@ def _outputd_transport_health(
     """
     from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
     from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
-    from jasper.paths import crossover_statefile
+    from jasper.platform.paths import crossover_statefile
 
     from .audio_runtime_camilla import evidence_statefile
     from jasper.audio_control.transport_coherence import (

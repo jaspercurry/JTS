@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .bass_comparison import CHANGE_FIELDS, bass_capture_context
 from .bass_fit import REFERENCE_BAND_HZ, fit_bass_shape

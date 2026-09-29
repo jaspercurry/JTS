@@ -13,10 +13,10 @@ import yaml
 
 from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.audio_routes.camilla_emit import mono_sum_sources
-from jasper.json_fields import as_float, finite_float, issue as _issue
-from jasper.log_event import log_event
+from jasper.platform.json_fields import as_float, finite_float, issue as _issue
+from jasper.platform.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.speaker_layout import (
+from jasper.platform.speaker_layout import (
     LOWEST_DRIVER_ROLE_BY_MAIN_MODE,
     SUB_CROSSOVER_HZ_HI,
     SUB_CROSSOVER_HZ_LO,

@@ -28,8 +28,8 @@ from typing import Any, Callable, Mapping
 import numpy as np
 
 from jasper.control import restart_broker
-from jasper.log_event import log_event
-from jasper.service_units import (
+from jasper.platform.log_event import log_event
+from jasper.platform.service_units import (
     AEC_RECONCILE_SERVICE,
     OUTPUTD_SERVICE,
     read_unit_property,
@@ -51,8 +51,8 @@ from jasper.cli.wake_enroll import (
     VOICE_UNIT,
 )
 from jasper.service_state.wake_ports import build_ports
-from jasper.atomic_io import write_env_file
-from jasper.env_file import delete_env_file, read_env_file
+from jasper.platform.atomic_io import write_env_file
+from jasper.platform.env_file import delete_env_file, read_env_file
 from . import runtime_probe
 # Both blocks carry names this module only re-exports: the thin
 # ``jasper.web.wake_corpus_setup`` HTTP adapter and ``session_store`` import

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import logging
 
-from jasper.log_event import log_event
-from jasper.volume_latch import READBACK_TOLERANCE_DB, GetMainVolumeDb, fader_matches, read_fader_db
+from jasper.platform.log_event import log_event
+from jasper.platform.volume_latch import READBACK_TOLERANCE_DB, GetMainVolumeDb, fader_matches, read_fader_db
 
 logger = logging.getLogger(__name__)
 

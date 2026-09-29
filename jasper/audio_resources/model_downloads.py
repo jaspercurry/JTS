@@ -28,8 +28,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.env_load import BASE_ENV_PATH, WAKE_MODEL_ENV_PATH, parse_env_file
-from jasper.json_fields import sha256_file
+from jasper.platform.env_load import BASE_ENV_PATH, WAKE_MODEL_ENV_PATH, parse_env_file
+from jasper.platform.json_fields import sha256_file
 
 
 DEFAULT_TIMEOUT_SECONDS = 30.0

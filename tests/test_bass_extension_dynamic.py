@@ -5,7 +5,7 @@ import pytest
 
 from jasper.active_speaker.branch_chain import camilla_filter_response
 from jasper.active_speaker.graph_transfer import mixer_mapping
-from jasper.biquad import biquad_response_complex, freq_trig
+from jasper.platform.biquad import biquad_response_complex, freq_trig
 
 from jasper.bass_extension.dynamic import (
     DynamicBassDescriptor,

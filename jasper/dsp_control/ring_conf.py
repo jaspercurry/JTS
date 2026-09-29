@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_SLOT_FRAMES
 
 if TYPE_CHECKING:
@@ -431,7 +431,7 @@ def render_ring_conf_wire(
     with the same value, and an omitted ``channels`` key already declares
     :data:`RING_CONF_DEFAULT_CHANNELS` so nothing is inserted. Otherwise the
     whole file is published through
-    :func:`jasper.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
+    :func:`jasper.platform.atomic_io.atomic_write_text` (``preserve_target_stat``), so a
     reader never observes a half-written conf.d and the installed file's
     uid/gid/mode survive the replace.
 

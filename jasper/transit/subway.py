@@ -65,7 +65,7 @@ from datetime import datetime
 
 import httpx
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ._mta_stations import Station, stations_by_id
 
 logger = logging.getLogger(__name__)

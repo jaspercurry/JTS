@@ -29,7 +29,7 @@ domain):
 - **Constant-time compare** via :func:`hmac.compare_digest` once a secret IS
   stored, so length/prefix never leaks through timing.
 - **Mode 0640, group jasper.** Written via
-  :func:`jasper.atomic_io.atomic_write_text` (tempfile + rename), never
+  :func:`jasper.platform.atomic_io.atomic_write_text` (tempfile + rename), never
   world-readable, always group-readable for the sibling non-root daemon.
 """
 from __future__ import annotations
@@ -38,7 +38,7 @@ import hmac
 import os
 import secrets
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 _MODE = 0o640
 

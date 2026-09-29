@@ -20,7 +20,7 @@ from dbus_next import BusType, Message, MessageType, Variant  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import AuthError, DBusError  # type: ignore
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from .models import is_hid_uuids
 
 logger = logging.getLogger(__name__)

@@ -23,9 +23,9 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json, read_json_mapping
-from jasper.json_fields import utc_now_iso
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_json, read_json_mapping
+from jasper.platform.json_fields import utc_now_iso
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.assistant_loudness")
 

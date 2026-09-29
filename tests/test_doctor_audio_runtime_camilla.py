@@ -20,7 +20,7 @@ from jasper.cli.doctor import (
     audio_runtime_outputd,
 )
 from jasper.cli.doctor._evidence import evidence
-from jasper.doctor_contract import summarize
+from jasper.platform.doctor_contract import summarize
 from jasper.audio_routes.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 
 from ._doctor_audio_runtime_fixtures import (

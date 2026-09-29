@@ -15,9 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text, read_regular_bytes_nofollow
-from jasper.env_file import parse_env_lines
-from jasper.paths import resolve_state_path
+from jasper.platform.atomic_io import atomic_write_text, read_regular_bytes_nofollow
+from jasper.platform.env_file import parse_env_lines
+from jasper.platform.paths import resolve_state_path
 
 from .config_txt import (
     OVERLAY_LINE_RE,

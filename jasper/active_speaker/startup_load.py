@@ -20,10 +20,10 @@ from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     validate_camilla_config,
 )
-from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
-from jasper.log_event import log_event
+from jasper.platform.json_fields import issue as _issue, utc_now_iso as _utc_now
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology import OutputTopology
-from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
+from jasper.platform.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 from jasper.active_speaker.crossover_preview import current_crossover_preview
 
 from ._common import gate as _gate
@@ -736,7 +736,7 @@ def reemit_staged_startup_anchor(
         staged_config_path,
         staged_metadata_path,
     )
-    from jasper.atomic_io import atomic_write_json, atomic_write_text  # lazy: test_ring_active_endpoint patches atomic_io
+    from jasper.platform.atomic_io import atomic_write_json, atomic_write_text  # lazy: test_ring_active_endpoint patches atomic_io
 
     # Single-flight (see SINGLE-FLIGHT above). Checked BEFORE the stage, so a
     # refused run does no work and touches nothing at all.

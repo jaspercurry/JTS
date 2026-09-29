@@ -15,7 +15,7 @@ from typing import Any, Mapping
 from jasper.active_speaker.crossover_v2.round_inputs import SetTakes
 from jasper.active_speaker.round_verdicts import common_measured_band, held_pairs, mark_takes, pair_spread
 from jasper.active_speaker.run_manifest import view_sets
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from jasper.active_speaker.repeat_floor import derive_repeat_floor, metric_summaries
 from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.cli._refusal import EXIT_UNREADABLE, stage

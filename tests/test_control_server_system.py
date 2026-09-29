@@ -29,8 +29,8 @@ import pytest
 
 from jasper.accessories import status as accessory_status
 from jasper.runtime.measurement_window import MEASUREMENT_FANIN_LABEL
-from jasper.service_units import JASPER_VOICE_SERVICE
-from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
+from jasper.platform.service_units import JASPER_VOICE_SERVICE
+from jasper.platform.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
@@ -274,7 +274,7 @@ def test_diagnostics_stale_cache_refresh_failure_is_visible(
 ):
     """A stale snapshot is still served, but a failed background refresh must
     become a table row so the dashboard does not silently show old evidence."""
-    from jasper.doctor_contract import REASON_REFRESH_FAILED
+    from jasper.platform.doctor_contract import REASON_REFRESH_FAILED
 
     diagnostics_snapshot(
         {
@@ -311,7 +311,7 @@ def test_diagnostics_stale_cache_refresh_failure_is_visible(
 def test_diagnostics_placeholder_when_snapshot_missing(
     server_with_coordinator, monkeypatch, diagnostics_snapshot,
 ):
-    from jasper.doctor_contract import REASON_SNAPSHOT_PENDING
+    from jasper.platform.doctor_contract import REASON_SNAPSHOT_PENDING
 
     _record_systemctl(monkeypatch)
 
@@ -330,7 +330,7 @@ def test_diagnostics_fail_row_when_refresh_start_fails(
 ):
     """A polkit denial / hard start failure should be visible in the
     diagnostics table without making the dashboard request itself a 502."""
-    from jasper.doctor_contract import REASON_SNAPSHOT_UNAVAILABLE
+    from jasper.platform.doctor_contract import REASON_SNAPSHOT_UNAVAILABLE
 
     class FailedProc:
         returncode = 1

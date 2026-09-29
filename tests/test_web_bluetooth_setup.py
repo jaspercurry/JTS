@@ -22,7 +22,7 @@ import pytest
 from dbus_next.errors import AuthError
 
 from jasper.audio_routes import source_intent
-from jasper.json_fields import sha256_text
+from jasper.platform.json_fields import sha256_text
 from jasper.local_sources import reconcile as source_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result

@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from jasper.env_file import parse_env_lines
+from jasper.platform.env_file import parse_env_lines
 
 logger = logging.getLogger("jasper.librespot_state")
 

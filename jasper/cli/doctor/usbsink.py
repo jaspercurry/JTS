@@ -44,7 +44,7 @@ from jasper.playback_state.music_sources import Source
 from jasper.audio_routes.output_hardware import current_usb_data_role
 from jasper.platform.status_socket import FANIN_STATUS_SOCKET
 from jasper.audio_routes.source_intent import source_intent_enabled
-from jasper.service_units import USBGADGET_SERVICE
+from jasper.platform.service_units import USBGADGET_SERVICE
 from jasper.device_probe.usbgadget import (
     DEFAULT_UDC_CLASS_DIR,
     GADGET_CONFIGFS_PATH,

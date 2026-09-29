@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.paths import resolve_state_path
+from jasper.platform.paths import resolve_state_path
 
 ENV_NAME = "JASPER_TEST_STATE_PATH_RESOLVER"
 DEFAULT = "/default/path"

@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ..config import Config
 from jasper.runtime.mic_capture import MicCapture

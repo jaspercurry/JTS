@@ -21,7 +21,7 @@ import pytest
 from jasper.cli import doctor
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor import memory as doctor_memory
-from jasper import memory_policy
+from jasper.platform import memory_policy
 
 from .doctor_test_support import _make_unit_states_fake
 

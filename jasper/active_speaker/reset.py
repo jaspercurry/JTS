@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .commission_ramp import ramp_state_path
 from .design_draft import _design_draft_path

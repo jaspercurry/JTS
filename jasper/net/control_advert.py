@@ -56,7 +56,7 @@ import logging
 from . import avahi_service
 from ..identity.reader import resolve_hostname
 from .avahi_service import RenderResult
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

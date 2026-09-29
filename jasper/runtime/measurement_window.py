@@ -28,7 +28,7 @@ from jasper.platform.control_client import AsyncControlClient
 from jasper.platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from jasper.platform.uds import daemon_command
 from jasper.platform.uds import mux_socket_command as _mux_socket_command
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.measurement_window")
 

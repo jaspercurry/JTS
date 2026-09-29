@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable, Sequence
 
-from jasper.biquad import (
+from jasper.platform.biquad import (
     GAINLESS_BIQUAD_TYPES,
     SHELF_BIQUAD_TYPES,
     SHELF_Q,
@@ -61,7 +61,7 @@ def emit_filter_spec(spec: FilterSpec) -> list[str]:
     shelf/gainless dispatch is the preference-EQ assembly's own concern.
 
     **Every shelf is spelled with CamillaDSP's ``q`` steepness, at the constant
-    :data:`~jasper.biquad.SHELF_Q`** — the same Butterworth Q
+    :data:`~jasper.platform.biquad.SHELF_Q`** — the same Butterworth Q
     every evaluator in this codebase draws a shelf at. This is the single
     choke point for that invariant: every shelf JTS emits (taste-EQ curve
     presets, Simple bands, Advanced bands, and the Layer-1a linearization

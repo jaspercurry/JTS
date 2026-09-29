@@ -25,7 +25,7 @@ from jasper.audio_measurement.household_mic import (
     household_mic_path,
     resolve_setup_calibration as resolve_household_setup_calibration,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture

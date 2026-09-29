@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 MIC_TOO_QUIET_BELOW_DBFS = -55.0
 MIC_USABLE_MIN_DBFS = -45.0

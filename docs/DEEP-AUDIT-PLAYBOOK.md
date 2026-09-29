@@ -176,7 +176,7 @@ Parallel specialist agents, each sweeping the whole tree on one axis:
 - **Resilience** — unbounded loops/buffers/subprocess/network; **silent restart
   loops**; wake-blocking failure paths with **no audible cue**; resources that
   can vanish and not self-recover.
-- **Observability** — stable `event=` logs (via `jasper.log_event`), useful
+- **Observability** — stable `event=` logs (via `jasper.platform.log_event`), useful
   warn levels, no journal spam, `/state`/doctor/dashboard coverage for new
   state.
 - **Performance** — import cost, polling cadence, buffer sizes, subprocess

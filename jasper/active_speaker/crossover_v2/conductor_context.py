@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, required_driver_roles
 from jasper.active_speaker.design_draft import declared_driver_spacing_m
@@ -31,7 +31,7 @@ from .refusal_copy import (
     driver_sensitivity_undeclared_message,
 )
 from jasper.audio_routes.output_topology import topology_is_subless_passive_mains
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.playback_route import resolve_active_playback_device

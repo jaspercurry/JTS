@@ -16,7 +16,7 @@ import textwrap
 import unittest
 
 from jasper.cli.doctor._cli import render
-from jasper.doctor_contract import CheckResult
+from jasper.platform.doctor_contract import CheckResult
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "scripts" / "deploy-to-pi.sh"

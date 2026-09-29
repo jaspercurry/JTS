@@ -37,15 +37,15 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Callable
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.runtime import flight_recorder
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 if TYPE_CHECKING:
     from jasper.audio_control.volume_state import VolumeState
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..env_load import bounded_env_int
+from jasper.platform.env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from jasper.playback_state.music_sources import Source
 from ..platform.control_client import CONTROL_PORT
@@ -70,7 +70,7 @@ from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
-from ..watchdog import Heartbeat
+from jasper.platform.watchdog import Heartbeat
 from .audio_incidents import IncidentStore
 from .ha_status_cache import HomeAssistantStatusCache
 from .handlers import (
@@ -693,7 +693,7 @@ class ControlHTTPServer(ThreadingHTTPServer):
     (~0.5 s cadence) **in the accept-loop thread itself**, so bumping the
     heartbeat here ties `WATCHDOG=1` to the loop actually spinning: if the
     accept loop wedges (blocked selector, interpreter deadlock), the bumps
-    stop, `jasper.watchdog.Heartbeat`'s progress sentinel goes stale, pats
+    stop, `jasper.platform.watchdog.Heartbeat`'s progress sentinel goes stale, pats
     stop, and systemd's `WatchdogSec=` revives us with a fresh process.
     Request handlers run on worker threads and intentionally don't gate the
     heartbeat — a slow probe must not look like a dead daemon.
@@ -976,7 +976,7 @@ def main(argv: list[str] | None = None) -> int:
     # out here; serve_forever()'s poll loop bumps the progress sentinel via
     # ControlHTTPServer.service_actions, so a wedged accept loop stops the
     # WATCHDOG=1 pats and systemd restarts us. No-ops outside systemd
-    # (NOTIFY_SOCKET unset). See jasper/watchdog.py.
+    # (NOTIFY_SOCKET unset). See jasper/platform/watchdog.py.
     heartbeat = Heartbeat()
     server.heartbeat = heartbeat
     heartbeat.start()

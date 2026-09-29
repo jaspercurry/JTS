@@ -11,8 +11,8 @@ import pytest
 from jasper.active_speaker import bundles
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action
-from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.json_fields import parse_utc_iso
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, take_artifact_name
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS

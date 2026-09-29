@@ -34,7 +34,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from jasper.env_load import ENV_FILES
+from jasper.platform.env_load import ENV_FILES
 
 from ._shell_corpus import shell_files
 
@@ -47,7 +47,7 @@ JASPER_ENV_ROOTS = ("/etc/jasper", "/var/lib/jasper")
 
 # Basenames catch the same files when the directory came from a variable this
 # file never assigns — `. "${ENV_DIR}/jasper.env"` inside deploy/lib/install/*,
-# which runs with install.sh's variables. jasper.env_load.ENV_FILES is the
+# which runs with install.sh's variables. jasper.platform.env_load.ENV_FILES is the
 # union of every unit's persistent EnvironmentFile=, so it tracks new wizard
 # files for free; the two added here are read by scripts and systemd
 # drop-ins rather than by a unit's EnvironmentFile=, so they are not in it.

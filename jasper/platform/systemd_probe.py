@@ -7,7 +7,7 @@
 The WRITE side — verbs, the polkit roster, transition timeouts — belongs to
 :mod:`jasper.control.restart_broker`; ``systemctl show`` records and single
 properties (``LoadState``, ``ActiveState``, ``ExecStart``, ...) belong to
-:mod:`jasper.service_units`. This module owns the ``is-active`` /
+:mod:`jasper.platform.service_units`. This module owns the ``is-active`` /
 ``is-enabled`` / ``is-failed`` reads: :func:`unit_state` for one unit,
 :func:`unit_states` for a batch, and :func:`async_unit_probe` on an event loop.
 Classifiers interpret the word systemd printed.

@@ -38,9 +38,9 @@ from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
     DTLN_ENABLED_ENV,
 )
-from jasper.env_load import parse_bool_value
-from jasper.json_fields import lenient_json_fingerprint
-from jasper.log_event import log_event
+from jasper.platform.env_load import parse_bool_value
+from jasper.platform.json_fields import lenient_json_fingerprint
+from jasper.platform.log_event import log_event
 from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CHIP_AEC_PRIMARY_LEG_ENV,

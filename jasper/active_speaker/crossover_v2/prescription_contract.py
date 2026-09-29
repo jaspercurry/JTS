@@ -36,9 +36,9 @@ from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.json_fields import as_mapping, finite_float
+from jasper.platform.json_fields import as_mapping, finite_float
 from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
-from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE
+from jasper.platform.speaker_layout import WAY_COUNT_BY_MAIN_MODE
 
 from . import alignment_prescription as alignment
 from . import bass_prescription

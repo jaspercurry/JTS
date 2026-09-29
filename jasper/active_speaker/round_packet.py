@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action

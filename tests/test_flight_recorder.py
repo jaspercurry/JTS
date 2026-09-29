@@ -19,7 +19,7 @@ import pytest
 from jasper.audio_control import debug_mode
 from jasper.runtime import flight_recorder as fr
 from jasper.runtime.conversation_history import ConversationStore
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 
 def _rec(level, msg, name="jasper.test"):

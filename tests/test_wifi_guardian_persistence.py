@@ -226,7 +226,7 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
     write_stash raises so the wizard's hook can log a warning AND
     surface the drift via doctor. The actual swallow happens one layer
     up — see `_stash_after_saved` in wifi_setup."""
-    import jasper.atomic_io as atomic_io_mod
+    import jasper.platform.atomic_io as atomic_io_mod
 
     def boom(*args, **kwargs):
         raise OSError("simulated permission denied")
@@ -238,7 +238,7 @@ def test_write_failure_is_raised_for_callers_to_handle(tmp_path, monkeypatch):
 
 def test_fsync_failure_does_not_block_write(tmp_path, monkeypatch, caplog):
     """A parent-dir fsync failure logs a WARNING and the write succeeds."""
-    import jasper.atomic_io as atomic_io_mod
+    import jasper.platform.atomic_io as atomic_io_mod
 
     seen_paths = []
 

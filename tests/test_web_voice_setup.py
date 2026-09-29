@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 
 import pytest
 
-from jasper import atomic_io, env_file
+from jasper.platform import atomic_io, env_file
 from jasper.voice.catalog import PROVIDERS
 from jasper.web import chrome, voice_setup
 

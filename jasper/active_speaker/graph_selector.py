@@ -14,10 +14,10 @@ from typing import Any
 
 import yaml
 
-from jasper import paths
-from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import issue as _issue
-from jasper.log_event import log_event
+from jasper.platform import paths
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.json_fields import issue as _issue
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.audio_routes.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 

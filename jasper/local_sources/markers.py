@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source
 from ..multiroom.config import load_config
 from ..multiroom.effective_role import (

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .secret_redaction import redact_secrets
+from jasper.platform.secret_redaction import redact_secrets
 
 CHECK_STATUSES = frozenset({"ok", "warn", "fail", "skipped"})
 

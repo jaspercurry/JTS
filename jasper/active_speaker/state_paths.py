@@ -5,7 +5,7 @@
 """Default on-disk locations of the active-speaker state files and the
 baseline CamillaDSP config.
 
-A leaf: the stdlib, :mod:`jasper.paths` and :mod:`jasper.json_fields` only,
+A leaf: the stdlib, :mod:`jasper.platform.paths` and :mod:`jasper.platform.json_fields` only,
 and it must stay that way. Its point is that a caller wanting one path — the
 boot classifier, a CLI, a doctor check — resolves it without importing the
 module that reads and writes the file.
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.json_fields import sha256_text
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
+from jasper.platform.json_fields import sha256_text
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
 BASELINE_PROFILE_STATE_ENV = "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"
 DEFAULT_BASELINE_PROFILE_STATE_PATH = Path(

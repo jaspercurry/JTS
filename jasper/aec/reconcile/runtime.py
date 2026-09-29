@@ -18,22 +18,22 @@ from jasper.aec.bridge_config import OUTPUTD_REF_UDP_PORT
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.aec.reconcile.observe import card_id, observe
 from jasper.service_state.aec_ready import aec_bridge_ready_marker_path
-from jasper.atomic_io import atomic_write_json, locked_upsert_env_file
+from jasper.platform.atomic_io import atomic_write_json, locked_upsert_env_file
 from jasper.runtime_config.audio_profile_state import (
     WAKE_LEG_DEFAULTS, infer_audio_input_profile, intent_from_env,
     normalize_aec_mode, normalize_audio_input_profile,
     resolve_profile_wake_legs,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
-from jasper.env_file import parse_env_mapping, quote_env_value, read_env_file, read_env_file_text
-from jasper.env_load import (
+from jasper.platform.env_file import parse_env_mapping, quote_env_value, read_env_file, read_env_file_text
+from jasper.platform.env_load import (
     parse_bool_value,
     DEFAULT_AEC_MODE_PATH,
     VOICE_GROUPING_ENV_FILE,
     VOICE_PROVIDER_ENV_PATH,
 )
 from jasper.mics import xvf3800
-from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
+from jasper.platform.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.voice.input_presence import voice_input_absent_marker_path
 from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 from jasper.voice.catalog import PROVIDER_IDS_MANIFEST_FILE

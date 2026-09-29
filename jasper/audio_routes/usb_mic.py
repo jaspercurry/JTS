@@ -19,19 +19,19 @@ import struct
 import time
 from typing import Any, Callable, Mapping
 
-from jasper.atomic_io import (
+from jasper.platform.atomic_io import (
     locked_update_env_file,
     read_json_mapping,
     read_regular_bytes_nofollow,
 )
-from jasper.json_fields import as_float, as_mapping as _mapping
-from jasper.env_file import read_value
-from jasper.env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
+from jasper.platform.json_fields import as_float, as_mapping as _mapping
+from jasper.platform.env_file import read_value
+from jasper.platform.env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
 from jasper.playback_state.music_sources import Source
 from jasper.identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from jasper.audio_routes.source_intent import source_intent_enabled
-from jasper.service_units import USBGADGET_SERVICE
-from jasper.systemd_probe import unit_active
+from jasper.platform.service_units import USBGADGET_SERVICE
+from jasper.platform.systemd_probe import unit_active
 from jasper.device_probe.usbgadget import GADGET_CONFIGFS_PATH
 
 INTENT_ENV_OWNER = "JTS /aec USB mic control"

@@ -28,8 +28,8 @@ from typing import Any, Iterable, Iterator, Mapping
 
 import numpy as np
 
-from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import finite_float, sha256_text
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.json_fields import finite_float, sha256_text
 
 # The model registry -- SUPPORTED_MODELS, DEFAULT_SIGN_CONVENTION,
 # measurement_mic_usb_ids, mic_tier_for_model -- lives in the numpy-free leaf
@@ -43,7 +43,7 @@ from jasper.audio_measurement.mic_identity import (
     measurement_mic_usb_ids as measurement_mic_usb_ids,
     mic_tier_for_model as mic_tier_for_model,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

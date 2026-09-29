@@ -37,7 +37,7 @@ import numpy as np
 # rather than restated, so a door's ceiling and the arithmetic it protects
 # cannot drift apart.
 from jasper.active_speaker.branch_chain import chain_response
-from jasper.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
+from jasper.platform.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 
 from .blend_correction import (
     BLEND_FILTER_Q,
@@ -119,7 +119,7 @@ def max_q_for_gain(gain_db: float) -> float:
 
     A boost gets :data:`PRESCRIPTION_MAX_BOOST_Q`, a POLICY ceiling; everything
     else — ``0.0`` included — gets
-    :data:`~jasper.biquad.EVALUABLE_Q_MAX`, an INSTRUMENT-fidelity one
+    :data:`~jasper.platform.biquad.EVALUABLE_Q_MAX`, an INSTRUMENT-fidelity one
     (past it the f64 biquad cascade stops evaluating the filter asked for:
     measured +6.99 dB realized from a requested Q 8e14 on an admitted -3.0 dB
     cut). Same predicate :func:`_check_bounds` derives

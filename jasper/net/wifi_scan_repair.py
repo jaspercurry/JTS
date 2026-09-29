@@ -30,10 +30,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text, read_json_mapping
-from jasper.json_fields import as_float
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
+from jasper.platform.atomic_io import atomic_write_text, read_json_mapping
+from jasper.platform.json_fields import as_float
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

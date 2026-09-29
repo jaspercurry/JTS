@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from ..active_speaker.crossover_v2.refusal_copy import ARM_STOP_REASONS, CrossoverV2Refused, REASON_USER_STOPPED
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..platform.systemd import no_hold
 
 from . import correction_capture, correction_runtime

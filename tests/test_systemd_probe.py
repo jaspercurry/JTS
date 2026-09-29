@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jasper import systemd_probe
+from jasper.platform import systemd_probe
 from tests._async_wait import wait_signalled
 
 

@@ -45,7 +45,7 @@ _load_fanin_coupling_pass_bound() {
     FANIN_COUPLING_PASS_BOUND_SEC="$(
         cd "${REPO_DIR}" &&
         PYTHONPATH="${REPO_DIR}" "${JASPER_SYSTEM_PYTHON:-python3}" - <<'PYTHON'
-from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
+from jasper.platform.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 print(f'{unit_action_timeout_sec(USB_COUPLING_UNIT, "start"):g}')
 PYTHON
     )" || {
@@ -1227,7 +1227,7 @@ reapply_source_intent() {
         /opt/jasper/.venv/bin/python - "${STATE_DIR}/source_intent.env" <<'PY'
 import sys
 
-from jasper.atomic_io import locked_transform_env_file
+from jasper.platform.atomic_io import locked_transform_env_file
 
 path = sys.argv[1]
 legacy_key = "JASPER_SOURCE_INTENT_BLUETOOTH"

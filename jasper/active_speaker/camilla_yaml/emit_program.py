@@ -19,7 +19,7 @@ from jasper.dsp_control.camilla_config_contract import (
 )
 from jasper.audio_routes.camilla_emit import emit_devices_block
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ..camilla_names import output_commission_mute_name, program_protection_name
 from ..graph_safety import TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ

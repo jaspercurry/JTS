@@ -35,10 +35,10 @@ import time
 from collections.abc import Callable
 from typing import Optional
 
-from .log_event import log_event
-from .platform.systemd import notify_ready, notify_stopping, notify_watchdog
+from jasper.platform.log_event import log_event
+from jasper.platform.systemd import notify_ready, notify_stopping, notify_watchdog
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.watchdog")
 
 
 class Heartbeat:

@@ -16,7 +16,7 @@ from collections import Counter
 from contextlib import closing
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

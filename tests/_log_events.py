@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read `jasper.log_event` lines back as the fields a journal consumer parses.
+"""Read `jasper.platform.log_event` lines back as the fields a journal consumer parses.
 
 `caplog.text` is the wrong surface for an event pin. `render_logfmt` quotes any
 value holding a space (`reason=`, `detail=`, `action=`), so a whitespace split
 truncates it; and a substring over the concatenated text is satisfied by fields
 spread across several records, which is not the one-record property such a pin
 is written to hold. This parser honours the quoting and the escapes
-`jasper.log_event` emits, and `event_fields` folds "exactly one record carries
+`jasper.platform.log_event` emits, and `event_fields` folds "exactly one record carries
 this event" into every call site.
 """
 from __future__ import annotations

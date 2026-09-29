@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from jasper import service_units
+from jasper.platform import service_units
 from jasper.cli import system_soak
 
 

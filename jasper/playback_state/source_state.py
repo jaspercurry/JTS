@@ -24,13 +24,13 @@ from typing import Any
 
 from jasper.playback_state import librespot_state
 from jasper.bluetooth.avrcp import a2dp_sink_playing
-from jasper.busctl import name_is_absent, run_busctl
+from jasper.platform.busctl import name_is_absent, run_busctl
 from jasper.fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
     read_fanin_status,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 logger = logging.getLogger("jasper.source_state")
 

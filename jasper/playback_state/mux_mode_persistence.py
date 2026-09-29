@@ -16,7 +16,7 @@ What's persisted: the mode (auto vs manual) and, when manual, the
 selected source label (`Source.value`, e.g. "airplay"). Auto mode
 persists as `{"mode": "auto"}` with no source.
 
-File format (JSON, atomic tmp+rename via jasper.atomic_io):
+File format (JSON, atomic tmp+rename via jasper.platform.atomic_io):
 
     {"mode": "manual", "selected_source": "airplay"}
     {"mode": "auto"}
@@ -33,7 +33,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.playback_state.music_sources import MUSIC_SOURCES, Source
 
 logger = logging.getLogger("jasper.mux_mode_persistence")

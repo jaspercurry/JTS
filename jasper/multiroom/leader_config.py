@@ -46,8 +46,8 @@ from jasper.dsp_control.camilla_config_contract import (
     devices_playback_is_pipe,
     read_camilla_devices_config,
 )
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR
-from ..log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR
+from jasper.platform.log_event import log_event
 from .config import GroupingConfig
 from .member_config import member_camilla_kwargs
 from .role_stash import RoleStash

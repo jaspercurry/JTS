@@ -16,7 +16,7 @@ from jasper.dsp_control.camilla_config_contract import (
     parse_camilla_devices_config,
     resolve_enable_rate_adjust,
 )
-from jasper.biquad import PeqFilter, total_positive_boost_db
+from jasper.platform.biquad import PeqFilter, total_positive_boost_db
 from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.dsp_control.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,

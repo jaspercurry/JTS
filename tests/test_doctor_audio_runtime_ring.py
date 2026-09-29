@@ -95,8 +95,8 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     absent = tmp_path / "crossover-statefile.yml"
 
     evidence.seed("camilla_config", (str(statefile), str(config)))
-    monkeypatch.setattr("jasper.paths.DEFAULT_CAMILLA_STATEFILE", statefile)
-    monkeypatch.setattr("jasper.paths.DEFAULT_CAMILLA2_STATEFILE", absent)
+    monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA_STATEFILE", statefile)
+    monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA2_STATEFILE", absent)
     # The bridge has to be STATED to make the graph above a split: an absent
     # key is the ring, and the ring agrees with the ring graph. The STATUS
     # payload is the daemon that came up on THIS env — the retired source and
@@ -106,7 +106,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.platform.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     _point_entry_lock_at(monkeypatch, tmp_path)
     _seed_units()
@@ -402,7 +402,7 @@ def _stage_ring_geometry(
     # `env_load.FANIN_ENV_PATH`; `ring_readiness.FANIN_ENV_PATH` still needs
     # patching too since `resolve_effective_fanin_ring_slots` reports it as
     # the resolution's `source` label.
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.platform.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr(
         "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
     )
@@ -1407,7 +1407,7 @@ def _arrange(
     # the module constant is what the ring-path derivation still reads.
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.platform.env_load.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     # The SECOND env layer, exactly where a bonded member's marker really lives
     # — never in the first file. Writing it here is what proves the doctor reads
@@ -1418,7 +1418,7 @@ def _arrange(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+        "jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
     _point_entry_lock_at(monkeypatch, tmp_path)
     primary = _write_pair(tmp_path, "primary", playback_device)
@@ -1430,7 +1430,7 @@ def _arrange(
         )
     crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
     evidence.seed("camilla_config", (str(primary), None))
-    monkeypatch.setattr("jasper.paths.DEFAULT_CAMILLA2_STATEFILE", crossover)
+    monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA2_STATEFILE", crossover)
 
 
 @pytest.mark.parametrize(

@@ -35,7 +35,7 @@ from jasper.aec import bridge_engines, bridge_telemetry
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
-from jasper.env_load import parse_bool_value, parse_env_file
+from jasper.platform.env_load import parse_bool_value, parse_env_file
 from jasper.audio_control.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
@@ -500,7 +500,7 @@ def test_jasper_env_values_are_data_never_shell(tmp_path: Path) -> None:
     assert not marker.exists()
     # `current_mic` is the one field this test deliberately gives an embedded
     # space, to pin that the value reaches its use whole (see docstring) —
-    # this shell script never logfmt-quotes it the way jasper.log_event does,
+    # this shell script never logfmt-quotes it the way jasper.platform.log_event does,
     # so stderr_events' tokenizer would itself split on that space and
     # truncate the value it exists to check. Anchor on the next field
     # instead, same idiom as the `candidates=(.*?) legs=` pin below.
@@ -704,7 +704,7 @@ def test_voice_input_absent_marker_mark_carries_the_reason(tmp_path: Path) -> No
     ] == [MIC_ABSENT_NO_LOCAL_OR_ACCESSORY]
     # `detail=` is operator prose with embedded spaces and always the last
     # field on its line; this shell script never logfmt-quotes it, so
-    # stderr_events' tokenizer (built for jasper.log_event's quoted output)
+    # stderr_events' tokenizer (built for jasper.platform.log_event's quoted output)
     # would truncate it at the first space. Match to end of line instead.
     [detail] = re.findall(
         r"^.*event=aec_reconcile\.voice_input_absent.*\bdetail=(.*)$",
@@ -1227,7 +1227,7 @@ def test_mixer_repair_failure_is_one_event_per_invocation(
     # `control=` can be an ALSA mixer name with embedded spaces (e.g.
     # "Headset Capture Switch") and is always the last field on its line;
     # this shell script never logfmt-quotes it, so stderr_events' tokenizer
-    # (built for jasper.log_event's quoted output) would truncate it at the
+    # (built for jasper.platform.log_event's quoted output) would truncate it at the
     # first space. Match to end of line instead.
     assert (
         re.findall(

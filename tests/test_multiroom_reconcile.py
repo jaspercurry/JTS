@@ -45,8 +45,8 @@ from tests.multiroom_reconcile_fixtures import (
     _patch_main_io,
 )
 
-from jasper import systemd_probe
-from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
+from jasper.platform import systemd_probe
+from jasper.platform.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
 from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import grouping_env as grouping_env_mod
@@ -666,7 +666,7 @@ def test_write_args_file_is_fail_soft(monkeypatch):
     def _boom(*a, **k):
         raise OSError("disk full")
 
-    # The atomic tempfile+rename mechanics now live in jasper.atomic_io;
+    # The atomic tempfile+rename mechanics now live in jasper.platform.atomic_io;
     # inject the failure there (makedirs is the first I/O it does).
     monkeypatch.setattr(reconcile_mod.atomic_io.os, "makedirs", _boom)
     # Must not raise; must report failure.
@@ -681,7 +681,7 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
     def _boom(*a, **k):
         raise OSError("rename failed")
 
-    # The rename now happens inside jasper.atomic_io; boom it there.
+    # The rename now happens inside jasper.platform.atomic_io; boom it there.
     monkeypatch.setattr(reconcile_mod.atomic_io.os, "replace", _boom)
     assert (
         _write_args_file({SERVER_KEY: "x", CLIENT_KEY: "y"}, path=str(target)) is False
@@ -2651,7 +2651,7 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
     """`_systemctl_unit_state` is a thin wrapper: the spawn + classification
-    it delegates to is jasper.systemd_probe.unit_query (shared with
+    it delegates to is jasper.platform.systemd_probe.unit_query (shared with
     jasper.audio_routes.source_intent's `_query_unit_state`)."""
     import subprocess as sp
 
@@ -3045,10 +3045,10 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
     outputd.write_text(outputd_env, encoding="utf-8")
     grouping = tmp_path / "grouping-outputd.env"
     grouping.write_text("", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(base))
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd))
+    monkeypatch.setattr("jasper.platform.env_load.BASE_ENV_PATH", str(base))
+    monkeypatch.setattr("jasper.platform.env_load.OUTPUTD_ENV_PATH", str(outputd))
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
+        "jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )
 
     period = reconcile_mod.box_outputd_period_frames()
@@ -3077,7 +3077,7 @@ def test_the_merged_env_outputd_starts_with_never_pairs_marker_and_bridge(
     must leave it alone: without the marker outputd reads the same key with
     `env_str`, whose blank it parks on.
     """
-    from jasper.env_load import outputd_reconciled_env
+    from jasper.platform.env_load import outputd_reconciled_env
     from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 
     outputd_env = tmp_path / "outputd.env"
@@ -3095,7 +3095,7 @@ def test_the_merged_env_outputd_starts_with_never_pairs_marker_and_bridge(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
+        "jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env)
     )
 
     merged = outputd_reconciled_env(str(outputd_env))

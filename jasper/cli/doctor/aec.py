@@ -39,14 +39,14 @@ from ...chip_aec.policy import (
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
-from ...env_load import (
+from jasper.platform.env_load import (
     env_file_path,
     parse_bool_value,
     parse_env_file as _shared_parse_env_file,
     DEFAULT_AEC_MODE_PATH,
 )
-from ...json_fields import finite_float, sha256_file
-from ...service_units import AEC_BRIDGE_SERVICE
+from jasper.platform.json_fields import finite_float, sha256_file
+from jasper.platform.service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV, OUTPUTD_REF_UDP_PORT,

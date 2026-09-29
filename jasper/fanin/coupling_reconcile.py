@@ -40,10 +40,10 @@ from pathlib import Path
 from typing import IO
 
 from jasper.control import camilla_topology_gate_state, restart_broker
-from jasper.atomic_io import flock_held
+from jasper.platform.atomic_io import flock_held
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.runtime.output_topology_runtime import GROUPING_RECONCILE_UNIT
-from jasper.env_file import env_value, read_value
+from jasper.platform.env_file import env_value, read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
 from jasper.dsp_control.fanin_coupling import (
@@ -57,10 +57,10 @@ from jasper.dsp_control.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     resolve_outputd_ring_path,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
 # spine below starts it before restarting outputd — see :func:`_converge_ring`.
-from jasper import (
+from jasper.platform import (
     env_load, )
 from jasper.dsp_control import (
     fanin_coupling, )
@@ -68,17 +68,17 @@ from jasper.audio_control import (
     ring_assets, )
 from jasper.dsp_control import (
     ring_conf, )
-from jasper import (
+from jasper.platform import (
     service_units, source_intent_units,
 )
 
-from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+from jasper.platform.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import (
     read_snapshot,
     ring_endpoint_anchor_converged,
 )
-from jasper.logging_setup import configure_logging
-from jasper.service_units import (
+from jasper.platform.logging_setup import configure_logging
+from jasper.platform.service_units import (
     AUDIO_HARDWARE_RECONCILE_UNIT,
     CAMILLA_SERVICE,
     FANIN_SERVICE,
@@ -181,7 +181,7 @@ def _camilla_up_or_gate_refusal() -> tuple[bool, str]:
 
     Unknown is not failure: no systemctl answer, or a manager that does not know
     this unit at all, leaves the ok verdict alone — the same fail-soft rule
-    :func:`jasper.service_units.read_unit_states` sets.
+    :func:`jasper.platform.service_units.read_unit_states` sets.
     """
     records = service_units.read_unit_states((CAMILLA_UNIT,))
     record = records.get(CAMILLA_UNIT) if records else None

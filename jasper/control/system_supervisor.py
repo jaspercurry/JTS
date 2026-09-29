@@ -76,11 +76,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
-from ..atomic_io import atomic_write_text, read_json_mapping
+from jasper.platform.atomic_io import atomic_write_text, read_json_mapping
 from ..platform.control_client import CONTROL_PORT
-from ..systemd_probe import async_unit_probe
+from jasper.platform.systemd_probe import async_unit_probe
 from . import restart_broker
 from .supervisor_runtime import (
     resolve_env_mode,
@@ -546,7 +546,7 @@ def _read_reboot_state(path: Path) -> float | None:
 def _write_reboot_state(path: Path, last_reboot_at: float) -> None:
     """Atomically persist the wall-clock last-reboot time.
 
-    Uses the canonical `jasper.atomic_io.atomic_write_text` (tempfile in
+    Uses the canonical `jasper.platform.atomic_io.atomic_write_text` (tempfile in
     the same directory + os.replace, mode applied before the rename) so
     a power-yank mid-write can never publish a torn file. A write
     failure is logged and swallowed — losing the persisted timestamp

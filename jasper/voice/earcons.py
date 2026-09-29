@@ -47,7 +47,7 @@ from jasper.runtime_config.assistant_loudness import (
     AssistantLoudnessProfile,
     measure_pcm_24k_mono,
 )
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.voice_daemon")
 

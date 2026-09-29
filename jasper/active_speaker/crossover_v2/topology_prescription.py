@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..profile import SUPPORTED_LR_ORDERS

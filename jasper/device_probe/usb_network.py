@@ -77,7 +77,7 @@ class IPv4Observation:
 def _write_boot_text(path: str | os.PathLike[str], text: str, mode: int) -> None:
     """Publish boot-critical state through JTS's canonical durable writer."""
 
-    from jasper.atomic_io import atomic_write_text  # lazy: the laptop runs `python3 jasper/device_probe/usb_network.py advisory-cidrs` by file path (tests/test_lib_usb_gadget_advisory.py)
+    from jasper.platform.atomic_io import atomic_write_text  # lazy: the laptop runs `python3 jasper/device_probe/usb_network.py advisory-cidrs` by file path (tests/test_lib_usb_gadget_advisory.py)
 
     atomic_write_text(path, text, mode=mode, durable=True)
 
@@ -93,7 +93,7 @@ def owner_lock(
     Root-only state, so the lock keeps 0600 and root's own group.
     """
 
-    from jasper.atomic_io import advisory_file_lock  # lazy: the laptop runs `python3 jasper/device_probe/usb_network.py advisory-cidrs` by file path (tests/test_lib_usb_gadget_advisory.py)
+    from jasper.platform.atomic_io import advisory_file_lock  # lazy: the laptop runs `python3 jasper/device_probe/usb_network.py advisory-cidrs` by file path (tests/test_lib_usb_gadget_advisory.py)
 
     with ExitStack() as stack:
         try:

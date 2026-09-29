@@ -89,9 +89,9 @@ import threading
 from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 from typing import Any
 
-from jasper import source_intent_units
-from jasper.log_event import log_event
-from jasper.service_units import (
+from jasper.platform import source_intent_units
+from jasper.platform.log_event import log_event
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     AEC_RECONCILE_SERVICE,
     AUDIO_HARDWARE_RECONCILE_UNIT,
@@ -103,7 +103,7 @@ from jasper.service_units import (
     SHAIRPORT_SYNC_SERVICE,
     USBGADGET_SERVICE,
 )
-from jasper.source_intent_units import (
+from jasper.platform.source_intent_units import (
     RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT,
     RECONCILE_BROKER_TIMEOUT_SECONDS as _SOURCE_INTENT_EXEC_TIMEOUT_CEILING_SEC,
     USB_COUPLING_UNIT,
@@ -256,7 +256,7 @@ _DEFAULT_EXEC_TIMEOUT_SEC = 30.0
 # shape is a blocking start of exactly the source-intent coordinator: its
 # finite systemd bound covers all four sources, bounded owner barriers,
 # failed-unit resets, and fail-closed cleanup, and this root boundary must
-# never truncate it. See jasper.source_intent_units.RECONCILE_BROKER_TIMEOUT_SECONDS
+# never truncate it. See jasper.platform.source_intent_units.RECONCILE_BROKER_TIMEOUT_SECONDS
 # (imported above); tests/test_source_intent_systemd.py fails if this ceiling
 # drops below the coordinator's broker bound, which is the direction that
 # truncates a pass.

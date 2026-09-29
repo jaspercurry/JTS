@@ -20,10 +20,10 @@ from typing import Any
 
 import numpy as np
 
-from jasper.atomic_io import atomic_write_bytes
+from jasper.platform.atomic_io import atomic_write_bytes
 from jasper.audio_measurement.bundles import record_artifact
 from jasper.audio_measurement.recorded_impulse import RecordedImpulse
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 from ..bundles import BUNDLE_FILE_MODE
 

@@ -14,8 +14,8 @@ from dataclasses import dataclass
 import json
 from typing import TYPE_CHECKING, Any
 
-from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import utc_now_iso
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.json_fields import utc_now_iso
 
 # httpx is imported lazily inside the fetch helpers — this module is
 # imported at the top of the /voice wizard (for its cache readers),

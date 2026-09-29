@@ -30,7 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import Iterable
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..net.mdns import instance_label
 from .speaker_name import normalize_name
 

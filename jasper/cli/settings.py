@@ -17,8 +17,8 @@ import os
 from typing import Any, Callable
 
 from jasper.service_state import wake_models
-from jasper.env_load import env_file_path, merged_env_files
-from jasper.logging_setup import configure_logging
+from jasper.platform.env_load import env_file_path, merged_env_files
+from jasper.platform.logging_setup import configure_logging
 from jasper.audio_resources.model_downloads import active_wake_model
 from jasper.voice import model_discovery
 from jasper.voice.catalog import PROVIDERS, VALID_PROVIDER_IDS, default_voice_id

@@ -8,10 +8,10 @@ import math
 from typing import Any, Mapping, Sequence
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
+from jasper.platform.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
 from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec
-from jasper.speaker_layout import SUB_CROSSOVER_ORDER
+from jasper.platform.speaker_layout import SUB_CROSSOVER_ORDER
 
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,

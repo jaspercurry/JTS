@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..transit.base import TransitError
 from . import tool
 

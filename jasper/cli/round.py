@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import is_loopback_name
-from jasper.json_fields import age_seconds, parse_utc_iso
+from jasper.platform.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
@@ -30,7 +30,7 @@ from jasper.active_speaker.wizard_client import (
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
-from jasper.logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,

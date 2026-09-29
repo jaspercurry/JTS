@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.runtime.google_routes import GoogleRoutesClient
@@ -86,7 +86,7 @@ from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.service_state.volume_persistence import VolumePersistence
 from jasper.service_state.wake import WakeWordDetector
 from jasper.service_state.wake_events import WakeEventStore
-from ..watchdog import Heartbeat
+from jasper.platform.watchdog import Heartbeat
 from jasper.service_state.weather import WeatherClient
 from ..voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
@@ -98,7 +98,7 @@ from ._tasks import cancel_tracked_tasks, track_task
 from .content_activity import ContentActivityTracker
 from .push_to_talk import ManualMicRuntime
 from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -1171,7 +1171,7 @@ async def run() -> None:
 
         # Tier 1 of the resilience ladder: bumped on every mic frame inside
         # WakeLoop.run, paired with `Type=notify` + `WatchdogSec=30s` in
-        # jasper-voice.service. See jasper/watchdog.py.
+        # jasper-voice.service. See jasper/platform/watchdog.py.
         heartbeat = Heartbeat(stale_threshold_sec=HEARTBEAT_STALE_THRESHOLD_SEC, interval_sec=10.0)
         heartbeat.start()
         _release(stack, "heartbeat", heartbeat.stop)

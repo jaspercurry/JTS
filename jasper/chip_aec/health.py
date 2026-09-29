@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from jasper.shell_env import render_shell_assignments as _render_shell_assignments
+from jasper.platform.shell_env import render_shell_assignments as _render_shell_assignments
 
 # The identity fields that name THIS physical box rather than its hardware
 # class.  K is a property of the class, so a box whose only divergence is here

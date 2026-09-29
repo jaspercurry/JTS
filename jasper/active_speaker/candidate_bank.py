@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from jasper.active_speaker import state_paths
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

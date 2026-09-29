@@ -811,7 +811,7 @@ def test_resident_daemon_import_leaves_oneshot_subsystems_out(
     modules instead. ``setup_status`` answers a streambox or passive box from
     the topology alone, so the baseline/design candidate stack stays behind
     its active-speaker branch. jasper-voice loads no ``jasper.active_speaker``
-    module: its fader primitives live in ``jasper.volume_latch``. ``scipy`` is the same
+    module: its fader primitives live in ``jasper.platform.volume_latch``. ``scipy`` is the same
     bargain at a much larger price (``jasper.playback_state.dsp_numpy`` owns that figure):
     the AEC bridge's steady-state resampling and high-pass are
     ``jasper.playback_state.dsp_numpy``. ``sounddevice`` leaves the bridge's import graph for

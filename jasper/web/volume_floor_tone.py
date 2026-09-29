@@ -29,8 +29,8 @@ from jasper.audio_measurement.correction_lane import (
     popen_correction_play,
 )
 from jasper.dsp_control.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
-from jasper.log_event import log_event
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.settings import SoundSettings, load_sound_settings
 from jasper.audio_control.volume_carrier import write_main_mute
 from jasper.audio_routes.volume_curve import percent_to_db

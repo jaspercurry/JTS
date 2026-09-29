@@ -25,7 +25,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from jasper.runtime import flight_recorder
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from . import tool
 
 if TYPE_CHECKING:

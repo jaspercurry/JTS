@@ -86,10 +86,10 @@ from typing import Any
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
 from jasper.runtime.audio_input_view import profile_choice_specs, valid_profile_ids
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.service_state import wake_models
-from ..env_file import read_env_file
-from ..env_load import BASE_ENV_PATH, WAKE_MODEL_ENV_PATH
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import BASE_ENV_PATH, WAKE_MODEL_ENV_PATH
 from ._common import (
     pair_banner_html,
     DEFAULT_CONTROL_BASE,

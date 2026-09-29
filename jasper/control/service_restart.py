@@ -8,7 +8,7 @@ import logging
 from enum import Enum
 
 from jasper.local_sources.markers import local_sources_allowed
-from jasper.service_units import JASPER_VOICE_SERVICE
+from jasper.platform.service_units import JASPER_VOICE_SERVICE
 from jasper.voice.provider_state import read_active_provider
 from .restart_broker import manage_units
 

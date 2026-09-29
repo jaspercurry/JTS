@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_header
+from jasper.platform import ring_header
 from jasper.cli.doctor import grouping as doctor_grouping
 from jasper.cli.doctor.grouping import _GROUPING_PCM_PROBE
 from jasper.multiroom import config as grouping_config, grouping_ring
 from jasper.multiroom.grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 from jasper.multiroom.state import read_grouping_state
-from jasper.ring_header import RING_FLOW_PRIMING, RING_FLOW_READER_STALLED
+from jasper.platform.ring_header import RING_FLOW_PRIMING, RING_FLOW_READER_STALLED
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"

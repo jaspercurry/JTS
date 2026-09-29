@@ -20,9 +20,9 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_QUEUELIMIT,
     DEFAULT_TARGET_LEVEL,
 )
-from jasper.env_load import bounded_env_int
+from jasper.platform.env_load import bounded_env_int
 from jasper.dsp_control.fanin_coupling import RING_CAMILLA_GEOMETRY, RING_PCM_DEVICES
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.camilla_latency")
 

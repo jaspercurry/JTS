@@ -24,7 +24,7 @@ from dbus_next.aio import MessageBus  # type: ignore
 from dbus_next.errors import DBusError  # type: ignore
 from dbus_next.service import ServiceInterface, method  # type: ignore
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .models import BluetoothDevice
 

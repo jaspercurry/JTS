@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jasper.atomic_io import atomic_write_json, read_json_mapping
+from jasper.platform.atomic_io import atomic_write_json, read_json_mapping
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -33,11 +33,11 @@ from jasper.audio_hardware.usb_port_role import (
     UsbPortRoleState,
     resolve_system_usb_port_role,
 )
-from jasper.json_fields import (
+from jasper.platform.json_fields import (
     issue as _issue,
     utc_now_iso,
 )
-from jasper.paths import (
+from jasper.platform.paths import (
     OUTPUT_HARDWARE_STATE_PATH as DEFAULT_STATE_PATH,
     resolve_state_path,
 )

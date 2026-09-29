@@ -137,7 +137,7 @@ SystemCallFilter=@system-service
 # lands group-writable (0660), not 0644. Mirrors jasper-voice/-mux/-control.
 UMask=0007
 
-# OOM wizard tier — see jasper/_oom_adj.py
+# OOM wizard tier — see jasper/platform/_oom_adj.py
 OOMScoreAdjust=200
 
 # Hardening — this process needs to read /etc/jasper/jasper.env,

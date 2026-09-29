@@ -12,7 +12,7 @@ import pytest
 
 
 import jasper.control.airplay_health as airplay_health
-from jasper import service_units
+from jasper.platform import service_units
 from jasper.control._health_fields import as_int
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,

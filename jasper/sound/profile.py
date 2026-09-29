@@ -28,9 +28,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_json
-from jasper.biquad import GAINLESS_BIQUAD_TYPES, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_db, freq_trig
-from jasper.json_fields import CodedFieldError
+from jasper.platform.atomic_io import CONFIG_FILE_MODE, atomic_write_json
+from jasper.platform.biquad import GAINLESS_BIQUAD_TYPES, SHELF_BIQUAD_TYPES, FilterSpec, filter_response_db, freq_trig
+from jasper.platform.json_fields import CodedFieldError
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class SimpleEq:
 class SimpleBand:
     """Fixed slot for one Simple-mode band. Only gain is user-editable;
     frequency, filter type, and Q are fixed per slot. Shelf slots carry no
-    ``q``: every shelf is drawn and emitted at :data:`jasper.biquad.SHELF_Q`."""
+    ``q``: every shelf is drawn and emitted at :data:`jasper.platform.biquad.SHELF_Q`."""
 
     key: str
     field: str
@@ -832,7 +832,7 @@ def response_preview(
 ) -> list[dict[str, float]]:
     """Summed magnitude response (dB) for UI preview and headroom.
 
-    Real RBJ biquad magnitude from :mod:`jasper.biquad`, so it matches
+    Real RBJ biquad magnitude from :mod:`jasper.platform.biquad`, so it matches
     CamillaDSP's actual output. Cascading is exact in dB, so per-band results
     sum.
     """

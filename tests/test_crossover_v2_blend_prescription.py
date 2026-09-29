@@ -60,7 +60,7 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     read_prescription_bytes,
 )
 from jasper.active_speaker.crossover_v2 import position_cycle
-from jasper.biquad import EVALUABLE_Q_MAX
+from jasper.platform.biquad import EVALUABLE_Q_MAX
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION,
     CrossoverEvidencePacketError,

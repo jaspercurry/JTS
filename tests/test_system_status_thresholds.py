@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.memory_policy import (
+from jasper.platform.memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
     MEM_PSI_WARN_AVG60,
@@ -219,7 +219,7 @@ def test_dashboard_memory_disk_thresholds_match_jasper_doctor() -> None:
     OK in the doctor. This test computes the doctor's thresholds in Python and
     the dashboard's in JS and asserts they're identical, so a future change to
     one side fails CI until both move together. Memory's source of truth is
-    ``jasper.memory_policy.memory_headroom_thresholds``; disk's is
+    ``jasper.platform.memory_policy.memory_headroom_thresholds``; disk's is
     ``DISK_WARN_PERCENT`` / ``DISK_FAIL_PERCENT`` in the same module.
     """
     node = shutil.which("node")

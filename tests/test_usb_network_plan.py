@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.device_probe import usb_network
 from jasper.device_probe.usb_network import (
     ALLOCATION_SUPERNET,

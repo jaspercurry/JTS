@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The journal is redacted by construction (:mod:`jasper.logging_setup`).
+"""The journal is redacted by construction (:mod:`jasper.platform.logging_setup`).
 
 These tests drive real records through the real root handler rather than
 through caplog, whose own handler is not the one under test — and whose
@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-import jasper.logging_setup as logging_setup
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
+import jasper.platform.logging_setup as logging_setup
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 from tests.conftest import bare_root_logger
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -370,6 +370,6 @@ def test_configure_logging_is_the_only_logging_bootstrap():
     }
     assert not offenders, (
         f"Logging bootstrap(s) outside jasper/logging_setup.py: {sorted(offenders)}. "
-        "Call jasper.logging_setup.configure_logging instead — it is what "
+        "Call jasper.platform.logging_setup.configure_logging instead — it is what "
         "attaches the redacting filter to the journal handler."
     )

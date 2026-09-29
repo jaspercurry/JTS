@@ -644,7 +644,7 @@ def test_oneshot_unit_runs_doctor_with_out():
     assert settings["Group"] == "jasper"
     # The writer's --out and the reader's default are one path: rename one
     # only and /system/diagnostics stats a file nothing writes.
-    from jasper.doctor_contract import DOCTOR_RESULT_PATH
+    from jasper.platform.doctor_contract import DOCTOR_RESULT_PATH
 
     assert settings["ExecStart"].endswith(
         f"jasper-doctor --json --out {DOCTOR_RESULT_PATH}"

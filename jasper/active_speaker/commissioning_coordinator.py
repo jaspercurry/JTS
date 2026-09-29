@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
-from jasper.json_fields import finite_float, parse_utc_iso
+from jasper.platform.json_fields import finite_float, parse_utc_iso
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from .calibration_level import load_calibration_level_state

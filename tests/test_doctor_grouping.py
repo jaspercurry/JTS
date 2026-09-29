@@ -500,7 +500,7 @@ def _solo_tts_lane(monkeypatch, voice_env_path):
     import jasper.multiroom.reconcile  # noqa: F401
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: _grouping_cfg())
-    monkeypatch.setattr("jasper.env_load.VOICE_GROUPING_ENV_FILE", str(voice_env_path))
+    monkeypatch.setattr("jasper.platform.env_load.VOICE_GROUPING_ENV_FILE", str(voice_env_path))
     _evidence.evidence.seed(
         "prop:Environment:jasper-voice",
         [f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}"],

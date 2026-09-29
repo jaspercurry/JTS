@@ -4,7 +4,7 @@
 
 """Ratchet: no NEW hand-rolled tempfile+rename writers outside atomic_io.
 
-``jasper/atomic_io.py`` is the canonical atomic text-file writer (its
+``jasper/platform/atomic_io.py`` is the canonical atomic text-file writer (its
 module docstring explains the two properties that are easy to get
 subtly wrong by hand: same-filesystem rename, and chmod-before-rename
 so no wider-permission window is ever visible). New code should call
@@ -22,7 +22,7 @@ shape but excludes ``str.replace``, ``bytes.replace``, and
 asserts the offender set EXACTLY matches the allowlist below.
 
 - Added a new hand-rolled writer? The test fails: use
-  ``jasper.atomic_io.atomic_write_text`` (pass ``mode=`` to match the
+  ``jasper.platform.atomic_io.atomic_write_text`` (pass ``mode=`` to match the
   permissions your file needs — tempfiles publish 0600 if you never
   chmod, so a verbatim migration usually wants ``mode=0o600``).
 - Migrated one off the list? Remove it here so the ratchet tightens.
@@ -78,7 +78,7 @@ def test_no_new_hand_rolled_atomic_writers():
     offenders = set()
     for path in sorted(_JASPER.rglob("*.py")):
         rel = path.relative_to(_REPO).as_posix()
-        if rel == "jasper/atomic_io.py":
+        if rel == "jasper/platform/atomic_io.py":
             continue  # the canonical implementation itself
         if _calls_tempfile_and_rename(ast.parse(path.read_text())):
             offenders.add(rel)
@@ -87,7 +87,7 @@ def test_no_new_hand_rolled_atomic_writers():
     assert not new, (
         "New hand-rolled tempfile+rename writer(s) detected:\n  "
         + "\n  ".join(sorted(new))
-        + "\nUse jasper.atomic_io.atomic_write_text instead (see this "
+        + "\nUse jasper.platform.atomic_io.atomic_write_text instead (see this "
         "test's docstring for the mode-preservation note). Only add to "
         "the allowlist with a documented reason, e.g. fsync durability."
     )

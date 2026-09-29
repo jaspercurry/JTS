@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from jasper import busctl
+from jasper.platform import busctl
 
 
 class _HungProcess:

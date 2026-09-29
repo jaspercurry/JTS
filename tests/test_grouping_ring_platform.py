@@ -44,7 +44,7 @@ from pathlib import Path
 import pytest
 
 from jasper.dsp_control import ring_conf
-from jasper import ring_header
+from jasper.platform import ring_header
 from jasper.cli.doctor import audio_runtime_ring
 from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.config import GroupingConfig

@@ -23,14 +23,14 @@ from jasper.audio_hardware.dac import (
     label_for as _dac_label_for,
     physical_output_count_for as _dac_physical_output_count_for,
 )
-from jasper.json_fields import (
+from jasper.platform.json_fields import (
     CodedFieldError,
     JsonFields,
     lenient_json_fingerprint,
 )
 from jasper.audio_routes.output_hardware import normalize_output_device_id
 from jasper.audio_routes.output_topology_evaluation import evaluate_output_topology
-from jasper.speaker_layout import (
+from jasper.platform.speaker_layout import (
     MAIN_GROUP_KINDS,
     OUTPUT_VARIANT_SCHEMA_VERSION,
     PASSIVE_MAIN_MODE,
@@ -663,7 +663,7 @@ class OutputTopology:
 
 def canonical_fingerprint(payload: Mapping[str, Any] | None) -> str:
     """The topology, baseline and measurement fingerprint rule:
-    :func:`jasper.json_fields.lenient_json_fingerprint` of ``payload``."""
+    :func:`jasper.platform.json_fields.lenient_json_fingerprint` of ``payload``."""
     return lenient_json_fingerprint(payload)
 
 

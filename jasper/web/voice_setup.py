@@ -23,7 +23,7 @@ from jasper.runtime_config.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_LOUDNESS_PROFILE_PATH,
     ensure_seed_profile,
 )
-from jasper.env_load import VOICE_PROVIDER_ENV_PATH
+from jasper.platform.env_load import VOICE_PROVIDER_ENV_PATH
 from jasper.voice.catalog import (
     PROVIDERS,
     default_model_id,
@@ -48,11 +48,11 @@ from jasper.service_state.usage import (
     default_pricing_as_of,
     load_pricing_overrides,
 )
-from jasper.log_event import log_event
-from jasper.secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 
-from ..atomic_io import atomic_write_json, locked_transform_env_file
-from ..env_file import read_env_file
+from jasper.platform.atomic_io import atomic_write_json, locked_transform_env_file
+from jasper.platform.env_file import read_env_file
 from ..platform import systemd
 from ._common import (
     RESTART_CLAUSE,

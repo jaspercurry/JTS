@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `jasper.watchdog.Heartbeat`.
+"""Unit tests for `jasper.platform.watchdog.Heartbeat`.
 
 The progress-sentinel pattern is load-bearing for the JTS
 resilience contract: a naive heartbeat thread that pats systemd
@@ -33,8 +33,8 @@ from collections import Counter
 
 import pytest
 
-import jasper.watchdog as watchdog_module
-from jasper.watchdog import Heartbeat
+import jasper.platform.watchdog as watchdog_module
+from jasper.platform.watchdog import Heartbeat
 
 from ._log_events import event_field_maps
 

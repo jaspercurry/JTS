@@ -84,7 +84,7 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     ProgramAnalysis,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .crossover_v2.alignment_prescription import (
     alignment_delay_search_bounds_us,

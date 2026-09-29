@@ -104,7 +104,7 @@ def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
     grouping.write_text(f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=direct\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(base))
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
+        "jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
     )
 
     env = audio_runtime_outputd.outputd_reconciled_env()
@@ -969,7 +969,7 @@ def _case_reference_contract_missing(monkeypatch, tmp_path):
 def _case_marker_armed_member_ok(monkeypatch, tmp_path):
     grouping_env = tmp_path / "grouping-outputd.env"
     grouping_env.write_text("JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env))
+    monkeypatch.setattr("jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", str(grouping_env))
     _seed_units()
     _patch_status_reader(
         monkeypatch,

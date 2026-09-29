@@ -10,7 +10,7 @@ from ``jasper.local_sources.reconcile``.
 
 from __future__ import annotations
 
-from jasper.service_units import (
+from jasper.platform.service_units import (
     AUDIO_HARDWARE_RECONCILE_UNIT,
     FANIN_SERVICE,
     LIBRESPOT_SERVICE,
@@ -231,7 +231,7 @@ _CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 
 # Entry-lock wait (10 s), convergence gate/graph/applied-record reads (4 s),
 # the anchor-branch re-emit (25 s: staged-anchor lock 15 s + camilladsp --check
-# 10 s), and three :data:`~jasper.atomic_io.ENV_FILE_LOCK_TIMEOUT_SECONDS` waits
+# 10 s), and three :data:`~jasper.platform.atomic_io.ENV_FILE_LOCK_TIMEOUT_SECONDS` waits
 # (10 s each: the combo write and the fanin and outputd writes) — the in-process
 # figures jasper-fanin-coupling-auto.service's own tally carries, which no broker
 # multiplier touches.

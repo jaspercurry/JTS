@@ -64,7 +64,7 @@ def _recording_systemctl(monkeypatch, calls, *, host_active=True, voice_active=F
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
-        "jasper.systemd_probe.subprocess.run",
+        "jasper.platform.systemd_probe.subprocess.run",
         lambda args, **kwargs: fake_systemctl(args[1:]),
     )
     return fake_systemctl
@@ -197,7 +197,7 @@ def test_an_unchanged_plan_restarts_the_adapter_host_only_when_asked(
 
     # main() runs the pass on its real systemctl, which spawns through here.
     monkeypatch.setattr(
-        "jasper.systemd_probe.subprocess.run",
+        "jasper.platform.systemd_probe.subprocess.run",
         lambda args, **_kwargs: systemctl(args[1:]),
     )
     monkeypatch.setattr(reconcile, "read_install_profile", lambda: "full")
@@ -1116,7 +1116,7 @@ def test_active_probe_preserves_strict_readiness(monkeypatch, state, returncode,
         assert kwargs["timeout"] == reconcile.SYSTEMCTL_TIMEOUT_SEC
         return SimpleNamespace(returncode=returncode, stdout=state, stderr="")
 
-    monkeypatch.setattr("jasper.systemd_probe.subprocess.run", run)
+    monkeypatch.setattr("jasper.platform.systemd_probe.subprocess.run", run)
     assert reconcile._unit_active(HOST) is expected
 
 

@@ -7,7 +7,7 @@
 from pathlib import Path
 import re
 
-from jasper import _oom_adj
+from jasper.platform import _oom_adj
 
 
 ROOT = Path(__file__).resolve().parents[1]
