@@ -50,7 +50,6 @@ REFUSE_NO_NEAR_FIELD_TAKES = "nearfield_no_kept_takes"
 REFUSE_NO_REAR_TAKES = "rear_no_summed_takes"
 ROOM_NOT_BANKED = "room_not_banked"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
-TAKE_BASS_NOT_BANKED = "take_bass_not_banked"
 TAKE_CURVES_NOT_BANKED = "take_curves_not_banked"
 
 

@@ -15,7 +15,7 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.distortion import floor_limited_mask, read_segment_distortion
-from jasper.audio_measurement.evidence_reasons import TAKE_BASS_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SUMMED_SWEEP, preceding_silence_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.quality_model import DRIVER
@@ -104,7 +104,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     document = take.document()
     reading = (document.get("analysis") or {}).get("bass")
     if reading is None:
-        raise EvidenceUnavailable(TAKE_BASS_NOT_BANKED, {"record": take.record_path, "field": "analysis.bass"})
+        raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": take.record_path, "field": "analysis.bass"})
     program = ExcitationProgram.from_dict(document["program"])
     segment = program.segment(reading["segment_id"])
     diagnostics = document["diagnostic"]
