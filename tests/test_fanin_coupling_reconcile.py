@@ -116,28 +116,21 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
 
-def _recorder(
-    *,
-    outputd_ok=True,
-    fanin_ok=True,
-    camilla_ok=True,
-    camilla_fail_for=None,
-):
+def _recorder():
     """Build (calls, restart_outputd, restart_fanin, reconcile_camilla) hooks."""
     calls: list[str] = []
 
     def restart_outputd() -> tuple[bool, str]:
         calls.append("outputd")
-        return (outputd_ok, "" if outputd_ok else "outputd restart failed")
+        return (True, "")
 
     def restart_fanin() -> tuple[bool, str]:
         calls.append("fanin")
-        return (fanin_ok, "" if fanin_ok else "fanin restart failed")
+        return (True, "")
 
     def reconcile_camilla() -> tuple[bool, str]:
         calls.append(f"camilla:{COUPLING_SHM_RING}")
-        ok = camilla_ok and camilla_fail_for is None
-        return (ok, "reconciled" if ok else "invalid config")
+        return (True, "reconciled")
 
     return calls, restart_outputd, restart_fanin, reconcile_camilla
 
@@ -1554,37 +1547,6 @@ def test_shm_ring_is_the_only_coupling_the_cli_accepts(
     assert len(calls) == 1
     with pytest.raises(SystemExit):
         cr.main(["loopback"])
-
-
-# --- Blocker 2: shm_ring refused while the bond reads the dac_content lane -----
-
-
-def _bonded_follower_cfg():
-    from jasper.multiroom.config import GroupingConfig
-
-    return GroupingConfig(
-        enabled=True, role="follower", channel="right", bond_id="b",
-        leader_addr="jts.local", buffer_ms=400, codec="flac", error=None,
-    )
-
-
-def _drive_grouping_shape(monkeypatch, *, box_is_active: bool, flat_allowed: bool):
-    """Drive the reconciler's route shape through the REAL readers.
-
-    The gate consults the dac_content-lane writer now, so a duck-typed config
-    stub no longer reaches it — a real GroupingConfig plus the topology state
-    the writer's own caller reads is what decides the verdict.
-    """
-    import jasper.multiroom.reconcile as mr
-
-    monkeypatch.setattr(
-        "jasper.multiroom.config.load_config",
-        lambda *a, **k: _bonded_follower_cfg(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        mr, "output_topology_state", lambda: (box_is_active, flat_allowed)
-    )
 
 
 # ---------------------------------------------------------------------------
