@@ -14,7 +14,6 @@ from typing import Any, Mapping
 from jasper.active_speaker.crossover_v2.room_prescription import (
     RoomPrescriptionRefused,
 )
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.round_view_builders import room_grade_payload
 from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
@@ -53,8 +52,6 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
         artifact = room_grade_payload(inputs, directory, args.set, incumbent_id=args.incumbent)
     except RoundSetRefused:
         raise
-    except RoundCapturesRefused as exc:
-        return refused_by_name(exc.reason, exc.detail)
     except RoomPrescriptionRefused as exc:
         # A document that will not read into a median is an input failure.
         return refused_by_name(exc.reason, exc.detail, code=EXIT_UNREADABLE)

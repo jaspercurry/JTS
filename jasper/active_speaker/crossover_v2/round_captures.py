@@ -21,6 +21,7 @@ import numpy as np
 
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.sweep import read_wav_mono
 from jasper.json_fields import finite_float, sha256_file
 
@@ -46,15 +47,6 @@ REFUSE_CAPTURE_UNREADABLE = "round_capture_unreadable"
 REFUSE_BRANCH_DIAGNOSTIC_MISSING = "round_branch_diagnostic_missing"
 #: A role was asked of a take that kept impulses, none of them for that role.
 REFUSE_ROLE_NOT_RECORDED = "round_role_not_recorded"
-
-
-class RoundCapturesRefused(Exception):
-    """A named refusal with the evidence behind it. Never a bare failure."""
-
-    def __init__(self, reason: str, detail: Mapping[str, Any]) -> None:
-        super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
-        self.reason = reason
-        self.detail = dict(detail)
 
 
 @dataclass
@@ -212,14 +204,14 @@ def _capture_document(path: Path) -> Mapping[str, Any]:
             raise ValueError("capture metadata is not an object")
         return doc
     except (OSError, ValueError) as exc:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "detail": str(exc)},
         ) from exc
 
 
 #: A record, the WAV it names, its document (empty when unreadable) and the
 #: fault that keeps it out of every view, if any.
-_Record = tuple[Path, Path, Mapping[str, Any], RoundCapturesRefused | None]
+_Record = tuple[Path, Path, Mapping[str, Any], EvidenceUnavailable | None]
 
 
 class _Omission(NamedTuple):
@@ -227,7 +219,7 @@ class _Omission(NamedTuple):
 
     entry: dict[str, str]
     doc: Mapping[str, Any]
-    fault: RoundCapturesRefused
+    fault: EvidenceUnavailable
 
 
 def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
@@ -235,13 +227,13 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
         root = round_inputs(round_dir).session_dir
     except RoundViewsError as exc:
         if (round_dir / "bundle").exists():
-            raise RoundCapturesRefused(
+            raise EvidenceUnavailable(
                 REFUSE_CAPTURE_UNREADABLE, {"round_dir": str(round_dir), "detail": str(exc)},
             ) from exc
         root = round_dir
     artifact_dir, reason = round_artifact_dir(root)
     if artifact_dir is None and reason != NO_ROUND_ARTIFACTS_REASON:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE, {"round_dir": str(round_dir), "detail": reason},
         )
     canonical: list[tuple[Path, Path, Mapping[str, Any]]] = []
@@ -259,7 +251,7 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
             "multiple canonical records name this WAV" if claims[wav] > 1
             else None if doc.get("wav_sha256") else "canonical capture hash is missing"
         )
-        records.append((path, wav, doc, None if problem is None else RoundCapturesRefused(
+        records.append((path, wav, doc, None if problem is None else EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "wav": str(wav), "detail": problem},
         )))
     for path in sorted(root.glob("summed/summed_*.json")):
@@ -268,7 +260,7 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
             continue
         try:
             records.append((path, wav, _capture_document(path), None))
-        except RoundCapturesRefused as exc:
+        except EvidenceUnavailable as exc:
             records.append((path, wav, {}, exc))
     return root, records
 
@@ -292,7 +284,7 @@ def discover_captures(
     selected record binds its exact summed WAV and program. One that fails is
     never analyzed: it is appended to ``omitted`` as ``capture_id``,
     ``sidecar`` and ``reason``, and the rest answer. Raises
-    :class:`RoundCapturesRefused` for missing or conflicting round input, and
+    :class:`EvidenceUnavailable` for missing or conflicting round input, and
     under the first failure's reason when every selected capture failed.
     """
     captures, skipped = _discover_captures(round_dir, select=select, roles=(role,))
@@ -301,9 +293,9 @@ def discover_captures(
     return captures
 
 
-def _refused(fault: RoundCapturesRefused, skipped: list[_Omission]) -> RoundCapturesRefused:
+def _refused(fault: EvidenceUnavailable, skipped: list[_Omission]) -> EvidenceUnavailable:
     """``fault`` under its own reason, naming every capture left out beside it."""
-    return RoundCapturesRefused(fault.reason, {**fault.detail, "omitted": [omission.entry for omission in skipped]})
+    return EvidenceUnavailable(fault.reason, {**fault.detail, "omitted": [omission.entry for omission in skipped]})
 
 
 def _discover_captures(
@@ -313,7 +305,7 @@ def _discover_captures(
     round_dir, documents = _capture_documents(Path(round_dir))
     manifest: Mapping[str, Any] | None = None
     if not documents:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_NO_CAPTURES,
             {"round_dir": str(round_dir), "looked_for": "**/summed/summed_*.json"},
         )
@@ -337,7 +329,7 @@ def _discover_captures(
                 captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, manifest, program_audio,
                                          clocked=clocked)
                 continue
-            except RoundCapturesRefused as exc:
+            except EvidenceUnavailable as exc:
                 fault = exc
         skipped.append(_Omission({"capture_id": document_capture_id(doc) or sidecar.stem,
                                   "sidecar": sidecar.name, "reason": fault.reason}, doc, fault))
@@ -353,13 +345,13 @@ def _bind_record(
 ) -> list[PoseCapture]:
     """One record's capture per role, or the refusal that keeps it out."""
     if not wav.is_file():
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE,
             {"sidecar": sidecar.name, "wav": str(wav), "detail": "capture WAV is missing"},
         )
     capture_sha = sha256_file(wav)
     if doc.get("wav_sha256") and capture_sha != doc["wav_sha256"]:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE,
             {"sidecar": sidecar.name, "declared_capture_sha256": doc["wav_sha256"]},
         )
@@ -368,10 +360,10 @@ def _bind_record(
     # A take that kept its impulses needs no program: nothing is deconvolved again.
     if program is None and not isinstance(doc.get(IMPULSES_KEY), Mapping):
         if not programs:
-            raise RoundCapturesRefused(
+            raise EvidenceUnavailable(
                 REFUSE_NO_PROGRAMS, {"round_dir": str(root), "looked_for": "**/*program*.wav"},
             )
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_PROGRAM_UNMATCHED,
             {
                 "sidecar": sidecar.name,
@@ -387,7 +379,7 @@ def _bind_record(
         )
     band = radiated_band_of(doc, manifest)
     if band is None:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_RADIATED_BAND_MISSING,
             {
                 "sidecar": sidecar.name,
@@ -400,7 +392,7 @@ def _bind_record(
     try:
         kept = take_impulses(root, doc) if isinstance(doc.get(IMPULSES_KEY), Mapping) else None
     except TakeImpulsesUnreadable as exc:
-        raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
+        raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
     curves = {role: _role_curve(doc, manifest, role) for role in roles}
     responses = [_capture_response(doc, role, wav, program, program_audio, kept=kept, curve=curves[role],
                                    clocked=clocked) for role in roles]
@@ -469,7 +461,7 @@ def _capture_response(
                     "microphone_correction": False,
                 }
             if role != "summed":
-                raise RoundCapturesRefused(REFUSE_ROLE_NOT_RECORDED, {
+                raise EvidenceUnavailable(REFUSE_ROLE_NOT_RECORDED, {
                     "role": role, "capture": str(wav),
                     "roles": sorted({one.role for one in kept}),
                 })
@@ -480,7 +472,7 @@ def _capture_response(
         if isinstance(diagnostic, Mapping):
             retained = next((r for r in diagnostic["responses"] if r["role"] == role), None)
             if retained is None:
-                raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav)})
+                raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav)})
             preprocessing = {
                 "role": role, "timing_reference": diagnostic["timing_reference"],
                 "clock_epsilon_ppm": diagnostic["clock_epsilon_ppm"],
@@ -496,17 +488,17 @@ def _capture_response(
             band = tuple(retained["band_hz"])
         else:
             if role != "summed" or clocked:
-                raise RoundCapturesRefused(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
+                raise EvidenceUnavailable(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
             signal, rate = read_wav_mono(wav)
         if retained is None:
             if program is None:
-                raise RoundCapturesRefused(REFUSE_PROGRAM_UNMATCHED, {"capture": str(wav)})
+                raise EvidenceUnavailable(REFUSE_PROGRAM_UNMATCHED, {"capture": str(wav)})
             program_key = str(program)
             if program_key not in program_audio:
                 program_audio[program_key] = read_wav_mono(program)
             program_signal, program_rate = program_audio[program_key]
             if rate != program_rate:
-                raise RoundCapturesRefused(
+                raise EvidenceUnavailable(
                     REFUSE_CAPTURE_UNREADABLE,
                     {
                         "capture": str(wav),
@@ -518,7 +510,7 @@ def _capture_response(
             )
         return ir, int(rate), band, preprocessing
     except (KeyError, TypeError, ValueError) as exc:
-        raise RoundCapturesRefused(REFUSE_CAPTURE_UNREADABLE, {
+        raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {
             "capture": str(wav), "role": role, "detail": str(exc),
         }) from exc
 
@@ -538,7 +530,7 @@ def select_capture(
     ``capture_id`` selects by the capture's own id or its WAV stem. With none,
     the on-axis capture wins: azimuth 0, elevation 0, first by capture id; if
     that take failed, only its repeat at the same pose under the same played
-    graph stands in. Raises :class:`RoundCapturesRefused` rather than
+    graph stands in. Raises :class:`EvidenceUnavailable` rather than
     guessing. The choice is made on each sidecar DOC, so the poses the reader
     discards are never checked or deconvolved; a chosen one that fails lands
     in ``omitted`` as :func:`discover_captures` says.
@@ -557,7 +549,7 @@ def select_capture_roles(
     """
     root = Path(round_dir)
     if not root.is_dir():
-        raise RoundCapturesRefused(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"round_dir": str(root)})
+        raise EvidenceUnavailable(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"round_dir": str(root)})
     seen: list[str] = []
     if capture_id is not None:
         def wanted(doc: Mapping[str, Any]) -> bool:
@@ -579,7 +571,7 @@ def select_capture_roles(
             in (capture.capture_id, capture.wav.stem if capture.wav else None)
         )
         if len(chosen) != len(roles):
-            raise RoundCapturesRefused(
+            raise EvidenceUnavailable(
                 REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
                 {
                     "round_dir": str(root),
@@ -597,7 +589,7 @@ def select_capture_roles(
 
         found, skipped = _discover_captures(root, select=on_axis_doc, roles=roles, clocked=clocked)
         if not found:
-            raise RoundCapturesRefused(
+            raise EvidenceUnavailable(
                 REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
                 {
                     "round_dir": str(root),

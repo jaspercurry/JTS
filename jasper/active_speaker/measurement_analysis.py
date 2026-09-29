@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.calibration import CalibrationRecord
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
@@ -32,12 +32,6 @@ from .crossover_v2.record_index import (
 from .crossover_v2.spatial import analysis_curve_records
 from .frequency_view import FrequencyRun
 from .measurement_document import frequency_run_from_documents
-
-
-class MeasurementAnalysisRefused(ValueError):
-    def __init__(self, code: str) -> None:
-        self.code = code
-        super().__init__(code)
 
 
 @dataclass(frozen=True)
@@ -83,14 +77,14 @@ def _reopened(
         try:
             record, capture = reopen_measurement_record(bundle_dir, path)
         except MeasurementCaptureIdentityError as exc:
-            raise MeasurementAnalysisRefused("measurement_capture_identity_mismatch") from exc
+            raise EvidenceUnavailable("measurement_capture_identity_mismatch", {"record": path, "detail": str(exc)}) from exc
         if capture is None:
             continue
         if not record.get("program"):
-            raise MeasurementAnalysisRefused("measurement_program_manifest_missing")
+            raise EvidenceUnavailable("measurement_program_manifest_missing", {"record": path})
         program = ExcitationProgram.from_dict(record["program"])
         if program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1 or (record.get("graph_scope") != "candidate" or not record.get("candidate_id")):
-            raise MeasurementAnalysisRefused("measurement_analysis_program_unsupported")
+            raise EvidenceUnavailable("measurement_analysis_program_unsupported", {"record": path})
         yield path, record, program, capture
 
 
@@ -129,17 +123,17 @@ def analyzed_measurements(bundle_dir: Path, *, paths: Iterable[str] | None = Non
         if "analysis_error" in record:
             continue
         if "curves" not in record:
-            raise MeasurementAnalysisRefused(TAKE_CURVES_NOT_BANKED)
+            raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": path})
         yield BankedMeasurement(record, path)
 
 
 def analyze_measurement_bundle(bundle_dir: Path, *, run_reference_db: float | None = None) -> FrequencyRun:
     if run_reference_db is not None and finite_float(run_reference_db) is None:
-        raise MeasurementAnalysisRefused("measurement_reference_invalid")
+        raise ValueError(f"measurement_reference_invalid: {run_reference_db}")
     info = json.loads((bundle_dir / "info.json").read_text())
     documents = [take.document() for take in analyzed_measurements(bundle_dir)]
     if not documents:
-        raise MeasurementAnalysisRefused("measurement_captures_missing")
+        raise EvidenceUnavailable("measurement_captures_missing", {"bundle_dir": str(bundle_dir)})
     return frequency_run_from_documents(
         run_id=info["session_id"], documents=documents,
         started_at=info.get("started_at"), state=info.get("state"),

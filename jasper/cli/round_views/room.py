@@ -11,14 +11,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundSetRefused, round_inputs
 from jasper.active_speaker.round_view_builders import room_payload, REFUSE_NO_SEAT_TAKES as REFUSE_NO_SEAT_TAKES
 from jasper.cli._refusal import EXIT_UNREADABLE, StageFailed, stage
 
 from ._common import (
     ARTIFACT_BY_VIEW, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, add_set_argument, answer, calibration_id, default_out, refused_by_name, subject,
+    _write, add_set_argument, answer, calibration_id, default_out, subject,
 )
 
 
@@ -37,10 +36,7 @@ def _cmd_room(args: argparse.Namespace) -> int:
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, Path(args.round_dir))
     if args.applied_profile:
         inputs = replace(inputs, applied_profile_path=Path(args.applied_profile))
-    try:
-        payload, written = write_room(inputs, Path(args.round_dir), args.set)
-    except RoundCapturesRefused as exc:
-        return refused_by_name(exc.reason, exc.detail)
+    payload, written = write_room(inputs, Path(args.round_dir), args.set)
     median, features = payload["median"], payload["persistence"]["features"]
     evidence = median["evidence"]
     return answer(

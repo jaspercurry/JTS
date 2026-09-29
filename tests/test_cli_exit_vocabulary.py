@@ -27,6 +27,7 @@ import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -34,9 +35,10 @@ import pytest
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
-from jasper.active_speaker.crossover_v2 import prescription_document
+from jasper.active_speaker.crossover_v2 import prescription_document, room_selection
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
@@ -48,7 +50,7 @@ from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
+from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _flat_ir as flat_ir, _resonant_ir as resonant_ir
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
 from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
@@ -305,10 +307,10 @@ def _on_fixture_round(argv: Callable[[_FixtureRound], list[str]]) -> Callable[[p
     return lambda request, root: argv(_fixture_round(root))
 
 
-def _sweep_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _sweep_argv(request: pytest.FixtureRequest, root: Path, poses: int = 3) -> list[str]:
     impulse = np.zeros(1800)
     impulse[100] = 1.0
-    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * 3)), "--scope", "round"]
+    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * poses)), "--scope", "round"]
 
 
 def _kept_take_argv(view: str) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
@@ -342,18 +344,18 @@ def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
 
 
-def _nearfield_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _nearfield_argv(request: pytest.FixtureRequest, root: Path, kept: bool = True) -> list[str]:
     bundle = root / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
-    takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)]
+    takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)] if kept else []
     write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
     return ["nearfield", str(bundle)]
 
 
-def _bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate") -> list[str]:
     bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank("baseline"))
+    path = asyncio.run(bank("baseline", scope=scope))
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
     write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -565,3 +567,74 @@ def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _
 
     assert "status" not in view_answer.answer
     assert "status" not in view_answer.artifact
+
+
+def _unanalysed_room_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    request.getfixturevalue("monkeypatch").setattr(room_selection, "analyzed_measurements", Mock(
+        side_effect=EvidenceUnavailable("take_curves_not_banked", {})))
+    return ["room", str(bank_seat_round(root))]
+
+
+def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    (root / "bundle").mkdir()
+    (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "unbanked"}))
+    return ["frequency", str(root / "bundle")]
+
+
+def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
+    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
+    if fault == "record":
+        record = bundle / EVIDENCE_ROOT / "artifacts" / path
+        record.write_text(f"{record.read_text()} ")
+    return ["frequency", str(bundle), "--analyze-wavs", *(["--reference-db=nan"] if fault == "reference" else [])]
+
+
+def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    (root / "bundle" / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
+    (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "s-1"}))
+    (root / "bundle" / "crossover-v2-state.json").write_text(json.dumps({"session_id": "cap-1"}))
+    return ["distortion", str(root / "bundle")]
+
+
+#: One case per view family whose evidence can fail to grade: a round the view
+#: reads, and the reason it names for not grading it.
+_CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str]] = {
+    "bass": (lambda request, root: _bass_argv(request, root, scope="drivers"), "measurement_analysis_program_unsupported"),
+    "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
+    "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
+                          "classification_no_features_detected"),
+    "distortion": (_stateless_distortion_argv, "state_unreadable"),
+    "frequency": (_unbanked_frequency_argv, "take_curves_not_banked"),
+    "frequency --analyze-wavs": (lambda request, root: _analyzed_frequency_argv(request, root, "wav_hash"),
+                                 "measurement_capture_identity_mismatch"),
+    "impulse": (lambda request, root: [*_kept_take_argv("impulse")(request, root), "--role", "woofer"],
+                "round_role_not_recorded"),
+    "nearfield": (lambda request, root: _nearfield_argv(request, root, kept=False), "nearfield_no_kept_takes"),
+    "room": (_unanalysed_room_argv, "take_curves_not_banked"),
+    "sweep": (lambda request, root: _sweep_argv(request, root, poses=1), "gate_sweep_single_pose"),
+}
+
+
+@pytest.mark.parametrize("view", sorted(_CANNOT_GRADE))
+def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
+    view: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv, reason = _CANNOT_GRADE[view]
+    monkeypatch.chdir(tmp_path)
+    assert round_views.main(argv(request, tmp_path)) == _refusal.EXIT_REFUSED
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
+
+
+@pytest.mark.parametrize("fault, code", [("record", "commissioning_evidence_integrity_mismatch"), ("reference", None)])
+def test_what_a_view_cannot_read_is_unreadable_not_refused(
+    fault: str, code: str | None, request: pytest.FixtureRequest, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A record the evidence store cannot read, or a reference level no analysis can use."""
+    monkeypatch.chdir(tmp_path)
+    assert round_views.main(_analyzed_frequency_argv(request, tmp_path, fault)) == _refusal.EXIT_UNREADABLE
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("code")) == (round_views.REASON_UNREADABLE, code)

@@ -42,7 +42,6 @@ from .evidence_packet.readers import packet_feature_classifications
 from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
-from .round_captures import RoundCapturesRefused
 from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
@@ -252,8 +251,6 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
                                   candidate=composed, basis_candidate=base.candidate)
     except ForwardModelError as exc:
         raise PrescriptionDocumentRefused(exc.refusal_reason, section, str(exc), evidence=exc.detail) from exc
-    except RoundCapturesRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
 
 
 _PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in PROGRAM_DOCUMENT_ORDER if row.preview)}
@@ -326,8 +323,6 @@ def preview_prescription_document(
         raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
     except rear_calibration.RearCalibrationError as exc:
         raise PrescriptionDocumentRefused("rear_calibration_invalid", kind, str(exc)) from exc
-    except RoundCapturesRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, kind, str(exc), evidence=exc.detail) from exc
     except PrescriptionDocumentRefused:
         raise
     except (KeyError, TypeError, ValueError) as exc:

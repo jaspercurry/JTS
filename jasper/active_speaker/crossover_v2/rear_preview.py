@@ -14,12 +14,11 @@ from jasper.active_speaker.rear_calibration import read_rear_calibration, rear_o
 from jasper.audio_measurement import rear_evidence, seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ
-from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, EvidenceUnavailable
 
 from .pose_curve import lateral_evidence_grid_hz, nearest_native_bins
 from .rear_views import PairTake, front_on_axis, pair_takes, rear_document
 from .room_selection import purpose_take_records
-from .round_captures import RoundCapturesRefused
 from .round_inputs import RoundInputs
 
 REAR_PREVIEW_NEEDS_PAIR_ROUND = "rear_preview_needs_pair_round"
@@ -126,7 +125,7 @@ def preview_rear_section(section: Mapping[str, Any], *, inputs: RoundInputs,
                          manifest: Mapping[str, Any]) -> dict[str, Any]:
     takes = pair_takes(record for _, record in purpose_take_records(inputs.session_dir, purpose=PURPOSE_REAR))
     if not takes:
-        raise RoundCapturesRefused(REAR_PREVIEW_NEEDS_PAIR_ROUND, {})
+        raise EvidenceUnavailable(REAR_PREVIEW_NEEDS_PAIR_ROUND, {})
     validated = read_rear_calibration(section, sample_rate=takes[0].sample_rate_hz)
     view = rear_document(inputs, manifest=manifest)
     grouped: dict[str, list[PairTake]] = {}

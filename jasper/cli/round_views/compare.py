@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
 from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
 from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview, read_take,
@@ -32,24 +31,21 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         preview_document = json.loads(Path(args.a_preview).read_text()) if args.a_preview else None
     except (OSError, ValueError) as exc:
         return refused_by_name(REFUSE_PREVIEW_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
-    try:
-        b_subject, b_take, b_role = resolve_set_take(b_round, args.b_set, args.b_take, args.b_role)
-        b = read_take(b_round, take_id=b_take, role=b_role)
-        if preview_document is not None:
-            preview = read_preview(preview_document)
-            report = compare_preview_report(preview, b, smoothing_fraction=args.smoothing,
-                                            points_per_octave=args.points_per_octave)
-            a_subject: dict[str, Any] = {"candidate_id": preview.candidate_id}
-            # Named by the forecast's identity, so two forecasts read against one take keep two artifacts.
-            a_label = f"preview-{preview.fingerprint[:12]}"
-        else:
-            a_subject, a_take, a_role = resolve_set_take(Path(args.source_a), args.a_set, args.a_take, args.a_role)
-            a = read_take(Path(args.source_a), take_id=a_take, role=a_role)
-            report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,
-                                    points_per_octave=args.points_per_octave, remove_level=args.remove_level)
-            a_label = f"{a.capture.capture_id}-{a.role}"
-    except RoundCapturesRefused as exc:
-        return refused_by_name(exc.reason, exc.detail)
+    b_subject, b_take, b_role = resolve_set_take(b_round, args.b_set, args.b_take, args.b_role)
+    b = read_take(b_round, take_id=b_take, role=b_role)
+    if preview_document is not None:
+        preview = read_preview(preview_document)
+        report = compare_preview_report(preview, b, smoothing_fraction=args.smoothing,
+                                        points_per_octave=args.points_per_octave)
+        a_subject: dict[str, Any] = {"candidate_id": preview.candidate_id}
+        # Named by the forecast's identity, so two forecasts read against one take keep two artifacts.
+        a_label = f"preview-{preview.fingerprint[:12]}"
+    else:
+        a_subject, a_take, a_role = resolve_set_take(Path(args.source_a), args.a_set, args.a_take, args.a_role)
+        a = read_take(Path(args.source_a), take_id=a_take, role=a_role)
+        report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,
+                                points_per_octave=args.points_per_octave, remove_level=args.remove_level)
+        a_label = f"{a.capture.capture_id}-{a.role}"
     spec = ARTIFACT_BY_VIEW[args.command]
     name = take_artifact_name(spec.artifact, f"{a_label}-vs-{b.capture.capture_id}", b.role)
     written = _write(report, args.out, resolved_out(b_round, name), schema=spec.schema)

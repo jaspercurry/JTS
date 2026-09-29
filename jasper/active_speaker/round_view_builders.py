@@ -9,10 +9,12 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Any, Mapping
 
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
 from .frequency_view import FrequencyRun, build_frequency_view, manifest_frequency_run
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
-from .measurement_analysis import MeasurementAnalysisRefused, analyze_measurement_bundle
+from .measurement_analysis import analyze_measurement_bundle
 from .measurement_bass import bass_view
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose, run_purposes
 from .run_manifest import room_sets
@@ -21,8 +23,7 @@ from .crossover_v2.rear_views import rear_document
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
-from .crossover_v2.round_captures import RoundCapturesRefused
-from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, round_inputs, read_run_manifest, resolve_set, default_out
+from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, RoundViewsError, round_inputs, read_run_manifest, resolve_set, default_out
 from .round_view_artifacts import ARTIFACT_BY_VIEW
 from .round_packet_report import gate_fields
 
@@ -71,7 +72,7 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                                            if key not in {"freqs_hz", "magnitude_db", "smoothing_fractional_octave"}}}))
         return replace(run, series=tuple(series))
     except CommissioningEvidenceStoreError as exc:
-        raise MeasurementAnalysisRefused(exc.code.value) from exc
+        raise RoundViewsError(f"{exc.code.value}: {exc}", code=exc.code.value) from exc
 
 
 
@@ -129,8 +130,8 @@ def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
         take_ids=selected.selected_ids, basis=selected.capture_basis,
     )
     if not selection.takes:
-        raise RoundCapturesRefused(REFUSE_NO_SEAT_TAKES, {"set_id": selected.set_id,
-                                                        "evidence": selection.evidence})
+        raise EvidenceUnavailable(REFUSE_NO_SEAT_TAKES, {"set_id": selected.set_id,
+                                                       "evidence": selection.evidence})
     payload = room_document(
         selection.takes, set_id=selected.set_id, evidence=selection.evidence,
         bundle_dir=inputs.session_dir,
