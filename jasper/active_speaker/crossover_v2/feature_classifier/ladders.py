@@ -42,19 +42,12 @@ from ..gate_sweep import (
     frame_descriptor,
     sweep_features,
 )
-from ..round_captures import (
-    REFUSE_RADIATED_BAND_MISSING,
-    PoseCapture,
-)
-from .captures import (
-    RoundCapture,
-    RoundPoseCurve,
-)
+from ..round_captures import PoseCapture
+from .captures import RoundPoseCurve
 
 #: A ladder of one rung. The window verdict compares the shortest and longest
-#: resolution-valid rung, so one rung compares with nothing. Deliberately
-#: not a :data:`CLASSIFICATION_REFUSAL_REASONS` member: it costs the window
-#: verdict and nothing else.
+#: resolution-valid rung, so one rung compares with nothing. Not a refusal:
+#: it costs the window verdict and nothing else.
 GATE_LADDER_NEEDS_TWO_RUNGS = "gate_ladder_needs_two_rungs"
 
 #: The engine declined this ladder or a bin on it for a reason of its own
@@ -83,17 +76,14 @@ DECAY_TARGET_DROP_DB = 20.0
 DECAY_FLANK_SKIRT_OFFSET_OCT = 1.0 / 3.0
 
 #: Fraction of a band-limited envelope's own tail read for its noise floor.
-#: The IRs this reads are the full deconvolved capture, not a gated
-#: fragment, so any decay this instrument could report has long since
-#: finished by the last fifth of it.
+#: The IRs this reads are each take's kept impulse, which runs 0.5 s past its
+#: sweep's scheduled start (ADR-0354), so the last fifth begins about 0.35 s
+#: after the arrival.
 DECAY_NOISE_FLOOR_TAIL_FRACTION = 0.2
 
 
 def _sweep_ladder(
-    captures: Sequence[RoundCapture],
-    irs: Sequence[np.ndarray],
-    peaks: Sequence[int],
-    sample_rate: int,
+    captures: Sequence[PoseCapture],
     features: Sequence[float],
     rungs_ms: Sequence[float],
 ) -> tuple[
@@ -107,60 +97,16 @@ def _sweep_ladder(
     Returns ``(by_feature, frame, poses, refusal)``. ``refusal`` is ``None``
     when the ladder ran; otherwise it names why it could not and
     ``by_feature`` is empty — the LADDER is refused for the round, never the
-    classification. A round with one capture, with sidecars banking no
-    radiated band, or with a ladder of one rung still gets its phase class,
-    its decay reads and its per-pose facts, and every row says so by name
-    rather than reading :data:`GATE_STABLE` off a test that never ran.
+    classification. A round with one capture, or a ladder of one rung, still
+    gets its phase class, its decay reads and its per-pose facts, and every
+    row says so by name rather than reading :data:`GATE_STABLE` off a test
+    that never ran.
 
     ``poses`` is who each pose row of every feature IS, banked once for the
     round beside the frame, in the order those rows are in.
     """
     rungs = tuple(sorted(float(rung) for rung in rungs_ms))
     frame = frame_descriptor(rungs, analysis_grid())
-    # Everything but `radiated_band_hz`, `sample_rate`, `ir` and `peak_idx` is
-    # disclosure: it names the capture a pose row was read from, and none of
-    # it moves a number.
-    poses: list[PoseCapture] = []
-    unbanded: list[str] = []
-    for capture, ir, peak in zip(captures, irs, peaks):
-        band = capture.radiated_band_hz
-        if band is None:
-            unbanded.append(capture.wav.name)
-            continue
-        poses.append(
-            PoseCapture(
-                capture_id=capture.wav.stem,
-                phase=capture.phase,
-                wav=capture.wav,
-                program=capture.program,
-                program_sha256="",
-                azimuth_deg=(
-                    None if capture.degrees is None else float(capture.degrees)
-                ),
-                vertical_deg=None,
-                mark_distance_m=None,
-                radiated_band_hz=band,
-                sample_rate=sample_rate,
-                ir=ir,
-                peak_idx=peak,
-            )
-        )
-    if unbanded:
-        return (
-            {},
-            frame,
-            [],
-            {
-                "reason": REFUSE_RADIATED_BAND_MISSING,
-                "captures": unbanded,
-                "note": (
-                    "the ladder normalises each capture on a reference band "
-                    "intersected with the band its own DUT radiates, and no "
-                    "declared band substitutes for one the capture did not "
-                    "bank (E5, #1969)"
-                ),
-            },
-        )
     banked_poses = [
         {
             "pose_key": pose.pose_key,
@@ -171,7 +117,7 @@ def _sweep_ladder(
             "mark_distance_m": pose.mark_distance_m,
             "capture_wav": pose.wav.name if pose.wav is not None else None,
         }
-        for pose in poses
+        for pose in captures
     ]
     if len(rungs) < 2:
         # The engine raises on this, and a ladder is not worth the round: a
@@ -190,7 +136,7 @@ def _sweep_ladder(
             },
         )
     try:
-        swept = sweep_features(poses, rungs_ms=rungs, at_hz=list(features))
+        swept = sweep_features(captures, rungs_ms=rungs, at_hz=list(features))
     except EvidenceUnavailable as refusal:
         return {}, frame, banked_poses, {"reason": refusal.reason, **refusal.detail}
     except ValueError as exc:
@@ -213,7 +159,7 @@ def _sweep_ladder(
 
 
 def _timing_scatter(
-    captures: Sequence[RoundCapture],
+    captures: Sequence[PoseCapture],
     irs: Sequence[np.ndarray],
     peaks: Sequence[int],
     sample_rate: int,
@@ -221,25 +167,29 @@ def _timing_scatter(
 ) -> dict[str, Any]:
     """Arrival-time scatter between captures at the SAME angle.
 
-    The raw arrival spread is dominated by the capture's capture-start offset,
-    which every other test removes by re-finding the peak. The SUB-SAMPLE
-    residual is what survives into a phase comparison, measured by
+    Each raw arrival is read on its take's own clock, from its sweep's
+    scheduled start (ADR-0355), and those clocks differ between takes. The
+    SUB-SAMPLE residual is what survives into a phase comparison, measured by
     cross-spectrum phase slope over the direct-sound window. It needs an
     angle visited twice; with no pair the result says NOT RUN and carries no
     numbers, a dimension that did not run being a different fact from one
     that measured zero.
     """
-    arrivals = [peak / sample_rate * 1e3 for peak in peaks]
+    arrivals = [
+        (peak - capture.preprocessing["pre_guard_samples"]
+         - capture.preprocessing["clock_shift_samples"]) / sample_rate * 1e3
+        for capture, peak in zip(captures, peaks)
+    ]
     spread = {
         "min_ms": float(min(arrivals)),
         "max_ms": float(max(arrivals)),
         "spread_ms": float(max(arrivals) - min(arrivals)),
     }
 
-    by_angle: dict[int, list[int]] = {}
+    by_angle: dict[float, list[int]] = {}
     for index, capture in enumerate(captures):
-        if capture.degrees is not None:
-            by_angle.setdefault(capture.degrees, []).append(index)
+        if capture.azimuth_deg is not None:
+            by_angle.setdefault(capture.azimuth_deg, []).append(index)
 
     half = int(round(DIRECT_SOUND_HALF_WINDOW_MS * 1e-3 * sample_rate))
 
@@ -453,9 +403,9 @@ def _band_limited_envelope(
 ) -> np.ndarray:
     """The analytic envelope of the host IR restricted to ``band_hz``.
 
-    An FFT-domain brick-wall mask, zero outside the band: the IR here is the
-    module's own reflection-free deconvolution, already long and clean, so no
-    taper is needed. :func:`~jasper.audio_measurement.gating.analytic_envelope`
+    An FFT-domain brick-wall mask, zero outside the band: the IR here is a
+    take's whole kept impulse, long against any decay this reads, so no taper
+    is needed. :func:`~jasper.audio_measurement.gating.analytic_envelope`
     is REUSED, not duplicated.
     """
     mask = (host.freqs >= band_hz[0]) & (host.freqs <= band_hz[1])

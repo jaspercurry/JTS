@@ -6,8 +6,8 @@
 
 The INSTRUMENT behind :mod:`.feature_classification`'s register: that module
 owns the verdict names, the row schema and what ``depth_db`` means, this one
-runs the tests that fill them in over captures a round already banked. It
-imports every verdict string and never spells one.
+runs the tests that fill them in over the impulses a round's kept takes banked
+(ADR-0392). It imports every verdict string and never spells one.
 
 **Three tests and a gate.** EXCESS GROUP DELAY — minimum-phase (a driver
 defect, so a filter is at least the right kind of tool) or non-minimum-phase
@@ -44,7 +44,6 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import (
     COMPLEX_SMOOTH_OCT,
@@ -76,24 +75,14 @@ from ..gate_sweep import (
     SIGMA_GROWTH_ROOM_RATIO as SIGMA_GROWTH_ROOM_RATIO,
 )
 from ..journey import PHASE_LATERAL as PHASE_LATERAL
+from ..round_captures import PoseCapture
 from .captures import (
     ADMISSIBLE_PHASES as ADMISSIBLE_PHASES,
-    CAPTURE_ADMISSIBILITY_REASONS as CAPTURE_ADMISSIBILITY_REASONS,
-    CAPTURE_OTHER_SESSION as CAPTURE_OTHER_SESSION,
-    CAPTURE_PHASE_NOT_ADMISSIBLE as CAPTURE_PHASE_NOT_ADMISSIBLE,
-    CAPTURE_PROGRAM_MISSING as CAPTURE_PROGRAM_MISSING,
-    CAPTURE_PROGRAM_UNIDENTIFIED as CAPTURE_PROGRAM_UNIDENTIFIED,
-    CAPTURE_UNSTAMPED_NAME as CAPTURE_UNSTAMPED_NAME,
-    CAPTURE_WAV_MISSING as CAPTURE_WAV_MISSING,
     CAPTURES_UNREADABLE as CAPTURES_UNREADABLE,
-    CLASSIFICATION_REFUSAL_REASONS as CLASSIFICATION_REFUSAL_REASONS,
     NO_ADMISSIBLE_CAPTURES as NO_ADMISSIBLE_CAPTURES,
     NO_FEATURES_DETECTED as NO_FEATURES_DETECTED,
-    PROGRAM_MISSING as PROGRAM_MISSING,
     ROUND_SHAPE_INADMISSIBLE as ROUND_SHAPE_INADMISSIBLE,
-    RoundCapture as RoundCapture,
     RoundPoseCurve as RoundPoseCurve,
-    _read_wav,
     load_round_captures as load_round_captures,
     load_round_pose_curves as load_round_pose_curves,
 )
@@ -136,21 +125,18 @@ from .ladders import (
     _sweep_ladder,
     _timing_scatter,
 )
+from .takes import load_kept_captures as load_kept_captures
 
 __all__ = [
     "ADMISSIBLE_PHASES",
-    "CAPTURE_ADMISSIBILITY_REASONS",
     "CAPTURES_UNREADABLE",
     "classifiable_band_hz",
-    "CLASSIFICATION_REFUSAL_REASONS",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_FEATURES_DETECTED",
-    "PROGRAM_MISSING",
     "ROUND_SHAPE_INADMISSIBLE",
-    "RoundCapture",
     "RoundPoseCurve",
     "classify_round",
-    "load_round_captures",
+    "load_kept_captures",
     "load_round_pose_curves",
     "summary_lines",
 ]
@@ -179,7 +165,7 @@ TRUSTED_CEILING_HZ = 16000.0
 
 
 def classify_round(
-    captures: Sequence[RoundCapture],
+    captures: Sequence[PoseCapture],
     *,
     at: Sequence[float] | None = None,
     gate_ms: float = DEFAULT_GATE_MS,
@@ -187,6 +173,9 @@ def classify_round(
     pose_curves: Sequence[RoundPoseCurve] = (),
 ) -> dict[str, Any]:
     """Classify one round's features and return the artifact to bank.
+
+    ``captures`` are the round's kept takes (:func:`load_kept_captures`), each
+    read through the impulse its analysis kept.
 
     ``at`` pins the frequencies to classify; omitted, they are detected from
     the round's own pooled response (:func:`_detect_features`).
@@ -217,32 +206,14 @@ def classify_round(
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
     grid = classification_grid()
 
-    irs: list[np.ndarray] = []
-    peaks: list[int] = []
-    sample_rate: int | None = None
+    sample_rate = captures[0].sample_rate
     for capture in captures:
-        signal, rate = _read_wav(capture.wav)
-        program, program_rate = _read_wav(capture.program)
-        if rate != program_rate:
+        if capture.sample_rate != sample_rate:
             raise ValueError(
-                f"{capture.wav.name}: capture is {rate} Hz but its program is "
-                f"{program_rate} Hz"
+                f"{capture.capture_id}: {capture.sample_rate} Hz among {sample_rate} Hz captures"
             )
-        if sample_rate is None:
-            sample_rate = rate
-        elif rate != sample_rate:
-            raise ValueError(
-                f"{capture.wav.name}: {rate} Hz among {sample_rate} Hz captures"
-            )
-        # Unwindowed on purpose: the timing test needs a t=0 defined by the
-        # program that was played, not by a per-capture argmax that has already
-        # absorbed the offset being measured.
-        ir = regularized_deconvolution_full(
-            signal.astype(np.float32), program.astype(np.float32), rate
-        ).astype(np.float64)
-        irs.append(ir)
-        peaks.append(int(np.argmax(np.abs(ir))))
-    assert sample_rate is not None
+    irs = [capture.ir for capture in captures]
+    peaks = [capture.peak_idx for capture in captures]
 
     curves = np.array(
         [
@@ -337,9 +308,7 @@ def classify_round(
     pooled_db = {f"{fc:.0f}": read_feature(pooled, grid, fc) for fc in features}
     measured_q = {f"{fc:.0f}": feature_q(pooled, grid, fc) for fc in features}
 
-    swept, frame, ladder_poses, ladder_refusal = _sweep_ladder(
-        captures, irs, peaks, sample_rate, features, ladder
-    )
+    swept, frame, ladder_poses, ladder_refusal = _sweep_ladder(captures, features, ladder)
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
 
     # Feature-independent work, once per round: each pose curve's detrended
@@ -436,7 +405,7 @@ def classify_round(
             "fdw_taper": FDW_TAPER,
             "n_captures": len(captures),
             "phases": sorted({c.phase for c in captures}),
-            "captures": [c.wav.name for c in captures],
+            "captures": [c.capture_id for c in captures],
             "features_requested": list(at) if at is not None else None,
         },
         "controls_ok": controls_ok,

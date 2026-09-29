@@ -45,9 +45,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
 )
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_KEY, POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.feature_classifier import load_round_captures
 from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_captures, _scope_captures
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import round_program_dir
 from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
@@ -345,7 +343,7 @@ def test_a_take_the_capture_host_banked_reaches_the_ring(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("fallback", [None, errno.EXDEV, errno.EPERM, errno.EACCES])
-def test_banking_writes_the_ring_both_instruments_read(tmp_path, monkeypatch, fallback):
+def test_banking_writes_the_ring_the_distortion_view_reads(tmp_path, monkeypatch, fallback):
     session = _capture_bundle(tmp_path / "live", takes=(
         ("verify-a", "verify", "2026-08-31T00:19:52Z"),
         ("lateral-b", "lateral", 1788135592.4),
@@ -363,11 +361,6 @@ def test_banking_writes_the_ring_both_instruments_read(tmp_path, monkeypatch, fa
             assert copy.read_bytes() == source.read_bytes()
             assert (copy.stat().st_ino == source.stat().st_ino) is (fallback is None)
     ring = bundle / CAPTURE_RING_DIR
-    directory, _ = round_artifact_dir(bundle)
-    programs = round_program_dir(bundle, directory, ("verify", "lateral", "measure"))
-    captures = load_round_captures(programs, ring, session_id="bank-session")
-    assert {c.phase for c in captures} == {"verify", "lateral"}
-    assert {c.stamp for c in captures} == {1788135592.0}
     bound, scope = _scope_captures(_bind_measure_captures(ring), "bank-session")
     assert len(bound) == 1 and scope["session_id"] == "bank-session"
     assert bank.provenance["capture_ring"] == {"written": 3, "skipped": []}
