@@ -73,7 +73,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
 )
 from tests.crossover_v2_banked_round import (
     LateralPose,
-    entry_baseline_record,
     lateral_pose_record,
 )
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -231,11 +230,12 @@ def test_the_packet_emits_no_path_no_prose_and_nothing_off_the_allowlist(
         "household_findings": [{"at": 1.0, "household_copy": "my flat, second bedroom"}],
         "verify": {"claims": {}},
     })
-    take = _bank_entry_baseline(session)
+    take = _bank_lateral_walk(session, [0])[0]
     take_path = next(session.rglob(f"positions/{take['take_id']}.json"))
     banked = json.loads(take_path.read_text())
     take_path.write_text(json.dumps({**banked, "wav_path": "/var/lib/jasper/commissioning/take.wav"}))
     packet = build_crossover_evidence_packet(session, state_path=state_path)
+    assert packet["lateral_poses"]["available"] is True
     assert needle not in json.dumps(packet)
 
 
@@ -461,26 +461,6 @@ def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
 
     assert refuse.call_count == 2
     assert blinded["lateral_poses"]["available"] is False
-
-
-def _bank_entry_baseline(session: Path) -> dict[str, Any]:
-    """The round's timing take, in the shape a banked round holds it."""
-    round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
-    positions = round_dir / "positions"
-    positions.mkdir(exist_ok=True)
-    record = entry_baseline_record(
-        index=9, attempt=1, run_id="capture-1", stimulus_id="prog-entry",
-        reference_mark="design_axis", graph_fingerprint="fp-entry",
-        captured_at="2026-08-11T00:00:00Z",
-        validity_floor_hz=100.0, gate_window_ms=12.0, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256="entry-sha",
-    )
-    (positions / f"{record['take_id']}.json").write_text(json.dumps({
-        "schema_version": 1,
-        "kind": "jts_crossover_v2_position_evidence",
-        **record,
-    }))
-    return record
 
 
 # --------------------------------------------------------------------------- #

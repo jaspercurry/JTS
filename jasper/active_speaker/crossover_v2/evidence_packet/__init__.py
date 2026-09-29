@@ -384,8 +384,8 @@ def build_crossover_evidence_packet(
     * ``driver_draft_path`` — the design draft used to compute driver limits;
       without it the per-driver prescription class has no bound to check
       against and refuses by name.
-    * ``repeat_floor_path`` — the banked repeat floor; without it the floor is
-      unmeasured and the two codified assumptions are used, named.
+    * ``repeat_floor_path`` — the banked repeat floor; without it the floor
+      reads ``unmeasured`` and publishes no thresholds.
     * ``declared_geometry_path`` — the household's declared rig geometry, the
       only viable source for the room's entanglement floor.
     * ``statefile_path`` — a CamillaDSP durable statefile banked alongside

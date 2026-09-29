@@ -255,7 +255,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0200](0200-the-measurement-toolbox-is-microphone-only.md) | The measurement toolbox is microphone-only | point 3 amended by 0360 |
 | [0201](0201-fdw-stays-out-of-the-correction-path-funded-as-diagnostic-evidence.md) | FDW stays out of the correction path; funded as diagnostic evidence | accepted |
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
-| [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | §4's entry baseline superseded by 0390 |
+| [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
 | [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | amended by 0367 |
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |

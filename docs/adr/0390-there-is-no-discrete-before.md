@@ -2,8 +2,7 @@
 
 - **Date:** 2026-09-29
 - **Status:** Accepted. Supersedes (partial)
-  [ADR-0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) §4's entry
-  baseline, and [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md)'s
+  [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md)'s
   consequence note on `entry_grade` and the `entry_baseline` series.
 - **Context:** A round kept a "before": the evidence packet's `entry_baseline` block, a copy in the
   flow state (`verify_priors.entry_baseline`), the `jasper-round-views entry` grade, and a "Before
@@ -13,6 +12,8 @@
   "before" is needed ([#5737](https://github.com/jaspercurry/JTS/issues/5737) RX-3 P4).
 - **Decision:**
   1. No take, packet block, flow-state copy, view or page series is kept as a round's "before".
+     [ADR-0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) §4's
+     campaign baseline, which a campaign opens by measuring per ADR-0192, is untouched.
   2. A comparison with an earlier take picks its comparand by #5737 P6's one comparand rule, which
      owns it.
   3. The ADR-0319 timing take stays. MEASURE reads its summed alignment from the session's timing
