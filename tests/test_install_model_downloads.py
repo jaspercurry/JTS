@@ -13,7 +13,7 @@ from jasper.audio_resources.model_downloads import (
     StageAsset,
     stage_model_assets,
 )
-from jasper.wake_models import openwakeword_stage_assets
+from jasper.service_state.wake_models import openwakeword_stage_assets
 
 
 def _asset(path: Path, *, required: bool = True) -> StageAsset:

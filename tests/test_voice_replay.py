@@ -20,9 +20,9 @@ from openai.types.realtime import (
 
 from jasper.mic_capture import MicCapture
 from jasper.tts_playout import confirmed_tts_flush
-from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 from jasper.tools import ToolRegistry
-from jasper.vad import SpeechVAD
+from jasper.service_state.vad import SpeechVAD
 from jasper.voice.gemini_session import GeminiLiveConnection
 from jasper.voice.grok_session import GrokRealtimeConnection
 from jasper.voice.openai_session import OpenAIRealtimeConnection

@@ -138,7 +138,6 @@ code = [
   "jasper/local_sources/**",
   "jasper/mux.py",
   "jasper/renderer.py",
-  "jasper/source_[es]*.py",
   "jasper/camilla.py",
   "jasper/dsp_control/camilla_config_contract.py",
   "jasper/dsp_control/camilla_latency.py",
@@ -168,6 +167,7 @@ code = [
   "c/jts-ring-ioplug/**",
   "jasper/bluetooth/**",
   "jasper/playback_state/source_state.py",
+  "jasper/service_state/source_events.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -195,10 +195,10 @@ safety = "voice-runtime"
 code = [
   "jasper/mic_capture.py",
   "jasper/tts_playout.py",
-  "jasper/tts_routing.py",
+  "jasper/service_state/tts_routing.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
-  "jasper/vad.py",
+  "jasper/service_state/vad.py",
   "jasper/tools/**",
   "jasper/tools/tool_state.py",
   "jasper/tools/tool_catalog_view.py",
@@ -228,11 +228,11 @@ code = [
   # high-churn, so this intentionally accepts false positives on non-wake
   # edits (the lookup is advisory — see header).
   "jasper/voice_daemon.py",
-  "jasper/wake.py",
-  "jasper/openwakeword_guard.py",
-  "jasper/wake_models.py",
-  "jasper/wake_events.py",
-  "jasper/wake_ports.py",
+  "jasper/service_state/wake.py",
+  "jasper/service_state/openwakeword_guard.py",
+  "jasper/service_state/wake_models.py",
+  "jasper/service_state/wake_events.py",
+  "jasper/service_state/wake_ports.py",
   "wake_training/**",
   "jasper/web/wake_setup.py",
   "jasper/web/wake_corpus_setup.py",
@@ -346,6 +346,7 @@ code = [
   # negative-cache behaviour reaches the volume path directly.
   "jasper/device_probe/bluealsa_probe.py",
   "jasper/audio_resources/volume_owner.py",
+  "jasper/service_state/volume_persistence.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -355,8 +356,7 @@ docs = [
 id = "spotify-and-music-accounts"
 safety = "safe-ci"
 code = [
-  "jasper/spotify*.py",
-  "jasper/accounts.py",
+  "jasper/service_state/accounts.py",
   "jasper/playback_state/librespot_state.py",
   "jasper/tools/spotify.py",
   "jasper/web/spotify_setup.py",
@@ -367,6 +367,9 @@ code = [
   "tests/test_spotify*.py",
   "tests/voice_eval/regression/test_spotify.py",
   "jasper/playback_state/spotify_uri.py",
+  "jasper/service_state/spotify_oauth.py",
+  "jasper/service_state/spotify_router.py",
+  "jasper/service_state/spotify_routing.py",
 ]
 docs = [
   "docs/multi-user-spotify.md",
@@ -497,7 +500,7 @@ id = "audio-latency-lean-lane"
 safety = "boot-risk"
 code = [
   "jasper/audio_runtime_plan.py",
-  "jasper/audio_runtime_settings.py",
+  "jasper/service_state/audio_runtime_settings.py",
   "jasper/transport_coherence.py",
   "jasper/mux.py",
   "jasper/dsp_control/camilla_config_contract.py",
@@ -596,7 +599,7 @@ docs = [
 id = "home-assistant"
 safety = "safe-ci"
 code = [
-  "jasper/home_assistant.py",
+  "jasper/service_state/home_assistant.py",
   "jasper/control/ha_probe_child.py",
   "jasper/control/ha_status_cache.py",
   "jasper/tools/home_assistant.py",
@@ -633,7 +636,7 @@ code = [
   "jasper/multiroom/**",
   "jasper/local_sources/**",
   "jasper/playback_state/install_profile.py",
-  "jasper/tts_routing.py",
+  "jasper/service_state/tts_routing.py",
   "jasper/web/rooms_setup.py",
   "jasper/web/rooms_peers.py",
   "jasper/control/grouping_supervisor.py",

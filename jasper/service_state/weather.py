@@ -33,9 +33,9 @@ from dataclasses import dataclass
 import httpx
 from rapidfuzz import fuzz
 
-from .log_event import log_event
+from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.weather")
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"

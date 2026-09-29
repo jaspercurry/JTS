@@ -137,7 +137,7 @@ heal_shared_state_modes() {
         "d:2770:${STATE_DIR}/active_speaker_stimuli"
     )
     # The tuning spend ledger is SQLite and is still summed into household
-    # spend (jasper.usage.household_usage_reader); a root-owned file left by
+    # spend (jasper.service_state.usage.household_usage_reader); a root-owned file left by
     # the pre-drop jasper-correction-web must stay readable by group `jasper`
     # or the aggregate silently drops it. Nothing writes it any more; heal
     # the mode, expect no growth.

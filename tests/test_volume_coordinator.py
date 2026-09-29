@@ -35,11 +35,11 @@ from tests.volume_coordinator_fixtures import (
 
 from jasper.device_probe import bluealsa_probe
 from jasper import camilla, renderer, volume_process
-from jasper import spotify_router as spotify_router_mod
+from jasper.service_state import spotify_router as spotify_router_mod
 from jasper import volume_push_sources as vps_mod
-from jasper.accounts import Account
+from jasper.service_state.accounts import Account
 from jasper.control.volume_ops import with_coordinator
-from jasper.spotify_router import AccountClient, Router
+from jasper.service_state.spotify_router import AccountClient, Router
 from jasper.playback_state.music_sources import Source
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
@@ -58,7 +58,7 @@ from jasper.audio_resources.volume_owner import (
     VolumeOwner,
     volume_owner,
 )
-from jasper.volume_persistence import FIRST_BOOT_DEFAULT_PCT, VolumePersistence
+from jasper.service_state.volume_persistence import FIRST_BOOT_DEFAULT_PCT, VolumePersistence
 from jasper.volume_curve import percent_to_db
 from jasper.volume_state import VolumeState
 from jasper.web import sound_profile_apply

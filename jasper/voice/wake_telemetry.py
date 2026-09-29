@@ -24,7 +24,7 @@ from ..aec_sweep import (
     knob_default,
 )
 from jasper.playback_state.wake_condition_context import ConditionContext
-from ..wake_events import (
+from jasper.service_state.wake_events import (
     CAPTURE_POST_SEC,
     CAPTURE_PRE_SEC,
     WakeEventStore,

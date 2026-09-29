@@ -386,8 +386,8 @@ async def _reconcile_volume_curve_after_settings(
     from jasper.playback_state import librespot_state
     from jasper.renderer import RendererClient
     from jasper.volume_coordinator import VolumeCoordinator
-    from jasper.volume_persistence import VolumePersistence
-    from jasper.volume_persistence import configured_path as volume_state_path
+    from jasper.service_state.volume_persistence import VolumePersistence
+    from jasper.service_state.volume_persistence import configured_path as volume_state_path
 
     coord = VolumeCoordinator(
         camilla=camilla_factory(),

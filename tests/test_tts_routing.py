@@ -12,7 +12,7 @@ the voice daemon's PREPARE_ASSISTANT gate share.
 
 import pytest
 
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     resolve_tts_routing_snapshot,
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,

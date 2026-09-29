@@ -5,8 +5,8 @@
 """Google OAuth credential storage + lookup for the per-household-
 member Calendar + Gmail voice tools.
 
-Mirrors `jasper.accounts` (Spotify multi-user registry) and
-`jasper.spotify_router.build_clients` (lazy per-account API client
+Mirrors `jasper.service_state.accounts` (Spotify multi-user registry) and
+`jasper.service_state.spotify_router.build_clients` (lazy per-account API client
 construction). One file because Google's surface is smaller than
 Spotify's and a separate router buys nothing.
 
@@ -57,10 +57,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar
 
-from .accounts import RecordRegistry, account_file_stem
-from .atomic_io import atomic_write_json
+from jasper.service_state.accounts import RecordRegistry, account_file_stem
+from jasper.atomic_io import atomic_write_json
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.google_creds")
 
 
 # The Google token tree lives in the group-`jasper-secrets` dir (readable only by

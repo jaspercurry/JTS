@@ -23,7 +23,7 @@ from jasper import volume_push_sources as vps_mod
 from jasper.camilla import CamillaController, CamillaUnavailable
 from jasper.playback_state.music_sources import Source
 from jasper.volume_coordinator import VolumeCoordinator
-from jasper.volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 
 _REAL_PUSHES = (vps_mod.push_spotify_volume, vps_mod.push_bluetooth_volume)
 

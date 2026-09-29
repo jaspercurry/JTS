@@ -31,7 +31,7 @@ from ...memory_policy import (
     memory_pressure,
     zram_usage,
 )
-from ...wake_events import (
+from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
 from ._evidence import evidence

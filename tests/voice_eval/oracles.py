@@ -245,7 +245,7 @@ async def weather_sunset(
     geocode or forecast fails (the test then knows to skip).
 
     Hits Open-Meteo with `daily=sunset` directly — does NOT route
-    through `jasper.weather`. That's the whole point of the oracle:
+    through `jasper.service_state.weather`. That's the whole point of the oracle:
     we're verifying our weather tool returns matching data, not
     re-running the same code."""
     owns = http is None

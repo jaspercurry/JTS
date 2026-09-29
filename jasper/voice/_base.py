@@ -53,7 +53,7 @@ from .session import (
 )
 
 if TYPE_CHECKING:
-    from jasper.usage import BillableActivityMeter
+    from jasper.service_state.usage import BillableActivityMeter
 
 logger = logging.getLogger(__name__)
 

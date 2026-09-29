@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper.audio_runtime_settings import DEFAULT_FANIN_INPUT_BUFFER_FRAMES
+from jasper.service_state.audio_runtime_settings import DEFAULT_FANIN_INPUT_BUFFER_FRAMES
 from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from tests.install_surface import installer_text
 from tests.shairport_template_helpers import (

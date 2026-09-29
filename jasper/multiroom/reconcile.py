@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import atomic_io
-from .. import tts_routing as _tts_routing
+from jasper.service_state import tts_routing as _tts_routing
 from ..camilla import CamillaUnavailable
 from ..control import restart_broker
 from jasper.dsp_control.dsp_apply import DspApplyError

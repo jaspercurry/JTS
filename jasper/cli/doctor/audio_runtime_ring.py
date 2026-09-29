@@ -1019,7 +1019,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.
     """
     label = "ring conf floor"
-    from ...audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
+    from jasper.service_state.audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
     dac_id = active_dac_profile_id()
     if dac_id is None:

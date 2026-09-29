@@ -109,15 +109,15 @@ from .platform.status_socket import (
 from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
-from .source_events import start_source_event_tasks
+from jasper.service_state.source_events import start_source_event_tasks
 from jasper.playback_state.source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
     spotify_playing_observed as spotify_playing,
     usbsink_direct_streaming,
 )
-from .spotify_oauth import resolved_spotify_redirect_uri
-from .spotify_router import build_router
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.service_state.spotify_router import build_router
 from .volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
@@ -155,7 +155,7 @@ def event_backed_probes() -> dict[Source, Callable[[], Any]]:
 
     AirPlay forks busctl for the MPRIS properties; Bluetooth reads BlueZ
     `MediaTransport1` over dbus_next. Both sources also have a signal adapter
-    in jasper.source_events, so for them the patrol probe is a lost-signal
+    in jasper.service_state.source_events, so for them the patrol probe is a lost-signal
     repair rather than the detection path. Resolved per call so the probes
     stay patchable by name.
     """

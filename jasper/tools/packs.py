@@ -46,15 +46,15 @@ from .travel_routes import make_travel_routes_tools
 from .weather import make_weather_tools
 
 if TYPE_CHECKING:
-    from ..google_creds import GoogleClients
+    from jasper.service_state.google_creds import GoogleClients
     from ..google_routes import GoogleRoutesClient
-    from ..home_assistant import HAClient
+    from jasper.service_state.home_assistant import HAClient
     from ..renderer import RendererClient
-    from ..spotify_router import Router
-    from ..timers import TimerScheduler
+    from jasper.service_state.spotify_router import Router
+    from jasper.service_state.timers import TimerScheduler
     from ..volume_coordinator import VolumeCoordinator
-    from ..wake_events import WakeEventStore
-    from ..weather import WeatherClient
+    from jasper.service_state.wake_events import WakeEventStore
+    from jasper.service_state.weather import WeatherClient
     from . import Tool, ToolRegistry, UntrustedContentMonitor
 
 logger = logging.getLogger(__name__)

@@ -16,8 +16,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from jasper import google_creds as gc
-from jasper.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
+from jasper.service_state import google_creds as gc
+from jasper.service_state.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
 from jasper.tools import UntrustedContentMonitor, build_tool
 from jasper.tools import _FENCE_CLOSE, _FENCE_TAG  # fence markers for adversarial asserts
 from jasper.tools.calendar import make_calendar_tools

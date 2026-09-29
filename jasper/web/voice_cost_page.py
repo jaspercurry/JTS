@@ -9,7 +9,7 @@ import html
 
 from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
 from jasper.voice.model_discovery import DiscoverySnapshot
-from jasper.usage import pricing_for_model
+from jasper.service_state.usage import pricing_for_model
 
 from ._common import csrf_field_html, pair_banner_html
 from .chrome import canonical_banner, canonical_header, canonical_page

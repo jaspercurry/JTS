@@ -4,7 +4,7 @@
 
 import pytest
 
-from jasper.location_state import CoordinateError, SavedLocation, parse_manual_coordinates, round_coord
+from jasper.service_state.location_state import CoordinateError, SavedLocation, parse_manual_coordinates, round_coord
 
 
 def test_round_coord_three_decimals():

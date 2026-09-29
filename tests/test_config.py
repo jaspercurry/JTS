@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from jasper.config import Config, VoiceConfigError, VoiceProviderNotConfigured
-from jasper.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.voice import catalog
 
 _ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"
@@ -472,7 +472,7 @@ def test_config_import_chain_does_not_require_httpx():
         "import sys\n"
         "sys.modules['httpx'] = None\n"  # makes `import httpx` raise
         "import jasper.config\n"
-        "import jasper.home_assistant, jasper.transit.bus, jasper.transit.citibike\n"
+        "import jasper.service_state.home_assistant, jasper.transit.bus, jasper.transit.citibike\n"
         "import jasper.transit\n"
         "print('ok')\n"
     )

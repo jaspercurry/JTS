@@ -52,18 +52,18 @@ from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from ..accounts import ACCOUNT_NAME_PATTERN, valid_account_name
+from jasper.service_state.accounts import ACCOUNT_NAME_PATTERN, valid_account_name
 from ..atomic_io import write_env_file
 from ..env_file import read_env_file
 from ..env_load import GOOGLE_CREDENTIALS_ENV_PATH as CREDS_FILE
-from ..google_creds import (
+from jasper.service_state.google_creds import (
     GOOGLE_SCOPES,
     GoogleAccount,
     GoogleRegistry,
     default_token_path_for,
     save_token,
 )
-from ..google_oauth import resolved_google_redirect_uri
+from jasper.service_state.google_oauth import resolved_google_redirect_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ._common import (
@@ -347,7 +347,7 @@ def _cloud_project_steps_html(mark_done: str) -> str:
 
 def _oauth_client_step_html(redirect_widget: str, creds_form: str) -> str:
     """Step 4: create the OAuth client, then paste its credentials here. The
-    redirect URI it registers is the bounce page in jasper.oauth_redirect."""
+    redirect URI it registers is the bounce page in jasper.service_state.oauth_redirect."""
     return f"""
   <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
   <li class="setup-step" data-step="4">

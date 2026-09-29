@@ -31,11 +31,11 @@ import logging
 import os
 from pathlib import Path
 
-from .atomic_io import atomic_write_text
-from .env_file import read_value
-from .env_load import parse_bool_value
+from jasper.atomic_io import atomic_write_text
+from jasper.env_file import read_value
+from jasper.env_load import parse_bool_value
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.mic_mute_persistence")
 
 
 DEFAULT_PATH = "/var/lib/jasper/mic_mute.env"

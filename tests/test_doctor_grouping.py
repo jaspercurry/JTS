@@ -12,7 +12,7 @@ import pytest
 
 from jasper.cli.doctor import _evidence, grouping
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,

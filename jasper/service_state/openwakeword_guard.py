@@ -61,11 +61,11 @@ import logging
 import sys
 import types
 
-from .log_event import log_event
+from jasper.log_event import log_event
 
 __all__ = ["ensure_openwakeword_import_safe"]
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.openwakeword_guard")
 
 _VERIFIER_MODULE = "openwakeword.custom_verifier_model"
 # Marks a sys.modules entry as ours, so a late call can tell "the stub is

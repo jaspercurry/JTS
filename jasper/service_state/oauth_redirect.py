@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 
-from .identity.reader import resolve_hostname
+from jasper.identity.reader import resolve_hostname
 
 
 def hosted_redirect_uri(base: str, hostname: str) -> str:

@@ -40,7 +40,7 @@ from ..platform.status_socket import (
     OUTPUTD_STATUS_SOCKET,
 )
 from ..volume_diagnostics import build_volume_policy_snapshot
-from ..volume_persistence import VolumePersistence, configured_path as volume_state_path
+from jasper.service_state.volume_persistence import VolumePersistence, configured_path as volume_state_path
 from ..volume_state import VolumeState
 from . import (
     debug_control,

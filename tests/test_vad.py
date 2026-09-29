@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import vad
+from jasper.service_state import vad
 
 
 class _FakeOpenWakeWordVAD:

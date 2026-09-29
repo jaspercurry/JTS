@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_models
+from jasper.service_state import wake_models
 from jasper.cli.doctor import wake
 
 # -------------------------------------------------- openWakeWord assets

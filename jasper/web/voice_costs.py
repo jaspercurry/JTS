@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from jasper.voice.catalog import ProviderCatalogEntry
-from jasper.usage import (
+from jasper.service_state.usage import (
     AggregateUsageReader, DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
     DEFAULT_DAILY_SPEND_CAP_USD, DEFAULT_USAGE_DB, household_usage_reader,
     pricing_for_model, tuning_usage_db_path, sanitize_pricing_models,

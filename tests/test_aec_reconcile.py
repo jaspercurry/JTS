@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.playback_state import wake_legs
-from jasper.aec_ready import read_aec_bridge_ready
+from jasper.service_state.aec_ready import read_aec_bridge_ready
 from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
 from jasper.aec.reconcile import runtime as reconcile_runtime
 from jasper.chip_aec import health as chip_aec_health
@@ -47,7 +47,7 @@ from jasper.mic_presence import (
 )
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
-from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from jasper.usb_mic import (
     USB_MIC_RAW_XVF_LEG,
     read_usb_mic_leg,

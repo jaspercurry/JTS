@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from jasper import google_creds as gc
-from jasper.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
+from jasper.service_state import google_creds as gc
+from jasper.service_state.google_creds import GoogleAccount, GoogleClients, GoogleRegistry
 
 
 class FakeExecutable:

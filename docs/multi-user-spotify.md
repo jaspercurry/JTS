@@ -222,20 +222,20 @@ re-link via the wizard.
 
 **Implementation pointers:**
 
-- `jasper.spotify_router.build_clients` — returns a `BuildResult`
+- `jasper.service_state.spotify_router.build_clients` — returns a `BuildResult`
   with `clients`, per-account `statuses` (`ACCOUNT_OK`,
   `ACCOUNT_NEEDS_OAUTH`, `ACCOUNT_REVOKED`, `ACCOUNT_ERROR`), and
   the registry's `default_name`. `_classify_oauth_error` inspects
   the `SpotifyOauthError.error` attribute first (and falls back to
   text substring search) so the classification survives spotipy
   format changes.
-- `jasper.spotify_router.Router.refresh_if_empty()` — lazy rebuild
+- `jasper.service_state.spotify_router.Router.refresh_if_empty()` — lazy rebuild
   on first voice command after the clients dict went empty.
   Rate-limited to once per `_REFRESH_MIN_INTERVAL_SEC` (30s) to
   avoid hammering Spotify's `/api/token` on a persistently-revoked
   account. Transient rebuild failures (exception raised) do NOT
   advance the cooldown — only completed builds do.
-- `jasper.spotify_router.Router.empty_reason()` — classifies why
+- `jasper.service_state.spotify_router.Router.empty_reason()` — classifies why
   `clients` is empty (`"revoked"`, `"needs_oauth"`, `"no_accounts"`,
   or `""` when non-empty). Tool layer reads this to pick the right
   user-facing message.
@@ -248,7 +248,7 @@ re-link via the wizard.
   for 30s, keyed by the account-cache file mtimes, so a persistently revoked
   account does not hit Spotify's token endpoint on every `/state`/`/volume`
   poll but an OAuth re-link takes effect as soon as the cache file changes.
-- `jasper.accounts.build_cache_handler` — spotipy cache adapter used by
+- `jasper.service_state.accounts.build_cache_handler` — spotipy cache adapter used by
   every Spotify OAuth client. It publishes refreshed token JSON via a
   tempfile + `os.replace` at mode `0640`, instead of spotipy's stock
   in-place writer, so any `jasper-intsecrets` member can replace an
@@ -444,10 +444,10 @@ Code:
 jaspercurry/spotify-oauth-callback    GitHub Pages bounce page (separate
                                        public repo, static, hostname-agnostic
                                        via `?host=` query param)
-jasper/accounts.py                    Registry / Account
-jasper/spotify_router.py              Router.resolve_for_transport / Router.active /
+jasper/service_state/accounts.py                    Registry / Account
+jasper/service_state/spotify_router.py              Router.resolve_for_transport / Router.active /
                                        build_clients (PKCE)
-jasper/spotify_routing.py             resolve_target (cold-start device picker, normalise)
+jasper/service_state/spotify_routing.py             resolve_target (cold-start device picker, normalise)
 jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
 jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
 jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch

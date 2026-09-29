@@ -44,13 +44,14 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ... import conversation_history, mic_mute_persistence
+from ... import conversation_history
+from jasper.service_state import mic_mute_persistence
 from jasper.playback_state import mux_mode_persistence
 from ...active_speaker.design_draft import DEFAULT_DESIGN_DRAFT_PATH
 from ...control.control_token import TOKEN_FILE
 from ...sound.profile import PROFILE_PATH
 from ...sound.settings import SETTINGS_PATH
-from ...volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 from ...accessories.mic_env import DEFAULT_ACCESSORY_ADAPTER_PLAN_FILE
 from ...env_load import (
     GROUPING_ENV_FILE,

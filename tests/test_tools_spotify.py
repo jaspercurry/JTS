@@ -804,11 +804,11 @@ def test_revoked_then_relinked_recovers_without_daemon_restart():
     A bug in real Router.refresh_if_empty (mutation order, wrong
     rate-limit comparison, statuses-not-propagated) would fail this
     test where the prior FakeRouter version would pass."""
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_OK, ACCOUNT_REVOKED, AccountClient, AccountStatus,
         BuildResult, Router,
     )
-    from jasper.accounts import Account
+    from jasper.service_state.accounts import Account
 
     sp = FakeSpotify(
         devices={"devices": [{"id": "jts-device", "name": "JTS", "is_active": True}]},
@@ -854,7 +854,7 @@ def test_revoked_then_relinked_recovers_without_daemon_restart():
     # the signed-out message naming the account. Advance the same clock past
     # the real cooldown before command 2 so the test exercises, rather than
     # bypasses, Router's rate-limit comparison.
-    with patch("jasper.spotify_router._now", side_effect=[1000.0, 1031.0]):
+    with patch("jasper.service_state.spotify_router._now", side_effect=[1000.0, 1031.0]):
         first = asyncio.run(tools["spotify_play"](query="Beyonce"))
         assert "signed jasper out" in first.get("error", "")
         with patch("jasper.tools.spotify.resolve_target") as resolve_mock:

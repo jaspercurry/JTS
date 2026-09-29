@@ -14,7 +14,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from jasper import home_assistant
+from jasper.service_state import home_assistant
 from jasper.json_fields import json_fingerprint
 from jasper.log_event import log_event
 

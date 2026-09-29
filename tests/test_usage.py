@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jasper.usage import (
+from jasper.service_state.usage import (
     AggregateUsageReader,
     BillableActivityMeter,
     USAGE_RETENTION_DAYS,
@@ -1052,7 +1052,7 @@ def test_read_only_ctor_closes_connection_on_corrupt_file(
         created.append(conn)
         return conn
 
-    monkeypatch.setattr("jasper.usage.sqlite3.connect", spy_connect)
+    monkeypatch.setattr("jasper.service_state.usage.sqlite3.connect", spy_connect)
     with pytest.raises(sqlite3.Error):
         UsageStore(str(db), read_only=True)
     assert len(created) == 1
@@ -1358,7 +1358,7 @@ async def test_buffered_snapshots_follow_day_month_and_rolling_windows(tmp_path,
         def now(cls, tz=None):
             return cls.current
 
-    monkeypatch.setattr("jasper.usage.datetime", Clock)
+    monkeypatch.setattr("jasper.service_state.usage.datetime", Clock)
     monkeypatch.setattr(VoiceUsageStore, "_REFRESH_SECONDS", 0.02)
     db = str(tmp_path / "usage.db")
     UsageStore(db).close()

@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.timers")
 
 
 # Default timer DB path — sits in the systemd StateDirectory used by

@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io, enhanced_aec, wake_models
+from jasper import atomic_io, enhanced_aec
+from jasper.service_state import wake_models
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.chip_aec.policy import (
     ACTION_FIX_MIC_PROFILE,

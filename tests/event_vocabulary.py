@@ -39,7 +39,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "correction": ("active_speaker", "audio_measurement", "jasper", "web"),
     "cue": ("cues", "voice"),
     "dsp": ("active_speaker", "dsp_control"),
-    "ha": ("control", "jasper", "tools", "web"),
+    "ha": ("control", "service_state", "tools", "web"),
     "household_credential": ("control", "web"),
     "http": ("control", "web"),
     "local_sources": ("local_sources",),
@@ -53,19 +53,19 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     # Source events span the unprivileged client and root reconciler boundary.
     "source": ("control", "jasper", "local_sources"),
     "source_intent": ("jasper", "local_sources"),
-    "spotify": ("jasper", "voice", "web"),
+    "spotify": ("service_state", "voice", "web"),
     "transit": ("tools", "transit", "web"),
     "tts_flush": ("jasper", "voice"),
     "tts_write": ("jasper",),
     "turn": ("jasper", "voice"),
-    "usage": ("jasper", "runtime_config"),
+    "usage": ("runtime_config", "service_state"),
     "usb_mic": ("aec", "cli", "control"),
     "usbsink": ("jasper", "usbsink"),
     "voice": ("jasper", "voice", "web"),
     "volume": ("audio_resources", "control", "jasper", "tools"),
-    "wake": ("jasper", "voice", "web"),
+    "wake": ("jasper", "service_state", "voice", "web"),
     "wake_corpus": ("wake_corpus", "web"),
-    "weather": ("jasper", "web"),
+    "weather": ("service_state", "web"),
 }
 
 # Event names a jasper/ reader names but no jasper/ site emits: `usbsink_name.*`

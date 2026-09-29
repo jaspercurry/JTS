@@ -16,7 +16,7 @@ import argparse
 import os
 from typing import Any, Callable
 
-from jasper import wake_models
+from jasper.service_state import wake_models
 from jasper.env_load import env_file_path, merged_env_files
 from jasper.logging_setup import configure_logging
 from jasper.audio_resources.model_downloads import active_wake_model

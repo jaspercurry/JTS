@@ -27,7 +27,7 @@ from jasper.cues.registry import (
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
 from jasper.config import VoiceConfigError, VoiceProviderNotConfigured
-from jasper.vad import SpeechVADSetupError
+from jasper.service_state.vad import SpeechVADSetupError
 from jasper.voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,

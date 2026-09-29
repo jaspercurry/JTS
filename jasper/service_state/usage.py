@@ -28,7 +28,7 @@ from typing import Protocol
 
 from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.usage")
 
 DEFAULT_DAILY_SPEND_CAP_USD = 1.0
 DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER = 1.25
@@ -135,7 +135,7 @@ class Pricing:
 # provider isn't a real thing). User overrides in /var/lib/jasper/pricing.json
 # overlay these per model.
 BUNDLED_PRICING_FILE = str(
-    Path(__file__).resolve().parent / "data" / "model_pricing.json"
+    Path(__file__).resolve().parents[1] / "data" / "model_pricing.json"
 )
 
 # The float fields a pricing entry (bundled or override) may set. ``label``

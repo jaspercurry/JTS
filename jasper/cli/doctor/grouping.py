@@ -903,7 +903,7 @@ def check_grouping_tts_lane() -> CheckResult:
         VOICE_PARK_ENV,
         expected_grouping_tts_route,
     )
-    from ...tts_routing import (
+    from jasper.service_state.tts_routing import (
         FANIN_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET,
         OUTPUTD_TTS_SOCKET_ENV,

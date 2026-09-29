@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from jasper.audio_hardware import dac
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
@@ -893,7 +893,7 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
 
 def test_fanin_tts_socket_default_matches_the_python_constant():
     """fan-in bakes its assistant-TTS socket path as a Rust default; every
-    Python consumer resolves ``jasper.tts_routing.FANIN_TTS_SOCKET``. Rust owns
+    Python consumer resolves ``jasper.service_state.tts_routing.FANIN_TTS_SOCKET``. Rust owns
     the value and Python mirrors it, so the two owners are compared here once.
 
     outputd's twin has no baked default — it binds only when the grouping
@@ -904,7 +904,7 @@ def test_fanin_tts_socket_default_matches_the_python_constant():
     config_rs = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
     assert f'"{FANIN_TTS_SOCKET}"' in config_rs, (
         f"jasper-fanin no longer defaults its TTS socket to {FANIN_TTS_SOCKET} "
-        "— jasper.tts_routing.FANIN_TTS_SOCKET must move with it"
+        "— jasper.service_state.tts_routing.FANIN_TTS_SOCKET must move with it"
     )
 
 

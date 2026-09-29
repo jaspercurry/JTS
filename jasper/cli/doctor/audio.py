@@ -23,7 +23,7 @@ from ...output_hardware import (
     mixer_pins_for_state as _mixer_pins_for_state,
 )
 from ...mic_presence import MicPresence
-from ...wake_ports import parse_udp_device
+from jasper.service_state.wake_ports import parse_udp_device
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (

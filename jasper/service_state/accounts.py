@@ -10,7 +10,7 @@ account. Spotify's auth model is per-account — there is no shared
 family token. So we maintain one OAuth refresh token per household
 member and route commands to the right one by cross-referencing the
 AirPlay-pushed track title against each account's currently-playing
-Spotify track (see `jasper.spotify_router`).
+Spotify track (see `jasper.service_state.spotify_router`).
 
 State layout on disk:
 
@@ -61,9 +61,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol, Self, TypeVar
 
-from .atomic_io import atomic_write_text
+from jasper.atomic_io import atomic_write_text
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.accounts")
 
 DEFAULT_REGISTRY_PATH = "/var/lib/jasper-intsecrets/spotify/accounts.json"
 DEFAULT_CACHE_DIR = "/var/lib/jasper-intsecrets/spotify/caches"

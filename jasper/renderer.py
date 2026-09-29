@@ -144,7 +144,7 @@ class RendererClient:
         # librespot's --onevent hook only gives us TRACK_ID / URI;
         # title/artist/album require a Spotify Web API lookup.
         # Voice tools that need rich metadata go through
-        # jasper.spotify_router (which already does Web API).
+        # jasper.service_state.spotify_router (which already does Web API).
         uri = librespot_state.track_uri(self._librespot_state_path)
         if not uri:
             return {}

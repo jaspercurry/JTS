@@ -14,7 +14,7 @@ three consumers that would otherwise drift:
     *infers* the condition (music from the playback-reference RMS the AEC
     bridge already computes; quiet vs ambient from a VAD-negative
     noise-floor proxy); and
-  * the wake-event telemetry (:mod:`jasper.wake_events` ``condition_class``),
+  * the wake-event telemetry (:mod:`jasper.service_state.wake_events` ``condition_class``),
     which records the inferred condition per fire.
 
 One definition means the corpus's "settings" axis and telemetry labels are

@@ -63,7 +63,7 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     import httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.home_assistant")
 
 
 # Env var names — single source of truth for the JASPER_HA_* keys.

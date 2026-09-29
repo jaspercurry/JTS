@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.home_assistant.HAClient — mock HTTP, no network.
+"""Unit tests for jasper.service_state.home_assistant.HAClient — mock HTTP, no network.
 
 Uses httpx.MockTransport (the same pattern as tests/test_bus.py) so the
 test suite is fully hermetic and matches the repo convention.
@@ -34,7 +34,7 @@ import httpx
 import pytest
 
 from jasper.web import home_assistant_setup
-from jasper.home_assistant import (
+from jasper.service_state.home_assistant import (
     CONVERSATION_ID_TTL_SEC,
     HAClient,
     OUTCOME_AGENT_ERROR,
@@ -862,7 +862,7 @@ async def test_as_tool_result_includes_error_detail_on_failure():
 # ---- build_ha_client factory -----------------------------------------------
 
 def test_build_ha_client_returns_none_when_disabled():
-    from jasper.home_assistant import build_ha_client
+    from jasper.service_state.home_assistant import build_ha_client
 
     class _Cfg:
         ha_enabled = False
@@ -874,7 +874,7 @@ def test_build_ha_client_returns_none_when_disabled():
 
 
 def test_build_ha_client_returns_client_when_enabled():
-    from jasper.home_assistant import build_ha_client
+    from jasper.service_state.home_assistant import build_ha_client
 
     class _Cfg:
         ha_enabled = True
@@ -893,7 +893,7 @@ def test_build_ha_client_returns_client_when_enabled():
 # Used by jasper-control to reflect wizard saves immediately (without
 # waiting for jasper-control to restart and re-source its EnvironmentFile).
 # Same systemd `KEY=VALUE` syntax as voice_provider.env etc. — but the
-# helper lives in jasper.home_assistant rather than jasper.web._common
+# helper lives in jasper.service_state.home_assistant rather than jasper.web._common
 # so the control daemon doesn't take a transitive dependency on the
 # web module.
 
@@ -955,7 +955,7 @@ def test_build_ha_client_returns_client_when_enabled():
     ],
 )
 def test_read_ha_env_file(tmp_path, content, expected):
-    from jasper.home_assistant import read_ha_env_file
+    from jasper.service_state.home_assistant import read_ha_env_file
     p = tmp_path / "ha.env"
     if content is not None:
         p.write_text(content)
@@ -963,7 +963,7 @@ def test_read_ha_env_file(tmp_path, content, expected):
 
 
 async def test_probe_from_env_accepts_shared_false_value(tmp_path, monkeypatch):
-    from jasper.home_assistant import probe_status_from_env
+    from jasper.service_state.home_assistant import probe_status_from_env
 
     p = tmp_path / "ha.env"
     p.write_text(
@@ -977,7 +977,7 @@ async def test_probe_from_env_accepts_shared_false_value(tmp_path, monkeypatch):
         seen["verify_ssl"] = verify_ssl
         return {}
 
-    monkeypatch.setattr("jasper.home_assistant.probe_status", fake_probe)
+    monkeypatch.setattr("jasper.service_state.home_assistant.probe_status", fake_probe)
     await probe_status_from_env(env_file_path=str(p))
 
     assert seen["verify_ssl"] is False

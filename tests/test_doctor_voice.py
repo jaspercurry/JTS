@@ -12,14 +12,14 @@ from unittest.mock import patch
 import pytest
 
 import jasper.transit.citibike as citibike_mod
-import jasper.home_assistant as ha_mod
+import jasper.service_state.home_assistant as ha_mod
 from jasper.cli import doctor
 from jasper.cli.doctor import renderers
 from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._evidence import evidence
 from jasper.config import Config
 from jasper.mic_presence import MicPresence
-from jasper.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
+from jasper.service_state.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
 from jasper.tools.packs import TOOL_PACKS
 from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manifest_text
 
@@ -268,7 +268,7 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
             default_name="jasper",
         )
 
-    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+    with patch("jasper.service_state.spotify_router.build_clients", side_effect=fake_build_clients):
         result = renderers.check_spotify_connect_device(cfg)
 
     assert result.status == "ok"
@@ -339,7 +339,7 @@ def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
     JASPER_GEMINI_MODEL would outrank the wizard file (issue #3133).
     File-vs-shell precedence itself is pinned in test_provider_state.py;
     this test pins the doctor's dispatch to that resolver."""
-    import jasper.usage as usage
+    import jasper.service_state.usage as usage
 
     _ssot(monkeypatch, tmp_path, "gemini")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")  # stale env; must lose
@@ -379,7 +379,7 @@ def _spend_cap_cfg(monkeypatch, tmp_path: Path, cap: str) -> Config:
 def test_check_spend_cap_reports_disabled_not_zero_remaining(
     tmp_path: Path, monkeypatch
 ):
-    """Cap 0 means disabled (jasper.usage.SpendCap.disabled), not
+    """Cap 0 means disabled (jasper.service_state.usage.SpendCap.disabled), not
     "$0.0000 remaining of $0.00"."""
     cfg = _spend_cap_cfg(monkeypatch, tmp_path, "0")
 
@@ -395,7 +395,7 @@ def test_check_spend_cap_reflects_tuning_ledger_state_in_its_reason(
     """Household spend folds in correction-web's paid tuning calls: no usage
     at all (including no tuning ledger) is a distinct reason from ordinary
     remaining-budget reporting once the ledger exists."""
-    from jasper.usage import UsageStore, tuning_usage_db_path
+    from jasper.service_state.usage import UsageStore, tuning_usage_db_path
 
     cfg = _spend_cap_cfg(monkeypatch, tmp_path, "1.00")
 

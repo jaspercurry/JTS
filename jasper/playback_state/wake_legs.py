@@ -16,8 +16,8 @@ consumer subscribes to by port. There are two kinds of consumer:
 
 Before this module the leg vocabulary lived in two places that could
 drift: the daemon's hardcoded ``on`` / ``off`` / ``dtln`` slots and
-``jasper.wake_ports.build_ports``'s larger ``on/off/dtln/raw0/ref/usb_*``
-port map. This registry unifies them. ``jasper.wake_ports`` now derives
+``jasper.service_state.wake_ports.build_ports``'s larger ``on/off/dtln/raw0/ref/usb_*``
+port map. This registry unifies them. ``jasper.service_state.wake_ports`` now derives
 its port constants from here, so each wire port has exactly one
 definition — ``jasper.cli.aec_bridge`` reads every emit port off this
 registry too, through ``jasper.aec.bridge_config.leg_default_port``.
@@ -36,7 +36,7 @@ and is free to be more descriptive.
 
 The parametric AEC3 *sweep* variants are intentionally NOT in this
 registry — they are tuning experiments enumerated dynamically in
-``jasper.aec_sweep``, not stable named legs. ``jasper.wake_ports``
+``jasper.aec_sweep``, not stable named legs. ``jasper.service_state.wake_ports``
 merges them on top of the registry ports for tooling.
 
 """

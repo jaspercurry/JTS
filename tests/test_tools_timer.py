@@ -16,7 +16,7 @@ from contextlib import closing
 
 import pytest
 
-from jasper.timers import TimerScheduler, TimerStore
+from jasper.service_state.timers import TimerScheduler, TimerStore
 from jasper.tools.timer import make_timer_tools
 
 

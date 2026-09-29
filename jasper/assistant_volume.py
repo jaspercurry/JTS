@@ -35,7 +35,7 @@ from .env_load import VOICE_GROUPING_ENV_FILE
 from .log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from .platform import wire
-from .tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
     resolve_tts_routing_snapshot,
@@ -46,7 +46,7 @@ from .volume_curve import canonical_target_db, percent_to_db
 from .volume_state import VolumeState
 
 if TYPE_CHECKING:
-    from .volume_persistence import VolumeRecord
+    from jasper.service_state.volume_persistence import VolumeRecord
 
 logger = logging.getLogger(__name__)
 

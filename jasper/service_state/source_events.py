@@ -22,11 +22,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .log_event import log_event
+from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source
 from jasper.playback_state.source_state import MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.source_events")
 
 Notify = Callable[[Source, str], None]
 

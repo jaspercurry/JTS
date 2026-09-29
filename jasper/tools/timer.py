@@ -4,7 +4,7 @@
 
 """Timer voice tools — set, list, cancel kitchen timers.
 
-Backed by `jasper.timers.TimerScheduler`, which owns persistence,
+Backed by `jasper.service_state.timers.TimerScheduler`, which owns persistence,
 asyncio task lifecycle, AND the optional pre-render hook (so the
 fire-time announcement WAV is cached before fire_at). This module
 is the function-tool surface the voice loop sees.
@@ -15,10 +15,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from . import tool
-from ..timers import human_duration
+from jasper.service_state.timers import human_duration
 
 if TYPE_CHECKING:
-    from ..timers import Timer, TimerScheduler
+    from jasper.service_state.timers import Timer, TimerScheduler
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,8 @@ import threading
 import time
 from typing import Any, cast
 
-from ... import enhanced_aec, wake_models
+from ... import enhanced_aec
+from jasper.service_state import wake_models
 from jasper.runtime_config.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
