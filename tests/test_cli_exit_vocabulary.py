@@ -26,13 +26,14 @@ import importlib.util
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker import bundles
+from jasper.active_speaker import baseline_profile, bundles, candidate_bank, round_bank
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
@@ -41,7 +42,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.cli import _refusal, crossover_prescriber, round as round_cli, round_views
+from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_seat_round,
@@ -59,6 +60,7 @@ from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_crossover_v2_room_prescription import _document as room_document
 from tests.test_prescription_document import bank, base, bass_packet, document as prescription, evidence  # noqa: F401
+from tests.test_preflight import ready_facts
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -584,6 +586,32 @@ def _prescription_argv(verb: str, *extra: str, room: bool = False) -> Callable[[
     return argv
 
 
+def _round_argv(argv: list[str], **wizard: Any) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    """A ``jasper-round`` verb whose preflight is ready, whose wizard answers each
+    named call with 200 and its payload, and whose wait, apply and reset succeed:
+    the answer is under test, not the run."""
+    def argv_(request: pytest.FixtureRequest, root: Path) -> list[str]:
+        monkeypatch = request.getfixturevalue("monkeypatch")
+        monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
+        for name, payload in wizard.items():
+            monkeypatch.setattr(WizardClient, name, lambda *args, payload=payload: (200, payload))
+        for module, name, value in (
+            (round_cli, "wait_for_round", lambda *args, **kwargs: {"status": "terminal", "result": "complete"}),
+            (round_cli, "_round_session_dir", lambda run: str(root)),
+            (round_bank, "finish_round", lambda path: (round_bank.BankedRound(root, {}), None)),
+            (round_cli, "apply_by_fingerprint", lambda client, fingerprint: {
+                "status": "applied", "candidate_fingerprint": fingerprint, "http": 200, "outcome": "applied"}),
+            (prescription_document, "saved_base", lambda: (None, {})),
+            (prescription_document, "reset_prescription_document", lambda **kwargs: {}),
+            (prescription_document, "judge_prescription_document", lambda document, **kwargs: None),
+            (candidate_bank, "publish_authored_candidate", lambda candidate: SimpleNamespace(fingerprint="f" * 64)),
+            (baseline_profile, "load_applied_baseline_profile_state", lambda *args: None),
+        ):
+            monkeypatch.setattr(module, name, value)
+        return argv
+    return argv_
+
+
 #: The tools whose answers are not views, and one success per answer each
 #: gives, by its ``ANSWER_SCHEMAS`` row. A room preview reads no take, so the
 #: ``--take`` its rows name must not reach their subjects.
@@ -591,6 +619,16 @@ _OTHER_TOOLS = {"jasper-round": round_cli, "jasper-crossover-prescriber": crosso
 _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = {
     "jasper-round list": lambda request, root: ["list"],
     "jasper-round show": lambda request, root: ["show", str(bank_measure_round(root))],
+    "jasper-round run": _round_argv(["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25",
+                                     "--candidates", "base"], open_session={"capture": {"session_id": "run-1"}}),
+    "jasper-round run --dry-run": _round_argv(["run", "--dry-run"]),
+    "jasper-round placed": _round_argv(["placed", "--run", "run-1", "--pose", "2"],
+                                      placed={"ok": True, "released": {"index": 1}}),
+    "jasper-round stop": _round_argv(["stop", "--run", "run-1"], stop={"capture": {"session_id": "run-1"}}),
+    "jasper-round status": _round_argv(["status", "--run", "run-1"], run_status={"run_id": "run-1", "status": "running"}),
+    "jasper-round wait": _round_argv(["wait", "--run", "run-1", "--timeout", "0"]),
+    "jasper-round apply": _round_argv(["apply", "a" * 64]),
+    "jasper-round reset": _round_argv(["reset", "--program", "speaker", "--keep-timing"]),
     "jasper-crossover-prescriber contract": lambda request, root: ["contract"],
     "jasper-crossover-prescriber status": lambda request, root: ["status"],
     "jasper-crossover-prescriber judge": _prescription_argv("judge"),
@@ -601,6 +639,14 @@ _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = 
         "judge --preview", "--take", "no-such-take", "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", "grid",
         room=True),
 }
+#: The subject and parameters a receipt states, by row, for the rows whose case fixes both (ADR-0389).
+_OTHER_ENVELOPES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "jasper-round placed": ({}, {"pose": 2}),
+    "jasper-round stop": ({}, {}),
+    "jasper-round status": ({}, {}),
+    "jasper-round apply": ({"candidate_id": "a" * 64}, {}),
+    "jasper-round reset": ({"candidate_id": "f" * 64}, {"program": "speaker", "keep_timing": True}),
+}
 
 
 @pytest.mark.parametrize("row", sorted(row for row in ANSWER_SCHEMAS if row.split()[0] in _OTHER_TOOLS))
@@ -608,7 +654,7 @@ def test_every_other_tuning_answer_carries_the_view_envelope(
     row: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``jasper-round``'s reads and the prescriber answer as a view does, naming only what they read (ADR-0387)."""
+    """``jasper-round`` and the prescriber answer as a view does, naming only what they read (ADR-0387)."""
 
     prog, verb = row.split()[:2]
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
@@ -619,6 +665,7 @@ def test_every_other_tuning_answer_carries_the_view_envelope(
     assert isinstance(answer["subject"], dict) and isinstance(answer["parameters"], dict)
     assert "take_ids" not in answer["subject"]
     assert "status" not in answer
+    assert row not in _OTHER_ENVELOPES or (answer["subject"], answer["parameters"]) == _OTHER_ENVELOPES[row]
 
 
 def _unanalysed_room_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:

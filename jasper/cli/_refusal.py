@@ -80,9 +80,9 @@ def envelope(
     view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
     parameters: Mapping[str, Any], out: Path | None = None, **fields: Any,
 ) -> dict[str, Any]:
-    """An analysis answer under the envelope every one shares: the view and its
+    """A success answer under the envelope every one shares: the view and its
     answer version, what it read (one subject, or a list of them as ``rounds``
-    for a view that compares rounds), the analysis parameters it used, and the
+    for a view that compares rounds), the parameters it used, and the
     artifact it wrote, when it wrote one."""
     # See ADR-0387
     document = {
@@ -97,25 +97,28 @@ def envelope(
 
 def answer(
     view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-    parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
+    parameters: Mapping[str, Any], out: Path | None = None, line: str, sort_keys: bool = True, **fields: Any,
 ) -> int:
     """Print :func:`envelope`'s answer and its one human line (ADR-0237)."""
-    return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line)
+    return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line,
+                    sort_keys=sort_keys)
 
 
 def refused(
     reason: str, detail: Any, *, exit_code: int, status: str = "refused",
-    code: str | None = None, next_action: Mapping[str, Any] | None = None,
+    code: str | None = None, next_action: Mapping[str, Any] | None = None, line: str | None = None,
 ) -> int:
     """Print the outcome on both streams and hand back ``exit_code``.
 
     ``detail`` is a sentence or the fields the failure carried -- everything the
     tool would otherwise have published as top-level keys goes here, so one
-    reader parses every refusal.
+    reader parses every refusal. ``line``, when given, is the stderr sentence
+    in place of ``detail``'s own.
     """
 
     sentence = (
-        detail if isinstance(detail, str)
+        line if line is not None
+        else detail if isinstance(detail, str)
         else json.dumps(detail, sort_keys=True, default=str)
     )
     record = {"status": status, "reason": reason, "detail": detail}
@@ -130,13 +133,13 @@ def refused(
 
 def failed(
     exit_code: int, reason: str, detail: Any, *,
-    code: str | None = None, next_action: Mapping[str, Any] | None = None,
+    code: str | None = None, next_action: Mapping[str, Any] | None = None, line: str | None = None,
 ) -> int:
     """One failing stage, published under the word its code owns."""
 
     return refused(
         reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code],
-        code=code, next_action=next_action,
+        code=code, next_action=next_action, line=line,
     )
 
 
