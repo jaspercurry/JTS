@@ -4,9 +4,11 @@
 """Manifest fixtures for retained rounds and legacy sidecar captures."""
 
 import json
+import os
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.measurement_context import capture_basis
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
@@ -33,9 +35,37 @@ def write_bundle_manifest(
                        for path in sorted(session_dir.glob("summed/*.json"))]
         groups = [manifest_set(records, selected=selected, refused=refused)]
     manifest = {"kind": "jts_run_manifest", "schema_version": 1, "program": program,
-                "run_id": "fixture", "finalized": True, "status": "complete", "sets": groups}
+                "run_id": "fixture", "finalized": True, "status": "complete",
+                "sets": [_banked(session_dir, index, group) for index, group in enumerate(groups)]}
     (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest))
     return manifest
+
+
+def _banked(session_dir: Path, index: int, group: dict) -> dict:
+    """``group`` with each take pointing where the join reads its record: a
+    hand-built take (one with no ``artifacts``) is banked as its own record,
+    which the scan of banked takes never finds, and a legacy sidecar named from
+    the bundle is named from the artifacts root, as the executor names a record."""
+    root = take_artifact_path(session_dir, "")
+    takes = []
+    for number, take in enumerate(group["takes"]):
+        if "artifacts" not in take:
+            record_id = f"fixture/{index}/{number}.json"
+            path = take_artifact_path(session_dir, record_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({key: value for key, value in take.items() if key != "selected"}))
+            take = {**take, "artifacts": {"record_id": record_id}}
+        elif (record_id := take["artifacts"]["record_id"]) and not (root / record_id).is_file() \
+                and (session_dir / record_id).is_file():
+            take = {**take, "artifacts": {**take["artifacts"], "record_id": os.path.relpath(session_dir / record_id, root)}}
+        takes.append(take)
+    return {**group, "takes": takes}
+
+
+def own_record(row: dict, record: dict, **fields) -> dict:
+    """A take built from ``row`` and the ``record`` it points at, with ``fields``,
+    that :func:`write_bundle_manifest` banks as its own record."""
+    return {**record, **{key: value for key, value in row.items() if key != "artifacts"}, **fields}
 
 
 def manifest_set(records, *, set_id=None, selected=None, refused=()) -> dict:

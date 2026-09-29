@@ -20,6 +20,7 @@ from jasper.platform.json_fields import as_mapping
 
 from . import bundles
 from .frequency_view import FrequencyRun
+from .measurement_analysis import banked_document
 from .measurement_document import frequency_run_from_documents
 from .crossover_v2.record_index import has_banked_take, measurement_documents
 
@@ -71,14 +72,15 @@ def _bundle_identity(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
+def load_measurement(run: ArchivedMeasurement, *, run_reference_db: float | None = None) -> FrequencyRun:
     """Load one archive entry from its banked take records."""
 
     direct = frequency_run_from_documents(
         run_id=run.id,
-        documents=[document for _, document in measurement_documents(run.bundle_dir)],
+        documents=[banked_document(document) for _, document in measurement_documents(run.bundle_dir)],
         started_at=run.started_at,
         state=run.state,
+        run_reference_db=run_reference_db,
     )
     metadata = {**direct.metadata, **_bundle_identity(run.bundle_dir)}
     if not direct.series:

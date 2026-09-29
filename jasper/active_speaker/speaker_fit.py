@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, replace
 from typing import Any, Mapping
 
@@ -18,7 +17,7 @@ from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, program_charge_db
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
-from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
+from jasper.active_speaker.crossover_v2.position_cycle import take_curve
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, resolve_set
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
@@ -30,7 +29,6 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, unavailable
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
@@ -63,7 +61,7 @@ def _round_candidate(sources: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
     raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
-def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
+def design_clouds(manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
     groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for group in manifest.get("sets", ()):
         basis = group["capture_basis"]
@@ -74,7 +72,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
         bearings = latest_measure_takes(
             ((group, take) for group in members for take in group["takes"]),
             key=lambda group, take: (take["pose"]["deg"], take["pose"].get("elevation_deg")) if (
-                role and role != REGIME_SUMMED and (take.get("role") or role) == role
+                role and role != REGIME_SUMMED
                 and take["pose"].get("kind") == POSE_KIND_BEARING and take["pose"].get("deg") is not None
             ) else None,
         )
@@ -85,12 +83,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                 responses = []
                 lo, hi = 0.0, float("inf")
                 for _group, take in bearings.values():
-                    curve = take.get("curve")
-                    if not curve:
-                        path = take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"])
-                        relative_artifact_path(inputs.session_dir, path)
-                        curve = next(c for c in json.loads(path.read_text()).get("curves", ()) if c["role"] == role)
-                    parsed = response_from_banked_curve(curve)
+                    parsed = response_from_banked_curve(take_curve(take, role) or {})
                     if parsed[0].role != role:
                         raise ValueError("design pose has no fit response")
                     responses.append(parsed[0])
@@ -148,28 +141,17 @@ def speaker_fit(
 ) -> dict[str, Any]:
     selected = resolve_set(inputs, set_id, manifest=manifest)
     take_id = selected.take_id(take_id)
-    take = next(take for take in selected.takes if take["take_id"] == take_id)
-    path = take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"])
-    relative_artifact_path(inputs.session_dir, path)
-    record = json.loads(path.read_text())
+    record = next(take for take in selected.takes if take["take_id"] == take_id)
     program = ExcitationProgram.from_dict(record["program"])
     if program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
-    if program.stimulus_id != selected.capture_basis["stimulus_id"] or record["take_id"] != take_id:
+    if program.stimulus_id != selected.capture_basis["stimulus_id"]:
         raise RoundViewsError("selected take does not match its manifest")
     sources = prescription_sources(inputs) if sources is None else sources
     try:
         base = _round_candidate(sources)
     except (OSError, ValueError, TypeError, LookupError) as exc:
         raise SpeakerFitUnreadable(str(exc), code=getattr(exc, "code", None)) from exc
-    analysis = take.get("analysis") or base.analysis
-    if analysis["stimulus_id"] != program.stimulus_id:
-        raise RoundViewsError("banked analysis does not match the selected program")
-    matching_takes = {take["take_id"] for group in manifest["sets"]
-                      if group["capture_basis"].get("stimulus_id") == program.stimulus_id
-                      for take in group["takes"] if take["selected"]}
-    if not take.get("analysis") and matching_takes != {take_id}:
-        raise RoundViewsError("banked analysis cannot distinguish the selected program's takes")
     if not inputs.banked or inputs.design_draft_path is None:
         raise RoundViewsError("speaker-fit requires the banked driver declaration")
     draft = sources.get("draft") or {}
@@ -187,15 +169,14 @@ def speaker_fit(
         raise RoundViewsError("speaker-fit requires one or two measured driver roles")
     vocabularies = _fit_vocabularies(base, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     if clouds_by_set is None:
-        clouds_by_set = design_clouds(inputs, manifest)
+        clouds_by_set = design_clouds(manifest)
     clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
               for group in manifest["sets"] if group["set_id"] in clouds_by_set
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
     regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
-    curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
-    drivers = [DriverEvidence(role, response_from_banked_curve(curves[role])[0], band, classes.get(role, "unknown"))
-               for role, band in bands.items()]
+    drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role) or {})[0], band,
+                              classes.get(role, "unknown")) for role, band in bands.items()]
     branches = fit_branches(
         drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},
         vocabulary=vocabularies,
@@ -234,6 +215,6 @@ def speaker_fit(
     return dict(
         set_id=selected.set_id, take_id=take_id,
         boost_evidence=selected_fit["boost_evidence"], linearization=linearization,
-        alignment=alignment_evidence({**take, "analysis": analysis}, sources),
+        alignment=alignment_evidence(record, sources),
         trim_decision=trim_decision,
     )

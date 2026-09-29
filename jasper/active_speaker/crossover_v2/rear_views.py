@@ -69,7 +69,7 @@ from jasper.platform.json_fields import finite_float
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis, compare_capture_basis
-from .position_cycle import curves_for_take, parse_curve_complex
+from .position_cycle import parse_curve_complex, take_curve
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
 from .round_captures import doc_pose_key
@@ -524,7 +524,7 @@ def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
 
 
 def _pair_segments(
-    record: Mapping[str, Any], manifest: Mapping[str, Any],
+    record: Mapping[str, Any],
 ) -> tuple[np.ndarray, dict[str, np.ndarray], tuple[float, float]] | None:
     """One pair take's three segments as complex transfers on ONE grid, with
     the band all three were driven over.
@@ -533,16 +533,11 @@ def _pair_segments(
     sampled at the nearest native bin, so the three banked curves stand on the
     same frequencies by construction and none is resampled here — a phase
     interpolated across a wrap is simply wrong.
-
-    The MANIFEST is read too: a real pair take's sidecar carries an empty
-    ``curves``, and each role's curve rides on that role's own set row
-    (:func:`~.position_cycle.curves_for_take`).
     """
-    banked = {str(curve.get("role")): curve
-              for curve in curves_for_take(record, manifest)}
     parsed = {}
     for role in PAIR_ROLES:
-        found = parse_curve_complex(banked[role]) if role in banked else None
+        curve = take_curve(record, role)
+        found = parse_curve_complex(curve) if curve is not None else None
         if found is None:
             return None
         parsed[role] = found
@@ -553,7 +548,7 @@ def _pair_segments(
 
 
 def _pair_position(
-    records: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], *, ceiling_hz: float,
+    records: Sequence[Mapping[str, Any]], *, ceiling_hz: float,
     arrival_gap_band_hz: Sequence[float] = ARRIVAL_GAP_BAND_HZ,
     arrival_gap_band_source: str = "default",
 ) -> tuple[dict[str, Any], np.ndarray] | None:
@@ -565,8 +560,7 @@ def _pair_position(
     non-linearity it exists to report. The coverage is the band this take
     itself drove, under the room ceiling.
     """
-    read = [found for record in records
-            if (found := _pair_segments(record, manifest)) is not None]
+    read = [found for record in records if (found := _pair_segments(record)) is not None]
     if not read:
         return None
     grid, transfers, swept_hz = read[0]
@@ -639,7 +633,7 @@ def _pair_document(
     grids: list[np.ndarray] = []
     for key, rows in sorted(records.items()):
         found = _pair_position(sorted(rows, key=lambda record: str(record.get("take_id") or "")),
-                               manifest, ceiling_hz=ceiling.ceiling_hz,
+                               ceiling_hz=ceiling.ceiling_hz,
                                arrival_gap_band_hz=stage["band_hz"] or ARRIVAL_GAP_BAND_HZ,
                                arrival_gap_band_source="rear_document" if stage["band_hz"] else "default")
         if found is None:

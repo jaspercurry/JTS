@@ -13,6 +13,8 @@ from jasper.cli import round_views
 from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKES
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.audio_measurement.program import build_measure_program, RoleBand
@@ -32,8 +34,8 @@ def _curve(level_db: float) -> dict:
 
 
 def _mark_take(take_id: str, level_db: float, role: str = "woofer") -> dict:
-    return {"take_id": take_id, "selected": True, "phase": "measure", "role": role, "pose": {**MARK},
-            "curve": {**_curve(level_db), "role": role}}
+    return {"take_id": take_id, "selected": True, "phase": "measure", "pose": {**MARK},
+            "curves": [{**_curve(level_db), "role": role}]}
 
 
 @pytest.fixture
@@ -50,10 +52,10 @@ def repeated_round(tmp_path):
 def test_repeat_spreads_selected_take_values_and_their_mark_pairs(repeated_round, capsys):
     root, group = repeated_round
     omitted = deepcopy(group["takes"][1])
-    omitted.update(take_id="replaced", selected=False, analysis={}, curve=_curve(9.0))
+    omitted.update(take_id="replaced", selected=False, analysis={}, curves=[_curve(9.0)])
     group["takes"].insert(0, omitted)
     off_axis = deepcopy(group["takes"][1])
-    off_axis.update(take_id="off-axis", pose={**off_axis["pose"], "deg": 20}, analysis={}, curve=_curve(9.0))
+    off_axis.update(take_id="off-axis", pose={**off_axis["pose"], "deg": 20}, analysis={}, curves=[_curve(9.0)])
     group["takes"].append(off_axis)
     write_manifest(root, groups=[group])
     assert round_views.main(["repeat", str(root), "--set", "mark"]) == 0
@@ -108,14 +110,16 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
         analysis = stand_in(record)
         expected.append({**analysis_json(analysis), "bass": None})
         return analysis
-    result, _ = asyncio.run(_run_gated(replace(_walk([0]), repeats=2), analyze=analyze,
-                                       seams=FakeSeams(records=Records()), gate=AnsweredGate()))
+    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), repeats=2), analyze=analyze,
+                                           seams=FakeSeams(records=Records()), gate=AnsweredGate()))
     assert result.status == "complete"
     assert len(expected) == 2
     for group in result.to_dict()["sets"]:
         assert [take["analysis"] for take in group["takes"]] == expected
 
     root = bank_measure_round(tmp_path)
+    for number, record in enumerate(fakes.records.banked, 1):  # each record where its row points
+        take_artifact_path(round_inputs(root).session_dir, f"rec-{number}").write_text(json.dumps(record))
     groups = result.to_dict()["sets"]
     write_manifest(root, groups=groups)
     assert round_views.main(["repeat", str(root), "--set", groups[0]["set_id"]]) == 0

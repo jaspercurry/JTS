@@ -24,6 +24,8 @@ from jasper.active_speaker.measurement_programs import (
     Preset, ProgramPose, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -1284,6 +1286,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
                           complete=True, started_s=0, ended_s=1, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")
+    take_artifact_path(round_inputs(root).session_dir, "record").write_text(json.dumps({"take_id": "pilot", "curves": []}))
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest.to_dict()))
     packet = write_round_packet(root, str(path), [])

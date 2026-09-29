@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
@@ -25,6 +24,9 @@ def live_round():
     packet = json.loads((Path(__file__).parent / "fixtures/round_d5dbe9ccdbd2.json").read_text())
     for fit in packet["fits"]:
         fit["boost_evidence"] = fit.pop("cloud")
+    for group in packet["manifest"]["sets"]:  # each take as the join reads it: the curve is its record's
+        for take in group["takes"]:
+            take["curves"] = [curve] if (curve := take.pop("curve", None)) else []
     return packet
 
 
@@ -52,17 +54,17 @@ def test_feature_variance_direction(cv, count, total, gain, classification):
 
 
 def _curve(band_hz, floor_hz):
-    return {"curve": {"freqs_hz": [100.0, 20000.0], "magnitude_db": [0.0, 0.0],
-                      "band_hz": band_hz, "validity_floor_hz": floor_hz}}
+    return {"curves": [{"role": "woofer", "freqs_hz": [100.0, 20000.0], "magnitude_db": [0.0, 0.0],
+                        "band_hz": band_hz, "validity_floor_hz": floor_hz}]}
 
 
 def test_common_measured_band_is_the_narrowest_shared_span():
     takes = [_curve([200.0, 12000.0], 200.0), _curve([300.0, 9000.0], 300.0)]
-    assert common_measured_band(takes) == [300.0, 9000.0]
+    assert common_measured_band(takes, "woofer") == [300.0, 9000.0]
 
 
 def test_common_measured_band_is_none_without_any_measured_curve():
-    assert common_measured_band([{"curve": {}}]) is None
+    assert common_measured_band([{"curves": []}, _curve([200.0, 12000.0], 200.0)], "tweeter") is None
 
 
 @pytest.mark.parametrize("unit,residual,gap,marks", [
@@ -91,19 +93,19 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
             "pose": pose,
             "selected": True,
             "phase": "measure",
-            "curve": curve,
+            "curves": [curve],
             "fault": None,
             "trusted_floor_hz": 500,
         }
         groups.append(
             {
                 "set_id": role,
-                "capture_basis": {"candidate_id": "base"},
+                "capture_basis": {"candidate_id": "base", "role": role},
                 "takes": [
                     take,
                     {**take, "take_id": "rejected", "selected": False},
                     *[{**take, "take_id": f"older-{i}", "timing": {"ended_s": -i},
-                       "curve": {**curve, "magnitude_db": [100, level + i, level + i, level + i, -100]}}
+                       "curves": [{**curve, "magnitude_db": [100, level + i, level + i, level + i, -100]}]}
                       for i in range(1, marks) if level is not None],
                 ],
             }
@@ -111,7 +113,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     groups.append(
         {
             "set_id": "other",
-            "capture_basis": {"candidate_id": "other"},
+            "capture_basis": {"candidate_id": "other", "role": "woofer"},
             "takes": [groups[0]["takes"][0]],
         }
     )
@@ -197,13 +199,13 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
         role = group["capture_basis"].get("role") or "summed"
         assert any(f"impulse {tmp_path} --set {group['set_id']} --take " in line and line.endswith(f"--role {role}`")
                    for line in index.splitlines())
-    curveless = {**manifest, "sets": [{**group, "takes": [{**take, "curve": None} for take in group["takes"]]}
+    curveless = {**manifest, "sets": [{**group, "takes": [{**take, "curves": []} for take in group["takes"]]}
                                       for group in manifest["sets"]]}
     assert "jasper-round-views impulse" not in packet_index(packet, tmp_path, [], curveless)
 
 
 @pytest.mark.parametrize("change", [
-    {"selected": False}, {"phase": "verify"}, {"role": "tweeter"},
+    {"selected": False}, {"phase": "verify"},
     {"pose": {"kind": "seat", "deg": 0, "elevation_deg": 0}},
     {"pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
     {"pose": {"kind": "bearing", "deg": 0, "elevation_deg": 10}},
@@ -212,12 +214,12 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
 ])
 def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
     grid = DEFAULT_ENVELOPE_GRID_HZ[49:54]
-    curve = {"freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
-    take = {"take_id": "a", "phase": "measure", "selected": True, "role": "woofer",
-            "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curve": curve}
-    other = {**take, "take_id": "unrelated", "curve": {**curve, "magnitude_db": [100] * 5}, **change}
-    group = {"set_id": "woofer", "capture_basis": {}, "takes": [take,
-             {**take, "take_id": "b", "curve": {**curve, "magnitude_db": [100, 3, -4, 0, 100]}}]}
+    curve = {"role": "woofer", "freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
+    take = {"take_id": "a", "phase": "measure", "selected": True,
+            "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curves": [curve]}
+    other = {**take, "take_id": "unrelated", "curves": [{**curve, "magnitude_db": [100] * 5}], **change}
+    group = {"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": [take,
+             {**take, "take_id": "b", "curves": [{**curve, "magnitude_db": [100, 3, -4, 0, 100]}]}]}
     manifest = {"sets": [group]}
     if "set_id" in change:
         manifest["sets"].append({**group, "set_id": "other", "takes": [other]})
@@ -236,12 +238,13 @@ def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
     (3, {}, None, "fit_band_unavailable"),
 ])
 def test_missing_mark_evidence_is_disclosed(marks, curve_change, band, reason):
-    takes = [{"take_id": str(i), "selected": True, "phase": "measure", "role": "woofer",
+    takes = [{"take_id": str(i), "selected": True, "phase": "measure",
               "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0,
-              "curve": {"freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
-                        **(curve_change if i == marks - 1 else {})}} for i in range(marks)]
+              "curves": [{"role": "woofer", "freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
+                          **(curve_change if i == marks - 1 else {})}]} for i in range(marks)]
     fit = {"set_id": "woofer", "role": "woofer", "fit_band_hz": band, "residual_rms_db": 1}
-    round_verdicts({"fits": [fit]}, manifest={"sets": [{"set_id": "woofer", "capture_basis": {}, "takes": takes}]},
+    round_verdicts({"fits": [fit]}, manifest={"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"},
+                                                        "takes": takes}]},
                    clouds={}, sources={})
     assert fit["verdict"] == {"repeat_spread_db": None, "n_pairs": marks * (marks - 1) // 2,
                               "repeat_basis": "no_mark_pairs" if marks < 2 else "mark_pairs_max_rms",
@@ -255,9 +258,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     sources["candidate"] = {"source_preset": {"crossover_regions": [
         {**sources["applied_profile"]["recomposition_snapshot"]["preset"]["crossover_regions"][0], "fc_hz": 8000},
     ]}}
-    (tmp_path / "bundle/session").mkdir(parents=True)
-    inputs = round_inputs(tmp_path)
-    clouds = design_clouds(inputs, manifest)
+    clouds = design_clouds(manifest)
     for fit in fixture["fits"]:
         fit.update(residual_rms_db=2.4, residual_max_db=6.1, reason_summary={})
         fit["boost_evidence"]["band_spread"][0]["f_lo"] = band_lo

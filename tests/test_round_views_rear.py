@@ -323,8 +323,8 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
 
     Every take carries the shape the runner really banks — a two-channel
     ``candidate_branches`` program, which the summed analyzer refuses outright.
-    The manifest carries the THREE role-scoped sets, each row with its take's
-    curve for that role, as the run manifest writes them. ``missing`` drops the solo
+    The manifest carries the THREE role-scoped sets, each row pointing at its
+    take's record, which banks every role's curve. ``missing`` drops the solo
     segments at named bearings; ``diagnostic`` false banks takes that analyzed
     no branches, the shape jts3 produced before #5361; ``swept_hz`` narrows the
     curves' own band so the band figures run out of bands to read.
@@ -373,8 +373,6 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     for role in sorted(rear_views.PAIR_ROLES):
         group = manifest_set(banked, set_id=f"{_PARENT}-{role}")
         group["capture_basis"].update(role=role, candidate_id=_PARENT)
-        for take, (_, record) in zip(group["takes"], banked):
-            take["curve"] = next((curve for curve in record["curves"] if curve["role"] == role), None)
         groups.append(group)
     write_manifest(root, program="rear/pair", groups=groups)
     _round_environment(root, applied=_SECTIONS[applied])
@@ -833,12 +831,7 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # One candidate, so no figure spread for a difference to be real against.
     # How the index renders that line is pinned with the other index cases.
     assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
-    # The frequency view reads the summed analyzer, which refuses a branch
-    # take's program, so a pair round banks none — as the real round does.
-    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "inventory"}
-    frequency_row = next(r for r in views if r["view"] == "frequency")
-    assert (frequency_row["status"], frequency_row["reason"]) == (
-        "unavailable", "measurement_analysis_program_unsupported")
+    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 

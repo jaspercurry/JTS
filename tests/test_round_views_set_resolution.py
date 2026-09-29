@@ -13,7 +13,6 @@ import pytest
 from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
 from jasper.active_speaker.crossover_v2 import room_views
 from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
-from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -22,13 +21,12 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from jasper.platform.json_fields import sha256_file
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, own_record, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 
 
@@ -45,8 +43,8 @@ def two_sets(tmp_path):
             take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
             records.append((row.path, record))
         group = manifest_set(records)
-        group["takes"].append({**group["takes"][0], "take_id": f"refused-{number}",
-                               "quality": {"status": "refused", "fault": "clipped"}, "selected": False})
+        group["takes"].append(own_record(group["takes"][0], records[0][1], take_id=f"refused-{number}",
+                                         quality={"status": "refused", "fault": "clipped"}, selected=False))
         groups.append(group)
     manifest = write_manifest(root, program="room", groups=groups)
     return root, manifest
@@ -65,7 +63,7 @@ def test_set_selects_manifest_takes_and_files_its_own_artifact(two_sets, capsys,
     group = manifest["sets"][index]
     selected = resolve_set(round_inputs(root), group["set_id"])
     assert selected.capture_basis == group["capture_basis"]
-    assert selected.takes == tuple(group["takes"])
+    assert [take["take_id"] for take in selected.takes] == [take["take_id"] for take in group["takes"]]
     assert selected.selected_ids == tuple(take["take_id"] for take in group["takes"] if take["selected"])
     assert main(["room", str(root), "--set", group["set_id"]]) == 0
     answer, document = artifact_answer(capsys)
@@ -195,39 +193,6 @@ def test_take_sweep_uses_the_same_record_and_artifact_bytes(tmp_path, capsys, ta
     else:
         answer, _ = artifact_answer(capsys)
         assert Path(answer["out"]).read_bytes() == (render_report(expected) + "\n").encode()
-
-
-@pytest.mark.parametrize("scope", ["round", "take"])
-def test_sweep_reads_manifest_curves_when_position_sidecars_have_none(tmp_path, capsys, scope):
-    impulse = np.zeros(1800)
-    impulse[100] = 1.0
-    root = bank_capture_round(tmp_path, [impulse] * 3)
-    session = round_inputs(root).session_dir
-    directory, _ = round_artifact_dir(session)
-    positions = directory / "positions"
-    positions.mkdir()
-    rows, curves = [], {}
-    for path in sorted(session.glob("summed/*.json")):
-        record = json.loads(path.read_text())
-        record.update(kind=POSITION_EVIDENCE_KIND, take_id=record.pop("position_id"),
-                      wav_sha256=sha256_file(session / record["wav_path"]))
-        curves[record["take_id"]], = record.pop("curves")
-        destination = positions / path.name
-        destination.write_text(json.dumps(record))
-        path.unlink()
-        rows.append((str(destination.relative_to(session / "evidence/v1/artifacts")), record))
-    group = manifest_set(rows)
-    for take in group["takes"]:
-        take.update(role="summed", curve=curves[take["take_id"]])
-    write_manifest(root, groups=[group])
-    flags = ["--take", group["takes"][0]["take_id"]] if scope == "take" else []
-    assert main(["sweep", str(root), "--scope", scope, "--set", group["set_id"], *flags]) == 0
-    answer, report = artifact_answer(capsys)
-    assert answer["scope"] == scope
-    if scope == "round":
-        assert {pose["capture_id"] for pose in report["poses"]} == set(curves)
-    else:
-        assert answer["capture_id"] == group["takes"][0]["take_id"]
 
 
 @pytest.mark.parametrize("override", [False, True])

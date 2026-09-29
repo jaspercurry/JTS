@@ -23,6 +23,7 @@ from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOS
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
+from .position_cycle import take_artifact_path
 from jasper.active_speaker import bundles
 from jasper.active_speaker.candidate_bank import _candidate_roots, _directories
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -483,9 +484,28 @@ class SetTakes(NamedTuple):
         raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
 
 
+def with_records(bundle_dir: Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """``manifest`` with each take row read with the record it points at, as
+    ``{**row, **record}``: a reader reads the take's own record (#5737 C1b). A
+    take that banked no record keeps its row."""
+    records: dict[str, Mapping[str, Any]] = {}
+
+    def joined(row: Mapping[str, Any]) -> dict[str, Any]:
+        record_id = row["artifacts"]["record_id"]
+        if record_id and record_id not in records:
+            records[record_id] = json.loads(take_artifact_path(bundle_dir, record_id).read_text())
+        return {**row, **records.get(record_id, {}), "record_id": record_id}
+
+    return {**manifest, "sets": [{**group, "takes": [joined(take) for take in group["takes"]]}
+                                 for group in manifest.get("sets", ())]}
+
+
 def read_run_manifest(
     inputs: RoundInputs, *, manifest: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
+    """The round's finalized run manifest, its take rows read with their records
+    (:func:`with_records`); a ``manifest`` passed in is one this returned."""
+    read = manifest is None
     if manifest is None:
         directory, _ = round_artifact_dir(inputs.session_dir)
         path = directory / RUN_MANIFEST_FILENAME if directory else inputs.session_dir / RUN_MANIFEST_FILENAME
@@ -495,7 +515,7 @@ def read_run_manifest(
     assert manifest is not None
     if manifest.get("finalized") is not True:
         raise RoundSetRefused("round_manifest_unfinalized", run_id=manifest.get("run_id"))
-    return manifest
+    return with_records(inputs.session_dir, manifest) if read else manifest
 
 
 def resolve_set(

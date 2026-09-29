@@ -106,7 +106,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
             swept_hz=(20, 5000), bearing={"pose"} if builder == "rear_upper" else set(),
         )["pose"]
     elif builder in ("rear_pair", "rear_preview"):
-        result = rear_views._pair_position([{"curves": _pair_curves()}], {}, ceiling_hz=500)
+        result = rear_views._pair_position([{"curves": _pair_curves()}], ceiling_hz=500)
         assert result is not None
         payload, _ = result
         if builder == "rear_preview":

@@ -11,7 +11,6 @@ from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
 from jasper.active_speaker.design_inputs import declared_by_target
-from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import REFUSE_NO_NEAR_FIELD_TAKES, EvidenceUnavailable
@@ -40,13 +39,11 @@ def _cmd_nearfield(args: argparse.Namespace) -> int:
     draft = (read_json_mapping(inputs.design_draft_path) if inputs.design_draft_path else None) or {}
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take.get("selected") and (take.get("pose") or {}).get("driver")]
-    # The CamillaDSP config each take played, and the band it banked, as its record read them back.
-    records = {take["take_id"]: read_json_mapping(take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"]))
-               or {} for take in takes}
-    graphs = {take_id: graph for take_id, record in records.items()
-              if (graph := ((record.get("provenance") or {}).get("graph") or {}).get("config")) is not None}
-    bands = {take_id: TrustedBand(**{**band, "undeclared": tuple(band.get("undeclared") or ())})
-             for take_id, record in records.items() if (band := record.get("trusted_band"))}
+    # The CamillaDSP config each take played, and the band it banked, as its record states them.
+    graphs = {take["take_id"]: graph for take in takes
+              if (graph := ((take.get("provenance") or {}).get("graph") or {}).get("config")) is not None}
+    bands = {take["take_id"]: TrustedBand(**{**band, "undeclared": tuple(band.get("undeclared") or ())})
+             for take in takes if (band := take.get("trusted_band"))}
     room = (stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_declared_geometry, inputs.declared_geometry_path)
             if inputs.declared_geometry_path else None)
     document = nearfield_view(takes, radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),

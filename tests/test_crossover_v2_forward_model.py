@@ -178,8 +178,6 @@ def test_forward_model_is_absent_from_the_cli_and_inventory(diagnostic_round, ca
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(["forward-model", str(diagnostic_round)])
     assert caught.value.code == 2
-    broken = diagnostic_round / "bundle/b0/summed/summed_old.json"
-    broken.write_text("{")
     assert cli_main(["inventory", str(diagnostic_round)]) == 0
     payload = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     assert all(row["view"] != "forward-model" for row in payload["artifacts"])

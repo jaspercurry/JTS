@@ -37,6 +37,7 @@ from jasper.audio_measurement.trusted_band import TrustedBand
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
 from .capture_provenance import take_trusted_band
+from .position_cycle import take_curve
 from .spatial import MARK_DISTANCE_M
 
 #: Where the distance step is read: above a port, below cone breakup (#5684),
@@ -119,7 +120,8 @@ def nearfield_view(
     room: DeclaredGeometry | None = None, played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
     banked_bands: Mapping[str, TrustedBand] = MappingProxyType({}),
 ) -> dict[str, Any]:
-    """The kept one-driver takes of a round's run manifest, band by band, and
+    """The kept one-driver takes of a round's run manifest, each read as its
+    record (its driver's curve, purpose, level and verdict), band by band, and
     each driver's placements, raw curves and distance steps. Each placement
     states the trusted band its take banked (``banked_bands``, by take id), or
     else one from its distance, the declared cone and ``room``, the round's
@@ -133,15 +135,16 @@ def nearfield_view(
     raw_rows: list[tuple[np.ndarray, np.ndarray] | None] = []
     placed: dict[str, dict[tuple[float, str], list[int]]] = {}
     for take in takes:
-        if not (take.get("selected") and (take.get("pose") or {}).get("driver") and take.get("curve")):
+        driver = (take.get("pose") or {}).get("driver")
+        if not (take.get("selected") and driver and (curve := take_curve(take, driver))):
             continue
-        freqs, sweeps = _sweeps(take["curve"])
-        swept = take["curve"]["band_hz"]
-        driver, stated_m = take["pose"]["driver"], take["pose"].get("distance_m")
+        freqs, sweeps = _sweeps(curve)
+        swept = curve["band_hz"]
+        stated_m = take["pose"].get("distance_m")
         # A pose at the mark banks no distance of its own.
         distance_m = MARK_DISTANCE_M if stated_m is None else float(stated_m)
         trusted = banked_bands.get(take["take_id"]) or take_trusted_band(
-            purpose=take.get("purpose"), kind=take["pose"].get("kind"), distance_m=stated_m, driver=driver,
+            purpose=take.get("measurement_purpose"), kind=take["pose"].get("kind"), distance_m=stated_m, driver=driver,
             roles=(), diameters_mm_by_target=radiating_diameter_mm_by_target, room=room)
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
         path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
@@ -149,8 +152,8 @@ def nearfield_view(
         raw_rows.append(None if path_db is None else
                         (freqs, (sweeps[1:] if len(sweeps) > 1 else sweeps) - fader_db - path_db))
         row = {"take_id": take["take_id"], "driver": driver, "distance_mm": round(distance_m * 1000.0, 1),
-               "kind": take["pose"].get("kind"), "gate": _gate(take["curve"]),
-               "level_db_spl": ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
+               "kind": take["pose"].get("kind"), "gate": _gate(curve),
+               "level_db_spl": ((take.get("verdict") or {}).get("evidence") or {}).get("level_db_spl"),
                "bands": [band for edges in NEAR_FIELD_BANDS_HZ
                          if (band := _band(freqs, sweeps, edges, swept, trusted)) is not None]}
         placed.setdefault(driver, {}).setdefault((row["distance_mm"], row["kind"]), []).append(len(rows))

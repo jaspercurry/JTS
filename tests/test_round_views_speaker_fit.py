@@ -26,7 +26,9 @@ from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, exception_detail
-from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError, prescription_sources, round_artifact_dir, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    RoundViewsError, prescription_sources, read_run_manifest, round_artifact_dir, round_inputs,
+)
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands, analysis_curve_records
 from jasper.active_speaker.linearization_envelope import compose_envelope
@@ -57,7 +59,7 @@ from jasper.active_speaker.candidate_bank import find_banked_candidate
 from jasper.active_speaker import candidate_parts
 from jasper.active_speaker.candidate_parts import baseline_candidate_id, candidate_from_design_draft
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, own_record, write_manifest
 from tests.crossover_v2_fixtures import _fixture_applied_profile, _one_way_preset
 
 
@@ -106,7 +108,7 @@ def speaker_round(tmp_path):
                                      anchor_delay_us=150, snap_delta_us=7.5),
     )
     record.update(program=program.to_dict(), stimulus_id=program.stimulus_id,
-                  curves=analysis_curve_records(analysis, program),
+                  curves=analysis_curve_records(analysis, program), analysis=analysis_json(analysis),
                   capture_setup={"calibration": {"model": "minidsp_umik2", "calibration_id": "mic-1"}},
                   capture_calibration={"applied": True, "calibration_id": "mic-1", "curve_fingerprint": "curve-1"})
     record_path = take_artifact_path(inputs.session_dir, row.path)
@@ -183,7 +185,7 @@ def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, 
     root, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    manifest = json.loads((directory / "run_manifest.json").read_text())
+    manifest = read_run_manifest(inputs)
     _bank_candidate(directory, json.loads((directory / "candidate.json").read_text())["analysis"], fc_hz=fc_hz)
     original = fit_branches
 
@@ -213,8 +215,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    manifest = json.loads((directory / "run_manifest.json").read_text())
-    path = take_artifact_path(inputs.session_dir, manifest["sets"][0]["takes"][0]["artifacts"]["record_id"])
+    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["record_id"])
     for curve in record["curves"]:
         response = response_from_banked_curve(curve)[0]
         level = 10 if curve["role"] == "tweeter" else 0
@@ -223,8 +224,6 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     banked_trim = {"woofer": min(0, 10 - cut_db), "tweeter": min(0, -10 + cut_db)}
     analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
     _bank_candidate(directory, {**analysis, "trim_db": banked_trim})
-    manifest["sets"][0]["capture_basis"]["gating_applied"] = True
-    manifest["sets"][0]["takes"][0]["role"] = "tweeter"
     original = fit_branches
 
     def controlled_fit(drivers, **kwargs):
@@ -234,6 +233,8 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
             if role == "tweeter" and cut_db else ())) for role, fit in branches.fits.items()})
 
     path.write_text(json.dumps(record))
+    manifest = read_run_manifest(inputs)
+    manifest["sets"][0]["capture_basis"].update(gating_applied=True, role="tweeter")
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", controlled_fit)
     rows = _fits(inputs, manifest, prescription_sources(inputs), {})
     assert rows
@@ -297,9 +298,8 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
     group = manifest_set(rows, set_id=role, selected={r["take_id"] for _, r in rows[:poses] + rows[3:6]})
     group["capture_basis"].update(role=changes.get("basis_role", role), stimulus=changes.get("stimulus"))
-    for take in group["takes"]:
-        take.update(role=changes.get("basis_role", role), analysis=candidate["analysis"])
-    manifest = write_manifest(root, groups=[group])
+    write_manifest(root, groups=[group])
+    manifest = read_run_manifest(inputs)
     flags = ["--boost-floor-hz", str(changes["floor"])] if "floor" in changes else []
     assert round_views.main(["speaker-fit", str(root), "--set", role, "--take", "design-0", *flags]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -323,7 +323,7 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         assert fit["class_prior_hz"] == {"full_to_hz": 10000, "taper_zero_hz": 20000}
         spread = fit["position_spread_db"]["16000"]
         assert spread == pytest.approx(0) if changes["horn_positions"] == 3 else spread > 1
-        packet_fit = next(f for f in _fits(inputs, manifest, prescription_sources(inputs), design_clouds(inputs, manifest))
+        packet_fit = next(f for f in _fits(inputs, manifest, prescription_sources(inputs), design_clouds(manifest))
                           if f["role"] == role and f["take_id"] == "design-0")
         assert packet_fit["position_spread_db"] == fit["position_spread_db"]
         assert packet_fit["class_prior_hz"] == fit["class_prior_hz"]
@@ -337,16 +337,16 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
     root, record, *_ = speaker_round
     curve = record["curves"][0]
     poses = [(0, 0)] * 4 + [(h, 0) for h in horizontal] + [(0, v) for v in vertical]
-    takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure", "role": "woofer",
+    takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure",
               "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "timing": {"ended_s": i},
-              "curve": {**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}}
+              "curves": [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}]}
              for i, (h, v) in enumerate(poses)]
     manifest = {"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]}
-    cloud = design_clouds(round_inputs(root), manifest)["woofer"]
+    cloud = design_clouds(manifest)["woofer"]
     assert cloud.n_positions == len(cloud.boost_responses) == expected
-    np.testing.assert_allclose(cloud.boost_responses[0].magnitude_db, takes[3]["curve"]["magnitude_db"])
+    np.testing.assert_allclose(cloud.boost_responses[0].magnitude_db, takes[3]["curves"][0]["magnitude_db"])
     for response, take in zip(cloud.boost_responses[1:], takes[4:]):
-        np.testing.assert_allclose(response.magnitude_db, take["curve"]["magnitude_db"])
+        np.testing.assert_allclose(response.magnitude_db, take["curves"][0]["magnitude_db"])
 
 
 @pytest.mark.parametrize("marks,pairs,spread", [(2, 1, 1), (4, 6, 3)])
@@ -354,7 +354,6 @@ def test_current_round_packet_uses_mark_pairs(speaker_round, marks, pairs, sprea
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
     rows = []
     for i in range(marks):
         curves = [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()} for curve in record["curves"]]
@@ -364,8 +363,8 @@ def test_current_round_packet_uses_mark_pairs(speaker_round, marks, pairs, sprea
         rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), capture))
     group = manifest_set(rows, set_id="woofer")
     group["capture_basis"]["role"] = "woofer"
-    for take, (_, capture) in zip(group["takes"], rows):
-        take.update(role="woofer", pose_index=0, analysis=analysis, curve=capture["curves"][0])
+    for take in group["takes"]:
+        take.update(pose_index=0)
     write_manifest(root, program="speaker/mark", groups=[group])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     assert len(packet["fits"]) == marks
@@ -410,9 +409,6 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
         rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
     group = manifest_set(rows, set_id="speaker-set")
     group["capture_basis"]["role"] = "woofer"
-    candidate = json.loads((directory / "candidate.json").read_text())
-    for take in group["takes"]:
-        take["analysis"] = candidate["analysis"]
     write_manifest(root, groups=[group])
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "floor-0"]) == 0
     proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]
@@ -438,25 +434,6 @@ def test_speaker_fit_reads_the_run_purpose_behind_a_sized_program(speaker_round,
     assert json.loads(capsys.readouterr().out)["set_id"] == "speaker-set"
 
 
-def test_speaker_fit_reads_curves_the_run_banked_on_the_manifest_rows(speaker_round, capsys):
-    root, record, program, *_ = speaker_round
-    inputs = round_inputs(root)
-    row_path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    curves = {curve["role"]: curve for curve in record.pop("curves")}
-    take_artifact_path(inputs.session_dir, row_path).write_text(json.dumps(record))
-    groups = []
-    for role, curve in curves.items():
-        group = manifest_set([(row_path, record)], set_id=f"{role}-set")
-        group["capture_basis"].update(role=role)
-        for take in group["takes"]:
-            take.update(role=role, curve=curve)
-        groups.append(group)
-    write_manifest(root, groups=groups)
-    assert round_views.main(["speaker-fit", str(root), "--set", "woofer-set"]) == 0
-    answer = json.loads(capsys.readouterr().out)
-    assert set(answer["linearization"]) == {"woofer", "tweeter"}
-
-
 @pytest.mark.parametrize("trial", [False, True])
 def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round, capsys, monkeypatch, trial):
     root, record, *_ = speaker_round
@@ -475,11 +452,10 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
     row_path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     measured = manifest_set([(row_path, record)], set_id="speaker-set")
     measured["capture_basis"].update(role="woofer", graph_scope="drivers")
-    measured["takes"][0].update(role="woofer", analysis=stored["analysis"])
     base = manifest_set([(row_path, record)], set_id="base-set")
     base["capture_basis"].update(graph_scope="timing", candidate_id="projected-timing-fp")
-    base["takes"][0].update(phase="timing", role="summed")
-    manifest = write_manifest(root, groups=[base, measured])
+    base["takes"] = [own_record(base["takes"][0], record, phase="timing")]
+    write_manifest(root, groups=[base, measured])
     looked_up = []
 
     def find(fingerprint):
@@ -490,7 +466,8 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     assert looked_up == ([] if trial else ["base-fp"])
     proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]["fit"]
-    fit, = _fits(round_inputs(root), manifest, prescription_sources(round_inputs(root)), {})
+    inputs = round_inputs(root)
+    fit, = _fits(inputs, read_run_manifest(inputs), prescription_sources(inputs), {})
     assert fit["filters"] == proposal["filters"] and fit["filters"]
     assert fit["residual_rms_db"] == proposal["residual_rms_db"] is not None
 
@@ -501,13 +478,9 @@ def test_packet_preserves_missing_round_base_error(speaker_round):
     directory, _ = round_artifact_dir(inputs.session_dir)
     (directory / "candidate.json").unlink()
     (root / "applied-profile.json").unlink(missing_ok=True)
-    path = directory / "run_manifest.json"
-    manifest = json.loads(path.read_text())
-    manifest["sets"][0]["takes"][0]["role"] = "woofer"
-    path.write_text(json.dumps(manifest))
     with pytest.raises(RoundViewsError) as exc:
-        speaker_fit(round_inputs(root), manifest, "speaker-set")
-    fit, = write_round_packet(root, str(path), [])["fits"]
+        speaker_fit(inputs, read_run_manifest(inputs), "speaker-set")
+    fit, = write_round_packet(root, str(directory / "run_manifest.json"), [])["fits"]
     assert fit["reason_summary"] == {"unavailable": exception_detail(exc.value)}
     assert fit["filters"] is fit["residual_rms_db"] is None
 
@@ -522,13 +495,14 @@ def test_unknown_set_uses_registry_refusal(speaker_round, capsys):
     assert result["detail"]["set_id"] == "unknown"
 
 
-@pytest.mark.parametrize("field", ["validity_floor_hz", "repeat_curves"])
-def test_a_curve_banked_without_a_fit_input_refuses_by_that_field(speaker_round, capsys, field):
-    """#2902: every banked curve carries both fit inputs, so one without refuses by name."""
+@pytest.mark.parametrize("field", ["curves", "validity_floor_hz", "repeat_curves"])
+def test_a_take_banked_without_a_fit_input_refuses_by_that_field(speaker_round, capsys, field):
+    """#2902: every banked take carries its curves, and every curve both fit
+    inputs, so one without refuses by name; the run manifest's copy is never read."""
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    del record["curves"][0][field]
+    del (record if field == "curves" else record["curves"][0])[field]
     take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
     refusal = json.loads(capsys.readouterr().out)
@@ -559,17 +533,6 @@ def test_speaker_fit_uses_executor_umik2_provenance(speaker_round, capsys, tmp_p
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert {entry["fit"]["mic_tier"] for entry in result["linearization"].values()} == {"reference"}
-
-
-def test_a_program_shared_by_takes_cannot_identify_the_banked_analysis(speaker_round, capsys):
-    root, record, *_ = speaker_round
-    inputs = round_inputs(root)
-    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    group = manifest_set([(row.path, record)], set_id="speaker-set")
-    second = manifest_set([(row.path, {**record, "take_id": "second-take"})], set_id="second-set")
-    write_manifest(root, groups=[group, second])
-    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["reason"] == round_views.REASON_REFUSED
 
 
 @pytest.mark.parametrize("damage,code", [
@@ -659,26 +622,23 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
     if anonymous:
         group["capture_basis"].update(other_identity)
     original = group["takes"][0]
-    group["takes"] = [{**original, "take_id": f"pose-{deg}", "role": "tweeter", "analysis": analysis,
-                       "curve": record["curves"][1], "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0},
-                       "attempt": 1, "selected": deg != -20} for deg in (-20, 0, 20)]
+    group["takes"] = [own_record(original, record, take_id=f"pose-{deg}", analysis=analysis, attempt=1,
+                                 pose={"kind": "bearing", "deg": deg, "elevation_deg": 0}, selected=deg != -20)
+                      for deg in (-20, 0, 20)]
     latest = {**group["takes"][0], "take_id": "retake", "selected": True, "attempt": 2}
     retake = {**group, "set_id": "retaken", "takes": [latest]}
-    stale = {**retake, "set_id": "older", "takes": [{**latest, "attempt": 1, "curve": {"role": "bad"}}]}
+    stale = {**retake, "set_id": "older", "takes": [{**latest, "attempt": 1, "curves": [{"role": "bad"}]}]}
     other = {**group, "set_id": "other", "capture_basis": {**group["capture_basis"], **other_identity},
-             "takes": [{**original, "role": "tweeter", "analysis": analysis, "curve": record["curves"][1],
-                        "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}}]}
-    manifest = write_manifest(root, groups=[retake, group, stale, other])
-    clouds = design_clouds(inputs, manifest)
+             "takes": [own_record(original, record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0})]}
+    write_manifest(root, groups=[retake, group, stale, other])
+    manifest = read_run_manifest(inputs)
+    clouds = design_clouds(manifest)
     assert {key: cloud.n_positions for key, cloud in clouds.items()} == (
         {"first": 2, "retaken": 1, "older": 1, "other": 1} if anonymous else {"first": 3, "retaken": 3, "older": 3, "other": 1})
     assert len(round_alignment(manifest, prescription_sources(inputs))[0]) == (5 if anonymous else 4)
     assert len(clouds["retaken"].boost_responses) == (0 if anonymous else 3)
     for selected, expected in (("first", 2 if anonymous else 3), ("other", 1)):
         take = group["takes"][1] if selected == "first" else other["takes"][0]
-        path = directory / "positions" / f"{take['take_id']}.json"
-        path.write_text(json.dumps({**record, "take_id": take["take_id"]}))
-        take["artifacts"] = {"record_id": str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts"))}
         result = speaker_fit(inputs, manifest, selected, take["take_id"])
         assert result["boost_evidence"]["design_poses"] == expected
         assert result["linearization"]["tweeter"]["composed_boost_cap_db"] == 40.0
@@ -727,24 +687,25 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
     group = manifest_set([(path, record)], set_id="timing")
     group["capture_basis"].update(role="woofer")
-    take = group["takes"][0]
     evidence = {f"snr.{role}.alignment.{key}": value for role, row in expected["snr"].items() for key, value in row.items()}
     levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
                           "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
-    take.update(analysis=analysis, role="woofer", pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
-                quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
+    take = own_record(group["takes"][0], record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+                      quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
+    group["takes"] = [take]
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
         refused.update({"quality": {"fault": fault}} if held else {"fault": fault})
     group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20},
                                "analysis": {**analysis, "delay_us": 900}, "timing": {"ended_s": 3}}]
-    manifest = write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
+    write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     pair, off_axis = packet["alignment"]
     assert off_axis["pose"]["deg"] == 20
     assert off_axis["committed"]["delay_us"] == 900
-    fit = speaker_fit(round_inputs(root), manifest, "timing", take["take_id"])
+    inputs = round_inputs(root)
+    fit = speaker_fit(inputs, read_run_manifest(inputs), "timing", take["take_id"])
     for answer in (pair, json.loads(json.dumps(fit["alignment"]))):
         assert {key: answer[key] for key in expected} == expected
         assert answer["applied"]["candidate"] == "applied-candidate"
@@ -770,10 +731,8 @@ def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_pat
     for role in ("summed", "woofer", "tweeter"):
         group = manifest_set([(row.path, record)], set_id=role)
         group["capture_basis"].update(role=role)
-        curve = next((c for c in record["curves"] if c["role"] == role), record["curves"][0])
-        group["takes"][0].update(role=role, curve={**curve, "role": role})
         if refused and role == "woofer":
-            group["takes"][0]["phase"] = "timing"
+            group["takes"] = [own_record(group["takes"][0], record, phase="timing")]
         groups.append(group)
     write_manifest(root, groups=groups)
     mark_state(inputs.session_dir, "applied")
@@ -788,7 +747,6 @@ def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_pat
     else:
         assert isinstance(fits["woofer"]["filters"], list)
     assert isinstance(fits["tweeter"]["filters"], list)
-    assert {series["role"] for series in packet["series"]} == {"summed", "woofer", "tweeter"}
     assert {take["role"] for group in packet["sets"] for take in group["takes"]} == {"summed", "woofer", "tweeter"}
 
 
@@ -830,8 +788,8 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         state["session_phases"].remove("verify")
     inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
-    candidate = json.loads((directory / "candidate.json").read_text())
-    curves = {curve["role"]: curve for curve in record.pop("curves")}
+    for curve in record["curves"]:
+        curve.update(gate_window_ms=7.0, validity_floor_hz=142.9, floor_source=FLOOR_SEARCH_BOUND)
     groups = []
     for base in (True, False):
         rows = []
@@ -840,18 +798,13 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             path = directory / "positions" / f"{take['take_id']}.json"
             path.write_text(json.dumps(take))
             rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
-        for role, curve in curves.items():
-            curve.update(gate_window_ms=7.0, validity_floor_hz=142.9, floor_source=FLOOR_SEARCH_BOUND)
+        for role in ("woofer", "tweeter"):
             count = pose_count if base else candidate_count
             group = manifest_set(rows, set_id=f"{base}-{role}", selected={r["take_id"] for _, r in rows[:count]})
             group.update(base=base)
             group["capture_basis"].update(role=role, candidate_id="base" if base else "candidate")
-            for take in group["takes"]:
-                take.update(role=role, curve=curve, analysis=candidate["analysis"])
             groups.append(group)
     manifest = write_manifest(root, groups=groups)
-    monkeypatch.setattr("jasper.active_speaker.measurement_analysis.analyze_measurement_bundle",
-                        lambda *a, **kw: pytest.fail("speaker packet reopened WAVs"))
     applied_path = tmp_path / "applied-profile.json"
     applied_path.write_text(json.dumps({**_fixture_applied_profile(fc_hz=2400),
                                        "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION}))
@@ -860,7 +813,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
                         design_draft_path=root / "design-draft.json", applied_profile_path=applied_path,
                         view_runner=round_views.run_bookkeeping)
     packet = json.loads((banked.path / "packet.json").read_text())
-    expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], t["role"])
+    expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], g["capture_basis"]["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}
     assert len(packet["fits"]) == len(expected) == 2 * (pose_count + candidate_count)
     assert all(fit["handover_level_shift_db"] is not None for fit in packet["fits"])
@@ -879,8 +832,10 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         count = pose_count if fit["set_id"].startswith("True-") else candidate_count
         assert fit["boost_evidence"]["design_poses"] == count
         assert fit["composed_boost_cap_db"] == 40.0
-    assert len(packet["series"]) == len(expected)
-    assert all(s["stats"]["flatness_rms_db"]["value"] is not None for s in packet["series"])
+    # Every banked take is drawn from its record, tagged with the set its run kept it in (#5737 C1b).
+    drawn = [series for series in packet["series"] if series["set_id"]]
+    assert expected <= {(s["set_id"], s["take_id"], s["pose"]["deg"], s["role"]) for s in drawn}
+    assert all(s["stats"]["flatness_rms_db"]["value"] is not None for s in drawn)
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
     assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")
     index = (banked.path / INDEX_FILENAME).read_text().splitlines()
@@ -899,7 +854,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
                 "gate_window_ms": 7.0, "validity_floor_hz": 142.9,
                 "trusted_floor_hz": f_trusted_floor_hz(.007), "floor_source": FLOOR_SEARCH_BOUND,
             }
-    for series in packet["series"]:
+    for series in drawn:
         stats = series["stats"]
         if series["role"] == "woofer":
             assert stats["band_means_db"]["250"]["below_trusted_floor"] is True
@@ -945,8 +900,9 @@ def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
     group = manifest_set([(row.path, record)], set_id="design-mark")
     group.update(base=not trial)
     group["capture_basis"].update(candidate_id=declared.fingerprint if trial else None)
-    group["takes"][0].update(analysis=analysis, attempt=2, timing={"started_s": 190, "ended_s": 200},
-                            pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})
+    group["takes"] = [own_record(group["takes"][0], record, analysis=analysis, attempt=2,
+                                 timing={"started_s": 190, "ended_s": 200},
+                                 pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})]
     off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 30},
                 "timing": {"ended_s": 400}, "analysis": {**analysis, "delay_us": 999}}
     unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "timing": {"ended_s": 300}}
@@ -1007,10 +963,10 @@ def test_packet_timing_verification_and_next_action(speaker_round, verdict, resi
     profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
     profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))
     group = manifest_set([(path, record)], set_id="timing")
-    group["takes"][0].update(pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+    group["takes"] = [own_record(group["takes"][0], record, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
         analysis={"trim_db": {"woofer": 0, "tweeter": -3}, "delay_us": 22, "polarity": "normal",
                   "timing_saved": timing, "timing_verdict": verdict,
-                  "timing_verification": verification})
+                  "timing_verification": verification})]
     group["takes"].append({**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0},
                           "analysis": {**group["takes"][0]["analysis"], "timing_verdict": "needs_measurement"}})
     write_manifest(root, groups=[group])

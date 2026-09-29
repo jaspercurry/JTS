@@ -409,6 +409,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
               "sets": [], "fits": [], "series": [], "packet_fingerprint": None}
     (tmp_path / "packet.json").write_text(json.dumps(packet))
+    (tmp_path / "info.json").write_text("{}")  # the round finish_bass_packet reads its takes from
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"runs": [{"level": {"run": {"level_db": level}}} for level in (-30, -20, -10)], "sets": []}))
     with patch("jasper.active_speaker.round_packet_report.bass_table_markdown", wraps=bass_table_markdown) as render:

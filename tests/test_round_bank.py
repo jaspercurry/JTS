@@ -28,8 +28,8 @@ from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
+from jasper.active_speaker.frequency_reference import band_limited_curve
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
-from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle
 from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
 from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY, EVIDENCE_NOT_BANKED
 from jasper.cli import crossover_prescriber
@@ -153,6 +153,7 @@ def test_a_round_with_no_walk_to_index_is_banked_without_one(tmp_path):
     session_dir, state_path = _live_session(tmp_path)
     for take in session_dir.rglob("positions/lateral_*.json"):
         take.unlink()
+    write_manifest(session_dir)
 
     banked = bank_round(
         session_dir,
@@ -430,9 +431,10 @@ def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set)
         return {"view": view, "status": "written"}
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run if real_set else None)
-    assert calls == ([None] if real_set else [])
-    assert banked.provenance["views"] == [{"view": "inventory", **({"status": "written", "set_id": "speaker"} if real_set else
-        {"status": "unavailable", "reason": "view_runner_unavailable"})}]
+    assert calls == ([None, None] if real_set else [])
+    answer = {"status": "written"} if real_set else {"status": "unavailable", "reason": "view_runner_unavailable"}
+    assert banked.provenance["views"] == [{"view": "frequency", **answer},
+                                          {"view": "inventory", **answer, **({"set_id": "speaker"} if real_set else {})}]
     if not real_set:
         with pytest.raises(RoundSetRefused) as refused:
             resolve_set(round_inputs(banked.path))
@@ -440,7 +442,7 @@ def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set)
 
 
 @pytest.mark.parametrize("purpose,expected", [
-    ("speaker", ("inventory",)),
+    ("speaker", ("frequency", "inventory")),
     ("room", ("room", "room-grade", "frequency", "inventory")),
     ("bass", ("bass", "frequency", "inventory")),
 ])
@@ -498,7 +500,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run)
     if purpose == "speaker":
-        assert calls == [("inventory", row["set_id"], None) for row in groups]
+        assert calls == [("frequency", None, None)] + [("inventory", row["set_id"], None) for row in groups]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
             ("room-grade", row["set_id"], None) for row in trials if base] + [
@@ -747,7 +749,7 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, l
 
     session, state = _live_session(tmp_path)
     group = {"set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
-             "takes": [{"take_id": "take", "role": "summed", "selected": True, "pose": {"kind": "seat"}}]}
+             "takes": [{"take_id": "take", "curves": [], "selected": True, "pose": {"kind": "seat"}}]}
     write_manifest(session, program="room", groups=[group])
     applied = {"kind": bp.BASELINE_PROFILE_KIND, "artifact_schema_version": bp.SCHEMA_VERSION,
                "source": {"measured_candidate_fingerprint": "a123456789bc" + "0" * 52},
@@ -804,14 +806,9 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     samples, rate = gate_sweep.decode_wav_to_mono(wav)
     reference = analyze_program_capture(program, samples, rate).summed_response
     assert reference is not None and reference.gating["applied"]
-    original, = analyze_measurement_bundle(bundle).series
-    manifest = write_manifest(bundle, program=purpose)
-    group, = manifest["sets"]
+    original, = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())["curves"]
+    group, = write_manifest(bundle, program=purpose)["sets"]
     take, = group["takes"]
-    take.update(role="summed", curve={key: original.to_dict()[key] for key in (
-        "freqs_hz", "magnitude_db", "gate_window_ms", "validity_floor_hz", "smoothing_fractional_octave",
-    )})
-    write_manifest(bundle, program=purpose, groups=[group])
     mark_state(bundle, "applied")
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     deconvolve = Mock(wraps=gate_sweep.deconvolve_window)
@@ -834,8 +831,7 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
         assert curves[1]["floor_source"] == reference.gating["floor_source"]
     assert ungated["position"] == gated["position"]
     assert [row["pose"] for row in packet["series"]] == [take["pose"], take["pose"]]
-    assert ungated["freqs_hz"] == list(original.freqs_hz)
-    assert ungated["magnitude_db"] == list(original.magnitude_db)
+    assert (ungated["freqs_hz"], ungated["magnitude_db"]) == tuple(map(list, band_limited_curve(original)))
     hz, db = np.asarray(gated["freqs_hz"]), np.asarray(gated["magnitude_db"])
     keep = (reference.freqs_hz >= gate_sweep.GRID_LO_HZ * 0.7) & (
         reference.freqs_hz <= gate_sweep.GRID_HI_HZ * 1.3)

@@ -20,16 +20,16 @@ from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
 from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
 from .crossover_v2.intervention import CloudFitTerms
+from .crossover_v2.position_cycle import take_curve
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
-    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, round_inputs, prescription_sources,
-    ROUND_INPUT_ERRORS,
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, SetTakes, round_inputs,
+    prescription_sources, ROUND_INPUT_ERRORS, with_records,
 )
-from .frequency_plot import prepare_plot_curve, render_frequency_view
-from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
+from .frequency_plot import prepare_plot_curve
+from .frequency_view import FREQUENCY_VIEW_FILENAME
 from .linearization_fit import unavailable_fit
 from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
-from .round_view_builders import analyzed_frequency_run
 from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
 from .round_verdicts import round_verdicts
@@ -115,7 +115,7 @@ def store_banked_evidence(round_dir: Path) -> Exception | None:
 
 def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
     destination = round_dir / PACKET_FILENAME
-    manifest = json.loads(manifest_path.read_text())
+    manifest = with_records(round_inputs(round_dir).session_dir, json.loads(manifest_path.read_text()))
     if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
         return destination
     candidates = sorted({row["capture_basis"]["candidate_id"] for row in manifest["sets"] if not row["base"]})
@@ -140,23 +140,24 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
     computed: dict[str, Any] = {}
     fits = []
     for group in manifest.get("sets", ()):
-        if group["capture_basis"].get("gating_applied") is False:
+        set_role = group["capture_basis"].get("role")
+        if group["capture_basis"].get("gating_applied") is False or set_role in (None, "summed"):
             continue
         for take in group["takes"]:
-            if not take["selected"] or take.get("role") in (None, "summed"):
+            if not take["selected"]:
                 continue
             take_id = take["take_id"]
-            if take_id not in computed or take["role"] not in computed[take_id]:
+            if take_id not in computed or set_role not in computed[take_id]:
                 try:
                     result = speaker_fit(inputs, manifest, group["set_id"], take_id,
                                          clouds_by_set=clouds, sources=sources)
                     computed[take_id] = {role: {**proposal, "trim_decision": result["trim_decision"]}
                                          for role, proposal in result["linearization"].items()}
                 except ROUND_INPUT_ERRORS as exc:
-                    computed[take_id] = {take["role"]: {"fit": unavailable_fit(
-                        take["role"], _refusal_code(exc, exception_detail(exc)))}}
+                    computed[take_id] = {set_role: {"fit": unavailable_fit(
+                        set_role, _refusal_code(exc, exception_detail(exc)))}}
             for role, proposal in computed[take_id].items():
-                if role != take["role"]:
+                if role != set_role:
                     continue
                 fit = proposal["fit"]
                 trims = (proposal.get("trim_decision") or {}).get("committed_db", {})
@@ -168,9 +169,17 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
     return fits
 
 
+def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A set's takes as the packet carries them; a take that banked no record has no gate."""
+    role = SetTakes.from_row(group).role
+    return [{**{key: take.get(key) for key in ("take_id", "pose", "selected", "alignment")}, "role": role,
+             "screens": take.get("screens", []), "fault": take.get("fault") or (take.get("quality") or {}).get("fault"),
+             **gate_fields(take_curve(take, role) if take["record_id"] else None)} for take in group["takes"]]
+
+
 def write_round_packet(target: Path, manifest_path: str | None, views: list[dict[str, Any]]) -> dict[str, Any]:
     inputs = round_inputs(target)
-    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else {}
+    manifest = with_records(inputs.session_dir, json.loads(Path(manifest_path).read_text())) if manifest_path else {}
     purpose = run_purpose(manifest.get("program"))
     errors: list[dict[str, Any]] = []
     series: list[dict[str, Any]] = []
@@ -178,10 +187,6 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                **{f"{family}_views": [] for family in PACKET_FAMILIES}, "manifest": manifest_path}
     view_path = target / FREQUENCY_VIEW_FILENAME
     try:
-        if purpose == PURPOSE_SPEAKER:
-            run = analyzed_frequency_run(target)
-            if run.series:
-                atomic_write_json(view_path, build_frequency_view(run))
         if view_path.is_file():
             view = json.loads(view_path.read_text())
             rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [(g, t) for g in manifest.get("sets", ()) for t in g["takes"]]
@@ -190,18 +195,15 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                     plot = curve.get("plot") or prepare_plot_curve(curve, run_doc.get("metadata"))
                     curve["plot"] = plot
                     group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.get("take_id")
-                                        and (not curve.get("set_id") or g["set_id"] == curve["set_id"])
-                                        and (not curve.get("role") or t.get("role") in (None, curve["role"]))), ({}, {}))
-                    gates = gate_fields({"curve": {**(take.get("curve") or {}), **curve}})
+                                        and (not curve.get("set_id") or g["set_id"] == curve["set_id"])), ({}, {}))
+                    gates = gate_fields({**((take_curve(take, curve.get("role")) if take else None) or {}), **curve})
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
                                    "candidate_id": curve.get("candidate_id") or group.get("capture_basis", {}).get("candidate_id"),
-                                   "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
+                                   "pose": take.get("pose", curve.get("position")), "role": curve.get("role"),
                                    "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),
                                    **gates, "stats": series_stats(curve, plot, gates["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)
-            if purpose == PURPOSE_SPEAKER:
-                render_frequency_view(view, target / PICTURE_FILENAME)
     except ROUND_INPUT_ERRORS + (ImportError, EvidenceUnavailable) as exc:
         errors.append({"artifact": "frequency", "reason": getattr(exc, "reason", "frequency_unavailable")})
     if (target / PICTURE_FILENAME).is_file():
@@ -239,7 +241,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
-    clouds = design_clouds(inputs, manifest)
+    clouds = design_clouds(manifest)
     alignments, alignment_verdict = round_alignment(
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
@@ -251,10 +253,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
               "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
-                        "takes": [{**{key: t.get(key) for key in ("take_id", "pose", "role", "selected", "alignment")},
-                                   "screens": t.get("screens", []),
-                                   "fault": t.get("fault") or (t.get("quality") or {}).get("fault"), **gate_fields(t)} for t in g["takes"]]}
-                       for g in manifest.get("sets", ())], "series": series,
+                        "takes": _packet_takes(g)} for g in manifest.get("sets", ())], "series": series,
               # A fit is gated speaker evidence; a rear take is measured ungated
               # below the gate's trusted floor and proposes no driver filters.
               "fits": [] if purpose == PURPOSE_REAR else _fits(inputs, manifest, sources, clouds),
