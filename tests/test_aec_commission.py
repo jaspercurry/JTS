@@ -33,8 +33,8 @@ from jasper.chip_aec.alignment import (
     commissioning_stimulus,
 )
 from jasper.cli import aec_commission
-from jasper import measurement_window as coordinator
-from jasper.measurement_window import MeasurementWindowError
+from jasper.runtime import measurement_window as coordinator
+from jasper.runtime.measurement_window import MeasurementWindowError
 from jasper.mics import xvf3800
 
 from tests._log_events import event_fields, event_records

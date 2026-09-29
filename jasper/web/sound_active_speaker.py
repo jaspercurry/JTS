@@ -73,7 +73,7 @@ from jasper.audio_routes.output_hardware import (
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
 )
-from jasper.output_topology_runtime import trigger_reconcile
+from jasper.runtime.output_topology_runtime import trigger_reconcile
 from jasper.active_speaker.commission_wiring import (
     commission_seams,
 )
@@ -280,7 +280,7 @@ def _save_output_topology_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Save speaker intent, parking audio when the layout changes."""
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
-    from jasper.output_topology_runtime import RECONCILE_UNIT, trigger_reconcile
+    from jasper.runtime.output_topology_runtime import RECONCILE_UNIT, trigger_reconcile
 
     with output_topology_mutation() as mutation:
         snapshot = mutation.snapshot()
@@ -366,7 +366,7 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
 
     from jasper.active_speaker.reset import clear_active_speaker_setup_state
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
-    from jasper.output_topology_runtime import trigger_reconcile
+    from jasper.runtime.output_topology_runtime import trigger_reconcile
 
     if not isinstance(raw, Mapping):
         raise ValueError("reset request must be an object")
@@ -469,7 +469,7 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     from jasper.active_speaker.runtime_convergence import park_and_commit_topology
-    from jasper.output_topology_runtime import trigger_reconcile
+    from jasper.runtime.output_topology_runtime import trigger_reconcile
 
     if not isinstance(raw, Mapping):
         raise ValueError("re-pin request must be an object")

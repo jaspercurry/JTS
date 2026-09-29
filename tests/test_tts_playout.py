@@ -35,14 +35,14 @@ import time
 import numpy as np
 import pytest
 
-import jasper.tts_playout as tts_mod
+import jasper.runtime.tts_playout as tts_mod
 from jasper.runtime_config.assistant_loudness import (
     UPSAMPLE_2X_CONTEXT,
     AssistantLoudnessProfile,
     LoudnessMeasurement,
     upsample_2x,
 )
-from jasper.tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 
 from ._async_wait import wait_signalled
 from ._log_events import event_fields
@@ -181,7 +181,7 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
     ending a turn *early* is the failure mode this primitive defends
     against, not sleeping "too long" under contention.
 
-    So pin the mechanism instead of the wall clock: jasper/tts_playout.py
+    So pin the mechanism instead of the wall clock: jasper/runtime/tts_playout.py
     imports `asyncio` as a full module, so `tts_mod.asyncio.sleep`
     is patchable from the test side. Recording the requested duration
     instead of actually sleeping removes the flaky scheduler dependency

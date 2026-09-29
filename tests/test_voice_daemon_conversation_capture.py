@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 
-from jasper.conversation_history import (
+from jasper.runtime.conversation_history import (
     CAPTURE_ENABLED_ENV,
     ConversationStore,
     DB_PATH_ENV,

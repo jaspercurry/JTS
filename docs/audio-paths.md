@@ -428,7 +428,7 @@ applied (`target`, `peak_cap`, `fallback_profile`, `gain_floor`).
 ## End-of-turn drain
 
 TTS writes record bytes accepted by the output transport. They do not prove
-DAC output or what a listener heard. `TtsPlayout` (`jasper/tts_playout.py`)
+DAC output or what a listener heard. `TtsPlayout` (`jasper/runtime/tts_playout.py`)
 estimates a drain deadline from accepted sample duration plus
 `Config.tts_drain_tail_sec`
 (`JASPER_TTS_DRAIN_TAIL_SEC`). `expected_drain_at()` returns that deadline;

@@ -31,7 +31,7 @@ from typing import Any
 from jasper.log_event import log_event
 
 from ..config import Config
-from ..mic_capture import MicCapture
+from jasper.runtime.mic_capture import MicCapture
 from jasper.playback_state.wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from jasper.service_state.wake_events import CAPTURE_POST_SEC, CAPTURE_PRE_SEC
 from jasper.playback_state.wake_legs import LegSpec, wake_input_legs

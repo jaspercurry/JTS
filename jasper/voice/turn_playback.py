@@ -11,7 +11,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import AsyncGenerator, Awaitable, Callable
 
-from ..tts_playout import TtsPlayout, confirmed_tts_flush
+from jasper.runtime.tts_playout import TtsPlayout, confirmed_tts_flush
 from ..log_event import log_event
 from .conversation import WATCHDOG_POLL_SEC
 from .session import AudioOutChunk, Interruptible, LiveTurn

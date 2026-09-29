@@ -17,13 +17,13 @@ from datetime import datetime, timezone
 from jasper.log_event import log_event
 
 from jasper.audio_control.audio_buffer import AudioBuffer
-from .mic_capture import InputDeviceUnavailable, MicCapture
-from .tts_playout import TtsPlayout
+from jasper.runtime.mic_capture import InputDeviceUnavailable, MicCapture
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.service_state.wake_events import WakeEventStore
 from .cues import AudioCueManager
 from jasper.service_state.vad import SpeechVAD
 from .config import Config
-from .conversation_history import ConversationStore
+from jasper.runtime.conversation_history import ConversationStore
 from .watchdog import Heartbeat
 from jasper.service_state.timers import Timer, announcement_text
 from jasper.service_state.usage import (

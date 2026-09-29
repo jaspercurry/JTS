@@ -19,8 +19,8 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
-from .control import park_record
-from .service_units import OUTPUTD_SERVICE, unit_failed, unit_unstable
+from jasper.control import park_record
+from jasper.service_units import OUTPUTD_SERVICE, unit_failed, unit_unstable
 
 #: The unit whose ``ExecStopPost=`` writes the record and ``ExecStartPost=``
 #: removes it.

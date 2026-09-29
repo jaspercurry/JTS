@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from jasper import audio_validation
+from jasper.runtime import audio_validation
 from jasper.audio_resources import audio_validation_artifacts as artifacts
 from jasper.audio_control import audio_validation_hardware_checks
 from jasper.cli import audio_hw_validate

@@ -97,7 +97,7 @@ class _SeatLevelSession:
     lock allows at a time. The cross-process guard against two passes
     running at once -- including one started directly from the CLI -- is
     ``jasper-seat-level``'s own ``measurement_window`` lease
-    (:mod:`jasper.measurement_window`), not this lock.
+    (:mod:`jasper.runtime.measurement_window`), not this lock.
     """
 
     def __init__(self) -> None:

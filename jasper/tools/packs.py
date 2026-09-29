@@ -47,7 +47,7 @@ from .weather import make_weather_tools
 
 if TYPE_CHECKING:
     from jasper.service_state.google_creds import GoogleClients
-    from ..google_routes import GoogleRoutesClient
+    from jasper.runtime.google_routes import GoogleRoutesClient
     from jasper.service_state.home_assistant import HAClient
     from jasper.audio_control.renderer import RendererClient
     from jasper.service_state.spotify_router import Router

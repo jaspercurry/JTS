@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from jasper.audio_input_view import build_microphone_settings_view, valid_profile_ids
+from jasper.runtime.audio_input_view import build_microphone_settings_view, valid_profile_ids
 
 
 def _base_status() -> dict:

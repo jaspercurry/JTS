@@ -56,7 +56,7 @@ Checked at `04a2a9bc949223079dc8d39371e7c9cd16cc1744`:
 - [Turn teardown](../../jasper/voice/turn_lifecycle.py) reads capture after
   provider release and passes it to the single
   [capture writer](../../jasper/voice/conversation_capture.py).
-- [Storage](../../jasper/conversation_history.py) and the
+- [Storage](../../jasper/runtime/conversation_history.py) and the
   [chat wizard](../../jasper/web/chat_setup.py) implement opt-in, pause gating,
   retention, and clear-all. The production writer leaves `tool_calls_json`
   null. The doctor's chat check reads the store's health; `/state.chat` is

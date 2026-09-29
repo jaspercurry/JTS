@@ -21,11 +21,12 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
-    from ..google_routes import GoogleRoutesClient
+    from jasper.runtime.google_routes import GoogleRoutesClient
 
-from .. import flight_recorder, transit
-from ..mic_capture import InputDeviceUnavailable, make_mic_capture
-from ..tts_playout import TtsPlayout
+from jasper.runtime import flight_recorder
+from .. import transit
+from jasper.runtime.mic_capture import InputDeviceUnavailable, make_mic_capture
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.runtime_config.assistant_loudness import active_voice_identity, ensure_seed_profile
 from jasper.audio_control.assistant_volume import volume_context_publisher_for_runtime
 from jasper.audio_control.camilla import (
@@ -33,7 +34,7 @@ from jasper.audio_control.camilla import (
     set_canonical_target_db_provider,
 )
 from ..config import Config, VoiceConfigError, VoiceProviderNotConfigured
-from ..conversation_history import (
+from jasper.runtime.conversation_history import (
     ConversationStore,
     read_settings as read_conversation_settings,
 )
@@ -47,7 +48,7 @@ from ..cues.registry import (
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
 from jasper.service_state.google_creds import GoogleClients, build_google_clients
-from ..google_routes import build_google_routes_client
+from jasper.runtime.google_routes import build_google_routes_client
 from jasper.service_state.home_assistant import HAClient, build_ha_client
 from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
@@ -1063,7 +1064,7 @@ async def run() -> None:
     cfg = Config.from_env()
     configure_logging()
     # DEBUG for the in-RAM ring, INFO for the journal, plus the /system
-    # Debug card toggle. See jasper/flight_recorder.py.
+    # Debug card toggle. See jasper/runtime/flight_recorder.py.
     flight_recorder.install("voice")
     speech_policy = _log_speech_input_policy(cfg)
     pricing, pricing_overrides = _resolve_pricing(cfg)

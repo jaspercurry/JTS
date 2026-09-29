@@ -29,11 +29,11 @@ from jasper.runtime_config.assistant_loudness import (
     upsample_2x,
 )
 from jasper.audio_control.assistant_volume import EffectiveVolumeContext
-from .log_event import log_event
-from .platform import wire
+from jasper.log_event import log_event
+from jasper.platform import wire
 from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.tts_playout")
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

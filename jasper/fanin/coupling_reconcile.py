@@ -42,7 +42,7 @@ from typing import IO
 from jasper.control import camilla_topology_gate_state, restart_broker
 from jasper.atomic_io import flock_held
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
-from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
+from jasper.runtime.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import env_value, read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions

@@ -192,7 +192,7 @@ _CAMILLA_START_TIMEOUT_SEC = (
 #
 # The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps 15 s — the
 # same bound the topology save/reset/repin wizard surfaces use
-# (``jasper.output_topology_runtime.trigger_reconcile``) — because a timeout
+# (``jasper.runtime.output_topology_runtime.trigger_reconcile``) — because a timeout
 # there costs only a delayed marker re-derivation, which the next
 # udev/boot/deploy event converges anyway.
 #

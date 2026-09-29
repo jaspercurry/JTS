@@ -18,7 +18,7 @@ from jasper.audio_measurement.admission.playback import (
     WavPlaybackCancelledBeforeSpawn,
 )
 from jasper.log_event import log_event
-from jasper.measurement_window import MEASUREMENT_FANIN_LABEL
+from jasper.runtime.measurement_window import MEASUREMENT_FANIN_LABEL
 from jasper.platform.route_health import (
     ROUTE_SURFACES, TAKE_FAULT_COUNTER_PATHS, TAKE_FAULT_COUNTER_SUFFIXES, known_counter_deltas, lane_indexes,
     numeric_deltas,

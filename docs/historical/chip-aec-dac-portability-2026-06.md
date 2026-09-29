@@ -183,7 +183,7 @@ arm production chip-AEC.
 
 **2. Calibration-artifact persistence + shippable profiles.** Record a DAC's
 measured verdict as a durable per-profile fact (mirror
-[`jasper/audio_validation.py`](../../jasper/audio_validation.py)) keyed on stable
+[`jasper/audio_validation.py`](../../jasper/runtime/audio_validation.py)) keyed on stable
 DAC + mic + firmware identity, so it survives reboots *and* ships as
 "known-good" to other units/builders with the same hardware. This is what
 makes a once-validated DAC plug-and-play for everyone instead of re-measured

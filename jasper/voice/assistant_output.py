@@ -27,7 +27,7 @@ from jasper.runtime_config.assistant_loudness import (
     tts_envelope_lufs_for_level,
 )
 from jasper.audio_control.assistant_volume import resolved_route_consumes_volume_context
-from ..tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 from ..config import Config
 from ..cues import AudioCueManager, registry
 from ..cues.manager import (

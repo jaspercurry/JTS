@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Literal
 
 from jasper import transit
-from jasper.mic_capture import MicCapture
+from jasper.runtime.mic_capture import MicCapture
 from jasper.audio_control.camilla import CamillaController
 from jasper.config import Config
 from jasper.service_state.google_creds import build_google_clients
-from jasper.google_routes import build_google_routes_client
+from jasper.runtime.google_routes import build_google_routes_client
 from jasper.service_state.home_assistant import build_ha_client
 from jasper.audio_control.renderer import RendererClient
 from jasper.service_state.timers import TimerScheduler, TimerStore

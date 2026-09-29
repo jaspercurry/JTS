@@ -55,7 +55,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import summed_sweep_band_hz
 from jasper.audio_measurement.ramp import HARD_CEILING_DBFS
 from jasper.audio_measurement.wired_capture import WiredSplMonitor, resolve_wired_mic
 from jasper.log_event import log_event
-from jasper.measurement_window import measurement_window
+from jasper.runtime.measurement_window import measurement_window
 from ..logging_setup import configure_logging
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 

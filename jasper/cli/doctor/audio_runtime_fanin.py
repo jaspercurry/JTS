@@ -19,7 +19,7 @@ from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from jasper.dsp_control.camilla_config_contract import devices_playback_is_pipe
 from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...json_fields import finite_float
-from ...measurement_window import MEASUREMENT_FANIN_LABEL
+from jasper.runtime.measurement_window import MEASUREMENT_FANIN_LABEL
 from jasper.playback_state.music_sources import SOURCE_SPECS, Source
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
@@ -673,7 +673,7 @@ def check_fanin_tts_drops() -> CheckResult:
     fan-in's TTS lane drops whole audio commands that arrive while its bounded
     pending queue is full (it cannot block the socket reader without stalling
     barge-in FLUSH behind queued audio). The Python writer paces itself to stay
-    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/tts_playout.py), so a
+    under that budget (`_OUTPUTD_PACE_AHEAD_SEC` in jasper/runtime/tts_playout.py), so a
     nonzero drop counter means assistant/cue audio audibly skipped.
 
     Every counter here is CUMULATIVE SINCE FAN-IN START, so the verdict keys on

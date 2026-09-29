@@ -36,7 +36,7 @@ recorder page, whose HTTP adapter is ``jasper/web/wake_corpus_setup.py``:
     lifecycle transactions, and shutdown.
 
 Nothing is re-exported at the package root on purpose: the modules import
-NumPy (and lazily ``jasper.mic_capture``), so importers reach for the
+NumPy (and lazily ``jasper.runtime.mic_capture``), so importers reach for the
 specific submodule only when the recorder is actually needed. Keeping the
 package root empty preserves the lazy-import contract that
 ``tests/test_web_main_imports.py`` enforces.

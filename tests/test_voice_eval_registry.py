@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
-from jasper.tts_playout import confirmed_tts_flush
+from jasper.runtime.tts_playout import confirmed_tts_flush
 from jasper.config import Config
 from jasper.tools import ToolRegistry, dispatch_tool, tool
 from jasper.voice import trace

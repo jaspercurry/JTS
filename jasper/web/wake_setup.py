@@ -85,7 +85,7 @@ from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from ..audio_input_view import profile_choice_specs, valid_profile_ids
+from jasper.runtime.audio_input_view import profile_choice_specs, valid_profile_ids
 from ..log_event import log_event
 from jasper.service_state import wake_models
 from ..env_file import read_env_file

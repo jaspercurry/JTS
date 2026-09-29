@@ -16,9 +16,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import tts_playout
+from jasper.runtime import tts_playout
 from jasper.runtime_config.assistant_loudness import UPSAMPLE_2X_CONTEXT, upsample_2x
-from jasper.tts_playout import (
+from jasper.runtime.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
     _SPINE_SCALE,
@@ -195,4 +195,4 @@ def test_the_spine_scale_is_the_shift_the_rust_primitive_applies():
 
 def test_tts_module_is_the_one_the_worktree_owns():
     """Guard against a shared venv resolving `jasper` to another checkout."""
-    assert Path(tts_playout.__file__).resolve().parent.parent == _REPO
+    assert Path(tts_playout.__file__).resolve().parents[2] == _REPO

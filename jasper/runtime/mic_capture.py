@@ -25,7 +25,7 @@ from jasper.service_state import wake_ports
 # so the two places that open a stream import it lazily and this module stays
 # importable off-hardware. Pinned by tests/test_lazy_imports.py.
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.mic_capture")
 
 if TYPE_CHECKING:
     import sounddevice as sd
