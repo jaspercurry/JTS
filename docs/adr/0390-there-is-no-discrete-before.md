@@ -22,8 +22,8 @@
 - **Consequences:**
   - A packet built from now on has no `entry_baseline` block. A stored packet keeps its block, and
     nothing reads it.
-  - The measurements page draws each take's own curves. Its details still name the bundle's build,
-    topology and microphone calibration.
+  - The measurements page draws each take's own curves, and a run's metadata still names the
+    bundle's build, topology and microphone calibration.
   - No `jasper-round-views` verb reads a round's packet any more; `evidence_not_banked` still
     refuses in the packet reader and the prescriber.
   - The dead benefit code of the retired engine goes with it: the benefit margin and plateau, and
