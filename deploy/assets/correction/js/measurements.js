@@ -10,6 +10,7 @@ import { frequencyWindow } from './measurement-frequency-window.js';
 const els = {
   runA: document.getElementById('measurement-run-a'),
   runB: document.getElementById('measurement-run-b'),
+  runBSource: document.getElementById('measurement-run-b-source'),
   canvas: document.getElementById('measurement-chart'),
   status: document.getElementById('measurement-chart-status'),
   series: document.getElementById('measurement-series'),
@@ -25,9 +26,14 @@ const POSITION_DASHES = [
   [12, 3, 2, 3, 2, 3],
 ];
 
+// A chosen "None" sends this, so it wins over run A's comparand like a chosen run.
+const NO_RUN_B = 'none';
+
 let currentView = null;
 let visibleSeries = new Set();
 let resizeTimer = null;
+// The viewer's run B: null until chosen, so B follows run A's comparand; '' is "None".
+let chosenB = null;
 const selectedRange = frequencyWindow(document.getElementById('measurement-frequency-window'), draw);
 
 function seriesKey(run, series) {
@@ -56,7 +62,7 @@ function fillRunPicker(select, catalog, selected, optional) {
 function dataUrl(runA, runB) {
   const query = new URLSearchParams();
   if (runA) query.set('a', runA);
-  if (runB) query.set('b', runB);
+  if (runB != null) query.set('b', runB || NO_RUN_B);
   const suffix = query.toString();
   return suffix ? `data?${suffix}` : 'data';
 }
@@ -216,6 +222,7 @@ function clearView(message) {
 function render(payload) {
   fillRunPicker(els.runA, payload.catalog, payload.selected.a, false);
   fillRunPicker(els.runB, payload.catalog, payload.selected.b, true);
+  els.runBSource.hidden = payload.selected.b_source !== 'comparand';
   currentView = payload.view;
   visibleSeries = new Set();
   if (!currentView) {
@@ -232,7 +239,7 @@ function render(payload) {
   draw();
 }
 
-async function load(runA = '', runB = '') {
+async function load(runA = '', runB = null) {
   els.status.textContent = 'Loading measurements…';
   try {
     render(await getJSON(dataUrl(runA, runB)));
@@ -242,8 +249,11 @@ async function load(runA = '', runB = '') {
   }
 }
 
-els.runA.addEventListener('change', () => load(els.runA.value, els.runB.value));
-els.runB.addEventListener('change', () => load(els.runA.value, els.runB.value));
+els.runA.addEventListener('change', () => load(els.runA.value, chosenB));
+els.runB.addEventListener('change', () => {
+  chosenB = els.runB.value;
+  load(els.runA.value, chosenB);
+});
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(draw, 120);
