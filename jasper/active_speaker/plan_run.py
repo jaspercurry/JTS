@@ -261,7 +261,7 @@ async def run_plan(
     from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
     manifest.request_fingerprint = request_fingerprint(request)
-    manifest.program, manifest.layout = request.program, request.layout
+    manifest.preset, manifest.layout = request.program, request.layout
     manifest.spl_monitor = spl_monitor
     manifest.asked = {
         "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
@@ -433,7 +433,6 @@ async def _run(
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, CaptureStopped, asyncio.CancelledError)
-    started = clock()
     ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
     attempts = [0] * len(work)
     offset, grant_epoch = 0, 0
@@ -443,7 +442,7 @@ async def _run(
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
-                              mover=manifest.asked["mover"], program=manifest.program or "") if door and door.program_for_spec else {"poses": len(ledgers)}
+                              mover=manifest.asked["mover"], program=manifest.preset or "") if door and door.program_for_spec else {"poses": len(ledgers)}
     sweep_offsets = list(accumulate(schedule.get("work_sweeps", [0] * len(work)), initial=0))
     progress: dict[str, Any] = {}
     stack = AsyncExitStack()
@@ -521,7 +520,7 @@ async def _run(
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
                         "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1,
-                        "level_mismatches": driver_level_mismatches(manifest.to_dict())}
+                        "level_mismatches": driver_level_mismatches(manifest.joined())}
             entry = item.entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
@@ -594,7 +593,6 @@ async def _run(
                                            next="stop" if assessed.next == "accept" else assessed.next,
                                            evidence={**assessed.evidence, "incident": incident})
                     await manifest.append(record, record_id, assessed, complete=outcome.complete,
-                                          started_s=take_started - started, ended_s=clock() - started,
                                           level_observation=level_verdict.evidence, ordinal=ordinal)
                     if verdict is None or (verdict.next != "stop" and assessed.next != "accept"):
                         verdict = assessed
@@ -636,15 +634,13 @@ async def _run(
                 if attempts[offset] != attempt:
                     manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
                 fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
-                already_banked = {take["artifacts"]["record_id"] for take in manifest.takes}
-                ended = clock()
+                already_banked = {take["record_id"] for take in manifest.takes}
                 for record, record_id in attempt_records():
                     if record_id and record_id in already_banked:
                         continue
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
-                                          started_s=(take_started if take_started is not None else ended) - started,
-                                          ended_s=ended - started, level_observation=observe_level(record).evidence)
+                                          level_observation=observe_level(record).evidence)
                 break
             finally:
                 failures.clear()
@@ -673,7 +669,7 @@ async def _run(
         finally:
             manifest.finalized = True
             document = manifest.to_dict()
-            mismatches = driver_level_mismatches(document)
+            mismatches = driver_level_mismatches(manifest.joined())
             if gate:
                 gate.abandon_hold()
                 gate.publish({**progress, "status": manifest.status, "manifest": manifest.path,

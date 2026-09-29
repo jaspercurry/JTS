@@ -38,8 +38,8 @@ def finite_json(value: Any) -> Any:
 
 def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]:
     """What one analysis leaves on its banked take, beside its provenance: its
-    ``curves`` and ``analysis``, which the run manifest's rows copy
-    (ADR-0383). The evidence packet's ``capture_snr`` block publishes the SNR
+    ``curves`` and ``analysis``, which a round's readers read from the take
+    itself (ADR-0395). The evidence packet's ``capture_snr`` block publishes the SNR
     columns of ``diagnostic``.
     """
     return finite_json({

@@ -114,10 +114,8 @@ def round_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool =
 
 def take_counts(document: Mapping[str, Any]) -> dict[str, int]:
     """The ended round's counts, from the manifest ``wait`` reprints once banked."""
-    takes = [t for group in document.get("sets", ()) for t in group["takes"]]
-    return {"takes": len({t["take_id"] for t in takes if t["selected"]}),
-            "retakes": len({t["take_id"] for t in takes if t.get("attempt", 1) > 1 and not t.get("replay")}),
-            "not_measured": len(document.get("not_measured", ()))}
+    return {"takes": len({t["take_id"] for group in document.get("sets", ()) for t in group["takes"] if t["selected"]}),
+            "retakes": document["honoured"]["retakes"], "not_measured": len(document.get("not_measured", ()))}
 
 
 def _count(n: int, noun: str) -> str:
@@ -129,12 +127,14 @@ def measured_line(count: int, retakes: int = 0) -> str:
 
 
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
+    """``manifest`` has every take read with its record (ADR-0395): a refused
+    take's verdict names the drivers a channel-map stop failed."""
     from .crossover_v2.refusal_copy import channel_map_failed_roles, refusal_copy_for  # lazy: keeps the CLI parser numpy-free
     from .run_manifest import driver_level_mismatches  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
     counts = take_counts(manifest)
-    failed_roles = channel_map_failed_roles(*((t.get("quality") or {}).get("evidence") or {}
+    failed_roles = channel_map_failed_roles(*((t.get("verdict") or {}).get("evidence") or {}
                                               for g in manifest.get("sets", ()) for t in g["takes"]))
     lines = [measured_line(counts["takes"], counts["retakes"])]
     poses = list(dict.fromkeys(pose_name(t["pose"]) for t in takes if t.get("pose")))
@@ -161,9 +161,13 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
 
 
 def packet_lines(directory: str) -> list[str]:
+    from .crossover_v2.round_inputs import round_inputs, with_records  # lazy: keeps the CLI parser numpy-free
+
     try:
         packet = json.loads((Path(directory) / "packet.json").read_text())
-        manifest = json.loads(Path(packet["artifacts"]["manifest"]).read_text())
+        manifest = with_records(round_inputs(Path(directory)).session_dir,
+                                json.loads(Path(packet["artifacts"]["manifest"]).read_text()),
+                                disclose=True, every_take=True)
     except (OSError, ValueError, KeyError):
         return []
     return coverage_lines(packet, manifest)

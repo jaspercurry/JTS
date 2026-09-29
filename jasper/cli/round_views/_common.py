@@ -108,7 +108,8 @@ def resolve_set_take(
     """One take of a set: the subject naming it, its id, and ``role`` or else
     the response the set measured."""
     inputs = round_inputs(round_dir)
-    selected = resolve_set(inputs, set_id)
+    # A named take the run did not keep refuses with its record's verdict (#6067).
+    selected = resolve_set(inputs, set_id).with_records(inputs.session_dir, every_take=take is not None)
     take_id = selected.take_id(take)
     return subject(inputs, selected, take_ids=[take_id]), take_id, role or selected.role
 

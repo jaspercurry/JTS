@@ -226,7 +226,7 @@ def _bookkeeping(
     if manifest is None or not manifest.is_file():
         return None, []
     document = json.loads(manifest.read_text())
-    purposes = run_purposes(document["program"])
+    purposes = run_purposes(document["preset"])
     room_groups = room_sets(document)
     views = bookkeeping_views(purposes, has_room=bool(room_groups))
     sets = view_sets(document)
@@ -417,25 +417,28 @@ def _catalog_row(round_dir: Path, packet: Mapping[str, Any], banked_at: float | 
     identity = {key: value for key, value in (packet.get("applied") or {}).items() if key != "layers"}
     return {
         "round_id": round_dir.name, "round_dir": str(round_dir),
-        "program": packet.get("program"), "layout": packet.get("layout"),
+        "preset": packet.get("preset"), "layout": packet.get("layout"),
         "purposes": list(packet_purposes(packet)),
         "banked_at": banked_at, "result": packet.get("result"),
         "applied_identity": identity if any(identity.values()) else None,
     }
 
 
-def _round_sets(round_dir: Path) -> list[dict[str, Any]]:
-    """Each set a view accepts, with the selected takes it accepts by ``--set``/``--take``."""
+def _round_sets(round_dir: Path, *, poses: bool = False) -> list[dict[str, Any]]:
+    """Each set a view accepts, with the selected takes it accepts by ``--set``/``--take``;
+    with ``poses``, each take read with its record for its pose (ADR-0395)."""
     from .crossover_v2.round_inputs import SetTakes, read_run_manifest, round_inputs  # lazy: the reader's import cost
     from .run_manifest import view_sets  # lazy: measurement types
 
+    inputs = round_inputs(round_dir)
     sets = []
-    for group in view_sets(read_run_manifest(round_inputs(round_dir))):
+    for group in view_sets(read_run_manifest(inputs)):
         takes = SetTakes.from_row(group)
+        takes = takes.with_records(inputs.session_dir) if poses else takes
         sets.append({
             "set_id": takes.set_id, "candidate_id": takes.capture_basis.get("candidate_id"),
             "base": bool(group.get("base")),
-            "takes": [{key: take.get(key) for key in ("take_id", "pose", "role")}
+            "takes": [{"take_id": take["take_id"], "pose": take.get("pose"), "role": takes.role}
                       for take in takes.takes if take["selected"]],
         })
     return sets
@@ -495,6 +498,6 @@ def show_round(ref: str) -> dict[str, Any]:
     from .crossover_v2.round_inputs import read_banked_round  # lazy: the reader's import cost
 
     round_dir = resolve_round(ref)
-    sets = _round_sets(round_dir)
+    sets = _round_sets(round_dir, poses=True)
     packet, banked_at = read_banked_round(round_dir, round_dir.stat().st_mtime) or ({}, None)
     return {**_catalog_row(round_dir, packet, banked_at), "sets": sets}

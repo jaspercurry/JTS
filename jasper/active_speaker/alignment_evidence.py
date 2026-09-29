@@ -6,7 +6,6 @@
 from typing import Any, Mapping, Sequence
 
 from .applied_identity import applied_identity
-from .run_manifest import capture_alignment_levels
 from .baseline_profile import profile_driver_corrections
 from .crossover_v2.conductor_context import driver_spacing_source
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes, take_order
@@ -15,8 +14,9 @@ from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measur
 def alignment_evidence(
     take: Mapping[str, Any], sources: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """One joined take's saved timing evidence (ADR-0395)."""
     analysis = take.get("analysis") or {}
-    evidence = (take.get("quality") or {}).get("evidence") or {}
+    evidence = (take.get("verdict") or {}).get("evidence") or {}
     roles = sorted(analysis.get("trim_db") or {})
     profile = sources.get("applied_profile")
     corrections = profile_driver_corrections(profile)
@@ -34,7 +34,7 @@ def alignment_evidence(
         "driver_spacing_source": driver_spacing_source(sources.get("draft") or {}),
         "snr": {role: {key: evidence.get(f"snr.{role}.alignment.{key}") for key in ("verdict", "shortfall_db")}
                 for role in roles},
-        "levels": take.get("alignment") or capture_alignment_levels(evidence, {}),
+        "levels": (take.get("level") or {}).get("alignment"),
         "applied": {**(applied_identity(profile) or {}),
                     "corrections": {role: {key: corrections.get(role, {}).get(key) for key in ("delay_ms", "inverted")}
                                     for role in roles}},
@@ -44,6 +44,8 @@ def alignment_evidence(
 def round_alignment(
     manifest: Mapping[str, Any], sources: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The newest kept MEASURE take's timing evidence per pose and graph, from
+    a manifest whose kept takes are read with their records."""
     pairs = latest_measure_takes(
         ((group, take) for group in manifest.get("sets", ()) for take in SetTakes.from_row(group).takes),
         key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
@@ -54,8 +56,8 @@ def round_alignment(
     rows = [{"candidate_id": group["capture_basis"].get("candidate_id"),
              "graph_fingerprint": (take.get("analysis") or {}).get("timing_graph_fingerprint") or group["capture_basis"].get("graph_fingerprint"),
              "side": group["capture_basis"].get("side"), "take_id": take["take_id"], "round_id": manifest.get("round_id", manifest.get("run_id")),
-             "pose": take["pose"], "record_id": take["artifacts"]["record_id"], "base": group.get("base", False),
-             "timing": take.get("timing"), "attempt": take.get("attempt", 0),
+             "pose": take["pose"], "record_id": take["record_id"], "base": group.get("base", False),
+             "captured_at": take.get("captured_at"), "attempt": take.get("attempt", 0),
              **alignment_evidence(take, sources)}
             for group, take in pairs.values()]
     verified = commissioning_alignment([row for row in rows if row["timing_verification"] is not None])

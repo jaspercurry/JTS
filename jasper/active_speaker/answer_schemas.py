@@ -28,7 +28,7 @@ ANSWER_SCHEMAS = {
     "jasper-round wait": "jts_round_wait/1",
     "jasper-round apply": "jts_round_apply/1",
     "jasper-round reset": "jts_round_reset/1",
-    "jasper-round list": "jts_round_list/1",
-    "jasper-round show": "jts_round_show/1",
+    "jasper-round list": "jts_round_list/2",
+    "jasper-round show": "jts_round_show/2",
     "jasper-round presets": "jts_round_presets/1",
 }

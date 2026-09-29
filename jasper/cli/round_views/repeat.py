@@ -12,7 +12,7 @@ from itertools import combinations, product
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, take_records
+from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, with_records
 from jasper.active_speaker.round_verdicts import common_measured_band, held_pairs, mark_takes, pair_spread
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.platform.json_fields import finite_float
@@ -86,10 +86,9 @@ def _cmd_repeat_rounds(args: argparse.Namespace) -> int:
               for path in args.round_dirs]
     marks: dict[tuple[Any, Any], list[tuple[int, str, list[Mapping[str, Any]]]]] = {}
     for index, (_path, inputs) in enumerate(rounds):
-        joined = take_records(inputs.session_dir)
-        for row in view_sets(read_run_manifest(inputs)):
+        for row in view_sets(with_records(inputs.session_dir, read_run_manifest(inputs))):
             basis = row["capture_basis"]
-            takes: list[Mapping[str, Any]] = [joined(take) for take in mark_takes(SetTakes.from_row(row), basis.get("role"))]
+            takes = mark_takes(SetTakes.from_row(row), basis.get("role"))
             if takes:
                 marks.setdefault((basis.get("side"), basis.get("role")), []).append((index, row["set_id"], takes))
     drivers = []

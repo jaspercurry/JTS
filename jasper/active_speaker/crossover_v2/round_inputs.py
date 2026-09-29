@@ -20,7 +20,7 @@ from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Named
 from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
 from .position_cycle import take_artifact_path
@@ -69,7 +69,7 @@ DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
 PACKET_FILENAME = "packet.json"
 #: The ``schema`` of the ``packet.json`` this build writes. A packet of any other is stale (#2902).
-ROUND_PACKET_SCHEMA = "jts_round_packet/4"
+ROUND_PACKET_SCHEMA = "jts_round_packet/5"
 PICTURE_FILENAME = "frequency.png"
 INDEX_FILENAME = "index.md"
 ROOM_ARTIFACT = "room.json"
@@ -277,7 +277,7 @@ def banked_rounds(
 def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
     """The programs a banked packet counts for: its own, and room when it carries room views."""
     try:
-        purpose = run_purpose(packet.get("program"))
+        purpose = run_purpose(packet.get("preset"))
     except ValueError:
         return ()
     return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
@@ -384,8 +384,9 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
     candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
+    manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
     return {"candidate": candidate,
-            "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
+            "manifest": with_records(inputs.session_dir, manifest) if manifest else {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")}}
 
@@ -424,8 +425,10 @@ def capture_identity(capture_basis: Mapping[str, Any], *, set_id: str) -> tuple[
     return (*identity, capture_basis.get("side"), set_id if not any(identity) else None)
 
 
-def take_order(take: Mapping[str, Any]) -> tuple[float, int]:
-    return (take.get("timing") or {}).get("ended_s", 0), take.get("attempt", 0)
+def take_order(take: Mapping[str, Any]) -> tuple[str, int]:
+    """A joined take's place in capture order: its record's wall-clock stamp,
+    then its attempt, since stamps tie within a second."""
+    return take.get("captured_at") or "", take.get("attempt", 0)
 
 
 def latest_measure_takes(
@@ -466,6 +469,8 @@ class SetTakes(NamedTuple):
 
     @property
     def on_axis(self) -> tuple[Mapping[str, Any], ...]:
+        """The kept on-axis bearing takes; a pose is on its record, so these read
+        joined takes (:meth:`with_records`)."""
         return tuple(take for take in self.takes if take["selected"]
                      and take["pose"].get("kind") == POSE_KIND_BEARING
                      and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0)
@@ -476,8 +481,11 @@ class SetTakes(NamedTuple):
             if requested in ids:
                 return requested
             if held := next((take for take in self.takes if take["take_id"] == requested), None):
+                # A joined take names its record's status and verdict; a row alone names none (ADR-0395).
+                verdict = held.get("verdict") or {}
                 raise RoundSetRefused("round_take_not_kept", set_id=self.set_id, take_id=requested, take_ids=ids,
-                                      status=held["quality"]["status"], fault=held.get("fault"), next=held.get("next"))
+                                      status=held.get("measurement_status"),
+                                      fault=verdict.get("fault") or held.get("incident") or None, next=verdict.get("next"))
             raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
         if len(ids) == 1:
             return ids[0]
@@ -486,37 +494,42 @@ class SetTakes(NamedTuple):
             return on_axis[0]
         raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
 
-    def with_records(self, bundle_dir: Path) -> SetTakes:
-        """This set, each selected take read with its record (:func:`take_records`)."""
-        return self._replace(takes=tuple(map(take_records(bundle_dir), self.takes)))
+    def with_records(self, bundle_dir: Path, *, every_take: bool = False) -> SetTakes:
+        """This set, each selected take, or ``every_take``, read with its record (:func:`take_records`)."""
+        return self._replace(takes=tuple(map(take_records(bundle_dir, every_take=every_take), self.takes)))
 
 
-def take_records(bundle_dir: Path, *, disclose: bool = False) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
+def take_records(
+    bundle_dir: Path, *, disclose: bool = False, every_take: bool = False,
+) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
     """One reader's join of a kept take's row with the record it points at, as
     ``{**row, **record}``, each record read once: a reader reads a take's own
-    record, and only for the takes it reads (#5737 C1b). A take the run did not
-    select keeps its row. A record that cannot be read refuses by name, or with
+    record, and only for the takes it reads (ADR-0395). A take the run did not
+    select keeps its row, unless ``every_take``, and so does a take that banked
+    no record. A record that cannot be read refuses by name, or with
     ``disclose`` leaves its take unselected, with the gap as its ``record``."""
     records: dict[str, Mapping[str, Any]] = {}
 
     def joined(row: Mapping[str, Any]) -> dict[str, Any]:
-        record_id = row["artifacts"]["record_id"]
-        if not row["selected"]:
-            return {**row, "record_id": record_id}
+        record_id = row_record_id(row)
+        if not (record_id and (row["selected"] or every_take)):
+            return dict(row)
         if record_id not in records:
             record = _read_json_mapping(take_artifact_path(bundle_dir, record_id))
             if record is None and not disclose:
                 raise RoundSetRefused(CAPTURE_UNREADABLE_SIDECAR, record=record_id, take_id=row["take_id"])
             records[record_id] = record if record is not None else {
                 "selected": False, "record": unavailable(CAPTURE_UNREADABLE_SIDECAR, {"record": record_id})}
-        return {**row, **records[record_id], "record_id": record_id}
+        return {**row, **records[record_id]}
 
     return joined
 
 
-def with_records(bundle_dir: Path, manifest: Mapping[str, Any], *, disclose: bool = False) -> dict[str, Any]:
+def with_records(
+    bundle_dir: Path, manifest: Mapping[str, Any], *, disclose: bool = False, every_take: bool = False,
+) -> dict[str, Any]:
     """``manifest`` with every set's takes read by one :func:`take_records`."""
-    joined = take_records(bundle_dir, disclose=disclose)
+    joined = take_records(bundle_dir, disclose=disclose, every_take=every_take)
     return {**manifest, "sets": [{**group, "takes": [joined(take) for take in group["takes"]]}
                                  for group in manifest.get("sets", ())]}
 
@@ -539,7 +552,9 @@ def read_run_manifest(
 def resolve_set(
     inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
-    """Resolve the executor's set without rebuilding its identity (ADR-0299)."""
+    """Resolve the executor's set without rebuilding its identity (ADR-0299).
+    Its takes are the manifest's rows, as given; a reader of a take's facts
+    joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and len(sets) > 1:
         raise RoundSetRefused("set_required", sets=[
@@ -595,6 +610,13 @@ def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = 
     return json.dumps(pose, sort_keys=True), basis.get("side"), role or group.role, basis.get("graph_scope")
 
 
+def _kept_view_sets(inputs: RoundInputs, named: Collection[str] | None = None) -> list[dict[str, Any]]:
+    """A round's view sets, or only those ``named``, each kept take read with its record."""
+    joined = take_records(inputs.session_dir)
+    return [{**row, "takes": [joined(take) for take in row["takes"]]}
+            for row in view_sets(read_run_manifest(inputs)) if named is None or row["set_id"] in named]
+
+
 def _newest(rows: Iterable[Mapping[str, Any]], key: tuple[Any, ...],
             order: Callable[[Mapping[str, Any]], tuple[Any, ...]]) -> tuple[str, tuple[str, ...]] | None:
     """The set holding the newest selected take at ``key``, and its selected takes there, newest first."""
@@ -622,7 +644,7 @@ def comparands(
     decision evidence and an earlier take is context: a comparison over the pair
     discloses :func:`~.measurement_context.compare_capture_basis`."""
     inputs = round_inputs(round_dir)
-    sets = view_sets(read_run_manifest(inputs))
+    sets = _kept_view_sets(inputs)
     rows = {row["set_id"]: row for row in sets}
     keys: list[tuple[Any, ...]] = []
     found: list[Comparand | None] = []
@@ -649,8 +671,7 @@ def comparands(
         if banked_at >= before or named == frozenset():
             continue
         try:
-            earlier = [row for row in view_sets(read_run_manifest(round_inputs(Path(directory))))
-                       if named is None or row["set_id"] in named]
+            earlier = _kept_view_sets(round_inputs(Path(directory)), named)
             for index, key in enumerate(keys):
                 if found[index] is None and (hit := _newest(earlier, key, take_order)):
                     found[index] = Comparand(COMPARAND_EARLIER_ROUND, Path(directory), hit[0], hit[1], wanted[index][2])
