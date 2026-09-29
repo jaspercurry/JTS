@@ -13,6 +13,7 @@ statefile retain their own current/bank-time meanings.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
@@ -56,7 +57,7 @@ __all__ = [
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
     'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
-    'subject',
+    'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand',
 ]
 
 STATE_FILENAME = "state.json"
@@ -520,3 +521,62 @@ def subject(
         ("round_id", banked.name if banked else None), ("set_id", set_id),
         ("take_ids", None if take_ids is None else list(take_ids)), ("candidate_id", candidate_id),
     ) if value is not None}
+
+
+#: Where a take's comparand came from (#5737 P6).
+COMPARAND_SAME_ROUND = "same_round_base"
+COMPARAND_EARLIER_ROUND = "earlier_round"
+
+
+class Comparand(NamedTuple):
+    source: str
+    round_dir: Path
+    set_id: str
+    take_id: str
+    role: str
+
+
+def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = None) -> tuple[Any, ...]:
+    """The place a take's pose names, the response it reads, and the graph scope that played."""
+    pose = {key: value for key, value in (take.get("pose") or {}).items() if key != "place"}
+    return json.dumps(pose, sort_keys=True), role or group.role, group.capture_basis.get("graph_scope")
+
+
+def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
+    """The one comparand rule (#5737 P6): the round's base take at the take's
+    place, preferring the take's own run; else the newest selected take banked
+    before the round at the same place, drivers (the response ``role`` reads)
+    and graph scope, within the ``limit`` latest banked rounds. The same-round
+    A/B is the decision evidence and an earlier take is context: a comparison
+    over the pair discloses :func:`~.measurement_context.compare_capture_basis`."""
+    inputs = round_inputs(round_dir)
+    sets = view_sets(read_run_manifest(inputs))
+    row = next(row for row in sets if row["set_id"] == set_id)
+    take = next(take for take in SetTakes.from_row(row).takes if take["take_id"] == take_id)
+    key = _comparand_key(SetTakes.from_row(row), take, role)
+
+    def newest(rows: Iterable[Mapping[str, Any]], order: Callable[[Mapping[str, Any]], tuple[Any, ...]]) -> Any:
+        return max(((order(other), other["take_id"], group.set_id) for group in map(SetTakes.from_row, rows)
+                    for other in group.takes if other["selected"] and _comparand_key(group, other) == key),
+                   default=None)
+
+    if not row.get("base") and (found := newest(
+            [group for group in sets if group.get("base")],
+            lambda other: (other.get("run_id") == take.get("run_id"), *take_order(other)))):
+        return Comparand(COMPARAND_SAME_ROUND, round_dir, found[2], found[1], role)
+    own = bank_of(inputs)
+    before = (read_banked_round(own, own.stat().st_mtime) or ({}, math.inf))[1] if own else math.inf
+    for _banked_at, directory in sorted(((banked_at, str(path)) for path, _, banked_at in
+                                         banked_rounds(inputs.session_dir, limit=limit) if banked_at < before),
+                                        reverse=True):
+        try:
+            earlier = round_inputs(Path(directory))
+            # A live bundle's own bank holds the same takes.
+            if earlier.session_dir.name == inputs.session_dir.name:
+                continue
+            found = newest(view_sets(read_run_manifest(earlier)), take_order)
+        except ROUND_INPUT_ERRORS:
+            continue
+        if found:
+            return Comparand(COMPARAND_EARLIER_ROUND, Path(directory), found[2], found[1], role)
+    return None

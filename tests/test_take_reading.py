@@ -6,16 +6,24 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
+from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_COMPARE_NO_COMMON_BAND, TakeRead, compare_preview_report, compare_report, decay_report,
-    group_delay_report, read_preview,
+    REFUSE_COMPARE_NO_COMMON_BAND, REFUSE_COMPARE_NO_COMPARAND, TakeRead, compare_preview_report, compare_report,
+    decay_report, group_delay_report, read_preview,
 )
+from jasper.cli import round_views
+from jasper.cli._refusal import EXIT_REFUSED
+from tests.crossover_v2_fixtures import bank_capture_round
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_audio_measurement_decay import _decay
 
 RATE = 48_000
@@ -131,3 +139,61 @@ def test_a_read_says_which_window_it_used_and_bands_only_what_it_read():
 
     assert (compared["window_ms"] < 20.0, compared["window_source"]) == (True, "shorter take window (argument, retained)")
     assert all(lo <= band["hz"] <= hi for band in timing["summary"]["bands"])
+
+
+def _banked(store: Path, name: str, banked_at: str, sets: dict[str, list[tuple]]) -> Path:
+    """One banked round of bare-delta takes under its own session: each set's
+    takes as ``(take_id, bearing[, run_id, ended_s])``; a set named ``base…`` is base."""
+    rows = {set_id: [(*take, None, 0)[:4] for take in takes] for set_id, takes in sets.items()}
+    takes = [take for set_takes in rows.values() for take in set_takes]
+    ir = np.zeros(4800)
+    ir[480] = 1.0
+    root = bank_capture_round(store / name, [ir] * len(takes), capture_ids=[take[0] for take in takes],
+                              positions_deg=[take[1] for take in takes])
+    session = (root / "bundle" / "b0").rename(root / "bundle" / name)
+    docs = {doc["position_id"]: (str(path.relative_to(session)), doc)
+            for path in session.glob("summed/*.json") for doc in [json.loads(path.read_text())]}
+    groups = []
+    for set_id, set_takes in rows.items():
+        group = manifest_set([docs[take[0]] for take in set_takes], set_id=set_id)
+        group["base"] = set_id.startswith("base")
+        for row, (*_, run_id, ended_s) in zip(group["takes"], set_takes):
+            row.update(run_id=run_id, timing={"ended_s": ended_s})
+        groups.append(group)
+    write_manifest(root, groups=groups)
+    (root / "provenance.json").write_text(json.dumps({"banked_at_utc": banked_at}))
+    return root
+
+
+@pytest.mark.parametrize("rounds,flags,expected", [
+    pytest.param({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}, "e": {"base": [("e0", 0)]}},
+                 ["--b-set", "cand", "--b-take", "c0"], (COMPARAND_SAME_ROUND, "r", "r0"), id="same-round-base"),
+    pytest.param({"r": {"base-1": [("b1", 0, "run-1", 1)], "base-2": [("b2", 0, "run-2", 3)],
+                        "cand": [("c1", 0, "run-1", 2)]}},
+                 ["--b-set", "cand", "--b-take", "c1"], (COMPARAND_SAME_ROUND, "r", "b1"), id="its-own-run"),
+    pytest.param({"e": {"base": [("e0", 0)]}, "r": {"base": [("r30", 30)], "cand": [("c0", 0)]}},
+                 ["--b-set", "cand", "--b-take", "c0"], (COMPARAND_EARLIER_ROUND, "e", "e0"), id="no-base-here"),
+    pytest.param({"o": {"base": [("o0", 0)]}, "e": {"base": [("e30", 30), ("e0", 0)]},
+                  "r": {"base": [("r0", 0)]}, "later": {"base": [("l0", 0)]}},
+                 [], (COMPARAND_EARLIER_ROUND, "e", "e0"), id="newest-earlier"),
+    pytest.param({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}},
+                 ["--a-set", "cand", "--a-take", "c0", "--b-set", "base"], (None, "r", "c0"), id="side-a-named"),
+    pytest.param({"e": {"base": [("e30", 30)]}, "r": {"base": [("r0", 0)]}}, [], None, id="none"),
+])
+def test_compare_with_one_take_reads_its_comparand_by_the_one_rule(tmp_path, capsys, rounds, flags, expected):
+    """#5737 P6: side A left unnamed is B's comparand, and the answer says how it
+    was found beside the capture-basis disclosure; with none, compare refuses by name."""
+    store = tmp_path / "campaigns"
+    paths = {name: _banked(store, name, f"2026-09-{20 + index:02d}T12:00:00Z", sets)
+             for index, (name, sets) in enumerate(rounds.items())}
+
+    code = round_views.main(["compare", str(paths["r"]), *flags])
+    answer = json.loads(capsys.readouterr().out)
+
+    if expected is None:
+        assert (code, answer["reason"]) == (EXIT_REFUSED, REFUSE_COMPARE_NO_COMPARAND)
+        return
+    a, _b = answer["subject"]["rounds"]
+    assert (code, answer["comparand"], a["round_id"], a["take_ids"]) == (0, *expected[:2], [expected[2]])
+    assert set(answer["basis"]) == {"basis_status", "intervention_fields", "incompatible_fields",
+                                    "mismatched_fields", "unknown_fields"}

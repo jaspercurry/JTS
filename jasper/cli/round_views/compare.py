@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
+from jasper.active_speaker.crossover_v2.round_inputs import comparand, take_artifact_name
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview, read_take,
+    REFUSE_COMPARE_NO_COMPARAND, REFUSE_PREVIEW_UNREADABLE, compare_preview_report, compare_report, read_preview,
+    read_take,
 )
 from jasper.cli._refusal import EXIT_UNREADABLE
 
@@ -33,6 +34,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         return refused_by_name(REFUSE_PREVIEW_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
     b_subject, b_take, b_role = resolve_set_take(b_round, args.b_set, args.b_take, args.b_role)
     b = read_take(b_round, take_id=b_take, role=b_role)
+    source: str | None = None
     if preview_document is not None:
         preview = read_preview(preview_document)
         report = compare_preview_report(preview, b, smoothing_fraction=args.smoothing,
@@ -41,11 +43,19 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         # Named by the forecast's identity, so two forecasts read against one take keep two artifacts.
         a_label = f"preview-{preview.fingerprint[:12]}"
     else:
-        a_subject, a_take, a_role = resolve_set_take(Path(args.source_a), args.a_set, args.a_take, args.a_role)
-        a = read_take(Path(args.source_a), take_id=a_take, role=a_role)
+        a_side = (Path(args.source_a), args.a_set, args.a_take, args.a_role)
+        if args.source_b is None and a_side[1:] == (None, None, None):
+            found = comparand(b_round, b_subject["set_id"], b_take, b_role)
+            if found is None:
+                return refused_by_name(REFUSE_COMPARE_NO_COMPARAND,
+                                       {"set_id": b_subject["set_id"], "take_id": b_take, "role": b_role})
+            source, a_side = found.source, (found.round_dir, found.set_id, found.take_id, found.role)
+        a_subject, a_take, a_role = resolve_set_take(*a_side)
+        a = read_take(a_side[0], take_id=a_take, role=a_role)
         report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,
                                 points_per_octave=args.points_per_octave, remove_level=args.remove_level)
         a_label = f"{a.capture.capture_id}-{a.role}"
+    report["summary"]["comparand"] = source
     spec = ARTIFACT_BY_VIEW[args.command]
     name = take_artifact_name(spec.artifact, f"{a_label}-vs-{b.capture.capture_id}", b.role)
     written = _write(report, args.out, resolved_out(b_round, name), schema=spec.schema)
@@ -58,7 +68,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser(
         "compare", help="how take B differs from take A (or from a forecast), through one window and smoothing")
     parser.add_argument("source_a", metavar=_ROUND_DIR_METAVAR,
-                        help=f"side A's round ({_ROUND_DIR_HELP}); with --a-preview, the measured round")
+                        help=f"side A's round ({_ROUND_DIR_HELP}); with --a-preview, the measured round. "
+                             "Named alone with no --a-* flag, it is take B's round and side A is B's comparand: "
+                             "the round's base take at B's place, else the newest earlier banked take at the "
+                             "same place, role and graph scope")
     parser.add_argument("source_b", metavar="<round-b>", nargs="?", help="side B's round; default: side A's")
     for side in ("a", "b"):
         add_set_argument(parser, name=f"--{side}-set", take=True)
