@@ -114,7 +114,9 @@ def curve_difference(
     return CurveDifference(freqs[mask], curve, against, offset)
 
 
-def series_stats(plot: Mapping[str, Any], trusted_floor_hz: float | None) -> dict[str, Any]:
+def series_stats(
+    curve: Mapping[str, Any], plot: Mapping[str, Any], trusted_floor_hz: float | None,
+) -> dict[str, Any]:
     def number(value: float | None, lo_hz: float) -> dict[str, Any]:
         return {"value": value, "below_trusted_floor": value is not None
                 and trusted_floor_hz is not None and lo_hz < trusted_floor_hz}
@@ -125,7 +127,8 @@ def series_stats(plot: Mapping[str, Any], trusted_floor_hz: float | None) -> dic
     tilt_lo_hz = max(SERIES_STATS_TILT_BAND_HZ[0], trusted_floor_hz or SERIES_STATS_TILT_BAND_HZ[0])
     measured = valid & (freqs >= tilt_lo_hz) & (freqs <= SERIES_STATS_TILT_BAND_HZ[1])
     flatness_lo_hz = trusted_floor_hz if trusted_floor_hz is not None else SERIES_STATS_FLATNESS_BAND_HZ[0]
-    flat = flatness(freqs, values, (flatness_lo_hz, SERIES_STATS_FLATNESS_BAND_HZ[1]))
+    flat = flatness(curve["freqs_hz"], curve["display"]["deviation_db"],
+                    (flatness_lo_hz, SERIES_STATS_FLATNESS_BAND_HZ[1]))
     bands = {}
     for center, lo, hi in octave_bands_hz(20, 20000):
         band = values[valid & (freqs >= lo) & (freqs < hi)]

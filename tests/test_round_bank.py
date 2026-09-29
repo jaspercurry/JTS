@@ -810,8 +810,7 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     expected_db = np.interp(hz, reference.freqs_hz[keep], gate_sweep.smooth_fractional_octave(
         reference.freqs_hz[keep], reference.magnitude_db[keep], gated["smoothing_fractional_octave"]))
     np.testing.assert_array_equal(db, expected_db)
-    plot_hz, plot_db = (np.asarray(gated["plot"][key], dtype=float) for key in ("freqs_hz", "deviation_db"))
-    band = plot_db[(plot_hz >= gated["trusted_floor_hz"]) & (plot_hz <= 10000)]
+    band = db[(hz >= gated["trusted_floor_hz"]) & (hz <= 10000)]
     assert packet["series"][1]["stats"]["flatness_rms_db"] == {
         "band_hz": [gated["trusted_floor_hz"], 10000],
         "value": pytest.approx(float(np.sqrt(np.mean((band - np.median(band)) ** 2)))),

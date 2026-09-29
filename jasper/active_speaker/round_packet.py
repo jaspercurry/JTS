@@ -170,7 +170,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                    "candidate_id": curve.get("candidate_id") or group.get("capture_basis", {}).get("candidate_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role", take.get("role")),
                                    "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),
-                                   **gates, "stats": series_stats(plot, gates["trusted_floor_hz"])})
+                                   **gates, "stats": series_stats(curve, plot, gates["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)
             if purpose == PURPOSE_SPEAKER:
