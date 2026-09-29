@@ -11,12 +11,23 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from jasper.active_speaker.crossover_v2.round_inputs import (
+    COMPARAND_EARLIER_ROUND,
+    ROUND_INPUT_ERRORS,
+    RoundViewsError,
+    SetTakes,
+    comparands,
+    read_banked_round,
+    read_run_manifest,
+    round_inputs,
+)
 from jasper.active_speaker.frequency_view import build_frequency_view
 from jasper.active_speaker.measurement_archive import (
     ArchivedMeasurement,
     list_measurements,
     load_measurement,
 )
+from jasper.active_speaker.run_manifest import view_sets
 
 from .chrome import canonical_header, canonical_page
 
@@ -25,6 +36,10 @@ CATALOG_SCHEMA = "jts_frequency_catalog/1"
 #: Namespaces a banked round's catalog id against a live session id of the
 #: same name. The id is opaque to the page, which hands it back verbatim.
 BANKED_ID_PREFIX = "round:"
+
+#: The ``run_b_id`` of a viewer who chose no run B. Like a chosen run, it wins
+#: over run A's comparand.
+NO_RUN_B = "none"
 
 
 class MeasurementViewRequestError(ValueError):
@@ -49,7 +64,7 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
 
   <section class="info-card measurement-run-pickers" aria-label="Measurements">
     <label>Measurement A<select id="measurement-run-a"></select></label>
-    <label>Measurement B<select id="measurement-run-b"><option value="">None</option></select></label>
+    <label><span>Measurement B<span id="measurement-run-b-source" hidden> · comparand (P6 rule)</span></span><select id="measurement-run-b"><option value="">None</option></select></label>
   </section>
 
   <section class="info-card">
@@ -81,11 +96,6 @@ def _banked_rounds(campaign_root: Path) -> tuple[ArchivedMeasurement, ...]:
     applies the same "carries measurements" filter; only the id is the round's.
     """
 
-    from jasper.active_speaker.crossover_v2.round_inputs import (
-        RoundViewsError,
-        round_inputs,
-    )
-
     root = Path(campaign_root)
     if not root.is_dir():
         return ()
@@ -104,6 +114,31 @@ def _banked_rounds(campaign_root: Path) -> tuple[ArchivedMeasurement, ...]:
             for run in list_measurements(inputs.session_dir.parent)
         )
     return tuple(entries)
+
+
+def _banked_at(round_dir: Path) -> tuple[float, str]:
+    """A banked round's place in the comparand rule's newest-first walk (ADR-0391 §3)."""
+
+    _packet, banked_at = read_banked_round(round_dir, round_dir.stat().st_mtime) or ({}, 0.0)
+    return banked_at, str(round_dir)
+
+
+def _comparand_id(run: ArchivedMeasurement) -> str | None:
+    """The newest round banked before ``run`` that holds the comparand of any of
+    its selected takes (ADR-0391; #5737 P6). A take whose comparand is
+    ``run``'s own base is drawn in ``run`` already."""
+
+    try:
+        groups = [SetTakes.from_row(row) for row in view_sets(read_run_manifest(round_inputs(run.bundle_dir)))]
+        found = comparands(run.bundle_dir, [
+            (group.set_id, take_id, group.role) for group in groups for take_id in group.selected_ids])
+        newest = max({match.round_dir for match in found if match and match.source == COMPARAND_EARLIER_ROUND},
+                     key=_banked_at, default=None)
+    except ROUND_INPUT_ERRORS:
+        # A run without a finalized manifest, or one the rule cannot read, still
+        # draws alone: a default is a convenience, never a refusal (ADR-0101).
+        return None
+    return None if newest is None else f"{BANKED_ID_PREFIX}{newest.name}"
 
 
 def _newest_first(run: ArchivedMeasurement) -> float:
@@ -136,7 +171,8 @@ def build_data(
 
     The catalog is the live bundles under ``sessions_dir`` and the rounds
     banked under ``campaign_root``, newest first; both are selected the same
-    way, by their catalog id.
+    way, by their catalog id. With no ``run_b_id``, run B is run A's comparand
+    round, and ``selected.b_source`` says ``"comparand"``.
     """
 
     runs = sorted(
@@ -147,23 +183,26 @@ def build_data(
         return {
             "catalog_schema": CATALOG_SCHEMA,
             "catalog": [],
-            "selected": {"a": None, "b": None},
+            "selected": {"a": None, "b": None, "b_source": None},
             "view": None,
         }
     catalog = [_catalog_entry(run) for run in runs]
 
     by_id = {run.id: run for run in runs}
     selected_a = run_a_id or runs[0].id
-    selected_b = run_b_id or None
+    selected_b = None if run_b_id == NO_RUN_B else (run_b_id or None)
     for run_id in (selected_a, selected_b):
         if run_id and run_id not in by_id:
             raise MeasurementViewRequestError(f"measurement not found: {run_id}")
+    b_source: str | None = None
+    if not run_b_id and (comparand_id := _comparand_id(by_id[selected_a])) in by_id:
+        selected_b, b_source = comparand_id, "comparand"
     run_a = load_measurement(by_id[selected_a])
     run_b = load_measurement(by_id[selected_b]) if selected_b is not None else None
 
     return {
         "catalog_schema": CATALOG_SCHEMA,
         "catalog": catalog,
-        "selected": {"a": selected_a, "b": selected_b},
+        "selected": {"a": selected_a, "b": selected_b, "b_source": b_source},
         "view": build_frequency_view(run_a, run_b),
     }

@@ -39,7 +39,7 @@ from jasper.audio_measurement.program_analysis import MeasurementGeometry, analy
 from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, decode_wav_to_mono
 from tests.active_speaker_fixtures import mono_output_topology
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
@@ -247,33 +247,46 @@ def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
 
     assert data["catalog_schema"] == "jts_frequency_catalog/1"
     assert [entry["id"] for entry in data["catalog"]] == ["bbb", "aaa"]
-    assert data["selected"] == {"a": "aaa", "b": "bbb"}
+    assert data["selected"] == {"a": "aaa", "b": "bbb", "b_source": None}
     assert [run["id"] for run in data["view"]["runs"]] == ["aaa", "bbb"]
 
 
-def _bank_one_round(root: Path, session_id: str) -> Path:
+def _bank_one_round(root: Path, session_id: str, sets: dict | None = None, banked_at: str | None = None) -> Path:
+    """One round as ``bank_round`` banks it: each set's takes, ``(take_id,
+    bearing)``, under a finalized run manifest (a set named ``base…`` is base);
+    with no ``sets``, one take and no manifest. ``banked_at`` dates the bank."""
 
     bundle = root / "sessions" / session_id
     positions = (
         bundle / EVIDENCE_ROOT / "artifacts/crossover_v2" / session_id / "positions"
     )
     positions.mkdir(parents=True)
-    (positions / "t1.json").write_text(json.dumps({
-        "kind": POSITION_EVIDENCE_KIND,
-        "run_id": session_id,
-        "take_id": "t1",
-        "phase": "measure",
-        "position_deg": 0,
-        "curves": [{
-            "role": "summed",
-            "reference_db": 0.0,
-            "freqs_hz": [100.0, 1000.0, 10000.0],
-            "magnitude_db": [-1.0, 0.0, 1.0],
-        }],
-    }))
+    groups = []
+    for set_id, takes in (sets or {"": [("t1", 0)]}).items():
+        records = []
+        for take_id, bearing in takes:
+            record = {
+                "kind": POSITION_EVIDENCE_KIND,
+                "run_id": session_id,
+                "take_id": take_id,
+                "phase": "measure",
+                "position_deg": bearing,
+                "curves": [{
+                    "role": "summed",
+                    "reference_db": 0.0,
+                    "freqs_hz": [100.0, 1000.0, 10000.0],
+                    "magnitude_db": [-1.0, 0.0, 1.0],
+                }],
+            }
+            path = positions / f"{take_id}.json"
+            path.write_text(json.dumps(record))
+            records.append((str(path.relative_to(bundle)), record))
+        groups.append({**manifest_set(records, set_id=set_id), "base": set_id.startswith("base")})
     (bundle / "info.json").write_text(json.dumps({
         "session_id": session_id, "started_at": 1000.0, "state": "applied",
     }))
+    if sets:
+        write_bundle_manifest(bundle, groups=groups)
     campaign_root = root / "campaigns"
     absent = root / "absent.json"
     bank_round(
@@ -285,6 +298,9 @@ def _bank_one_round(root: Path, session_id: str) -> Path:
         repeat_floor_path=absent,
         declared_geometry_path=absent,
     )
+    if banked_at is not None:
+        provenance = campaign_root / session_id / "provenance.json"
+        provenance.write_text(json.dumps({**json.loads(provenance.read_text()), "banked_at_utc": banked_at}))
     return campaign_root
 
 
@@ -300,6 +316,39 @@ def test_web_data_offers_a_banked_round_and_graphs_its_curves(tmp_path):
     assert data["selected"]["a"] == entry["id"] != "sess-1"
     [run] = data["view"]["runs"]
     assert [series["magnitude_db"] for series in run["series"]] == [[-1.0, 0.0, 1.0]]
+
+
+# Run A is round r. Its base takes find their comparands in o (0°) and e (30°); "later" is banked after r.
+_EARLIER_COMPARANDS = {"o": {"base": [("o0", 0)]}, "e": {"base": [("e30", 30)]},
+                       "r": {"base": [("r0", 0), ("r30", 30)], "cand": [("c0", 0)]},
+                       "later": {"base": [("l0", 0), ("l30", 30)]}}
+
+
+@pytest.mark.parametrize("rounds,run_b_id,expected", [
+    pytest.param(_EARLIER_COMPARANDS, None, ("round:e", "comparand"), id="newest-earlier-comparand"),
+    # c0's comparand is r's own base, drawn in A; no earlier round holds b0's place.
+    pytest.param({"e": {"base": [("e30", 30)]}, "r": {"base": [("b0", 0)], "cand": [("c0", 0)]}},
+                 None, (None, None), id="own-base"),
+    pytest.param({"e": {"base": [("e0", 0)]}, "r": None}, None, (None, None), id="no-manifest"),
+    pytest.param({"r": {"base": [("r0", 0)]}, "later": {"base": [("l0", 0)]}}, None, (None, None),
+                 id="no-earlier-round"),
+    pytest.param(_EARLIER_COMPARANDS, "round:o", ("round:o", None), id="chosen-run"),
+    pytest.param(_EARLIER_COMPARANDS, correction_measurements.NO_RUN_B, (None, None), id="chosen-none"),
+])
+def test_run_b_defaults_to_the_round_holding_run_a_comparands(tmp_path, rounds, run_b_id, expected):
+    """#5737 P6, the owner's answer A on #5925: with no run B chosen, B is the
+    newest round banked before A that holds the comparand (ADR-0391) of any of
+    A's takes, and says so; a chosen B, "None" included, wins."""
+    for index, (name, sets) in enumerate(rounds.items()):
+        campaign_root = _bank_one_round(tmp_path, name, sets, banked_at=f"2026-09-{20 + index:02d}T12:00:00Z")
+
+    data = correction_measurements.build_data(
+        sessions_dir=tmp_path / "no-sessions", campaign_root=campaign_root, run_a_id="round:r", run_b_id=run_b_id,
+    )
+
+    run_b, b_source = expected
+    assert (data["selected"]["b"], data["selected"]["b_source"]) == (run_b, b_source)
+    assert [run["id"] for run in data["view"]["runs"]] == ["round:r"] + ([run_b] if run_b else [])
 
 
 def test_web_data_returns_an_empty_view_when_no_runs_exist(tmp_path, monkeypatch):

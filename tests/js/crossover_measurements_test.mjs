@@ -58,6 +58,7 @@ function descendants(root, tag) {
 const elements = new Map([
   ["measurement-run-a", new Element("select")],
   ["measurement-run-b", new Element("select")],
+  ["measurement-run-b-source", new Element("span")],
   ["measurement-chart", new Element("canvas")],
   ["measurement-chart-status", new Element("p")],
   ["measurement-series", new Element("div")],
@@ -126,7 +127,11 @@ async function getJSON(url) {
     hidden.series = hidden.series.map((series) => ({ ...series, visible_by_default: false }));
     return { catalog, selected: { a: "a", b: "round:r3" }, view: { runs: [hidden, unbankedRun("b", "round:r3")] } };
   }
-  const withB = url.includes("b=");
+  if (mode === "comparand" && !url.includes("b=")) {
+    return { catalog, selected: { a: "a", b: "round:r3", b_source: "comparand" },
+      view: { runs: [responseRun("a", "a"), responseRun("b", "round:r3")] } };
+  }
+  const withB = url.includes("b=") && !url.includes("b=none");
   return {
     catalog,
     selected: { a: "a", b: withB ? "round:r3" : null },
@@ -234,6 +239,26 @@ check(
   chart.series[1].curve.display.deviation_db[0] === -1,
   "revealing a position preserves its prepared display values",
 );
+
+mode = "comparand";
+await elements.get("measurement-run-a").dispatch("change");
+await elements.get("measurement-run-a").dispatch("change");
+check(
+  requests.at(-1) === "data?a=a" &&
+  elements.get("measurement-run-b").value === "round:r3" &&
+  elements.get("measurement-run-b-source").hidden === false,
+  "until one is chosen, run B follows run A and is labelled as the comparand",
+);
+elements.get("measurement-run-b").value = "";
+await elements.get("measurement-run-b").dispatch("change");
+await elements.get("measurement-run-a").dispatch("change");
+check(
+  requests.at(-1) === "data?a=a&b=none" &&
+  elements.get("measurement-run-b").value === "" &&
+  elements.get("measurement-run-b-source").hidden === true,
+  "a chosen None keeps run B empty when run A changes",
+);
+mode = "normal";
 
 elements.get("measurement-run-b").value = "round:r3";
 lower.value = 500;
