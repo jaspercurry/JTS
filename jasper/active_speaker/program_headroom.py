@@ -27,7 +27,7 @@ from jasper.biquad import (
 )
 from jasper.json_fields import finite_float
 
-from .graph_safety import GraphView
+from .graph_safety import GraphView, view_from_emitted_text
 from .graph_transfer import GraphTransferError, complex_channel_transfer, mixer_mapping
 from .graph_types import PEAK_EPS_DB
 from .profile import ActiveSpeakerConfigError
@@ -56,6 +56,16 @@ def graph_headroom_db(view: GraphView) -> float:
     if gain is None:
         raise ProgramHeadroomUnreadable(f"the graph has no finite {PROGRAM_HEADROOM_FILTER} gain")
     return 0.0 - gain
+
+
+def written_headroom_db(text: str | None) -> float:
+    """:func:`graph_headroom_db` of emitted ``text``, or 0.0 when there is no text or it
+    writes no readable :data:`PROGRAM_HEADROOM_FILTER`, as a driver-domain graph does.
+    For disclosed numbers only; a judge reads :func:`graph_headroom_db`, which refuses."""
+    try:
+        return graph_headroom_db(view_from_emitted_text(text or ""))
+    except ProgramHeadroomUnreadable:
+        return 0.0
 
 
 class ProgramPeak(NamedTuple):

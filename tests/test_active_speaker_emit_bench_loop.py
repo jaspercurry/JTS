@@ -347,7 +347,7 @@ def test_the_two_arms_differ_only_by_the_filters_under_test(exact_report) -> Non
 
 def test_a_cut_only_linearization_moves_no_program_headroom(exact_report) -> None:
     assert exact_report.expected_offset_db == pytest.approx(0.0)
-    assert exact_report.control.derived.program_headroom_db == pytest.approx(0.0)
+    assert exact_report.control.derived.headroom_gain_db == pytest.approx(0.0)
 
 
 def test_the_stimulus_lead_in_covers_the_analysis_window(exact_report) -> None:

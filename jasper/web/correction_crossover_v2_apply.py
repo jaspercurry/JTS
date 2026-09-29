@@ -7,6 +7,7 @@ from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.web import correction_crossover_v2_state as v2state
 
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker import applied_tune, baseline_apply, baseline_profile, baseline_record
@@ -21,6 +22,7 @@ from jasper.active_speaker.design_draft import load_design_draft
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, candidate_on_declaration
 from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, compile_tuning_graph, load_tuning_declaration
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.program_headroom import written_headroom_db
 from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_control.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
@@ -79,7 +81,8 @@ async def apply_candidate(
                 atomic_write_text(target, text, mode=CONFIG_FILE_MODE)
                 if not validate_camilla_config(target).ok_to_apply:
                     raise CrossoverV2Refused("invalid configuration", code="baseline_config_validation_failed")
-            offset = baseline_profile.applied_program_level_delta_db(incumbent, prepared)
+            # For analysis only, never compensated at the fader (#1811).
+            offset = written_headroom_db(_persisted_text(incumbent)) - written_headroom_db(text)
             summary = v2durable.candidate_summary(selected, topology_pinned=True)
             change = declaration_change_for_candidate(source_preset=selected.source_preset, design_draft=draft)
             if on_candidate_verified is not None:
@@ -118,6 +121,15 @@ async def apply_candidate(
             log_event(logger, "correction.crossover_v2_apply", status="apply_failed", code="apply_failed", candidate_fingerprint=expected)
             result = await baseline_apply.apply_result(topology, prepared, apply_state=exc.state, error=exc)
             return {**result, "issue": {"code": "apply_failed", "message": str(exc)}}
+
+
+def _persisted_text(profile: Mapping[str, Any] | None) -> str | None:
+    """The config ``profile`` was applied from, or None when it names no readable file."""
+    path = ((profile or {}).get("config") or {}).get("path")
+    try:
+        return Path(str(path)).read_text(encoding="utf-8") if path else None
+    except (OSError, UnicodeError):
+        return None
 
 
 def handle_v2_apply(raw: Mapping[str, Any], run_async: Any, camilla_factory: Any) -> dict[str, Any]:

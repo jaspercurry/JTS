@@ -381,7 +381,7 @@ def test_unknown_role_lookup_refuses() -> None:
 
 
 def test_program_headroom_is_read_from_the_emitted_graph() -> None:
-    assert _derive(_emit()).program_headroom_db == pytest.approx(0.0)
+    assert _derive(_emit()).headroom_gain_db == pytest.approx(0.0)
 
 
 def test_a_boosting_linearization_moves_the_program_headroom() -> None:
@@ -398,8 +398,8 @@ def test_a_boosting_linearization_moves_the_program_headroom() -> None:
             {"biquad_type": "Peaking", "freq": 12000.0, "q": 2.0, "gain": 4.0},
         ]
     }
-    control = _derive(_emit()).program_headroom_db
-    treated = _derive(_emit(linearization=boosted)).program_headroom_db
+    control = _derive(_emit()).headroom_gain_db
+    treated = _derive(_emit(linearization=boosted)).headroom_gain_db
     assert treated < control
     assert treated - control < 0.0
 
