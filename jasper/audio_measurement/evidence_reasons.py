@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Analysis-side evidence codes, and the one exception an evidence reader refuses with.
+"""Analysis-side evidence codes, the one exception an evidence reader refuses with,
+and the one shape of a gap inside a document.
 
 Each code's household sentence and next action live in
 ``refusal_copy.REASON_REGISTRY`` (ADR-0300).
