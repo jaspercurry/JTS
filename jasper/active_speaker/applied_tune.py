@@ -97,7 +97,13 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
         return []
     issues: list[dict[str, Any]] = []
     fitted_m = (document.get("geometry") or {}).get("cabinet_back_wall_m")
-    geometry = measurement_geometry.load_declared_geometry()
+    try:
+        geometry = measurement_geometry.load_declared_geometry()
+    except (OSError, ValueError) as exc:
+        geometry = None
+        issues.append({**_issue("warning", measurement_geometry.DECLARED_GEOMETRY_UNREADABLE,
+                                f"the declared rig geometry cannot be read, so the wall gap is not checked: {exc}"),
+                       "field": getattr(exc, "field", None)})
     declared_m = None if geometry is None else geometry.cabinet_back_wall_m
     if fitted_m is not None and declared_m is not None and (
         abs(fitted_m - declared_m) > REAR_CALIBRATION_WALL_GAP_TOLERANCE_M

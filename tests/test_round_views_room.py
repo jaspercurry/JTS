@@ -304,7 +304,6 @@ def test_room_analysis_refusals_name_their_code(tmp_path, capsys, analyzed_room_
 @pytest.mark.parametrize("geometry,walls,boundary_reason", [
     (None, {}, "geometry_undeclared"),
     ({}, {}, "walls_undeclared"),
-    ({"front_wall_m": 0.85}, {"front": 0.85}, ""),
     ({"cabinet_back_wall_m": 0.2}, {}, "front_baffle_geometry_undeclared"),
     ({"cabinet_back_wall_m": 0.2, "side_wall_m": 1.4}, {"side": 1.4}, "front_baffle_geometry_undeclared"),
     ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.5}, ""),

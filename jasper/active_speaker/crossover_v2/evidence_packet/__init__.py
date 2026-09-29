@@ -177,7 +177,9 @@ def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
     try:
         geometry = load_declared_geometry(path)
     except (OSError, ValueError) as exc:
-        return absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry")
+        refused = getattr(exc, "field", None)
+        return {**absence(f"unreadable: {type(exc).__name__}", False, "declared_geometry"),
+                **({"refused_field": refused} if refused else {})}
     if geometry is None:
         return absence("source_absent", False, "declared_geometry")
     return geometry.to_dict()

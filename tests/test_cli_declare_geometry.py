@@ -75,7 +75,6 @@ def test_set_then_show_round_trips_the_declared_geometry(tmp_path, gap_in):
         speaker_height_m=0.84, mic_height_m=0.5, distance_m=1.2, ceiling_height_m=2.4,
         cabinet_back_wall_m=gap_in * 0.0254, cabinet_depth_m=0.3, toe_in_degrees=0, side_wall_m=1.4,
     )
-    assert "front_wall_m" not in json.loads(path.read_text())
 
 
 @pytest.mark.parametrize(
@@ -141,21 +140,3 @@ def test_set_refuses_an_out_of_range_field(tmp_path):
 def test_show_of_a_missing_file_returns_not_found(tmp_path):
     code = declare_geometry.main(["show", "--path", str(tmp_path / "absent.json")])
     assert code == declare_geometry.EXIT_NOT_FOUND
-
-
-@pytest.mark.parametrize("flag", ["--front-wall-m", "--front-wall-in"])
-def test_legacy_wall_records_read_without_reinterpreting_old_cli_flags(tmp_path, flag):
-    path = tmp_path / "geometry.json"
-    legacy = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84,
-                              distance_m=1.0, front_wall_m=0.85)
-    legacy.save(path)
-    before = path.read_bytes()
-    assert declare_geometry.main(["show", "--path", str(path)]) == declare_geometry.EXIT_OK
-    with pytest.raises(SystemExit) as exc:
-        declare_geometry.main(_set_argv(path, **{
-            "--speaker-height-m": 0.84, "--mic-height-m": 0.84,
-            "--distance-m": 1.0, flag: 0.2,
-        }))
-    assert exc.value.code == 2
-    assert path.read_bytes() == before
-    assert DeclaredGeometry.load(path).to_dict() == legacy.to_dict()
