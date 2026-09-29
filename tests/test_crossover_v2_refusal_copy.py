@@ -13,9 +13,7 @@ import pytest
 
 from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import (
-    refusal_copy,
-)
+from jasper.active_speaker.crossover_v2 import refusal_copy, take_reading
 from jasper.audio_measurement import evidence_reasons
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
@@ -114,6 +112,23 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
     if action is not None:
         action["id"] = "changed"
         assert refusal_copy.refusal_copy_for(code)[1]["id"] == spec.next_action["id"]
+
+
+# The readers own most of these codes outside evidence_reasons, so the module scan below cannot see them.
+@pytest.mark.parametrize("code, action", [
+    (take_reading.REFUSE_TAKE_BAND_TOO_NARROW, "choose_window"),
+    (take_reading.REFUSE_COMPARE_NO_COMMON_BAND, "name_comparand"),
+    (take_reading.REFUSE_COMPARE_RATES_DIFFER, "name_comparand"),
+    (take_reading.REFUSE_PREVIEW_UNREADABLE, "name_comparand"),
+    (take_reading.REFUSE_COMPARE_NO_COMPARAND, "name_comparand"),
+    ("measurement_captures_missing", "measure_again"),
+    ("dsp_replay_window_unavailable", "choose_window"),
+    ("bass_replay_manifest_predates_adr_0359", "render_again"),
+    (evidence_reasons.REASON_COVERAGE_SHORT, "measure_common_band"),
+])
+def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert (spec.code, spec.next_action and spec.next_action["id"]) == (code, action)
 
 
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
