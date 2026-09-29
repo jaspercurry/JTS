@@ -531,6 +531,33 @@ def test_a_take_banked_without_a_fit_input_refuses_by_that_field(speaker_round, 
         TAKE_CURVES_NOT_BANKED, "curves" if field == "woofer" else field, "woofer")
 
 
+def test_a_design_cloud_that_refuses_is_disclosed_and_its_takes_fit_nothing(speaker_round):
+    """#5737 C1b: a design pose that banked no curve for its role never costs the
+    round. The packet names the refusal by code for the set it serves, and that
+    set's takes publish no fit, never one without its cloud."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    broken = {**record, "curves": [curve for curve in record["curves"] if curve["role"] != "woofer"]}
+    rows = [(row.path, record)] + [(str(Path(row.path).with_name(f"pose{deg}.json")),
+                                    {**pose, "take_id": f"pose{deg}", "position_deg": deg})
+                                   for deg, pose in ((-20, record), (20, broken))]
+    for path, take in rows:
+        take_artifact_path(inputs.session_dir, path).write_text(json.dumps(take))
+    group = manifest_set(rows, set_id="speaker-set")
+    group["capture_basis"].update(role="woofer", gating_applied=True)
+    write_manifest(root, groups=[group])
+    directory, _ = round_artifact_dir(inputs.session_dir)
+
+    packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
+
+    refusal, = [entry for entry in packet["unavailable"] if entry["artifact"] == "design_clouds"]
+    assert (refusal["set_id"], refusal["reason"], refusal["detail"]["take_id"], refusal["detail"]["role"]) == (
+        "speaker-set", TAKE_CURVES_NOT_BANKED, "pose20", "woofer")
+    assert len(packet["fits"]) == 3 and all(
+        (fit["reason_summary"], fit["filters"]) == ({"unavailable": TAKE_CURVES_NOT_BANKED}, None) for fit in packet["fits"])
+
+
 @pytest.mark.parametrize("applied", [False, True])
 def test_mic_tier_uses_the_recorded_calibration(speaker_round, capsys, applied):
     root, record, *_ = speaker_round

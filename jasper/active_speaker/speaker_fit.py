@@ -29,7 +29,7 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, unavailable
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.series_stats import power_mean_db
@@ -61,7 +61,12 @@ def _round_candidate(sources: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
     raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
-def design_clouds(manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
+def design_clouds(
+    manifest: Mapping[str, Any], *, refused: dict[str, EvidenceUnavailable] | None = None,
+) -> dict[str, CloudFitTerms]:
+    """Each set's design cloud. A design pose without a fit input refuses by
+    code; with ``refused``, its sets get no cloud and ``refused`` names the
+    refusal by set id instead."""
     groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
     for group in manifest.get("sets", ()):
         basis = group["capture_basis"]
@@ -96,6 +101,11 @@ def design_clouds(manifest: Mapping[str, Any]) -> dict[str, CloudFitTerms]:
                     np.interp(grid, response.freqs_hz, response.magnitude_db) for response in responses
                 ])
                 cloud = replace(cloud, band_spread=_band_spread(grid, stacked), boost_responses=tuple(responses))
+            except EvidenceUnavailable as refusal:
+                if refused is None:
+                    raise
+                refused.update((group["set_id"], refusal) for group in members)
+                continue
             except (OSError, ValueError, TypeError, LookupError, StopIteration):
                 pass
         clouds.update((group["set_id"], cloud) for group in members)

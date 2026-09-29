@@ -42,7 +42,9 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     takes_by_position,
 )
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, unavailable
+from jasper.audio_measurement.evidence_reasons import (
+    CAPTURE_UNREADABLE_SIDECAR, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable,
+)
 from jasper.active_speaker.crossover_v2.round_inputs import (
     CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, resolve_set, round_artifact_dir, round_inputs,
 )
@@ -940,13 +942,17 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
                     assert delta["level_offset_db"] == pytest.approx(-6.0, abs=0.05)
 
 
-@pytest.mark.parametrize("failure", [False, True])
+@pytest.mark.parametrize("failure", [
+    None, OSError("disk unavailable"), EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"field": "curves", "role": "woofer"}),
+], ids=["banked", "disk", "evidence"])
 def test_finish_round_banks_packet_or_records_save_failure(tmp_path, monkeypatch, failure):
+    """A bank that fails, on the disk or on evidence that refuses by code, is
+    recorded on the run manifest and handed back, never raised (#5737 C1b)."""
     from jasper.active_speaker import round_bank
 
     def bank(*args, **kwargs):
-        if failure:
-            raise OSError("disk unavailable")
+        if failure is not None:
+            raise failure
         return round_bank.BankedRound(tmp_path, {})
     monkeypatch.setattr(round_bank, "bank_round", bank)
     manifest = tmp_path / "evidence/v1/artifacts/crossover_v2/run" / RUN_MANIFEST_FILENAME
@@ -955,13 +961,11 @@ def test_finish_round_banks_packet_or_records_save_failure(tmp_path, monkeypatch
     logged = Mock()
     monkeypatch.setattr(round_bank, "log_event", logged)
     banked, error = round_bank.finish_round(tmp_path)
-    assert (banked is None) == failure
-    assert isinstance(error, OSError) if failure else error is None
+    assert (banked is None, error) == (failure is not None, failure)
     if banked:
         assert banked.path == tmp_path
-    assert json.loads(manifest.read_text()) == {"status": "complete", "sets": [],
-        **({"packet_error_detail": "OSError: disk unavailable"} if failure else {})}
-    if failure:
-        assert logged.call_args.kwargs["detail"] == json.loads(manifest.read_text())["packet_error_detail"]
-    else:
+    written = json.loads(manifest.read_text())
+    assert written.pop("packet_error_detail", None) == (logged.call_args.kwargs["detail"] if failure else None)
+    assert written == {"status": "complete", "sets": []}
+    if failure is None:
         logged.assert_not_called()
