@@ -31,18 +31,20 @@ from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIR
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
-    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, REASON_INTERNAL_ERROR, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInterrupted
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
-from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, kept_measurements
+from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -54,6 +56,7 @@ from tests.crossover_v2_fixtures import (
 )
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
@@ -68,7 +71,7 @@ def _walk(angles, candidates=("fp-a",)):
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE))
 
 
-def _analysis(_record, _record_id):
+def _analysis(_record):
     return ProgramAnalysis(phase="verify", stimulus_id="test", locations=(_loc("sweep"),))
 
 
@@ -333,12 +336,12 @@ def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
 def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
     signals, gate = plan_run.RunSignals(), AnsweredGate()
     calls = 0
-    def analyze(record, record_id):
+    def analyze(record):
         nonlocal calls
         calls += 1
         if calls == 1:
             getattr(signals, action).set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, fakes = asyncio.run(_run_gated(_walk([0, 20]), gate=gate, analyze=analyze, signals=signals))
     if action == "retake":
         assert fakes.play.bearings == [0, 0, 20]
@@ -353,9 +356,9 @@ def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
 
 def test_progress_and_manifest_are_published_during_the_run():
     gate, seen = AnsweredGate(), []
-    def analyze(record, record_id):
+    def analyze(record):
         seen.append(gate.published())
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, _ = asyncio.run(_run_gated(_walk([0, 20], ("fp-a", "fp-b")), gate=gate, analyze=analyze))
     assert [(r["run"]["pose"], r["run"]["poses"], r["run"]["config"], r["run"]["configs"], r["run"]["attempt"])
             for r in seen] == [(1, 2, 1, 2, 1), (1, 2, 2, 2, 1), (2, 2, 1, 2, 1), (2, 2, 2, 2, 1)]
@@ -445,9 +448,9 @@ def test_done_requires_every_stimulus_at_the_last_stop(monkeypatch, accepted):
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     request = _walk([0])
     request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
-    def analyze(record, record_id):
+    def analyze(record):
         signals.complete.set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, fakes = asyncio.run(_run_gated(request, analyze=analyze, signals=signals))
     assert len(fakes.banked) == 2
     assert result.status == ("complete" if accepted else "partial")
@@ -462,7 +465,7 @@ def test_run_never_applies_a_tune(monkeypatch, action):
     monkeypatch.setattr(correction_crossover_v2_apply, "handle_v2_apply", apply)
     signals = plan_run.RunSignals()
     calls = 0
-    def analyze(record, record_id):
+    def analyze(record):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -470,7 +473,7 @@ def test_run_never_applies_a_tune(monkeypatch, action):
                 raise asyncio.CancelledError
             if action == "complete":
                 signals.complete.set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     verdicts = iter([TakeVerdict(action == "accept", REASON_CLIPPED if action in {"retake_same", "stop"} else None,
                                next=action if action in {"retake_same", "stop"} else "accept", charge="speaker"), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
@@ -544,26 +547,68 @@ def test_operator_retries_are_pooled_across_configs(monkeypatch):
     assert result.status == "partial"
 
 
-def test_failed_analysis_keeps_the_raw_record(monkeypatch):
-    def broken(*args):
-        raise ValueError("bad capture")
-    result, fakes = asyncio.run(_run_gated(_walk([0]), analyze=broken))
-    assert result.status == "partial"
-    assert result.takes_measured == len(fakes.banked) == 1
-    assert result.takes[0]["artifacts"]["record_id"]
-    assert result.takes[0]["fault"] in REASON_REGISTRY
+@pytest.mark.parametrize("case,status,faults", [
+    ("accepted", "complete", [None]),
+    ("refused", "complete", [REASON_DRIFT_BASELINES_DISAGREE, None]),
+    ("drift", "complete", [None, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, None]),
+    ("analysis_error", "partial", [REASON_INTERNAL_ERROR]),
+])
+def test_a_take_banks_the_verdict_and_level_its_manifest_row_holds(case, status, faults):
+    """The bank judges each take before it writes the record, so every banked
+    take holds its manifest row's verdict and level, a refused one and one whose
+    analysis failed too (ADR-0383)."""
+    if case == "drift":
+        result, fakes, _, _ = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+    else:
+        calls = count(1)
+        def analyze(record):
+            if case == "analysis_error":
+                raise ValueError("bad capture")
+            return replace(_analysis(record), discontinuity_samples=1024 if case == "refused" and next(calls) == 1 else 0)
+        result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
+    records = {record["take_id"]: record for record in fakes.banked}
+    assert (result.status, [row.get("fault") for row in result.takes]) == (status, faults)
+    assert set(records) == {row["take_id"] for row in result.takes}
+    for row in result.takes:
+        record = records[row["take_id"]]
+        assert record["level"] == row["level"]
+        assert record["verdict"] == {
+            "ok": row["quality"]["status"] == TAKE_MEASURED, "fault": row.get("fault"), "next": row.get("next", "accept"),
+            "charge": row.get("charge", "none"), "next_gain_db": row["next_gain_db"],
+            "evidence": row["quality"]["evidence"], "capabilities": row["quality"]["capabilities"], "screens": row["screens"]}
 
 
-def test_real_assessor_sees_glitch_and_retries_once():
-    calls = 0
-    def analyze(record, record_id):
-        nonlocal calls
-        calls += 1
-        return replace(_analysis(record, record_id), discontinuity_samples=1024 if calls == 1 else 0)
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
-    assert len(fakes.banked) == 2
-    assert result.takes[0]["fault"] == REASON_DRIFT_BASELINES_DISAGREE
-    assert result.status == "complete"
+def test_an_assessor_error_ends_its_captures_assessment_then_the_run(caplog):
+    """The take whose assessor raised banks a stop and is logged; its capture's
+    later rung banks unassessed, and the error ends the run once the capture has
+    played (ADR-0383)."""
+    fakes, assessor = FakeSeams(), Mock(side_effect=RuntimeError)
+    request = _walk([0, 20])
+    request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
+    with caplog.at_level("WARNING", logger=plan_run.logger.name), pytest.raises(RuntimeError):
+        asyncio.run(_run_gated(request, seams=fakes, assessor=assessor))
+    assert (assessor.call_count, fakes.play.rungs) == (1, [-24, -18])
+    assert [(record["verdict"]["fault"], record["verdict"]["evidence"]) for record in fakes.banked] == [
+        (REASON_INTERNAL_ERROR, {"error_type": "RuntimeError"}), (REASON_INTERNAL_ERROR, {"assessed": False})]
+    assert event_fields(caplog, "active_speaker.take_assessment_failed") == {
+        "take_id": fakes.banked[0]["take_id"], "error_type": "RuntimeError"}
+
+
+def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
+    """A cancel that lands once the stimulus played interrupts its capture: the
+    take banks unassessed, nothing grades it, and the run keeps no judge (ADR-0383)."""
+    class InterruptedPlay(FakePlay):
+        async def run(self, **kwargs):
+            await super().run(**kwargs)
+            asyncio.current_task().cancel()
+            raise PlaybackInterrupted(PlaybackObservation(emission="completed"), wav_path="capture.wav")
+
+    grading = Mock()
+    result, fakes = asyncio.run(_run_gated(_walk([0]), seams=FakeSeams(play=InterruptedPlay()),
+                                           analyze=grading, assessor=grading))
+    record, = fakes.banked
+    assert (result.status, record["verdict"]["evidence"], grading.called, result.judge) == (
+        "cancelled", {"assessed": False}, False, None)
 
 
 @pytest.mark.parametrize("changed", [
@@ -788,28 +833,27 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
 _MIC = MicSensitivity(-12.0)
 
 
-class _LevelStore(_Store):
-    """Banks each take as the web host does: the program it played, at the
-    peak it asked for under its ceiling, and what the microphone read."""
+class _LevelRecords:
+    """Hands each take to its manifest as the web host does: the program it
+    played, at the peak it asked for under its ceiling, and what the microphone read."""
 
-    def __init__(self, records, readings, probe_db, ceiling_db):
-        super().__init__(records)
-        self.readings, self.probe_db, self.ceiling_db = iter(readings), probe_db, ceiling_db
+    def __init__(self, manifest, readings, probe_db, ceiling_db):
+        self.manifest, self.readings, self.probe_db, self.ceiling_db = manifest, iter(readings), probe_db, ceiling_db
 
     async def bank(self, record):
-        if record.get("kind") != RUN_MANIFEST_KIND:
-            band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
-            peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
-            reading = next(self.readings)
-            program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
-                                                 downstream_gain_db=0.0, channels=1)
-                       if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
-                       build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
-            record.update(
-                program=program.to_dict(),
-                capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
-                                           "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
-        return await super().bank(record)
+        record = self.manifest.capture_record(record)
+        band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
+        peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
+        reading = next(self.readings)
+        program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                             downstream_gain_db=0.0, channels=1)
+                   if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
+                   build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
+        record.update(
+            program=program.to_dict(),
+            capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
+                                       "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
+        return await self.manifest.bank(record)
 
 
 class _RedoOnPlacementGate(AnsweredGate):
@@ -832,7 +876,7 @@ class _RedoOnPlacementGate(AnsweredGate):
             raise
 
 
-def _heard_analysis(record, _record_id):
+def _heard_analysis(record):
     """The play's located sweeps read what the microphone heard, 30 dB over the room (ADR-0364)."""
     program = ExcitationProgram.from_dict(record["program"])
     heard = _MIC.dbfs_from_db_spl(record["capture_integrity"]["spl"]["max_window_db_spl"])
@@ -848,7 +892,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
     ``redo_at``, take 0 being just after the first placement is confirmed."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
-    manifest = RunManifest("run", _LevelStore(fakes.records, readings, probe_db=-42.0, ceiling_db=ceiling_db))
+    manifest = RunManifest("run", _Store(fakes.records))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
 
@@ -861,7 +905,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         return capture_dispatch.assess(analysis, **kwargs)
 
     async def run():
-        async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
+        records = _LevelRecords(manifest, readings, probe_db=-42.0, ceiling_db=ceiling_db)
+        async with open_session(replace(fakes, records=records), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
                 request, session=session, manifest=manifest, gate=gate if web else None, aborts=_ABORTS,
@@ -1146,18 +1191,15 @@ async def test_bass_levels_refuse_when_no_level_is_admissible():
 @pytest.fixture
 def rung_spl(monkeypatch):
     measurements = {}
-    bank = _Store.bank
+    bank = RunManifest.bank
 
     async def measured_bank(self, record):
-        if "level_db" in record:
-            level = record["level_db"]
-            record["capture_integrity"] = {"spl": measurements.get(round(level, 2), {
-                "loudest_half_second_db_spl": 93 + level, "max_window_db_spl": 93 + level,
-                "ceiling_db_spl": 85})}
-            record["stimulus_id"] = "bass-sweep"
-        return await bank(self, record)
+        level = record["level_db"]
+        return await bank(self, {**record, "stimulus_id": "bass-sweep", "capture_integrity": {
+            "spl": measurements.get(round(level, 2), {"loudest_half_second_db_spl": 93 + level,
+                                                      "max_window_db_spl": 93 + level, "ceiling_db_spl": 85})}})
 
-    monkeypatch.setattr(_Store, "bank", measured_bank)
+    monkeypatch.setattr(RunManifest, "bank", measured_bank)
     return measurements
 
 

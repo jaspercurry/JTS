@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection, Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -30,6 +30,24 @@ RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
+#: A take's own verdict and its level observation, judged on its record before it banks (ADR-0383).
+TakeJudge = Callable[[Mapping[str, Any]], Awaitable[tuple[TakeVerdict, Mapping[str, Any]]]]
+
+
+def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[str, Any]:
+    basis = capture_basis(record)
+    gains = [segment["gain_db"] for segment in (record.get("program") or {}).get("segments", [])
+             if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}
+             and (role is None or (segment.get("role") or "summed") == role)]
+    if gains:
+        # The composer can cap the requested rung; report the emitted sweep gain.
+        basis["stimulus_dbfs"] = max(gains)
+    return basis
+
+
+def _take_level(basis: Mapping[str, Any], observed: Mapping[str, Any]) -> dict[str, Any]:
+    return {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")},
+            **{key: observed.get(key) for key in ("loudest_half_second_db_spl", "level_delta_db")}}
 
 
 def kept_measurements(
@@ -164,6 +182,7 @@ class RunManifest:
     finalized: bool = False
     path: str = ""
     pending_records: list[tuple[Mapping[str, Any], str]] = field(default_factory=list, repr=False)
+    judge: TakeJudge | None = field(default=None, init=False, repr=False)
     _context: dict[str, Any] = field(default_factory=dict, repr=False)
     _ordinal: int = 0
     _attempts: int = 0
@@ -239,7 +258,12 @@ class RunManifest:
         return {**planned, **record, **context}
 
     async def bank(self, record: Mapping[str, Any]) -> str:
+        from .crossover_v2.capture_provenance import finite_json  # lazy: it loads the analysis stack
+
         payload = self.capture_record(record)
+        assert self.judge is not None
+        verdict, observed = await self.judge(payload)
+        payload.update(finite_json({"verdict": asdict(verdict), "level": _take_level(_played_basis(payload), observed)}))
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
         return record_id
@@ -283,14 +307,10 @@ class RunManifest:
                        key=lambda take: take["attempt"], default={}).get("alignment", {})
         alignment = capture_alignment_levels(verdict.evidence, previous)
         for role in sorted(roles):
-            basis = capture_basis(record)
+            basis = _played_basis(record, role)
             # Pose is an observation axis, never a set boundary (brief §2.4).
             basis.pop("pose_kind", None)
             basis.update(role=role, stimulus=record.get("regime"), calibration=dict(self.calibration))
-            gains = [segment["gain_db"] for segment in sweeps if (segment.get("role") or "summed") == role]
-            if gains:
-                # The composer can cap the requested rung; report the emitted sweep gain.
-                basis["stimulus_dbfs"] = max(gains)
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
                 "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
@@ -302,10 +322,7 @@ class RunManifest:
             row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
                    "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
-                   "level": {**{key: basis.get(key) for key in
-                             ("level_db", "stimulus_dbfs", "stimulus_id")},
-                             "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
-                             "level_delta_db": level_observation.get("level_delta_db")},
+                   "level": _take_level(basis, level_observation),
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
                    "screens": verdict.screens,
                    "quality": {"status": status,

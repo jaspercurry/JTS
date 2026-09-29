@@ -511,8 +511,9 @@ def _run_phase(conductor, index, attempt, result=None):
         "program": program.to_dict(),
     }
     records.enrich(result if result is not None else _capture(), record)
+    verdict = assess(analyze(record), phase=program.phase, program=program)
     records.after_bank(record, record["take_id"])
-    return assess(analyze(record, record["take_id"]), phase=program.phase, program=program)
+    return verdict
 
 
 def _snr_pilot(role: str, snr_db: float) -> PilotObservation:

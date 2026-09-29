@@ -102,8 +102,7 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
     program = compose_plan_program(conductor, spec, None, context=plan_context())
     record = {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "check", "program": program.to_dict()}
     records.enrich(WiredCaptureAnswer(wav=b"", program=program.to_dict()), record)
-    records.after_bank(record, record["take_id"])
-    verdict = assessor(analyze(record, record["take_id"]), phase="check", program=program)
+    verdict = assessor(analyze(record), phase="check", program=program)
     read.assert_called_once_with()
     assert (verdict.fault, verdict.next) == (
         ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
@@ -461,8 +460,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         record = {"take_id": f"take-{attempt}", "index": 1, "attempt": attempt,
                   "phase": "measure", "program": program.to_dict()}
         records.enrich(capture, record)
-        records.after_bank(record, record["take_id"])
-        analysis = analyze(record, record["take_id"])
+        analysis = analyze(record)
         verdict = assessor(analysis, phase="measure", program=program)
         assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
         assert verdict.ok and verdict.fault is None
