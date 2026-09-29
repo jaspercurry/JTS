@@ -106,13 +106,7 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 
 ## Map
 
-- `jasper/` — product Python. Notable: `voice_daemon.py` (wake→LLM loop),
-  `mux.py` (source arbitration), `volume_coordinator.py`, `camilla.py`
-  (DSP control), `output_topology.py`; packages: `voice/` (providers),
-  `tools/` (LLM tool packs), `web/` (wizards; shared primitives in
-  `web/_common.py`, page shell in `web/chrome.py`), `control/`
-  (jasper-control daemon), `fanin/`, `multiroom/`, `transit/`, `cues/`,
-  `cli/` (incl. `cli/doctor/`).
+- [Repository layout](README.md#repository-layout) owns the code map.
 - `jasper/active_speaker/`, `jasper/audio_measurement/`
   — the speaker tuning/measurement program (own doctrine:
   [docs/measurement-loop-doctrine.md](docs/measurement-loop-doctrine.md)).

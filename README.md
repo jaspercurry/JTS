@@ -175,14 +175,15 @@ standalone `deploy/systemd/jasper-*-web.service` units) resolves via its
 jasper/            Product Python: daemons, wizards, CLIs, tool packs
   voice_daemon.py    Main loop: wake → real-time LLM → tools → TTS
   mux.py             Renderer arbitration (latest-source-wins)
-  camilla.py         CamillaDSP websocket control + ducking
-  output_topology.py Output topology / DAC selection
+  audio_control/     DSP, volume and renderer control
+  audio_routes/      Output topology, DAC selection and route state
+  runtime/           Audio validation, capture, TTS and flight recorder
   voice/             Provider-agnostic LiveConnection + per-provider adapters
   tools/             LLM tool packs and the tool registry
   web/               Setup wizards (primitives in web/_common.py, shell in web/chrome.py)
   control/           jasper-control: /state, management + automation HTTP API
   cli/               jasper-doctor, jasper-aec-*, measurement CLIs
-  platform/          Control client, UDS + status-socket clients, systemd activation
+  platform/          Shared I/O, paths, math, logs, systemd and IPC clients
   fanin/ multiroom/ transit/ cues/ peering/ usbsink/ accessories/
   sound/             CamillaDSP config emission and the graph carrier
   active_speaker/ audio_measurement/ correction/ attribution/
@@ -203,9 +204,6 @@ LICENSES/          Apache-2.0 plus vendored third-party license texts
 .claude/           Repo-scoped Claude Code commands (onboard-pi, reviews)
 .github/           Community files, CI, PR template, CODEOWNERS, dependabot
 ```
-
-The audio path spans four of these: `deploy/` (ALSA + units), `rust/` and
-`c/` (fan-in, output, ring), and `jasper/` (control, DSP, voice).
 
 ---
 
