@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, replace
-from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -20,7 +19,7 @@ from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, program_charge_db
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
 from jasper.active_speaker.crossover_v2.position_cycle import curves_for_take, take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, round_artifact_dir, resolve_set
+from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, resolve_set
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
 from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ, EnvelopeCurve, ladder_smooth
@@ -30,7 +29,7 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, CrossoverRegion
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.audio_measurement.bundles import relative_artifact_path
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
@@ -56,21 +55,11 @@ def _envelope_answer(envelope: EnvelopeCurve) -> dict[str, Any]:
     return {"ladder": "octave", "bands": bands, "sigma_source": "paired_repeats" if envelope.sigma_db is not None else "unavailable"}
 
 
-def _read_candidate(path: Path) -> dict[str, Any]:
-    candidate = json.loads(path.read_text())
-    if not isinstance(candidate, dict) or not all(
-        isinstance(candidate.get(key), dict) for key in ("source_preset", "analysis")
-    ):
-        raise RoundViewsError("candidate requires source_preset and analysis objects")
-    return candidate
-
-
-def _round_candidate(directory: Path, sources: Mapping[str, Any]) -> dict[str, Any]:
-    path = directory / "candidate.json"
-    if path.is_file():
-        return _read_candidate(path)
+def _round_candidate(sources: Mapping[str, Any]) -> MeasuredCrossoverCandidate:
+    if candidate := sources.get("candidate"):
+        return MeasuredCrossoverCandidate.from_mapping(candidate)
     if applied := sources.get("applied_profile"):
-        return candidate_from_applied_profile(None, applied).to_dict()
+        return candidate_from_applied_profile(None, applied)
     raise RoundViewsError("speaker-fit requires the round's candidate or a banked base")
 
 
@@ -131,10 +120,9 @@ def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarra
 
 
 def _fit_vocabularies(
-    candidate: Mapping[str, Any], budgets: Mapping[str, Mapping[str, Any]],
+    base: MeasuredCrossoverCandidate, budgets: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, FitVocabulary]:
     try:
-        base = MeasuredCrossoverCandidate.from_mapping(candidate)
         # The charge without each role's own chain (#5909).
         spent = {role: program_charge_db(replace(base, linearization={
             name: fit for name, fit in base.linearization.items() if name != role})) for role in budgets}
@@ -169,14 +157,12 @@ def speaker_fit(
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
     if program.stimulus_id != selected.capture_basis["stimulus_id"] or record["take_id"] != take_id:
         raise RoundViewsError("selected take does not match its manifest")
-    directory, _ = round_artifact_dir(inputs.session_dir)
-    assert directory is not None
     sources = prescription_sources(inputs) if sources is None else sources
     try:
-        candidate = _round_candidate(directory, sources)
+        base = _round_candidate(sources)
     except (OSError, ValueError, TypeError, LookupError) as exc:
-        raise SpeakerFitUnreadable(str(exc)) from exc
-    analysis = take.get("analysis") or candidate["analysis"]
+        raise SpeakerFitUnreadable(str(exc), code=getattr(exc, "code", None)) from exc
+    analysis = take.get("analysis") or base.analysis
     if analysis["stimulus_id"] != program.stimulus_id:
         raise RoundViewsError("banked analysis does not match the selected program")
     matching_takes = {take["take_id"] for group in manifest["sets"]
@@ -199,15 +185,14 @@ def speaker_fit(
     bands = _primary_sweep_bands(program)
     if not 1 <= len(bands) <= 2:
         raise RoundViewsError("speaker-fit requires one or two measured driver roles")
+    vocabularies = _fit_vocabularies(base, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     if clouds_by_set is None:
         clouds_by_set = design_clouds(inputs, manifest)
     clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
               for group in manifest["sets"] if group["set_id"] in clouds_by_set
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
-    regions = [CrossoverRegion.from_mapping(region)
-               for region in candidate["source_preset"].get("crossover_regions") or ()]
+    regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
-    vocabularies = _fit_vocabularies(candidate, {role: {**budgets.get(role, {}), **overrides} for role in bands})
     curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
     drivers = []
     for role, band in bands.items():

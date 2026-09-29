@@ -524,7 +524,7 @@ def test_an_exhausted_base_spends_the_charge_the_emitter_refused():
     assert {role: (row["program_headroom_spent_db"], row["program_headroom_remaining_db"], row["binding"], row["reason"])
             for role, row in rows.items()} == {role: (refused.value.charge_db, 0.0, "program_headroom", None)
                                                for role in ("woofer", "tweeter")}
-    caps = _fit_vocabularies(candidate.to_dict(), {"woofer": {}, "tweeter": {}})
+    caps = _fit_vocabularies(candidate, {"woofer": {}, "tweeter": {}})
     assert {role: vocabulary.composed_boost_cap_db for role, vocabulary in caps.items()} == {
         "woofer": 40.0, "tweeter": 0.0}
 
@@ -566,7 +566,7 @@ def test_a_base_the_emitter_refuses_names_its_code_and_the_packet_still_builds(r
     assert {role: (row["program_headroom_spent_db"], row["reason"]) for role, row in rows.items()} == {
         role: (None, candidate_parts.COMPOSITION_INVALID) for role in ("woofer", "tweeter")}
     with pytest.raises(SpeakerFitUnreadable) as refused:
-        _fit_vocabularies(candidate.to_dict(), {"woofer": {}})
+        _fit_vocabularies(candidate, {"woofer": {}})
     assert refused.value.code == candidate_parts.COMPOSITION_INVALID
 
 

@@ -130,6 +130,10 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     return destination
 
 
+def _refusal_code(exc: Exception, fallback: str) -> str:
+    return getattr(exc, "reason", None) or getattr(exc, "code", None) or fallback
+
+
 def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any],
           clouds: Mapping[str, CloudFitTerms]) -> list[dict[str, Any]]:
     computed: dict[str, Any] = {}
@@ -149,8 +153,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                                          for role, proposal in result["linearization"].items()}
                 except ROUND_INPUT_ERRORS as exc:
                     computed[take_id] = {take["role"]: {"fit": unavailable_fit(
-                        take["role"], getattr(exc, "reason", None) or getattr(exc, "code", None) or exception_detail(exc),
-                    )}}
+                        take["role"], _refusal_code(exc, exception_detail(exc)))}}
             for role, proposal in computed[take_id].items():
                 if role != take["role"]:
                     continue
@@ -231,8 +234,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                 contract = prescription_contracts(programs=(section,), **section_sources)[section]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
-            limits[group["set_id"]] = {"status": "unavailable",
-                                       "reason": getattr(exc, "reason", None) or getattr(exc, "code", None) or "evidence_unreadable"}
+            limits[group["set_id"]] = {"status": "unavailable", "reason": _refusal_code(exc, "evidence_unreadable")}
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
