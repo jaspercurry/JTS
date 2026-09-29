@@ -16,7 +16,7 @@ from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.deconv import HarmonicWindowOutOfRange
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.distortion import floor_limited_mask, read_segment_distortion, sweep_covers_band
-from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SUMMED_SWEEP, preceding_silence_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.quality_model import DRIVER
@@ -29,7 +29,7 @@ from .measurement_analysis import BankedMeasurement, analyzed_measurements
 
 logger = logging.getLogger(__name__)
 
-BASS_VIEW_SCHEMA = "jts_bass_view/2"
+BASS_VIEW_SCHEMA = "jts_bass_view/3"
 BASS_BAND_HZ = (BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1])
 
 
@@ -85,7 +85,7 @@ def bass_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray
     anchor = locations["sweep_verify"]
     reading = band_snr(capture, program, "sweep_verify", anchor, _quiet(program, locations, capture.size), BASS_BANDS_HZ)
     if not sweep_covers_band(segment_sweep_meta(program.segment("sweep_verify")), BASS_BAND_HZ):
-        return {**reading, "harmonics": {"status": "unavailable", "reason": REASON_COVERAGE_SHORT}}
+        return {**reading, "harmonics": unavailable(REASON_COVERAGE_SHORT)}
     try:
         harmonics = read_segment_distortion(
             program, capture, "sweep_verify", anchor, band_hz=BASS_BAND_HZ, calibration=calibration,
@@ -95,7 +95,7 @@ def bass_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray
         reason = "harmonic_window_out_of_range" if isinstance(exc, HarmonicWindowOutOfRange) else REASON_COVERAGE_SHORT
         log_event(logger, "active_speaker.bass_harmonics_not_banked", level=logging.WARNING,
                   stimulus_id=program.stimulus_id, reason=reason, error_type=type(exc).__name__)
-        return {**reading, "harmonics": {"status": "unavailable", "reason": reason}}
+        return {**reading, "harmonics": unavailable(reason)}
     return {**reading, "harmonics": {"freqs_hz": harmonics.freqs_hz.tolist(), "orders": {
         str(order): {"relative_db": harmonics.relative_db[order].tolist(),
                      "floor_relative_db": harmonics.floor_relative_db[order].tolist()}
@@ -126,9 +126,9 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
         band["fundamental_qualified"] = valid and snr is not None and snr >= DRIVER.snr_warn_db
     orders = {}
     harmonics = reading["harmonics"]
-    distortion = ({"available": False, "reason": harmonics["reason"]}
-                  if harmonics.get("status") == "unavailable" else {"available": True})
-    if distortion["available"]:
+    distortion = (unavailable(harmonics["reason"]) if harmonics.get("status") == "unavailable"
+                  else {"status": "available"})
+    if distortion["status"] == "available":
         freqs = np.asarray(harmonics["freqs_hz"], dtype=float)
         harmonic_qualified = _qualified(freqs, bands)
         silence = preceding_silence_s(program, segment)

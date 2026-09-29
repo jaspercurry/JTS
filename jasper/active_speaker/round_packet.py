@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.platform.atomic_io import atomic_write_json
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
@@ -22,7 +22,8 @@ from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fi
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
-    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS,
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, round_inputs, prescription_sources,
+    ROUND_INPUT_ERRORS,
 )
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
@@ -103,11 +104,12 @@ def banked_evidence(inputs: RoundInputs) -> tuple[dict[str, Any], Exception | No
 def store_banked_evidence(round_dir: Path) -> Exception | None:
     """Store a round's evidence in its ``packet.json`` when a bank other than
     :func:`write_round_packet` banks it, keeping what the file already holds.
-    It names its round as that bank does: a packet's bass evidence binds on ``round_id``."""
+    It names its round as that bank does: a packet's bass evidence binds on ``round_id``.
+    A file it creates takes this build's ``schema``; one another bank wrote keeps its own."""
     stored, error = banked_evidence(round_inputs(round_dir))
     path = round_dir / PACKET_FILENAME
     packet = json.loads(path.read_text()) if path.is_file() else {}
-    atomic_write_json(path, {"round_id": round_dir.name, **packet, **stored})
+    atomic_write_json(path, {"schema": ROUND_PACKET_SCHEMA, "round_id": round_dir.name, **packet, **stored})
     return error
 
 
@@ -121,8 +123,7 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
         table = json.loads(table_path.read_text())
     except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
-        table = {"status": "unavailable", "code": getattr(exc, "code", "bass_fit_inputs_missing"),
-                 "error_type": type(exc).__name__}
+        table = {**unavailable(getattr(exc, "code", "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
     packet = json.loads(destination.read_text())
     packet["bass_table"] = table
     atomic_write_json(destination, packet)
@@ -234,7 +235,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                 contract = prescription_contracts(programs=(section,), **section_sources)[section]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
-            limits[group["set_id"]] = {"status": "unavailable", "reason": _refusal_code(exc, "evidence_unreadable")}
+            limits[group["set_id"]] = unavailable(_refusal_code(exc, "evidence_unreadable"))
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
@@ -243,7 +244,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
     axis = commissioning_alignment(alignments) or {}
-    packet = {"schema": "jts_round_packet/3", "round_id": target.name, "run_id": manifest.get("run_id"),
+    packet = {"schema": ROUND_PACKET_SCHEMA, "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "layout": manifest.get("layout"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),

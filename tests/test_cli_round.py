@@ -1396,7 +1396,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
             take["frequency_curve"]["magnitude_db"] = [take["record"]["level_db"]] * 3
             takes.append(take)
         path = default_out(inputs, target, "bass_view.json", set_id)
-        path.write_text(json.dumps({"schema": "jts_bass_view/2", "takes": takes}))
+        path.write_text(json.dumps({"schema": "jts_bass_view/3", "takes": takes}))
         return {"view": view, "status": "written", "out": str(path)}
     monkeypatch.setattr(round_bookkeeping, "run_bookkeeping", view)
     bank = round_bank.bank_round

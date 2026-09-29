@@ -25,6 +25,7 @@ from jasper.dsp_control.camilla_config_contract import (
     check_volume_limit,
     parse_camilla_devices_config,
 )
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.platform.json_fields import issue as _issue
 from jasper.platform.paths import camilla_statefile
@@ -35,7 +36,7 @@ from .camilla_yaml import (
     forbidden_playback_token,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ENVIRONMENT_REPORT_KIND = "jts_active_speaker_environment_report"
 SAFE_PLAYBACK_SCHEMA_VERSION = 1
 ALSA_PROBE_TIMEOUT_SEC = 3.0
@@ -130,7 +131,7 @@ def probe_alsa_playback_devices(
         completed = runner(["aplay", "-l"], ALSA_PROBE_TIMEOUT_SEC)
     except FileNotFoundError:
         return {
-            "available": False,
+            **unavailable("aplay_missing"),
             "command": ["aplay", "-l"],
             "returncode": None,
             "devices": [],
@@ -145,7 +146,7 @@ def probe_alsa_playback_devices(
         }
     except subprocess.TimeoutExpired:
         return {
-            "available": False,
+            **unavailable("aplay_timeout"),
             "command": ["aplay", "-l"],
             "returncode": None,
             "devices": [],
@@ -181,7 +182,7 @@ def probe_alsa_playback_devices(
         )
 
     return {
-        "available": completed.returncode == 0,
+        **({"status": "available"} if completed.returncode == 0 else unavailable("aplay_failed")),
         "command": ["aplay", "-l"],
         "returncode": completed.returncode,
         "devices": devices,

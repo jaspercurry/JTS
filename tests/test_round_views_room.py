@@ -505,7 +505,7 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
                          "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id", "schema"}
     assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
     limits = packet["limits"]["summed"]
-    assert limits["evidence_status"] == "evaluated"
+    assert limits["status"] == "available"
     assert limits["bounds"]["band_hz"][0] == room["median"]["coverage_hz"][0] == floor_hz
     assert limits["bounds"]["freqs_hz"] == room["median"]["freqs_hz"]
     assert len(limits["bounds"]["cut_floor_db"]) == len(room["median"]["freqs_hz"])

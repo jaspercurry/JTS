@@ -256,8 +256,7 @@ def test_alsa_probe_failure_has_stable_issue_count() -> None:
 
     report = probe_alsa_playback_devices(runner=missing_aplay)
 
-    assert report["available"] is False
-    assert report["issue_count"] == 1
+    assert (report["status"], report["reason"], report["issue_count"]) == ("unavailable", "aplay_missing", 1)
     assert report["issues"][0]["code"] == "aplay_missing"
 
 

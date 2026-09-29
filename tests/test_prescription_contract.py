@@ -31,7 +31,8 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
     BASE_NOT_BANKED, CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs, set_artifact_name,
+    ROUND_PACKET_SCHEMA, contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs,
+    set_artifact_name,
 )
 from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
@@ -65,10 +66,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "715aff882d4eda2521b463a50c61e8a96ac425043ef1522a4eecf82b5687be51"),
-    ("mono", True, "46ebf20ed8f20dc64ade00c5cc6f2fe4d1c31395b96f615885356479749ffb33"),
-    ("stereo", False, "32b09b8edf3a5f440653f2d1e4cc3a1a1a0e9645f73b747c32fb80fe2a2dcf41"),
-    ("stereo", True, "a514c1cec032ebf4a405444a8db44026b8541a531e55122cbc8e7372ba50caec"),
+    ("mono", False, "94c9a707d42d4883c6510654d99b94ecd0aed763083b127395fbd3c6c1d3d1bf"),
+    ("mono", True, "ff6567e54a31d03bb3825a7661ecc69bbea43d5d9fe93b5135b3dc265b3e2770"),
+    ("stereo", False, "8dc534ec30a06f1fc138e7f7dddb825eab38bc374b51728bd29415fe85f5c8b4"),
+    ("stereo", True, "5a0806fbb5d7ba86681fdddb169eaf2965df46486ded58f71aae857c4e3637bb"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -106,7 +107,7 @@ def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, caps
 
 @pytest.fixture
 def bass_packet():
-    return {"round_id": "round-1", "packet_fingerprint": "p" * 64,
+    return {"schema": ROUND_PACKET_SCHEMA, "round_id": "round-1", "packet_fingerprint": "p" * 64,
             "bass": [{"set_id": "set-1", "takes": [{"bands": [
                 {"band_hz": list(band), "estimated_snr_db": 30, "fundamental_qualified": True}
                 for band in BASS_BANDS_HZ]}]}],
@@ -214,8 +215,8 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
     assert set(bounds["boost_headroom"]) == set(expected)
-    assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
-    assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
+    route = speaker["blend"]["bounds"]["boost_route"]
+    assert (route["status"], route["reason"]) == ("unavailable", blend.BOOST_ROUTE_UNAVAILABLE)
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
     assert speaker["alignment"]["bounds"]["declared_delay_magnitude_us"] == list(alignment.alignment_delay_search_bounds_us(preset))
     corner = preset.crossover_regions[0].fc_hz
@@ -296,7 +297,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert printed == contract_json(answer) + "\n"
     contracts = answer["sections"]
     assert set(contracts) == set(PLAIN_PROGRAMS)
-    assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
+    assert (contracts["room"]["status"], contracts["room"]["reason"]) == ("unavailable", room.ROOM_MEDIAN_UNAVAILABLE)
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
     contract = contracts["bass"]
     assert set(contract["schema"]["properties"]) == dynamic.REQUIRED_FIELDS | dynamic.OPTIONAL_FIELDS | {"round_id"}
@@ -308,7 +309,7 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert contract["schema"]["required"] == sorted(dynamic.REQUIRED_FIELDS)
     assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic.OPTIONAL_FIELDS} == {
         "compressor_factor": 10.0, "compressor_attack_s": 0.01, "compressor_release_s": 0.25}
-    assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
+    assert (contract["status"], contract["reason"]) == ("unavailable", bass.BASS_EVIDENCE_UNAVAILABLE)
 
 
 def test_the_layers_the_bass_contract_calls_uncharged_leave_the_charge_unmoved():
@@ -334,9 +335,9 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)["sections"]["bass"]
-    assert contract["evidence_status"] == "evaluated"
+    assert contract["status"] == "available"
     assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
-    levels = contract["evidence_status_detail"]["levels"]
+    levels = contract["detail"]["levels"]
     assert levels == bass_table_rows(bass_packet["bass_table"])
     for level in levels:
         assert set(level) == set(BASS_READOUT_FIELDS)
@@ -406,12 +407,12 @@ def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, name
     set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"] if named_set else None
     view = bank / set_artifact_name("room.json", set_id)
     stored = json.loads((bank / "room.json").read_text())
-    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "out": str(view)}]}))
+    (bank / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": [{**stored, "out": str(view)}]}))
     view.write_text(json.dumps({}))
     assert cli.main(["contract", "--round", str(bank), "--section", "room",
                      *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
     served = json.loads(capsys.readouterr().out)["sections"]["room"]
-    assert served["evidence_status"] == "evaluated"
+    assert served["status"] == "available"
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
 
 
@@ -434,7 +435,7 @@ def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys
     output.write_text(json.dumps({"median": _room_median()}))
     assert cli.main(["contract", "--round", str(session), "--section", "room"]) == 0
     served = json.loads(capsys.readouterr().out)["sections"]
-    assert served["room"]["evidence_status"] == "evaluated"
+    assert served["room"]["status"] == "available"
     assert served["room"]["bounds"]["freqs_hz"] == _room_median()["freqs_hz"]
     packet = build_crossover_evidence_packet(session)
     assert packet["contracts"]["room"] == contract_digests(served)["room"]

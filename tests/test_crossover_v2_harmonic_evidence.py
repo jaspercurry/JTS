@@ -1609,4 +1609,4 @@ def test_instruments_read_a_fresh_bank_in_either_order(harmonic_capture, tmp_pat
     }
     assert {row["role"] for row in harmonic["roles"]} == {"woofer", "tweeter"}
     assert feature_result["measurement"]["n_captures"] == 1
-    assert feature_result["timing_scatter"]["available"] is False
+    assert feature_result["timing_scatter"]["status"] == "unavailable"

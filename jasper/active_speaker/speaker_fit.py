@@ -31,7 +31,7 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.audio_measurement.bundles import relative_artifact_path
-from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, unavailable
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.series_stats import power_mean_db
@@ -206,9 +206,9 @@ def speaker_fit(
         try:
             trim_decision = {"committed_db": resolve_trims_after_fit(drivers, branches.fits, regions)}
         except NonFiniteTrimError as exc:
-            trim_decision = {"status": "unavailable", "reason": exc.refusal_reason}
+            trim_decision = unavailable(exc.refusal_reason)
         except ValueError:
-            trim_decision = {"status": "unavailable", "reason": "handover_band_unmeasured"}
+            trim_decision = unavailable("handover_band_unmeasured")
     finite = {role: _filters_finite(fit) for role, fit in branches.fits.items()}
     handover_shifts = {}
     for role, fit in branches.fits.items():

@@ -11,6 +11,7 @@ from typing import Any
 
 from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.bass_extension.dynamic import (
     DYNAMIC_BASS_REFUSAL_REASONS, DynamicBassDescriptorError, validate_dynamic_bass_descriptor,
 )
@@ -25,15 +26,15 @@ def _bound(evidence: Mapping[str, Any]) -> Mapping[str, Any]:
     return evidence if evidence.get("round_id") else {}
 
 
-def bass_evidence_status(evidence: Mapping[str, Any]) -> dict[str, Any]:
+def bass_evidence_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
     bound = _bound(evidence)
     table = bound.get("bass_table") or {}
     levels = bass_table_rows(table)
-    code = table.get("code", evidence.get("code"))
-    return {
-        "evidence_status": "evaluated" if bound.get("bass") or levels else BASS_EVIDENCE_UNAVAILABLE,
-        "evidence_status_detail": {"levels": levels, **({"code": code} if code is not None else {})},
-    }
+    reason = table.get("reason", evidence.get("code"))
+    detail = {"levels": levels, **({"reason": reason} if reason is not None else {})}
+    if bound.get("bass") or levels:
+        return {"status": "available", "detail": detail}
+    return unavailable(BASS_EVIDENCE_UNAVAILABLE, detail)
 
 
 @dataclass(frozen=True)
@@ -76,5 +77,5 @@ def read_bass_prescription(raw: Any, *, evidence: Mapping[str, Any]) -> BassPres
     # At the allowed 20 Hz detector minimum, the first measured band supplies the endpoint.
     unqualified = [list(band) for band in bands or [BASS_BANDS_HZ[0]] if band not in qualified]
     echo = raw.get("round_id")
-    return BassPrescription(descriptor, round_id, bass_evidence_status(evidence), unqualified,
+    return BassPrescription(descriptor, round_id, bass_evidence_summary(evidence), unqualified,
                             answers_round=None if echo is None else echo == round_id)

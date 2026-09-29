@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, unavailable
 from jasper.platform.json_fields import as_mapping
 
 from . import bundles
@@ -83,5 +83,5 @@ def load_measurement(run: ArchivedMeasurement) -> FrequencyRun:
     metadata = {**direct.metadata, **_bundle_identity(run.bundle_dir)}
     if not direct.series:
         # A run with no curve says why instead of drawing nothing (ADR-0373).
-        metadata["curves"] = {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}
+        metadata["curves"] = unavailable(TAKE_CURVES_NOT_BANKED)
     return replace(direct, metadata=metadata)

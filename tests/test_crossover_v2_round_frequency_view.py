@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle, analyzed_measurements
-from jasper.active_speaker.measurement_bass import bass_evidence
+from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA, bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
@@ -918,7 +918,7 @@ def test_bass_view_reads_banked_takes_and_discloses_unknown_harmonics(
     assert view['set_id'] == manifest['sets'][0]['set_id']
     assert view['candidate_id'] == 'baseline-fp'
     first, repeat = view['takes']
-    assert first['distortion'] == repeat['distortion'] == {'available': True}
+    assert first['distortion'] == repeat['distortion'] == {'status': 'available'}
     assert first['stimulus_id'] == first['record']['stimulus_id'] == program.stimulus_id
     assert (first['record']['take_id'], repeat['record']['take_id'], 'program' in first['record']) == ('baseline', 'repeat', False)
     assert first['fundamental_db'] == repeat['fundamental_db']
@@ -958,10 +958,10 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
     assert view["candidate_id"] == "baseline-fp"
     takes = view["takes"]
     assert tuple(take["record"]["take_id"] for take in takes) == accepted
-    assert takes[0]["distortion"] == {"available": True}
+    assert takes[0]["distortion"] == {"status": "available"}
     if selected_broken:
         broken = takes[1]
-        assert broken["distortion"] == {"available": False, "reason": "harmonic_window_out_of_range"}
+        assert broken["distortion"] == {"status": "unavailable", "reason": "harmonic_window_out_of_range"}
         assert broken["harmonics"] == {}
         assert broken["bands"]
         assert all(np.isfinite(band["signal_plus_noise_dbfs"]) for band in broken["bands"])
@@ -992,7 +992,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     if change == 'candidate':
         after['record'].update(candidate_id='b', graph_fingerprint='graph-b')
     result = compare_bass_takes(before, after, change=change)
-    assert result['available']
+    assert result['comparison'] == {'status': 'available'}
     assert 60 not in result['freqs_hz']
     band = next(b for b in result['bands'] if b['band_hz'] == [50, 63])
     assert band['qualified_bins'] == 1
@@ -1001,9 +1001,10 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
     assert (band['harmonics']['3']['qualified_bins'], band['harmonics']['3']['change_db']) == (1, 0)
     assert result['context']['unknown_fields']
     after['record'].update(mismatch)
-    assert not compare_bass_takes(before, after, change=change)['available']
+    assert compare_bass_takes(before, after, change=change)['comparison'] == {
+        'status': 'unavailable', 'reason': 'capture_context_changed'}
     diagnostic = compare_bass_takes(before, after, change='diagnostic')
-    assert diagnostic['available']
+    assert diagnostic['comparison'] == {'status': 'available'}
     assert field in diagnostic['context']['incompatible_fields']
 
 
@@ -1102,7 +1103,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 if change_basis:
                     change_basis(row)
                 manifest_groups.append(row)
-                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': 'jts_bass_view/2', 'takes': group}))
+                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': BASS_VIEW_SCHEMA, 'takes': group}))
             manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)))
             manifest['run_id'] = f'run-{volume}'
             path = directory / 'run_manifest.json'
@@ -1291,7 +1292,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
     out = bass_run.out.parent / 'comparison.json'
     assert round_views_main(['bass-compare', str(bass_run.roots[0]), str(bass_run.roots[0]), '--before-set', 'set-0', '--after-set', 'set-1',
                              '--change', 'candidate', '--out', str(out)]) == 0
-    assert json.loads(capsys.readouterr().out)['available']
+    assert json.loads(capsys.readouterr().out)['comparison'] == {'status': 'available'}
     comparison = json.loads(out.read_text())
     assert comparison['before'] == bass_run.takes[0]['record_path']
     assert comparison['after'] == bass_run.takes[1]['record_path']

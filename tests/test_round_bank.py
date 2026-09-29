@@ -630,18 +630,20 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     assert positions == sorted(positions)
 
 
-@pytest.mark.parametrize("stored_evidence", [True, False], ids=["stored", "not-stored"])
+@pytest.mark.parametrize("stored_evidence", [True, False, "old-schema"], ids=["stored", "not-stored", "old-schema"])
 def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
     """A round banked beside it later moves what a rebuild would read, so
     nothing rebuilds a banked round's packet (ADR-0371): one whose packet.json
-    holds no evidence refuses by that key (ADR-0383)."""
+    holds no evidence refuses by that key (ADR-0383), and so does one another
+    packet schema wrote (#2902)."""
     session, state = _live_session(tmp_path)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
     path = banked.path / "packet.json"
     packet = json.loads(path.read_text())
     monkeypatch.setattr(evidence_packet, "build_crossover_evidence_packet", Mock(side_effect=AssertionError))
-    if not stored_evidence:
-        path.write_text(json.dumps({key: value for key, value in packet.items() if key != EVIDENCE_KEY}))
+    if stored_evidence is not True:
+        path.write_text(json.dumps({**packet, "schema": "jts_round_packet/3"} if stored_evidence else
+                                   {key: value for key, value in packet.items() if key != EVIDENCE_KEY}))
         with pytest.raises(RoundViewsError) as refused:
             evidence_packet.round_evidence(round_inputs(banked.path))
         assert refused.value.code == EVIDENCE_NOT_BANKED

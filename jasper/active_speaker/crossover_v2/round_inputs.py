@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
-from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -67,6 +67,8 @@ REPEAT_FLOOR_FILENAME = "repeat-floor.json"
 DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
 PACKET_FILENAME = "packet.json"
+#: The ``schema`` of the ``packet.json`` this build writes. A packet of any other is stale (#2902).
+ROUND_PACKET_SCHEMA = "jts_round_packet/4"
 PICTURE_FILENAME = "frequency.png"
 INDEX_FILENAME = "index.md"
 ROOM_ARTIFACT = "room.json"
@@ -348,9 +350,17 @@ def bank_of(inputs: RoundInputs) -> Path | None:
 
 
 def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
-    """The ``packet.json`` the round's bank wrote, or ``{}`` for a round banked without one."""
+    """The ``packet.json`` the round's bank wrote, or ``{}`` for a round banked without one.
+
+    A packet another schema wrote refuses by name: its blocks mean what that schema meant (#2902).
+    """
     round_dir = bank_of(inputs)
-    return (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
+    packet = (_read_json_mapping(round_dir / PACKET_FILENAME) or {}) if round_dir else {}
+    if packet and packet.get("schema") != ROUND_PACKET_SCHEMA:
+        raise RoundViewsError(
+            f"{round_dir}: packet.json field schema is {packet.get('schema')!r}, not {ROUND_PACKET_SCHEMA!r}; "
+            "bank the round again from its session", code=EVIDENCE_NOT_BANKED)
+    return packet
 
 
 def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:

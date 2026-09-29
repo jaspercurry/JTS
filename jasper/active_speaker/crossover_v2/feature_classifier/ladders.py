@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import REASON_NO_REPEATS, REASON_TOO_FEW_POSITIONS, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.excess_phase import (
     FEATURE_HALF_OCT,
     NEIGHBOURHOOD_OCT,
@@ -209,7 +209,7 @@ def _timing_scatter(
 
     if not residuals:
         return {
-            "available": False,
+            **unavailable(REASON_NO_REPEATS),
             "n_pairs": 0,
             "raw_arrival_ms": spread,
             "note": (
@@ -220,7 +220,7 @@ def _timing_scatter(
         }
     values = np.array(residuals)
     return {
-        "available": True,
+        "status": "available",
         "n_pairs": int(values.size),
         "raw_arrival_ms": spread,
         "subsample_residual_us": {
@@ -337,7 +337,7 @@ def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
     """
     if not pose_curves:
         return {
-            "available": False,
+            **unavailable(REASON_TOO_FEW_POSITIONS),
             "n_poses": 0,
             "note": (
                 "NOT RUN: this round banked no lateral-walk pose curves, so "
@@ -346,7 +346,7 @@ def _pose_bank_block(pose_curves: Sequence[RoundPoseCurve]) -> dict[str, Any]:
             ),
         }
     return {
-        "available": True,
+        "status": "available",
         "n_poses": len({curve.pose_id for curve in pose_curves}),
     }
 

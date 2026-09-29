@@ -163,7 +163,7 @@ def test_comparison_uses_only_common_frequency_support():
     artifact = grade_room_median(candidate, incumbent=incumbent).to_dict()
 
     assert artifact["regressed_bands"] == []
-    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["status"] == "available"
     assert artifact["comparison"]["common_support_hz"][0] == pytest.approx(
         candidate.freqs_hz[0]
     )
@@ -195,7 +195,7 @@ def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclo
         incumbent=read_room_median(document),
     ).to_dict()
 
-    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["status"] == "available"
     assert artifact["comparison"]["incompatible_fields"] == []
     assert set(artifact["comparison"][disclosed]) == fields
     assert artifact["comparison"]["level_alignment_db"] == pytest.approx(-6.0)
@@ -245,7 +245,7 @@ def test_graph_change_is_the_intervention_not_an_incompatible_basis():
     ).to_dict()
 
     comparison = artifact["comparison"]
-    assert comparison["available"] is True
+    assert comparison["status"] == "available"
     assert comparison["basis_status"] == "compatible"
     assert comparison["incompatible_fields"] == []
     assert comparison["intervention_fields"] == [
@@ -260,10 +260,10 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
         incumbent=read_room_median(_comparison_document(graph="incumbent")),
     ).to_dict()
 
-    assert artifact["comparison"]["available"] is False
+    assert (artifact["comparison"]["status"], artifact["comparison"]["reason"]) == (
+        "unavailable", "incompatible_measurement_basis")
     assert artifact["comparison"]["basis_status"] == "incompatible"
     assert artifact["comparison"]["incompatible_fields"] == ["side"]
-    assert artifact["comparison"]["unavailable_reason"] == "incompatible_measurement_basis"
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
 
@@ -278,7 +278,7 @@ def test_medians_compare_across_levels_but_not_across_stimuli(field, value, inco
 
     artifact = grade_room_median(read_room_median(candidate), incumbent=read_room_median(incumbent)).to_dict()
 
-    assert artifact["comparison"]["available"] == (not incompatible)
+    assert artifact["comparison"]["status"] == ("unavailable" if incompatible else "available")
     assert artifact["comparison"]["incompatible_fields"] == incompatible
 
 
@@ -304,7 +304,7 @@ def test_pose_or_calibration_change_withholds_comparison(changed_field, change):
         incumbent=read_room_median(_comparison_document(graph="incumbent")),
     ).to_dict()
 
-    assert artifact["comparison"]["available"] is False
+    assert artifact["comparison"]["status"] == "unavailable"
     assert artifact["comparison"]["incompatible_fields"] == [changed_field]
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
@@ -315,7 +315,7 @@ def test_legacy_unknown_basis_is_disclosed_without_blocking_comparison():
         incumbent=read_room_median(room_median_document(**INCUMBENT)),
     ).to_dict()
 
-    assert artifact["comparison"]["available"] is True
+    assert artifact["comparison"]["status"] == "available"
     assert artifact["comparison"]["basis_status"] == "unknown"
     assert "capture_calibration" in artifact["comparison"]["unknown_fields"]
     assert "calibration_applied" in artifact["comparison"]["unknown_fields"]
@@ -423,7 +423,7 @@ def test_the_view_keeps_response_grades_when_spread_is_unknown(
     ] * 3
     assert all(isinstance(row["rms_db"], float) and isinstance(row["max_db"], float) for row in answer["bands"])
     if with_baseline:
-        assert answer["comparison"]["available"] is True
+        assert answer["comparison"]["status"] == "available"
         assert answer["regressed_bands"] == [60.0]
         assert [row["incumbent_spread_db"] for row in answer["bands"]] == [
             SPREAD_DB if unknown == "candidate" else None,
@@ -528,4 +528,4 @@ def test_campaign_room_sets_preserve_the_60_to_120_hz_grade(tmp_path, capsys, na
     assert band["incumbent_rms_db"] == pytest.approx(7.9267101468919945)
     assert band["regressed"] is False
     assert band["delta_rms_db"] == pytest.approx(5.086593900879649 - 7.9267101468919945)
-    assert answer["comparison"]["available"] is True
+    assert answer["comparison"]["status"] == "available"
