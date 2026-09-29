@@ -50,6 +50,7 @@ from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
@@ -333,7 +334,7 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
     payload = cli.status_document(
         {"lateral_poses": {"status": "available", "n_takes": 8,
                            "angles_deg": [-20, 0, 20]}},
-        "",
+        None,
         session_dir=None,
     )
 
@@ -363,7 +364,7 @@ def test_status_publishes_each_drivers_live_cap_or_the_declarations_refusal(monk
         return {"driver_safety_profile": safety}
 
     monkeypatch.setattr(cli, "load_design_draft", load)
-    assert cli.status_document(None, "", session_dir=None)["driver_caps_live"] == expected
+    assert cli.status_document(None, None, session_dir=None)["driver_caps_live"] == expected
 
 
 def test_a_raised_walk_publishes_its_elevations():
@@ -372,13 +373,13 @@ def test_a_raised_walk_publishes_its_elevations():
     raised = cli.status_document(
         {"lateral_poses": {"status": "available", "n_takes": 2,
                            "angles_deg": [0], "elevations_deg": [0, 10]}},
-        "",
+        None,
         session_dir=None,
     )["banked"]["walk"]
     flat = cli.status_document(
         {"lateral_poses": {"status": "available", "n_takes": 2,
                            "angles_deg": [0], "elevations_deg": [0]}},
-        "",
+        None,
         session_dir=None,
     )["banked"]["walk"]
 
@@ -428,12 +429,21 @@ def test_the_bank_lists_candidates_but_leaves_the_tournament_shortlist_unstaged(
 
 
 def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
-    payload = cli.status_document(
-        None, "no bundle here", session_dir=None
-    )
+    walk = cli.status_document(None, None, session_dir=None)["banked"]["walk"]
 
-    assert payload["banked"]["walk"]["status"] == "unavailable"
-    assert payload["banked"]["walk"]["reason"] == payload["packet_error"]
+    assert (walk["status"], walk["reason"]) == ("unavailable", "source_absent")
+
+
+@pytest.mark.parametrize("packet, packet_gap", [
+    (None, unavailable("evidence_not_banked", "why the packet did not build")),
+    ({"drivers": unavailable("source_absent", "why the drivers block is empty")}, None),
+], ids=["the packet did not build", "a block is empty"])
+def test_a_gap_reaches_status_as_its_code_and_its_detail(packet, packet_gap):
+    declared = cli.status_document(packet, packet_gap, session_dir=None)["declared"]
+
+    expected = packet_gap or packet["drivers"]
+    assert (declared["status"], declared["reason"], declared["detail"]) == (
+        "unavailable", expected["reason"], expected["detail"])
 
 
 @pytest.mark.parametrize(
@@ -586,7 +596,6 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
 
     assert code == cli.EXIT_OK
     assert payload["packet_fingerprint"] is None
-    assert payload["packet_error"] is None
     assert payload["selected_round"] is None
     assert payload["recent_rounds"] == []
     assert payload["banked"]["status"] == "unavailable"
@@ -641,7 +650,6 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     code, payload = _status([], capsys)
 
     assert code == cli.EXIT_OK
-    assert payload["packet_error"] is None
     assert payload["applied"]["layers"] == {"driver": "speaker" in layers, "rear": "rear" in layers,
                                             "bass": "bass" in layers, "room": "room" in layers}
     names = ["driver" if name == "speaker" else name for name in ("speaker", "room", "bass", "rear") if name in layers]
@@ -691,7 +699,6 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
     code, payload = _status([], capsys)
 
     assert code == cli.EXIT_OK
-    assert payload["packet_error"] is None
     assert payload["packet_fingerprint"] is None
     assert payload["selected_round"] is None
     assert payload["banked"]["status"] == "unavailable"
@@ -707,7 +714,6 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
     current = json.loads(capsys.readouterr().out)
     assert current["selected_round"] == str(paths[-1][0])
     assert current["packet_fingerprint"]
-    assert current["packet_error"] is None
     assert _tree(tmp_path) == before
     inventory = shlex.split(payload["recent_rounds"][0]["next"][1])
     assert round_views.main(inventory[1:]) == cli.EXIT_OK
@@ -851,7 +857,6 @@ _STATUS_DOCUMENT_KEYS = {
     "packet_fingerprint",
     "contracts",
     "packet_contracts",
-    "packet_error",
     "selected_round",
     "recent_rounds",
     "latest_agent_note",
@@ -887,7 +892,7 @@ def test_the_cli_json_is_the_status_document_under_the_envelope(tmp_path, capsys
         session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(
-        packet, "", session_dir=None
+        packet, None, session_dir=None
     )
 
     assert set(doc_payload) == _STATUS_DOCUMENT_KEYS

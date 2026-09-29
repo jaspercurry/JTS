@@ -635,7 +635,7 @@ def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, 
     """A round banked beside it later moves what a rebuild would read, so
     nothing rebuilds a banked round's packet (ADR-0371): one whose packet.json
     holds no evidence refuses by that key (ADR-0383), and so does one another
-    packet schema wrote (#2902)."""
+    packet schema wrote (#2902). ``status`` reads the code into each gap."""
     session, state = _live_session(tmp_path)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
     path = banked.path / "packet.json"
@@ -647,6 +647,12 @@ def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, 
         with pytest.raises(RoundViewsError) as refused:
             evidence_packet.round_evidence(round_inputs(banked.path))
         assert refused.value.code == EVIDENCE_NOT_BANKED
+        assert crossover_prescriber.main(["status", str(banked.path)]) == 0
+        status = json.loads(capsys.readouterr().out)
+        gaps = (status["declared"], status["banked"], status["banked"]["walk"], status["banked"]["classification"],
+                status["applied"]["from_applied_profile"])
+        assert [(gap["status"], gap["reason"]) for gap in gaps] == [("unavailable", EVIDENCE_NOT_BANKED)] * len(gaps)
+        assert all(gap["detail"] for gap in gaps)
         return
     later = bank_measure_round(tmp_path / "campaigns", name="r2-later")
     artifacts, _ = round_artifact_dir(round_inputs(later).session_dir)
@@ -685,6 +691,31 @@ def test_a_banked_round_says_whether_its_stored_contracts_are_current(tmp_path, 
     assert crossover_prescriber.main(argv) == 0
     assert json.loads(capsys.readouterr().out)["packet_contracts"] == {
         "contract_current": not stale, "stored": packet[EVIDENCE_KEY]["contracts"], "now": now}
+
+
+@pytest.mark.parametrize("verb", ["contract", "judge", "status"])
+def test_a_prescriber_verb_takes_a_banked_round_by_its_id_as_by_its_directory(tmp_path, monkeypatch, capsys, verb):
+    """One verb for each round argument: ``contract --round``, ``judge --round`` and status's positional."""
+    monkeypatch.setattr("jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.chdir(tmp_path)
+    session, state = _live_session(tmp_path)
+    draft = tmp_path / "design-draft.json"
+    draft.write_text(json.dumps(_draft()))
+    banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, design_draft_path=draft)
+    root = tmp_path / "candidates"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    document = tmp_path / "prescription.json"
+    document.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                    "rationale": "none", "sections": {}}))
+    argv = {"contract": ["contract", "--round"], "status": ["status"],
+            "judge": ["judge", str(document), "--root", str(root), "--round"]}[verb]
+
+    answers = []
+    for ref in (banked.path.name, str(banked.path)):
+        assert crossover_prescriber.main([*argv, ref]) == 0
+        answers.append(json.loads(capsys.readouterr().out))
+
+    assert answers[0] == answers[1]
 
 
 @pytest.mark.parametrize("contents", [None, "{"], ids=["missing", "corrupt"])
