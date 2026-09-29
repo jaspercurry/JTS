@@ -16,7 +16,7 @@ together), read as a fraction of what a genuine same-frequency cancellation
 produces through this exact pipeline, which the C4 control measures. GATE
 INVARIANCE — the window ladder, run by :mod:`.gate_sweep`; this module owns
 no second one. TIMING SCATTER — the sub-sample arrival residual between
-captures at the same angle, which needs a repeated angle to run and never
+captures at the same pose, which needs a repeated pose to run and never
 reads its own absence as evidence of tight timing.
 
 **The controls certify the PHASE test, and only it.** Four known answers are

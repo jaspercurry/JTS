@@ -19,17 +19,19 @@ import math
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import get_args
+from typing import Any, get_args
 
 import numpy as np
 import pytest
 
 from jasper.audio_measurement import excess_phase as ep
 from jasper.audio_measurement.deconv import magnitude_response
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import NO_KEPT_TAKES, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_verify_program, render_program_pcm
 from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, analyze_program_capture
+from jasper.audio_measurement.program_analysis import dispatch as analysis_dispatch
+from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from jasper.audio_measurement.quality_model import TrustLevel
 from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.wired_capture import decode_wav_to_mono
@@ -859,23 +861,31 @@ def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path
     assert result["timing_scatter"]["n_pairs"] == int(repeated)
 
 
-@pytest.mark.parametrize(("phases", "expected"), [
-    pytest.param(("measure",), fx.ROUND_SHAPE_INADMISSIBLE, id="round_shape"),
-    pytest.param((), fx.NO_ADMISSIBLE_CAPTURES, id="no_take"),
+@pytest.mark.parametrize(("phases", "manifest", "expected"), [
+    pytest.param((), "kept", fx.NO_ADMISSIBLE_CAPTURES, id="no_take"),
+    pytest.param(("measure",), "kept", fx.ROUND_SHAPE_INADMISSIBLE, id="no_take_of_a_classified_phase"),
+    pytest.param(("lateral",), "refused", NO_KEPT_TAKES, id="every_take_refused"),
+    pytest.param(("lateral",), None, NO_KEPT_TAKES, id="an_older_bank_with_no_run_manifest"),
 ])
-def test_the_two_ways_to_reach_no_capture_refuse_under_different_names(tmp_path, phases, expected):
-    """#3480: one slug covered two situations with two different remedies.
+def test_each_way_to_reach_no_kept_take_refuses_under_its_own_name(tmp_path, capsys, phases, manifest, expected):
+    """#3480: one slug covered situations with different remedies.
 
-    A round whose takes are in a shape classification cannot read (``measure``
-    is per-driver, not the summed response) is plannable-around: point at a
-    verify or lateral round. A bundle that banked no take at all is not, and no
-    round shape would satisfy it, so the two must not share a name.
+    A bundle that banked no take is the wrong round. One whose takes are all of
+    a phase classification cannot read (``measure`` is per-driver, not the
+    summed response) needs a verify or lateral round. One whose verify or
+    lateral takes the round kept none of, each refused or replaced or no run
+    manifest selecting it, is the right shape and says so.
     """
-    bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0), phases=phases)
-    with pytest.raises(EvidenceUnavailable) as caught:
-        fx.load_kept_captures(bundle)
-    assert caught.value.reason == expected
-    assert caught.value.detail["phases_seen"] == dict.fromkeys(phases, 1)
+    bundle, positions = _bundle(tmp_path, _resonant_ir(+3.0), phases=phases)
+    if manifest == "refused":
+        write_bundle_manifest(bundle, refused={path.stem for path in positions.glob("*.json")})
+    elif manifest is None:
+        next(bundle.glob("evidence/v1/artifacts/crossover_v2/*/run_manifest.json")).unlink()
+
+    assert cli.main(["classify-features", str(bundle)]) == cli.EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert answer["reason"] == expected
+    assert json.loads(answer["detail"])["phases_seen"] == dict.fromkeys(phases, 1)
 
 
 def test_only_the_kept_speaker_takes_are_read(tmp_path):
@@ -890,11 +900,33 @@ def test_only_the_kept_speaker_takes_are_read(tmp_path):
     assert [capture.capture_id for capture in fx.load_kept_captures(bundle)] == ["lateral_00_a01"]
 
 
-def test_a_kept_take_reads_what_a_decode_of_its_recording_reads(tmp_path, monkeypatch):
-    """The record holds what classification reads (ADR-0392): the impulse a
-    take kept is, sample for sample at its stored float32, the one its own
-    analysis deconvolves from its recording, on the same clock, so the verdicts
-    are the same numbers."""
+#: How far a number in the artifact may move between a take's kept impulse and
+#: a full-precision decode of its recording: the kept impulse is that decode
+#: rounded to float32, which moves these readings by parts in a million.
+_FRESH_DECODE_REL_TOL = 1e-4
+_FRESH_DECODE_ABS_TOL = 1e-6
+
+
+def _assert_same_answer(kept: Any, fresh: Any) -> None:
+    """Every verdict, flag and name equal, every number within the tolerances above."""
+    if isinstance(kept, dict):
+        assert kept.keys() == fresh.keys()
+        for key in kept:
+            _assert_same_answer(kept[key], fresh[key])
+    elif isinstance(kept, list):
+        assert len(kept) == len(fresh)
+        for one, other in zip(kept, fresh):
+            _assert_same_answer(one, other)
+    elif isinstance(kept, float):
+        assert math.isclose(kept, fresh, rel_tol=_FRESH_DECODE_REL_TOL, abs_tol=_FRESH_DECODE_ABS_TOL), (kept, fresh)
+    else:
+        assert kept == fresh
+
+
+def test_a_kept_take_classifies_as_a_fresh_decode_of_its_recording_does(tmp_path, monkeypatch):
+    """What the view relies on (ADR-0392): the impulse a take kept is its
+    analysis's own impulse, stored as float32, so classifying it gives what
+    classifying a fresh full-precision decode of the take's recording gives."""
     program = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
     heard = np.convolve(render_program_pcm(program)[:, 0].astype(np.float64) * 0.3, _resonant_ir(+3.0))
     heard = np.pad(heard, (800, SR))
@@ -905,14 +937,18 @@ def test_a_kept_take_reads_what_a_decode_of_its_recording_reads(tmp_path, monkey
     bundle, = (tmp_path / "sessions").iterdir()
     capture, = fx.load_kept_captures(bundle)
 
+    def full_precision(full_ir, origin_index, segment, sample_rate, *, clock_shift_samples=0.0):
+        kept = recorded_impulse(full_ir, origin_index, segment, sample_rate, clock_shift_samples=clock_shift_samples)
+        return replace(kept, samples=np.asarray(full_ir[:kept.samples.size], dtype=np.float64))
+
+    monkeypatch.setattr(analysis_dispatch, "recorded_impulse", full_precision)
     samples, rate = decode_wav_to_mono((bundle / record["wav_path"]).read_bytes())
     decoded = analyze_program_capture(program, samples, rate).summed_response.impulse
-    stored = decoded.samples.astype(np.float32).astype(np.float64)
-    np.testing.assert_array_equal(capture.ir, stored)
-    assert (capture.preprocessing["pre_guard_samples"], capture.preprocessing["clock_shift_samples"]) == (
-        decoded.origin_index, round(decoded.clock_shift_samples, 4))
-    assert fx.classify_round([capture], at=[RESONANCE_HZ]) == fx.classify_round(
-        [replace(capture, ir=stored)], at=[RESONANCE_HZ])
+    np.testing.assert_array_equal(capture.ir, decoded.samples.astype(np.float32))
+    fresh = replace(capture, ir=decoded.samples, peak_idx=int(np.argmax(np.abs(decoded.samples))),
+                    preprocessing={**capture.preprocessing, "pre_guard_samples": decoded.origin_index,
+                                   "clock_shift_samples": decoded.clock_shift_samples})
+    _assert_same_answer(fx.classify_round([capture], at=[RESONANCE_HZ]), fx.classify_round([fresh], at=[RESONANCE_HZ]))
 
 
 # --------------------------------------------------------------------------- #
@@ -1066,7 +1102,7 @@ def test_the_operator_summary_is_one_line_per_row_under_any_disclosure(
 
 
 def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
-    """No repeated angle means no pair, and an unmeasured dimension says so."""
+    """No repeated pose means no pair, and an unmeasured dimension says so."""
     timing = peak_artifact["timing_scatter"]
     assert timing["available"] is False
     assert timing["n_pairs"] == 0
@@ -1181,7 +1217,8 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     the superseded attempt would read unresolved.
 
     The stop is a RAISED seat, so the entry's pose key carries both halves
-    of the pose -- bearing and elevation -- off the banked file.
+    of the pose -- bearing and elevation -- off the banked file, and so does
+    the take the window ladder read.
     """
     bundle, _ = _bundle(tmp_path, _resonant_ir(+3.0))
     superseded = _pose_curve(
@@ -1221,6 +1258,8 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     assert pose["position_deg"] == -20
     assert pose["vertical_deg"] == 10
     assert pose["resolved"] is True
+    (ladder_pose,) = banked["measurement"]["gate_ladder_poses"]
+    assert (ladder_pose["azimuth_deg"], ladder_pose["vertical_deg"]) == (-20, 10)
 
 
 # --------------------------------------------------------------------------- #
@@ -1237,22 +1276,25 @@ _DECAY_CONTROL_REL_TOL = 0.25
 _DECAY_RESONANCE_TAU_S = 0.02
 
 
-def _decaying_sinusoid_ir(
-    fc: float, tau_s: float, *, peak: int = 200, seconds: float = 0.6
-) -> np.ndarray:
-    """An impulse plus a decaying sinusoid of analytically KNOWN ring time.
+def _kept_impulse_ir(fc: float, tau_s: float, *, ring: float = 0.5, noise: float = 1e-5) -> np.ndarray:
+    """A kept impulse's shape: noise through the deconvolution pre-guard and
+    after, then at its origin an impulse plus a decaying sinusoid of
+    analytically KNOWN ring time.
 
     Time-to-``DECAY_TARGET_DROP_DB`` of ``exp(-t/tau)`` is exactly
     ``tau * ln(10^(DECAY_TARGET_DROP_DB/20))`` -- ``tau * ln(10)`` at the
-    shipped 20 dB target -- which is the known answer the control below
-    grades :func:`fx._decay_read` against.
+    shipped 20 dB target -- which is the known answer the controls below
+    grade :func:`fx._decay_read` against.
     """
-    n = int(seconds * SR)
-    ir = np.zeros(n)
-    ir[peak] = 1.0
-    t = np.arange(n - peak) / SR
-    ir[peak:] += 0.5 * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
+    ir = np.random.default_rng(5).normal(0.0, noise, _KEPT_SAMPLES)
+    ir[_ORIGIN] += 1.0
+    t = np.arange(_KEPT_SAMPLES - _ORIGIN) / SR
+    ir[_ORIGIN:] += ring * np.exp(-t / tau_s) * np.sin(2 * np.pi * fc * t)
     return ir
+
+
+def _centre_decay(ir: np.ndarray) -> dict:
+    return fx._decay_read(fx._DecayHost.of(ir, SR), fx._decay_bands_hz(RESONANCE_HZ)["center"])
 
 
 def test_decay_recovers_an_injected_rings_known_time():
@@ -1260,9 +1302,7 @@ def test_decay_recovers_an_injected_rings_known_time():
     style: inject a ring of a KNOWN time constant and read it back within
     tolerance.
     """
-    ir = _decaying_sinusoid_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S)
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S))
     expected_ms = _DECAY_RESONANCE_TAU_S * math.log(10) * 1000.0
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] == pytest.approx(
@@ -1275,27 +1315,30 @@ def test_decay_reads_fast_on_a_clean_impulse():
     bandwidth-bound ring-down must read far faster than a real resonance —
     the "6-10 ms just outside" half of the campaign's own contrast.
     """
-    ir = np.zeros(int(0.6 * SR))
-    ir[200] = 1.0
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S, ring=0.0))
     assert result["below_floor"] is False
     assert result["time_to_neg20_db_ms"] is not None
     assert result["time_to_neg20_db_ms"] < 10.0
 
 
-def test_decay_reports_below_floor_for_a_steady_tone():
-    """An undamped sinusoid never decays, so the -20 dB point is
-    unreachable above its own tail — reported as ``below_floor``, never a
-    fabricated time.
-    """
-    n = int(0.6 * SR)
-    t = np.arange(n) / SR
-    ir = 0.5 * np.sin(2 * np.pi * RESONANCE_HZ * t)
-    band = fx._decay_bands_hz(RESONANCE_HZ)["center"]
-    result = fx._decay_read(fx._DecayHost.of(ir, SR), band)
+def test_a_band_as_noisy_as_its_peak_reports_below_floor():
+    """A band whose noise before the arrival sits within the target drop of its
+    peak cannot show that drop: ``below_floor``, never a fabricated time."""
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, _DECAY_RESONANCE_TAU_S, ring=0.0, noise=0.02))
     assert result["below_floor"] is True
     assert result["time_to_neg20_db_ms"] is None
+
+
+def test_a_decay_still_ringing_at_the_end_of_the_kept_window_reads_its_time():
+    """The floor is the take's noise before its arrival, never its tail: a
+    kept impulse ends 0.5 s after its sweep's start, where a slow room mode is
+    still decaying, so a floor read there would sit above the target and hide
+    a time the window holds (ADR-0392)."""
+    tau_s = 0.195
+    result = _centre_decay(_kept_impulse_ir(RESONANCE_HZ, tau_s))
+    assert result["noise_floor_db"] < -60.0
+    assert result["below_floor"] is False
+    assert result["time_to_neg20_db_ms"] == pytest.approx(tau_s * math.log(10) * 1000.0, rel=_DECAY_CONTROL_REL_TOL)
 
 
 def test_the_artifact_carries_the_decay_field_with_units(peak_artifact):
