@@ -175,7 +175,7 @@ def test_status_and_inventory_find_notes_and_current_evidence(
     beside.write_text(json.dumps(_classification()))
     assert cli.main(recipe[1:]) == cli.EXIT_OK
     enriched = json.loads(capsys.readouterr().out)
-    assert enriched["banked"]["classification"]["available"] is True
+    assert enriched["banked"]["classification"]["status"] == "available"
     assert enriched["packet_fingerprint"] == status["packet_fingerprint"]
 
 
@@ -205,17 +205,17 @@ def test_a_fully_evidenced_speaker_reports_retained_states(tmp_path, capsys):
     assert code == cli.EXIT_OK
     # declared — the design draft's own per-role bands, narrowed by the
     # protective corners each target declares.
-    assert payload["declared"]["available"] is True
+    assert payload["declared"]["status"] == "available"
     assert payload["declared"]["roles"] == ["tweeter", "woofer"]
     assert payload["declared"]["passbands_hz"] == {
         "tweeter": list(TWEETER_BAND),
         "woofer": list(WOOFER_BAND),
     }
     # banked — the round and its classified features.
-    assert payload["banked"]["available"] is True
+    assert payload["banked"]["status"] == "available"
     assert payload["banked"]["classification"]["n_verdicts"] == 2
     assert payload["applied"]["from_applied_profile"] == {
-        "available": True, "n_filters": 1
+        "status": "available", "n_filters": 1
     }
 
 
@@ -253,7 +253,7 @@ def test_an_absence_carries_the_reason_the_packet_gave_for_it(tmp_path, capsys):
     # --drivers was not passed, so its true default was read and found
     # unreadable — the same "source_absent" a badly-pointed explicit flag
     # would give, not a bespoke "not supplied" wording for the omitted case.
-    assert payload["declared"]["available"] is False
+    assert payload["declared"]["status"] == "unavailable"
     assert payload["declared"]["reason"] == "source_absent"
     # The artifact could have been banked in the bundle and was not.
     assert payload["banked"]["classification"]["reason"] == "source_absent"
@@ -268,8 +268,8 @@ def test_an_empty_incumbent_is_not_a_missing_one(tmp_path, capsys):
     _, empty = _status([str(session), "--applied-profile", str(applied)], capsys)
     _, missing = _status([str(session)], capsys)
 
-    assert empty["applied"]["from_applied_profile"] == {"available": True, "n_filters": 0}
-    assert missing["applied"]["from_applied_profile"]["available"] is False
+    assert empty["applied"]["from_applied_profile"] == {"status": "available", "n_filters": 0}
+    assert missing["applied"]["from_applied_profile"]["status"] == "unavailable"
     assert missing["applied"]["from_applied_profile"]["reason"] == "source_absent"
 
 
@@ -331,19 +331,18 @@ def test_a_banked_walk_is_visible_before_any_round_receipt_is():
     """The done-signal for a walk: ``lateral_poses`` is filled by accepted
     takes, whatever else the round banked."""
     payload = cli.status_document(
-        {"lateral_poses": {"available": True, "n_takes": 8,
+        {"lateral_poses": {"status": "available", "n_takes": 8,
                            "angles_deg": [-20, 0, 20]}},
         "",
         session_dir=None,
     )
 
-    assert payload["banked"]["available"] is False
+    assert payload["banked"]["status"] == "unavailable"
     assert payload["banked"]["walk"] == {
-        "available": True,
+        "status": "available",
         "n_takes": 8,
         "angles_deg": [-20, 0, 20],
         "elevations_deg": [],
-        "reason": None,
     }
 
 
@@ -371,13 +370,13 @@ def test_a_raised_walk_publishes_its_elevations():
     """A walk off mark height carries its raises through; a flat one carries
     the one elevation it took."""
     raised = cli.status_document(
-        {"lateral_poses": {"available": True, "n_takes": 2,
+        {"lateral_poses": {"status": "available", "n_takes": 2,
                            "angles_deg": [0], "elevations_deg": [0, 10]}},
         "",
         session_dir=None,
     )["banked"]["walk"]
     flat = cli.status_document(
-        {"lateral_poses": {"available": True, "n_takes": 2,
+        {"lateral_poses": {"status": "available", "n_takes": 2,
                            "angles_deg": [0], "elevations_deg": [0]}},
         "",
         session_dir=None,
@@ -433,7 +432,7 @@ def test_a_session_that_walked_nothing_says_so_rather_than_going_quiet():
         None, "no bundle here", session_dir=None
     )
 
-    assert payload["banked"]["walk"]["available"] is False
+    assert payload["banked"]["walk"]["status"] == "unavailable"
     assert payload["banked"]["walk"]["reason"] == payload["packet_error"]
 
 
@@ -512,7 +511,7 @@ def test_a_speaker_with_no_declaration_is_handed_the_page_that_makes_one(
 
     _, payload = _status([str(session)], capsys)
 
-    assert payload["declared"]["available"] is False
+    assert payload["declared"]["status"] == "unavailable"
     assert payload["speaker"]["declaration_url"] == "http://jts5.local/sound/speaker/"
 
 
@@ -590,7 +589,7 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     assert payload["packet_error"] is None
     assert payload["selected_round"] is None
     assert payload["recent_rounds"] == []
-    assert payload["banked"]["available"] is False
+    assert payload["banked"]["status"] == "unavailable"
     # Nothing to run against a speaker with no session: the page that runs one
     # is the handoff, and this verb never invents a command it cannot spell.
     assert payload["next_commands"] == ["jasper-seat-level"]
@@ -695,7 +694,7 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
     assert payload["packet_error"] is None
     assert payload["packet_fingerprint"] is None
     assert payload["selected_round"] is None
-    assert payload["banked"]["available"] is False
+    assert payload["banked"]["status"] == "unavailable"
     assert len(payload["recent_rounds"]) == min(count, 32)
     for entry, (path, bundle) in zip(payload["recent_rounds"], reversed(paths), strict=False):
         assert entry["path"] == str(path)
@@ -724,7 +723,7 @@ def test_a_missing_declaration_carries_the_reason_and_the_page_that_fixes_it(
 
     _, payload = _status([str(session)], capsys)
 
-    assert payload["declared"]["available"] is False
+    assert payload["declared"]["status"] == "unavailable"
     assert payload["declared"]["reason"] == "source_absent"
     assert payload["speaker"]["declaration_url"].endswith("/sound/speaker/")
 
@@ -746,10 +745,10 @@ def test_drivers_and_applied_profile_are_true_defaults_not_documentation(
     session, _ = _speaker_dirs(tmp_path, live=True)
     _, payload = _status([str(session)], capsys)  # neither flag passed
 
-    assert payload["declared"]["available"] is True
+    assert payload["declared"]["status"] == "available"
     assert payload["declared"]["roles"] == ["tweeter", "woofer"]
     assert payload["applied"]["from_applied_profile"] == {
-        "available": True, "n_filters": 1
+        "status": "available", "n_filters": 1
     }
 
 
@@ -763,8 +762,8 @@ def test_both_prescription_classes_are_offered_when_both_have_a_bound(
 
     _, payload = _status([str(session), "--drivers", str(draft)], capsys)
 
-    assert payload["declared"]["available"] is True
-    assert payload["banked"]["classification"]["available"] is True
+    assert payload["declared"]["status"] == "available"
+    assert payload["banked"]["classification"]["status"] == "available"
     # The next verb, carrying the flag this report was read with: a rebuild
     # without it resolves --drivers against the machine and answers differently.
     assert f"{cli.PROG} contract --round {session}" in payload["next_commands"]
@@ -791,8 +790,8 @@ def test_a_speaker_with_no_crossover_is_sent_to_the_one_door_it_has(
 
     assert payload["declared"]["roles"] == ["full_range"]
     # …and the per-driver door, the only one this speaker has, is open.
-    assert payload["declared"]["available"] is True
-    assert payload["banked"]["classification"]["available"] is True
+    assert payload["declared"]["status"] == "available"
+    assert payload["banked"]["classification"]["status"] == "available"
 
 
 def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, capsys):

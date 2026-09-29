@@ -15,6 +15,7 @@ from jasper.active_speaker.baseline_profile import (
     profile_driver_corrections,
     profile_linearization,
 )
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.json_fields import as_mapping, finite_float
 
 from ..round_inputs import recent_round_sessions, round_artifact_dir
@@ -166,7 +167,7 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
 
     oldest_first = list(reversed(newest_first))
     return {
-        "available": bool(oldest_first),
+        **({"status": "available"} if oldest_first else unavailable("field_null")),
         "max_rounds": STRUCTURAL_HISTORY_MAX_ROUNDS,
         "axes": list(STRUCTURAL_HISTORY_AXES),
         "rounds_covered": len(oldest_first),

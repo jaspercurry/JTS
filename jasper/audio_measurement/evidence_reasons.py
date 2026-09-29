@@ -61,3 +61,8 @@ class EvidenceUnavailable(Exception):
         super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
         self.reason = reason
         self.detail = dict(detail)
+
+
+def unavailable(reason: str, detail: Any = None) -> dict[str, Any]:
+    """A gap inside a document; a present value reads ``{"status": "available"}`` (#5928)."""
+    return {"status": "unavailable", "reason": reason, **({} if detail is None else {"detail": detail})}

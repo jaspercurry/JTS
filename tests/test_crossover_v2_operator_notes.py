@@ -149,7 +149,7 @@ def test_every_carrier_reaches_the_artifact_verbatim():
     """
     artifact = build_operator_notes(_draft())
 
-    assert artifact["available"] is True
+    assert artifact["status"] == "available"
     assert artifact["kind"] == OPERATOR_NOTES_KIND
     assert artifact["artifact_schema_version"] == OPERATOR_NOTES_SCHEMA_VERSION
     assert artifact["provenance"] == OPERATOR_NOTES_PROVENANCE
@@ -193,7 +193,7 @@ def test_blank_prose_is_absent_not_empty(blank):
     artifact = build_operator_notes(
         _draft(build_notes=blank, driver_notes=blank, legacy_notes=blank)
     )
-    assert artifact["available"] is False
+    assert (artifact["status"], artifact["reason"]) == ("unavailable", "field_null")
     assert "build_notes" not in artifact
     assert "drivers" not in artifact
     assert "declared_context" not in artifact
@@ -202,9 +202,9 @@ def test_blank_prose_is_absent_not_empty(blank):
 def test_a_draft_with_no_prose_at_all_is_its_envelope_and_says_so():
     """The jts3-today case: the artifact is shape, not content."""
     artifact = build_operator_notes({})
-    assert artifact["available"] is False
+    assert (artifact["status"], artifact["reason"]) == ("unavailable", "field_null")
     assert set(artifact) == {
-        "artifact_schema_version", "kind", "generated_by", "available",
+        "artifact_schema_version", "kind", "generated_by", "status", "reason",
         "provenance", "treat_as", "rule", "carriers", "excluded_prose",
         "redacted_fields",
     }
@@ -380,15 +380,12 @@ def test_the_draft_to_packet_flow_carries_every_carrier(tmp_path):
 def test_the_two_absences_are_not_merged(tmp_path):
     """No draft passed, versus a draft nobody typed into: different fixes."""
     no_draft = _packet(tmp_path / "a", None)[OPERATOR_NOTES_BLOCK]
-    assert no_draft["available"] is False
-    assert no_draft["status"] == "not_evaluated"
-    assert no_draft["reason"] == "no driver design draft was supplied"
+    assert (no_draft["status"], no_draft["reason"]) == ("unavailable", "no driver design draft was supplied")
 
     silent = _packet(
         tmp_path / "b", _draft(build_notes=None, driver_notes=None, legacy_notes=None)
     )[OPERATOR_NOTES_BLOCK]
-    assert silent["available"] is False
-    assert silent["reason"] == "field_null"
+    assert (silent["status"], silent["reason"]) == ("unavailable", "field_null")
 
 
 def test_household_prose_stays_excluded_while_operator_prose_is_carried(tmp_path):

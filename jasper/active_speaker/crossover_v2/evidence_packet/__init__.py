@@ -195,10 +195,7 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
     """
     labelled = [row for row in rows if row.candidate_id]
     if not labelled:
-        return {
-            "available": False,
-            **absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id"),
-        }
+        return absence(NO_CANDIDATE_TAKES, False, "banked takes' candidate_id")
     by_candidate: dict[str, list[Measurement]] = {}
     for row in labelled:
         by_candidate.setdefault(row.candidate_id, []).append(row)
@@ -220,7 +217,7 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
             ],
         })
     return {
-        "available": True,
+        "status": "available",
         "candidates": candidates,
         "source": (
             f"{POSITIONS_SUBDIR}/<take_id>.json candidate_id, selected through "
@@ -251,9 +248,9 @@ def _drivers_block(draft: Mapping[str, Any], reason: str) -> dict[str, Any]:
     passbands = driver_passbands_from_safety_profile(profile)
     absent = absence(reason, bool(passbands), "driver_safety_profile.targets")
     if absent:
-        return {"available": False, **absent}
+        return absent
     return {
-        "available": True,
+        "status": "available",
         "passbands_hz": {
             role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
         },
@@ -274,7 +271,7 @@ def _operator_notes_block(draft: Mapping[str, Any], reason: str) -> dict[str, An
     """The operator's own words, quarantined from every decision in code."""
     artifact = build_operator_notes(draft)
     absent = absence(
-        reason, bool(artifact["available"]), "design_draft.operator_prose"
+        reason, artifact["status"] == "available", "design_draft.operator_prose"
     )
     return {**artifact, **absent} if absent else artifact
 
@@ -490,10 +487,10 @@ def build_crossover_evidence_packet(
         "not_evaluated": _not_evaluated(
             state_reason=state_reason,
             applied_profile_reason=applied_profile_reason,
-            drivers_available=bool(drivers.get("available")),
-            lateral_poses_available=bool(lateral_poses.get("available")),
-            candidates_available=bool(candidates.get("available")),
-            capture_snr_reason=str(capture_snr.get("reason") or ""),
+            drivers_available=drivers["status"] == "available",
+            lateral_poses_available=lateral_poses["status"] == "available",
+            candidates_available=candidates["status"] == "available",
+            capture_snr_reason=str(capture_snr.get("detail") or ""),
         ),
         "contracts": _contract_digests(inputs, round_dir, as_mapping(draft_raw), applied_profile),
         DERIVED_VIEWS: _derived_views_block(inputs),

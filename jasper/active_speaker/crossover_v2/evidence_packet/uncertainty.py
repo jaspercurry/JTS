@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.linearization_envelope import _MIC_TRUST_TABLE_HZ
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.platform.json_fields import as_mapping
 
@@ -97,19 +98,12 @@ def _capture_snr_block(
             "phase": take.get("phase"),
             "snr": snr,
         })
-    absent: dict[str, Any] = {}
-    if not captures:
-        absent = {
-            "status": "not_evaluated",
-            "reason": (
-                f"this round banked {seen} take(s) and none of them carries a "
-                "diagnostic block — the round was banked before a take carried "
-                "its own analysis, or every analysis it ran produced none"
-            ),
-        }
     return {
-        "available": bool(captures),
-        **absent,
+        **({"status": "available"} if captures else unavailable("field_null", (
+            f"this round banked {seen} take(s) and none of them carries a "
+            "diagnostic block — the round was banked before a take carried "
+            "its own analysis, or every analysis it ran produced none"
+        ))),
         "n_captures": len(captures),
         "n_takes_seen": seen,
         "captures": captures,
@@ -128,15 +122,8 @@ def _capture_snr_block(
     }
 
 
-def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
-    """The shared shape for every absence. ``absence`` is the closed vocabulary
-    a reader keys on; ``reason`` is for a human."""
-    return {
-        "kind": UNCERTAINTY_RANDOM,
-        "available": False,
-        "absence": absence,
-        "reason": reason,
-    }
+def _unmeasured_repeat_floor(reason: str, detail: str) -> dict[str, Any]:
+    return {"kind": UNCERTAINTY_RANDOM, **unavailable(reason, detail)}
 
 #: Why the repeat floor is not available: never banked, a file that is not
 #: a readable record, or a record whose aggregate row cannot yield thresholds.
@@ -188,8 +175,7 @@ def _repeat_floor_component(
     rows = [row for row in record.get("rounds") or [] if isinstance(row, Mapping)]
     return {
         "kind": UNCERTAINTY_RANDOM,
-        "available": True,
-        "absence": None,
+        "status": "available",
         "source": "repeat-floor.json (jts_active_speaker_repeat_floor)",
         "n_repeats": record.get("n_repeats"),
         "measured_at": record.get("measured_at"),
@@ -204,7 +190,6 @@ def _repeat_floor_component(
         "aggregate_metric": record.get("aggregate_metric"),
         "metrics": record.get("metrics"),
         "thresholds": {"source": "banked_repeat_floor", **thresholds},
-        "reason": "",
     }
 
 
@@ -228,7 +213,7 @@ def _accuracy_budget_block(
     Two components, each labelled its own kind and each honest about absence:
 
     * ``in_capture_repeat_floor`` — RANDOM, from the banked repeat floor
-      (:mod:`jasper.active_speaker.repeat_floor`), ``available=False`` when
+      (:mod:`jasper.active_speaker.repeat_floor`), ``unavailable`` when
       the rig has none. Unmeasured, never defaulted to 0.0.
     * ``mic_calibration_tier`` — SYSTEMATIC, PER ROLE off ``candidate.json``'s
       ``linearization[*].mic_tier``. Roles fitted under different tiers are
@@ -267,15 +252,12 @@ def _accuracy_budget_block(
             ),
             "mic_calibration_tier": {
                 "kind": UNCERTAINTY_SYSTEMATIC,
-                "available": bool(tier_by_role),
+                **({"status": "available"} if tier_by_role else unavailable(
+                    "field_null", "no banked candidate names a mic tier for this round")),
                 "tier_by_role": tier_by_role,
                 "tier_vocabulary": list(MIC_TIERS),
                 "trust_ceiling_hz_by_tier": trust_ceiling_hz_by_tier,
                 "source": "candidate.json linearization[*].mic_tier",
-                "reason": (
-                    "" if tier_by_role
-                    else "no banked candidate names a mic tier for this round"
-                ),
             },
         },
     }

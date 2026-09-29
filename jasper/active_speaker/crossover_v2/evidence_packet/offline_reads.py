@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.json_fields import as_mapping
 
 from ..feature_classification import (
@@ -59,10 +60,8 @@ def absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
     did and the field inside it is null. Merging them is the reading defect
     this packet exists partly to fix.
     """
-    if source_reason:
-        return {"status": "not_evaluated", "reason": source_reason, "field": field}
-    if not present:
-        return {"status": "not_evaluated", "reason": "field_null", "field": field}
+    if source_reason or not present:
+        return {**unavailable(source_reason or "field_null"), "field": field}
     return {}
 
 
@@ -151,15 +150,12 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     """
     if not isinstance(raw, dict):
         return {
-            "available": False,
-            "status": "not_evaluated",
-            # NEVER the bare read reason: a file that PARSED into a non-object
-            # carries the empty string.
-            "reason": reason or (
+            # A file that PARSED into a non-object has no read reason.
+            **unavailable(reason or "field_null", None if reason else (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
                 "reading in it to publish"
-            ),
+            )),
             "n_roles": 0,
         }
     banked_roles = raw.get("roles")
@@ -170,12 +166,10 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     )
     if not roles:
         return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
+            **unavailable("field_null", (
                 "a harmonic-distortion artifact is banked for this round but "
                 "carries no role block, so there is no reading in it to publish"
-            ),
+            )),
             "n_roles": 0,
         }
     orders = [
@@ -189,18 +183,16 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
         # excluded above because a ``true`` would declare an "h1" nothing
         # publishes.
         return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
+            **unavailable("field_null", (
                 "a harmonic-distortion artifact is banked for this round but "
                 "names no harmonic order, so nothing says what its rows are "
                 "readings OF and no column in them could be declared"
-            ),
+            )),
             "n_roles": 0,
         }
     captures = as_mapping(raw.get("captures"))
     return {
-        "available": True,
+        "status": "available",
         "schema": raw.get("schema"),
         "orders": orders,
         "n_roles": len(roles),
@@ -263,7 +255,6 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
     if absent:
         return {
-            "available": False,
             **absent,
             "note": (
                 "no feature classification was banked for this round, so no "
@@ -287,7 +278,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
             for column, value in kept.items()
         })
     return {
-        "available": bool(verdicts),
+        **({"status": "available"} if verdicts else unavailable("field_null")),
         "n_rows_banked": len(banked) if isinstance(banked, list) else 0,
         "n_rows_readable": len(verdicts),
         "verdicts": [verdict.to_dict() for verdict in verdicts],
