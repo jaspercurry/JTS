@@ -364,9 +364,9 @@ def _nearfield_argv(request: pytest.FixtureRequest, root: Path, kept: bool = Tru
     return ["nearfield", str(bundle)]
 
 
-def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate") -> list[str]:
+def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate", **fields: Any) -> list[str]:
     bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank_take("baseline", scope=scope))
+    path = asyncio.run(bank_take("baseline", scope=scope, **fields))
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
     write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -716,7 +716,7 @@ def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> li
     return ["distortion", str(root / "bundle")]
 
 
-def _unanalysed_bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _ghost_bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     bundle = request.getfixturevalue("summed_capture_bundle")[0]
     write_manifest(bundle, program="bass", groups=[manifest_set([("ghost.json", {"take_id": "ghost"})], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -745,7 +745,8 @@ def _pre_adr_0359_levels_argv(request: pytest.FixtureRequest, root: Path) -> lis
 #: Evidence a view reads and cannot grade, and the reason it names for not grading it.
 _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str]] = {
     "bass": (lambda request, root: _bass_argv(request, root, scope="drivers"), "measurement_analysis_program_unsupported"),
-    "bass (no analysed take)": (_unanalysed_bass_argv, "measurement_captures_missing"),
+    "bass (no captured take)": (lambda request, root: _bass_argv(request, root, measurement_status="incomplete"),
+                                "measurement_captures_missing"),
     "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
     "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
                           "classification_no_features_detected"),
@@ -777,13 +778,24 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
     assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
 
 
-@pytest.mark.parametrize("fault, code", [("record", "commissioning_evidence_integrity_mismatch"), ("reference", None)])
+#: Input a view cannot read, and the code its refusal carries: a record the
+#: evidence store cannot read, a reference level no analysis can use, and a set
+#: that names a take with no record.
+_UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
+    "bass (a take with no record)": (_ghost_bass_argv, None),
+    "frequency (record)": (lambda request, root: _analyzed_frequency_argv(request, root, "record"),
+                           "commissioning_evidence_integrity_mismatch"),
+    "frequency (reference)": (lambda request, root: _analyzed_frequency_argv(request, root, "reference"), None),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNREADABLE))
 def test_what_a_view_cannot_read_is_unreadable_not_refused(
-    fault: str, code: str | None, request: pytest.FixtureRequest, tmp_path: Path,
+    case: str, request: pytest.FixtureRequest, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A record the evidence store cannot read, or a reference level no analysis can use."""
+    argv, code = _UNREADABLE[case]
     monkeypatch.chdir(tmp_path)
-    assert round_views.main(_analyzed_frequency_argv(request, tmp_path, fault)) == _refusal.EXIT_UNREADABLE
+    assert round_views.main(argv(request, tmp_path)) == _refusal.EXIT_UNREADABLE
     record = json.loads(capsys.readouterr().out)
     assert (record["reason"], record.get("code")) == (round_views.REASON_UNREADABLE, code)
