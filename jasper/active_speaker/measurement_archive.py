@@ -58,7 +58,7 @@ def list_measurements(sessions_dir: Path) -> tuple[ArchivedMeasurement, ...]:
 
 
 def _bundle_identity(bundle_dir: Path) -> dict[str, Any]:
-    """The build, topology and microphone calibration ``info.json`` names, or ``{}``."""
+    """The build and topology ``info.json`` names, or ``{}``."""
 
     try:
         info = json.loads((bundle_dir / "info.json").read_text())
@@ -69,8 +69,16 @@ def _bundle_identity(bundle_dir: Path) -> dict[str, Any]:
         "topology_id": fingerprints.get("topology_id"),
         "topology_fingerprint": fingerprints.get("topology_fingerprint"),
         "build_sha": fingerprints.get("build_sha"),
-        "mic_calibration_id": as_mapping(fingerprints.get("mic")).get("calibration_id"),
     }
+
+
+def _mic_calibration_id(records: Iterable[Mapping[str, Any]]) -> str | None:
+    """The calibrations the run's takes applied, each once, else ``None``. The mic
+    is chosen after the bundle opens, so only the takes name it."""
+
+    calibrations = (as_mapping(record.get("capture_calibration")) for record in records)
+    ids = {c["calibration_id"] for c in calibrations if c.get("applied") is True and c.get("calibration_id")}
+    return ", ".join(sorted(ids)) or None
 
 
 def load_measurement(
@@ -80,15 +88,17 @@ def load_measurement(
     """Load one archive entry from its banked take records, or from ``documents``
     when the caller already read them (:func:`measurement_documents`)."""
 
+    records = [document for _, document in (
+        measurement_documents(run.bundle_dir) if documents is None else documents)]
     direct = frequency_run_from_documents(
         run_id=run.id,
-        documents=[banked_document(document) for _, document in (
-            measurement_documents(run.bundle_dir) if documents is None else documents)],
+        documents=[banked_document(record) for record in records],
         started_at=run.started_at,
         state=run.state,
         run_reference_db=run_reference_db,
     )
-    metadata = {**direct.metadata, **_bundle_identity(run.bundle_dir)}
+    metadata = {**direct.metadata, **_bundle_identity(run.bundle_dir),
+                "mic_calibration_id": _mic_calibration_id(records)}
     if not direct.series:
         # A run with no curve says why instead of drawing nothing (ADR-0373).
         metadata["curves"] = unavailable(TAKE_CURVES_NOT_BANKED)
