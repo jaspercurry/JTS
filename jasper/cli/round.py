@@ -18,6 +18,7 @@ from jasper.net.http_security import is_loopback_name
 from jasper.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_presets,
 )
@@ -317,7 +318,6 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
 
 def _cmd_list(args: argparse.Namespace) -> int:
     from jasper.active_speaker.round_bank import list_rounds  # lazy: keeps the CLI parser numpy-free
-    from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS  # lazy: keeps the CLI parser numpy-free
 
     rows = list_rounds(program=args.program, limit=args.limit + 1)
     shown = rows[:args.limit]
@@ -328,9 +328,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    from jasper.active_speaker.crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused  # lazy: keeps the CLI parser numpy-free
+    from jasper.active_speaker.crossover_v2.round_inputs import (  # lazy: keeps the CLI parser numpy-free
+        ROUND_INPUT_ERRORS, RoundSetRefused, round_inputs, subject,
+    )
     from jasper.active_speaker.round_bank import RoundBankError, show_round  # lazy: keeps the CLI parser numpy-free
-    from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS  # lazy: keeps the CLI parser numpy-free
 
     try:
         shown = show_round(args.round)
@@ -341,7 +342,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     except ROUND_INPUT_ERRORS as exc:
         return failed(EXIT_UNREADABLE, getattr(exc, "code", REASON_UNREADABLE), str(exc))
     takes = sum(len(group["takes"]) for group in shown["sets"])
-    return answer("show", schema=ANSWER_SCHEMAS[f"{PROG} show"], subject={"round_id": shown["round_id"]},
+    return answer("show", schema=ANSWER_SCHEMAS[f"{PROG} show"], subject=subject(round_inputs(Path(shown["round_dir"]))),
                   parameters={}, line=f"{shown['round_id']}: {len(shown['sets'])} set(s), {takes} take(s)", **shown)
 
 

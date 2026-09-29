@@ -39,7 +39,7 @@ from jasper.active_speaker.wizard_client import WizardClient
 from jasper.active_speaker.crossover_v2 import prescription_document, room_selection
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
-from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
@@ -585,7 +585,8 @@ def _prescription_argv(verb: str, *extra: str, room: bool = False) -> Callable[[
 
 
 #: The tools whose answers are not views, and one success per answer each
-#: gives, by its ``ANSWER_SCHEMAS`` row.
+#: gives, by its ``ANSWER_SCHEMAS`` row. A room preview reads no take, so the
+#: ``--take`` its rows name must not reach their subjects.
 _OTHER_TOOLS = {"jasper-round": round_cli, "jasper-crossover-prescriber": crossover_prescriber}
 _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = {
     "jasper-round list": lambda request, root: ["list"],
@@ -594,9 +595,11 @@ _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = 
     "jasper-crossover-prescriber status": lambda request, root: ["status"],
     "jasper-crossover-prescriber judge": _prescription_argv("judge"),
     "jasper-crossover-prescriber compose": _prescription_argv("compose"),
-    "jasper-crossover-prescriber judge --preview": _prescription_argv("judge --preview", room=True),
+    "jasper-crossover-prescriber judge --preview": _prescription_argv(
+        "judge --preview", "--take", "no-such-take", room=True),
     "jasper-crossover-prescriber judge --preview --vary": _prescription_argv(
-        "judge --preview", "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", "grid", room=True),
+        "judge --preview", "--take", "no-such-take", "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", "grid",
+        room=True),
 }
 
 
@@ -605,7 +608,7 @@ def test_every_other_tuning_answer_carries_the_view_envelope(
     row: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``jasper-round``'s reads and the prescriber answer as a view does (ADR-0344)."""
+    """``jasper-round``'s reads and the prescriber answer as a view does, naming only what they read (ADR-0387)."""
 
     prog, verb = row.split()[:2]
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
@@ -614,6 +617,7 @@ def test_every_other_tuning_answer_carries_the_view_envelope(
     answer = json.loads(capsys.readouterr().out)
     assert (answer["view"], answer["schema"]) == (verb, ANSWER_SCHEMAS[row])
     assert isinstance(answer["subject"], dict) and isinstance(answer["parameters"], dict)
+    assert "take_ids" not in answer["subject"]
     assert "status" not in answer
 
 

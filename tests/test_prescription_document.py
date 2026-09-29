@@ -138,6 +138,7 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     assert crossover_prescriber.main(args) == 0
     single = json.loads(capsys.readouterr().out)
     assert single["sections"] == ["room"]
+    assert single["parameters"] == {"window_ms": None, "band_hz": single["preview"]["summary"]["band_hz"]}
     assert single["preview"] == room_prescription.preview_room_prescription(
         {"rationale": prescription["rationale"], **prescription["sections"]["room"]},
         room_median=room_prescription.read_room_median(evidence.sources["room_median"]),
@@ -151,7 +152,7 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     assert answer["variants"][0]["preview"] == single["preview"]
     assert all("positions" not in row for row in answer["variants"])
     assert json.loads((out_dir / "variant-01.preview.json").read_text()) == {
-        key: value for key, value in single.items() if key not in ("view", "schema", "subject", "parameters")}
+        key: value for key, value in single.items() if key not in ("view", "subject", "parameters")}
 
 
 @pytest.fixture

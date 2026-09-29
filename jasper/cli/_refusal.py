@@ -76,15 +76,15 @@ def answered(document: Mapping[str, Any], line: str = "", *, sort_keys: bool = T
     return EXIT_OK
 
 
-def answer(
+def envelope(
     view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-    parameters: Mapping[str, Any], out: Path | None = None, line: str = "", **fields: Any,
-) -> int:
-    """Print an analysis answer (ADR-0237) under the envelope every one shares:
-    the view and its answer version, what it read (one subject, or a list of
-    them as ``rounds`` for a view that compares rounds), the analysis
-    parameters it used, and the artifact it wrote, when it wrote one."""
-    # See ADR-0344
+    parameters: Mapping[str, Any], out: Path | None = None, **fields: Any,
+) -> dict[str, Any]:
+    """An analysis answer under the envelope every one shares: the view and its
+    answer version, what it read (one subject, or a list of them as ``rounds``
+    for a view that compares rounds), the analysis parameters it used, and the
+    artifact it wrote, when it wrote one."""
+    # See ADR-0387
     document = {
         "view": view, "schema": schema, "parameters": dict(parameters),
         "subject": dict(subject) if isinstance(subject, Mapping) else {"rounds": [dict(one) for one in subject]},
@@ -92,7 +92,15 @@ def answer(
     }
     if out is not None:
         document.update(out=str(out), bytes=out.stat().st_size)
-    return answered(document, line)
+    return document
+
+
+def answer(
+    view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
+) -> int:
+    """Print :func:`envelope`'s answer and its one human line (ADR-0237)."""
+    return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line)
 
 
 def refused(

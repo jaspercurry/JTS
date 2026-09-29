@@ -115,21 +115,6 @@ VIEW_PURPOSES = {
     "speaker-fit": (PURPOSE_SPEAKER,),
 }
 
-#: The answers whose shape no row above names: they write no artifact, or
-#: one no inventory lists. Keyed by command; a view's omits ``jasper-round-views``.
-ANSWER_SCHEMAS = {
-    "speaker-fit": "jts_speaker_fit/1",
-    "repeat --set": "jts_repeat/1",
-    "jasper-crossover-prescriber judge": "jts_prescription_judgement/1",
-    "jasper-crossover-prescriber judge --preview": "jts_prescription_preview/1",
-    "jasper-crossover-prescriber judge --preview --vary": "jts_prescription_preview_grid/1",
-    "jasper-crossover-prescriber compose": "jts_prescription_candidate/1",
-    "jasper-crossover-prescriber contract": "jts_prescription_contract/1",
-    "jasper-crossover-prescriber status": "jts_prescriber_status/1",
-    "jasper-round list": "jts_round_list/1",
-    "jasper-round show": "jts_round_show/1",
-}
-
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 

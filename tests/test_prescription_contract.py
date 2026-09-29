@@ -90,7 +90,7 @@ def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, caps
     monkeypatch.setattr(cli, "load_output_topology", lambda: box)
     for args in ([], ["--round", str(bank)]):
         assert cli.main(["contract", *args]) == cli.EXIT_OK
-        assert set(json.loads(capsys.readouterr().out)["contracts"]) == set(programs)
+        assert set(json.loads(capsys.readouterr().out)["sections"]) == set(programs)
         assert cli.main(["contract", "--section", "rear", *args]) == (cli.EXIT_OK if rear else cli.EXIT_REFUSED)
         answer = json.loads(capsys.readouterr().out)
         assert answer.get("reason") == (None if rear else "prescription_section_unavailable")
@@ -259,7 +259,7 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
     monkeypatch.setattr(Path, "open", counted_open)
     if surface == "contract":
         assert cli.main(["contract", "--round", str(bank)]) == 0
-        assert set(json.loads(capsys.readouterr().out)["contracts"]) == set(PLAIN_PROGRAMS)
+        assert set(json.loads(capsys.readouterr().out)["sections"]) == set(PLAIN_PROGRAMS)
     else:
         packet = build_crossover_evidence_packet(
             session, driver_draft_path=bank / "design-draft.json", applied_profile_path=profile,
@@ -278,9 +278,9 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
     assert cli.main(["contract", "--round", str(bank), "--section", section, "--out", str(output)]) == 0
     answer = json.loads(capsys.readouterr().out)
     served = output.read_bytes()
-    assert (answer["out"], answer["bytes"], answer["contracts"]) == (str(output), len(served), {section: json.loads(served)})
+    assert (answer["out"], answer["bytes"], "sections" in answer) == (str(output), len(served), False)
     packet = build_crossover_evidence_packet(session, driver_draft_path=bank / "design-draft.json")
-    assert packet["contracts"][section] == hashlib.sha256(served).hexdigest()
+    assert packet["contracts"][section] == answer["sha256"] == hashlib.sha256(served).hexdigest()
     assert packet["contracts"] == contract_digests(_contracts(*round_bank))
     assert {"response_format", "driver_response_format"}.isdisjoint(packet)
     assert packet["capture_snr"]["uncertainty"] == CONTRACT_COMMAND
@@ -291,7 +291,11 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
 
 def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(capsys):
     assert cli.main(["contract"]) == 0
-    contracts = json.loads(capsys.readouterr().out)["contracts"]
+    printed = capsys.readouterr().out
+    answer = json.loads(printed)
+    # Served in the contracts' own compact serialization, so the envelope costs bytes, not a multiple.
+    assert printed == contract_json(answer) + "\n"
+    contracts = answer["sections"]
     assert set(contracts) == set(PLAIN_PROGRAMS)
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
@@ -317,7 +321,7 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
                      records=["/tmp/record.json"], compression_includes=["compressor", "driver"], harmonics_delta_db=[])
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
-    contract = json.loads(capsys.readouterr().out)["contracts"]["bass"]
+    contract = json.loads(capsys.readouterr().out)["sections"]["bass"]
     assert contract["evidence_status"] == "evaluated"
     assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
     levels = contract["evidence_status_detail"]["levels"]
@@ -394,7 +398,7 @@ def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, name
     view.write_text(json.dumps({}))
     assert cli.main(["contract", "--round", str(bank), "--section", "room",
                      *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
-    served = json.loads(capsys.readouterr().out)["contracts"]["room"]
+    served = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert served["evidence_status"] == "evaluated"
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
 
@@ -405,7 +409,7 @@ def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys
     output = default_out(round_inputs(session), session, "room.json")
     output.write_text(json.dumps({"median": _room_median()}))
     assert cli.main(["contract", "--round", str(session), "--section", "room"]) == 0
-    served = json.loads(capsys.readouterr().out)["contracts"]
+    served = json.loads(capsys.readouterr().out)["sections"]
     assert served["room"]["evidence_status"] == "evaluated"
     assert served["room"]["bounds"]["freqs_hz"] == _room_median()["freqs_hz"]
     packet = build_crossover_evidence_packet(session)
@@ -437,7 +441,7 @@ def test_applied_preset_fallback_matches_the_packets_reader(round_bank, capsys, 
     path = bank / "applied-profile.json"
     path.write_text(json.dumps(profile))
     assert cli.main(["contract", "--round", str(bank)]) == 0
-    contracts = json.loads(capsys.readouterr().out)["contracts"]
+    contracts = json.loads(capsys.readouterr().out)["sections"]
     packet = build_crossover_evidence_packet(
         session, driver_draft_path=bank / "design-draft.json", applied_profile_path=path,
     )
@@ -723,9 +727,9 @@ def test_rear_document_agrees_with_the_validator_at_each_bound_edge(mutate, expe
 def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
     monkeypatch.setattr(cli, "load_output_topology", lambda: _rear_pair("mono")[1])
     assert cli.main(["contract", "--section", "rear"]) == 0
-    rear = json.loads(capsys.readouterr().out)["contracts"]["rear"]
+    rear = json.loads(capsys.readouterr().out)["sections"]["rear"]
     assert cli.main(["contract", "--section", "room"]) == 0
-    room_contract = json.loads(capsys.readouterr().out)["contracts"]["room"]
+    room_contract = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert {"schema", "bounds"} <= set(rear) & set(room_contract)
     # The starting document the rear door admits as written: untuned and muted.
     seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)

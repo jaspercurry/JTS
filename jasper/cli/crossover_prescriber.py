@@ -13,10 +13,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, failed, read_source_bytes
-from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts, subject
+from ._refusal import (
+    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, read_source_bytes,
+)
+from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS, PROG as ROUND_VIEWS_PROG
+from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -41,6 +44,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, latest_banked_rounds, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
+    SetTakes, subject,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
@@ -49,6 +53,7 @@ from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.atomic_io import atomic_write_json
+from jasper.json_fields import sha256_file
 from jasper.audio_routes.output_topology_store import load_output_topology
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH, read_identity, speaker_url
 
@@ -57,24 +62,31 @@ AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a can
 REASON_UNWRITABLE = "output_unwritable"
 
 
-def _answer(args: argparse.Namespace, row: str, round_dir: str | None,
+#: A preview's shape, answered or written to a file (ADR-0344 §4).
+_PREVIEW_SCHEMA = ANSWER_SCHEMAS[f"{PROG} judge --preview"]
+
+
+def _answer(args: argparse.Namespace, row: str, read: Mapping[str, Any],
             parameters: Mapping[str, Any] | None = None, **fields: Any) -> int:
-    """This verb's answer under the envelope every analysis answer shares (ADR-0344)."""
-    try:
-        inputs = round_inputs(Path(round_dir)) if round_dir else None
-    except (CrossoverEvidencePacketError, OSError):  # status reports an unreadable round and names none
-        inputs = None
-    take = getattr(args, "preview", False) and args.take  # only a preview reads --take
-    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} {row}"],
-                  subject=subject(inputs, set_id=getattr(args, "set", None), take_ids=[take] if take else None),
-                  parameters=parameters or {}, **fields)
+    """This verb's answer under the envelope every analysis answer shares (ADR-0387).
+
+    ``read`` is the :func:`subject` of the round, set and take the verb resolved.
+    """
+    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} {row}"], subject=read,
+                  parameters=parameters or {}, line="", **fields)
 
 
-def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
-    inputs = round_inputs(Path(args.round)) if args.round else None
+def _document_set(args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None) -> SetTakes | None:
+    """The set a document reads: the one ``--set`` names, else a room section's only set."""
+    if inputs is None or not (args.set or document["sections"].get("room")):
+        return None
+    return resolve_set(inputs, args.set)
+
+
+def _document_evidence(
+    args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None,
+) -> PrescriptionEvidence:
     sections = document["sections"]
-    if inputs is not None and sections.get("room"):
-        resolve_set(inputs, args.set)
     sources = prescription_sources(inputs, set_id=args.set)
     packet: dict[str, Any] = {}
     if inputs is not None and (sections.get("driver") or sections.get("blend")):
@@ -102,31 +114,46 @@ def _document_base(document: Mapping[str, Any], root: Path | None) -> tuple[Bank
     return saved_base() if document["base"] == "saved" else (find_banked_candidate(document["base"], root=root), None)
 
 
-def _preview_document(args: argparse.Namespace, document: Mapping[str, Any]) -> dict[str, Any]:
+def _preview_document(
+    args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The preview, and the :func:`subject` of the round, set and take it read."""
     kind = preview_kind(document)
-    base, evidence, capture_id, cabinet = None, None, None, None
+    base, evidence, selected, capture_id, cabinet = None, None, None, None, None
     try:
         if kind == "rear_calibration":
             cabinet = rear_cabinet_channels(classify_output_contract(load_output_topology()))
         else:
             base, _ = _document_base(document, Path(args.root) if args.root else None)
-            evidence = _document_evidence(args, document)
-        if kind == "emitted_graph" and args.round:
-            capture_id = resolve_set(round_inputs(Path(args.round)), args.set).take_id(args.take)
-        return preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
-                                             base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
+            selected = _document_set(args, document, inputs)
+            evidence = _document_evidence(args, document, inputs)
+        if kind == "emitted_graph" and inputs is not None:
+            selected = selected or resolve_set(inputs, args.set)
+            capture_id = selected.take_id(args.take)
+        result = preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
+                                               base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
     except (RoundSetRefused, EvidenceUnavailable) as exc:
         raise PrescriptionDocumentRefused(exc.reason, blamed_section(document["sections"]), str(exc), evidence=exc.detail) from exc
+    return result, subject(inputs, selected, take_ids=None if capture_id is None else [capture_id])
 
 
-def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) -> int:
+def _preview_parameters(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The gate and band the preview's engine recorded; null where its kind records none (ADR-0344 §3)."""
+    summary = result["preview"].get("summary") or {}
+    if result["section"] == "emitted_graph":
+        return {"window_ms": summary["window"]["window_ms"], "band_hz": summary["reconstruction"]["compared_band_hz"]}
+    return {"window_ms": None, "band_hz": summary.get("band_hz")}
+
+
+def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None) -> int:
     kind = preview_kind(document)
     axes = [parse_vary_axis(text) for text in args.vary]
     directory = Path(args.out_dir)
     rows = []
+    read = subject(inputs)
     for index, (values, variant) in enumerate(vary_document(document, axes), 1):
         try:
-            result = _preview_document(args, variant)
+            result, read = _preview_document(args, variant, inputs)
         except PrescriptionDocumentRefused as exc:
             rows.append({"out": None, "values": values, "reason": exc.code, "error": exc.error})
             continue
@@ -134,27 +161,29 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
         try:
             directory.mkdir(parents=True, exist_ok=True)
             atomic_write_json(path, variant)
-            atomic_write_json(path.with_suffix(".preview.json"), result)
+            atomic_write_json(path.with_suffix(".preview.json"), {**result, "schema": _PREVIEW_SCHEMA})
         except OSError as exc:
             return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
         rows.append({"out": str(path), "values": values,
                      **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
                         else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
-    return _answer(args, "judge --preview --vary", args.round,
+    return _answer(args, "judge --preview --vary", read,
                    {"axes": [{"paths": paths, "values": values} for paths, values in axes]},
                    section=kind, variants=rows, adopted=False, banked=False)
 
 
-def _preview_out(args: argparse.Namespace, result: Mapping[str, Any]) -> int:
-    """The whole preview to ``--out``; the answer names it and keeps the forecast's summary."""
+def _preview_out(args: argparse.Namespace, result: Mapping[str, Any], read: Mapping[str, Any]) -> int:
+    """The whole preview to ``--out`` under its answer's schema; the answer names
+    it and keeps the forecast's summary."""
     out = Path(args.out)
     try:
-        atomic_write_json(out, result)
+        atomic_write_json(out, {**result, "schema": _PREVIEW_SCHEMA})
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
     return _answer(
-        args, "judge --preview", args.round, out=out, section=result["section"], sections=result["sections"],
+        args, "judge --preview", read, _preview_parameters(result), out=out,
+        section=result["section"], sections=result["sections"],
         **({"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph" else {}),
         adopted=False, banked=False,
     )
@@ -175,19 +204,23 @@ def _cmd_document(args: argparse.Namespace) -> int:
             raise PrescriptionDocumentRefused(exc.reason, None, exc.detail, evidence=exc.evidence) from exc
         document = read_prescription_document(raw)
         root = Path(args.root) if args.root else None
+        inputs = round_inputs(Path(args.round)) if args.round else None
         if args.command == "judge" and args.preview:
             if args.vary:
-                return _cmd_vary_document(args, document)
-            result = _preview_document(args, document)
-            return _preview_out(args, result) if args.out else _answer(args, "judge --preview", args.round, **result)
+                return _cmd_vary_document(args, document, inputs)
+            result, read = _preview_document(args, document, inputs)
+            if args.out:
+                return _preview_out(args, result, read)
+            return _answer(args, "judge --preview", read, _preview_parameters(result), **result)
         base, base_profile = _document_base(document, root)
-        evidence = _document_evidence(args, document)
+        selected = _document_set(args, document, inputs)
+        evidence = _document_evidence(args, document, inputs)
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
         fields: dict[str, Any] = {
             "candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
             "program_charge_db": program_charge_db(candidate), "measurement_status": "unmeasured", "adopted": False,
-            "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
+            "packet_contracts": contract_currency(inputs) if inputs is not None else None}
         if args.command == "judge":
             fields["sections"] = candidate.analysis["evidence"]["prescriptions"]
         else:
@@ -204,7 +237,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         refusal = PrescriptionDocumentRefused(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE), None, str(exc))
         return _document_failure(refusal, EXIT_UNREADABLE)
-    return _answer(args, args.command, args.round, **fields)
+    return _answer(args, args.command, subject(inputs, selected), **fields)
 
 
 def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None) -> dict[str, Any]:
@@ -227,8 +260,10 @@ def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None)
 
 def _cmd_contract(args: argparse.Namespace) -> int:
     try:
-        sources = prescription_sources(round_inputs(Path(args.round)) if args.round else None, set_id=args.set)
-        programs = contract_programs(sources) if args.round else programs_for_topology(load_output_topology())
+        inputs = round_inputs(Path(args.round)) if args.round else None
+        selected = resolve_set(inputs, args.set) if inputs is not None and args.set else None
+        sources = prescription_sources(inputs, set_id=args.set)
+        programs = contract_programs(sources) if inputs is not None else programs_for_topology(load_output_topology())
         contracts = prescription_contracts(programs=programs, **sources)
         if args.section != "all" and args.section not in contracts:
             return failed(EXIT_REFUSED, "prescription_section_unavailable", args.section)
@@ -239,14 +274,20 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         code = getattr(exc, "code", REASON_EVIDENCE_UNREADABLE)
         return failed(EXIT_UNREADABLE, code, str(exc))
-    out = Path(args.out) if args.out else None
-    if out is not None:
-        try:
-            out.write_text(payload, encoding="utf-8")
-        except OSError as exc:
-            return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
-    return _answer(args, "contract", args.round, {"section": args.section}, out=out,
-                   contracts=contracts if args.section == "all" else {args.section: document})
+    read, parameters = subject(inputs, selected), {"section": args.section}
+    if not args.out:
+        # The contracts' own compact serialization keeps the answer the size of what it serves.
+        print(contract_json(envelope(
+            args.command, schema=ANSWER_SCHEMAS[f"{PROG} contract"], subject=read, parameters=parameters,
+            sections=contracts if args.section == "all" else {args.section: document},
+        )))
+        return EXIT_OK
+    out = Path(args.out)
+    try:
+        out.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
+    return _answer(args, "contract", read, parameters, out=out, sha256=sha256_file(out))
 
 
 
@@ -500,9 +541,10 @@ def status_document(
     packet_error: str,
     *,
     session_dir: str | None,
+    inputs: RoundInputs | None = None,
     applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read retained evidence and candidate status."""
+    """Read retained evidence and candidate status; ``inputs`` is ``session_dir`` already read."""
     sections = _status_sections(packet, packet_error)
     context: dict[str, Any] = {
         "latest_agent_note": None, "context_error": None,
@@ -511,7 +553,7 @@ def status_document(
     currency = None
     try:
         if session_dir:
-            inputs = round_inputs(Path(session_dir))
+            inputs = inputs or round_inputs(Path(session_dir))
             context.update(context_artifacts(inputs, Path(session_dir)))
             currency = contract_currency(inputs)
         else:
@@ -583,17 +625,19 @@ def _cmd_status(args: argparse.Namespace) -> int:
     have to publish a refusal record instead of the orientation the caller ran
     it for.
     """
+    inputs: RoundInputs | None = None
     packet: dict[str, Any] | None = None
     packet_error = ""
     if args.session_dir is not None:
         try:
-            packet = _load_packet(args)
+            inputs = round_inputs(Path(args.session_dir))
+            packet = _load_packet(args, inputs=inputs)
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_error = str(exc)
 
-    return _answer(args, "status", args.session_dir, **status_document(
+    return _answer(args, "status", subject(inputs), **status_document(
         packet, packet_error,
-        session_dir=args.session_dir,
+        session_dir=args.session_dir, inputs=inputs,
         applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,
     ))
 

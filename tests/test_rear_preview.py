@@ -81,7 +81,7 @@ def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
             assert variant["sections"]["rear_calibration"]["rear"][branch]["gain_db"] == row["values"][axis_path]
         full = json.loads(path.with_suffix(".preview.json").read_text())
         single = _preview(tmp_path, capsys, variant["sections"], root)
-        assert full == {key: value for key, value in single.items() if key not in ("view", "schema", "subject", "parameters")}
+        assert full == {key: value for key, value in single.items() if key not in ("view", "subject", "parameters")}
         assert row["headroom_charge_db"] == full["preview"]["stage"]["headroom_charge_db"]
         for key, position in row["positions"].items():
             source = full["preview"]["positions"][key]
