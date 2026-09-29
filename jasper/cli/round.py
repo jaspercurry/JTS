@@ -10,6 +10,7 @@ import json
 import math
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
@@ -33,7 +34,7 @@ from jasper.logging_setup import configure_logging
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,
-    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, failed,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, envelope, failed,
 )
 
 PROG = "jasper-round"
@@ -69,10 +70,6 @@ class _RoundSubparser(argparse.ArgumentParser):
         return super().parse_known_args(args if args is None else _joined_bearings(args), namespace)
 
 
-def _answer(verb: str, human: str, **fields: Any) -> int:
-    return answered({"verb": verb, **fields}, human)
-
-
 def _round_session_dir(capture_id: str) -> str:
     from jasper.active_speaker.bundles import sessions_dir  # lazy: wait-only measurement imports
     from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir  # lazy: wait-only
@@ -101,8 +98,25 @@ def _wizard_failure(exit_code: int, reason: str, detail: dict, payload: Any) -> 
     )
 
 
-def _run_links(run_id: str) -> dict[str, str]:
+def _run_links(run_id: str) -> dict[str, Any]:
     return dict(run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH), status_url=speaker_url(STATUS_PATH))
+
+
+def _shared(values: Iterable[Any]) -> Any:
+    """The one value a plan's stops share, their sorted distinct values when they differ, or None (ADR-0389)."""
+    distinct = sorted(set(values))
+    return distinct[0] if len(distinct) == 1 else distinct or None
+
+
+def _plan_envelope(plan: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A run's subject and parameters, from its resolved plan; a staged run has no round yet (ADR-0389).
+    A preset spreads its repeats over duplicate stops, so takes per pose and configuration are counted."""
+    takes = Counter((stop.place, stop.candidate_id, stop.regime) for stop in plan.stops)
+    return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
+            {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
+             "levels": list(plan.levels) if plan.levels else None,
+             "repeats": _shared(count * plan.repeats for count in takes.values()),
+             "driver": _shared(stop.driver for stop in plan.stops if stop.driver)})
 
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
@@ -122,14 +136,16 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
     if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
         build_parser().error("--mover arm requires --wait")
-    if args.dry_run:
-        answered({"verb": args.command, "dry_run": args.dry_run, "program": report.plan.program,
-                  "mover": report.plan.mover, **report.to_dict()})
-        return EXIT_REFUSED if report.blocking else EXIT_OK
-    if any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues):
+    subject, parameters = _plan_envelope(report.plan)
+    # A dry run refuses what would block the run; a run, only the arm facts the door cannot see (ADR-0237).
+    blocked = report.blocking if args.dry_run else any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues)
+    if blocked:
         issue = report.blocking_issue
-        return failed(EXIT_REFUSED, issue.code, report.to_dict(),
-                      code=issue.code, next_action=issue.next_action)
+        return failed(EXIT_REFUSED, issue.code, {"subject": subject, "parameters": parameters, **report.to_dict()},
+                      code=issue.code, next_action=issue.next_action, line=issue.detail)
+    if args.dry_run:
+        return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run --dry-run"], subject=subject,
+                      parameters=parameters, line="", **report.to_dict())
     http, payload = client.open_session(report.plan.to_dict())
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
@@ -153,10 +169,9 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
             arm_walk.WalkConfig(),
         ) as arm:
             return _cmd_wait(client, args, finish_arm=arm.finish)
-    return _answer(args.command, "Run ready; place the microphone to start.",
-                   **_run_links(run_id),
-                   shape="trial" if report.plan.candidates else "measure",
-                   first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
+    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run"], subject=subject, parameters=parameters,
+                  line="Run ready; place the microphone to start.", **_run_links(run_id),
+                  first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
 
 
 def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
@@ -187,7 +202,8 @@ def _cmd_placed(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "placement_refused", {"run_id": args.run, "http": http}, payload)
-    return answered(payload)
+    return answer("placed", schema=ANSWER_SCHEMAS[f"{PROG} placed"], subject={}, parameters={"pose": args.pose},
+                  line="", **payload)
 
 
 def _cmd_stop(client: WizardClient, args: argparse.Namespace) -> int:
@@ -195,7 +211,7 @@ def _cmd_stop(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "stop_refused", {"run_id": args.run, "http": http}, payload)
-    return answered(payload)
+    return answer("stop", schema=ANSWER_SCHEMAS[f"{PROG} stop"], subject={}, parameters={}, line="", **payload)
 
 
 def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
@@ -208,8 +224,11 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
     for line in (packet_lines(payload["round_dir"]) if payload.get("round_dir") else
                  round_lines(payload, pending=bool(payload.get("pending")))):
         print(line, file=sys.stderr)
-    return answered(payload, (f"session level {session['leveled_db_spl']:.1f} dB SPL at gain {session['gain_db']:.1f} dB, "
-                              f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "")
+    # The wizard's capture ``status`` is the run's state; ``status`` names a failure (ADR-0237).
+    return answer("status", schema=ANSWER_SCHEMAS[f"{PROG} status"], subject={}, parameters={},
+                  line=(f"session level {session['leveled_db_spl']:.1f} dB SPL at gain {session['gain_db']:.1f} dB, "
+                        f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "",
+                  **{"state" if key == "status" else key: value for key, value in payload.items()})
 
 
 def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
@@ -244,7 +263,9 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
         return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
                       error.reason if isinstance(error, RoundBankError) else "write_failed",
                       {"error": str(error), **arm} if arm else str(error))
-    return answered({**wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run), **arm},
+    return answered(envelope(args.command, schema=ANSWER_SCHEMAS[f"{PROG} wait"], subject={"round_id": banked.path.name},
+                             parameters={}, **wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run),
+                             **arm),
                     "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 
 
@@ -252,13 +273,8 @@ def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
     result = apply_by_fingerprint(client, args.fingerprint)
     fingerprint = str(result["candidate_fingerprint"])
     if result["status"] == "applied":
-        return _answer(
-            "apply",
-            f"applied {fingerprint}",
-            candidate_fingerprint=fingerprint,
-            http=result["http"],
-            outcome=result["outcome"],
-        )
+        return answer("apply", schema=ANSWER_SCHEMAS[f"{PROG} apply"], subject={"candidate_id": fingerprint},
+                      parameters={}, line=f"applied {fingerprint}", http=result["http"], outcome=result["outcome"])
     lost = result["reason"] == REASON_ANSWER_LOST
     return _wizard_failure(
         EXIT_UNREADABLE if lost else EXIT_REFUSED, str(result["reason"]),
@@ -308,8 +324,9 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         return _wizard_failure(EXIT_REFUSED, str(result["reason"]),
                                {"candidate_fingerprint": fingerprint}, result.get("payload"))
     timing = (load_applied_baseline_profile_state() or {}).get("timing")
-    return _answer(
-        "reset", f"applied {fingerprint}", candidate_fingerprint=fingerprint,
+    return answer(
+        "reset", schema=ANSWER_SCHEMAS[f"{PROG} reset"], subject={"candidate_id": fingerprint},
+        parameters={"program": args.program, "keep_timing": args.keep_timing}, line=f"applied {fingerprint}",
         http=result["http"], outcome=result["outcome"], trims_db=trims_db,
         timing={"saved": timing is not None,
                 "provenance": timing.get("provenance") if isinstance(timing, dict) else None},
