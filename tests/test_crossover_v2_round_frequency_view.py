@@ -811,12 +811,12 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
     path, = (take.record_path for take in analyzed_measurements(bundle))
     wav = reopen_measurement_record(bundle, path)[1]()
     calibration = resolve_setup_calibration(record["capture_setup"], device=record["capture_device"],
-                                            root=tmp_path / "calibration").curve
+                                            root=tmp_path / "calibration")
     samples, rate = decode_wav_to_mono(wav)
-    analysis = analyze_program_capture(program, samples, rate, calibration=calibration,
+    analysis = analyze_program_capture(program, samples, rate, calibration=calibration.curve,
                                        geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
                                        capture_report=record["capture_integrity"])
-    decoded = analysis_blocks(replace(analysis, bass=bass_evidence(program, analysis, samples, calibration)), program)
+    decoded = analysis_blocks(replace(analysis, bass=bass_evidence(program, analysis, samples, calibration.curve)), program)
     reading = record["analysis"]["bass"]
     assert (record["curves"], reading) == (decoded["curves"], decoded["analysis"]["bass"])
     assert {curve["window"] for curve in record["curves"]} == {"ungated"}
@@ -825,6 +825,7 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
     _without_recordings(bundle)
     banked, = analyzed_measurements(bundle)
     assert banked.document()["curves"] == record["curves"]
+    assert banked.document()["calibration"] == {"applied": True, "calibration_id": calibration.calibration_id}
 
 
 @pytest.mark.parametrize("fields,read", [
