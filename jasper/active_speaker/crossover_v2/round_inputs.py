@@ -13,7 +13,6 @@ statefile retain their own current/bank-time meanings.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
@@ -537,18 +536,21 @@ class Comparand(NamedTuple):
 
 
 def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = None) -> tuple[Any, ...]:
-    """The place a take's pose names, the response it reads, and the graph scope that played."""
+    """The place a take's pose names, the drivers it reads (its side's, the
+    response ``role``), and the graph scope that played."""
     pose = {key: value for key, value in (take.get("pose") or {}).items() if key != "place"}
-    return json.dumps(pose, sort_keys=True), role or group.role, group.capture_basis.get("graph_scope")
+    basis = group.capture_basis
+    return json.dumps(pose, sort_keys=True), basis.get("side"), role or group.role, basis.get("graph_scope")
 
 
 def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
     """The one comparand rule (ADR-0391): the round's base take at the take's
     place, preferring the take's own run; else the newest selected take banked
-    before the round at the same place, drivers (the response ``role`` reads)
-    and graph scope, among :func:`banked_rounds`' ``limit`` latest. The
-    same-round A/B is the decision evidence and an earlier take is context: a
-    comparison over the pair discloses
+    before the round at the same place, drivers and graph scope, among the
+    banked rounds in :func:`banked_rounds`' window of ``limit`` directories. A
+    live bundle dates by its bank copy when the window holds one, else by when
+    it started. The same-round A/B is the decision evidence and an earlier take
+    is context: a comparison over the pair discloses
     :func:`~.measurement_context.compare_capture_basis`."""
     inputs = round_inputs(round_dir)
     sets = view_sets(read_run_manifest(inputs))
@@ -565,17 +567,19 @@ def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: i
             [group for group in sets if group.get("base")],
             lambda other: (other.get("run_id") == take.get("run_id"), *take_order(other)))):
         return Comparand(COMPARAND_SAME_ROUND, round_dir, found[2], found[1], role)
-    own = bank_of(inputs)
-    before = (read_banked_round(own, own.stat().st_mtime) or ({}, math.inf))[1] if own else math.inf
-    for _banked_at, directory in sorted(((banked_at, str(path)) for path, _, banked_at in
-                                         banked_rounds(inputs.session_dir, limit=limit) if banked_at < before),
-                                        reverse=True):
+    rounds = sorted(((banked_at, str(path)) for path, _, banked_at in banked_rounds(inputs.session_dir, limit=limit)),
+                    reverse=True)
+    # round_bank copies a live bundle under the bundle's own name.
+    own = bank_of(inputs) or next((Path(path) for _, path in rounds
+                                   if (Path(path) / "bundle" / inputs.session_dir.name).is_dir()), None)
+    dated = read_banked_round(own, own.stat().st_mtime) if own else None
+    before = dated[1] if dated else finite_float(
+        (_read_json_mapping(inputs.session_dir / "info.json") or {}).get("started_at")) or 0.0
+    for banked_at, directory in rounds:
+        if banked_at >= before:
+            continue
         try:
-            earlier = round_inputs(Path(directory))
-            # A live bundle's own bank holds the same takes.
-            if earlier.session_dir.name == inputs.session_dir.name:
-                continue
-            found = newest(view_sets(read_run_manifest(earlier)), take_order)
+            found = newest(view_sets(read_run_manifest(round_inputs(Path(directory)))), take_order)
         except ROUND_INPUT_ERRORS:
             continue
         if found:

@@ -69,9 +69,10 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "compare", help="how take B differs from take A (or from a forecast), through one window and smoothing")
     parser.add_argument("source_a", metavar=_ROUND_DIR_METAVAR,
                         help=f"side A's round ({_ROUND_DIR_HELP}); with --a-preview, the measured round. "
-                             "Named alone with no --a-* flag, it is take B's round and side A is B's comparand: "
-                             "the round's base take at B's place, else the newest earlier banked take at the "
-                             "same place, role and graph scope")
+                             "Named alone with no --a-* flag, it is take B's round and side A is B's comparand "
+                             "(ADR-0391): the round's base take at B's place, else the newest earlier banked take "
+                             "at the same place, side, role and graph scope. To compare B with its set's on-axis "
+                             "take, or with another role of B's take, name side A: --a-take, --a-role")
     parser.add_argument("source_b", metavar="<round-b>", nargs="?", help="side B's round; default: side A's")
     for side in ("a", "b"):
         add_set_argument(parser, name=f"--{side}-set", take=True)
