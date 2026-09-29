@@ -526,10 +526,10 @@ async def test_failed_open_cleanup_retains_the_graph_for_a_later_close():
     assert not session.is_open
 
 
-async def test_each_take_selects_and_records_its_graph_scope_and_program_phase():
+async def test_each_take_selects_and_records_its_graph_scope_and_phase():
     session, parts = _session(play=_Play(wav_path="summed/take.wav"))
     specs = [
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="entry_baseline",
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, graph_scope="candidate", candidate_id="baseline", program_phase="timing",
                     cleared_layers=("room_correction", "bass_extension")),
         MeasureSpec(kind=MEASURE_KIND_VERIFY, graph_scope="candidate", candidate_id="fp-a", positions=(0, 15), program_phase="verify"),
         MeasureSpec(kind=MEASURE_KIND_BASELINE),
@@ -543,7 +543,7 @@ async def test_each_take_selects_and_records_its_graph_scope_and_program_phase()
     records = parts["records"].banked
     assert [record["cleared_layers"] for record in records] == [["room_correction", "bass_extension"], [], [], []]
     assert [record["graph_scope"] for record in records] == ["candidate", "candidate", "candidate", "drivers"]
-    assert [record.get("program_phase") for record in records] == ["entry_baseline", "verify", "verify", None]
+    assert [record.get("phase") for record in records] == ["timing", "verify", "verify", None]
     assert len({record["graph_fingerprint"] for record in records}) == 3
     assert all(record["measurement_status"] == "captured" for record in records)
 

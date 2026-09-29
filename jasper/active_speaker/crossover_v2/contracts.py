@@ -312,16 +312,8 @@ VERIFY_TOLERANCE_DB = 1.5
 # offline repeat-floor replay. Lower is better.
 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
-#: WHERE the two sides of #2291's before→after comparison were measured — the
-#: one spot CHECK asks the household to stand the microphone on, where both the
-#: entry baseline and the post-apply VERIFY are taken. ``stimulus_id`` equality
-#: cannot see position (a capture a metre away replays the identical program),
-#: so a capture carries this second identity.
-#:
-#: One owner, deliberately: both sides must stamp the SAME string. It is a
-#: stable identity, not a coordinate — nothing measures where the mark
-#: physically is, and no claim is made that two sessions' marks are the same
-#: place, only that within ONE round the mic did not move between the captures.
+#: The spot CHECK asks the household to stand the microphone on. An identity,
+#: not a coordinate: nothing measures where the mark physically is.
 REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 
 

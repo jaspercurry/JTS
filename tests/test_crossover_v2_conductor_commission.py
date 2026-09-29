@@ -15,7 +15,7 @@ from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
-    PHASE_ENTRY_BASELINE,
+    PHASE_TIMING,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
@@ -280,7 +280,7 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
     assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
     assert verify_tone_ids == {
         s.segment_id
-        for s in c.program_for_phase(PHASE_ENTRY_BASELINE).segments
+        for s in c.program_for_phase(PHASE_TIMING).segments
         if s.kind == KIND_COURTESY_TONE
     }
     assert not [

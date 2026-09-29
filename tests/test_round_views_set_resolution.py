@@ -439,10 +439,10 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
         assert resolved.take_id(requested) == expected
 
 
-def test_set_selection_excludes_entry_baseline_takes(two_sets):
+def test_set_selection_excludes_timing_takes(two_sets):
     root, manifest = two_sets
     group = manifest["sets"][0]
-    group["takes"][0]["phase"] = "entry_baseline"
+    group["takes"][0]["phase"] = "timing"
 
     selected = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
 

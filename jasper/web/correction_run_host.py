@@ -26,7 +26,7 @@ from jasper.active_speaker.crossover_v2.capture_provenance import (
     analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_band,
 )
 from jasper.active_speaker.crossover_v2.session import TuningSession
-from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
+from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
 from jasper.active_speaker.plan_run import RunDoor, after_grading
@@ -36,7 +36,7 @@ from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.platform.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
-from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE
+from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_TIMING
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
 from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import ExcitationProgram
@@ -118,15 +118,14 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
-            "phase": record.get("program_phase"),
             **({"provenance": captured.to_dict()} if captured is not None else {}),
         }, layout=conductor.source_preset.channel_map.layout)
 
     def after_bank(record: Any, _record_id: str) -> None:
         _, analysis = answers.pop(record["take_id"])
-        if (record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception)
-                and conductor.measure_entry_baseline is None):
-            conductor.set_entry_baseline(banked_entry_baseline(record, analysis))
+        if (record.get("phase") == PHASE_TIMING and not isinstance(analysis, Exception)
+                and conductor.timing_prior is None):
+            conductor.set_timing_prior(timing_prior(record, analysis))
 
     records.enrich, records.after_bank = enrich, after_bank
 

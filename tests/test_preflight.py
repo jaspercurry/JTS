@@ -322,7 +322,7 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     name = candidate.fingerprint
     plan = AngleCaptureRequest(
         tuple(AngleStop(angle, REGIME_SUMMED, candidate_id=cid, purpose="speaker") for angle in (0, 20, 0) for cid in ("", name)),
-        candidates=("base", name), repeats=2,
+        candidates=("base", name), repeats=2, program="tournament/express",
     )
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()

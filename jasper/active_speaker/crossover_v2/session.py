@@ -610,7 +610,7 @@ class TuningSession:
             "kind": spec.kind,
             "measurement_status": "captured" if outcome.wav_path and not outcome.incident else "incomplete",
             "graph_scope": spec.graph_scope,
-            **({"program_phase": spec.program_phase} if spec.program_phase else {}),
+            **({"phase": spec.program_phase} if spec.program_phase else {}),
             "baseline_record_id": "",
             "position_deg": bearing,
             "position_axis": spec.position_axis,

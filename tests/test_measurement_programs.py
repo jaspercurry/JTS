@@ -518,14 +518,14 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
     (mp.run_preset("drivers"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)), ("lateral", ("tweeter",))]),
     ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
       ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
-     [("check", ()), ("entry_baseline", ()), ("measure", ()), ("lateral", ("woofer",))]),
+     [("check", ()), ("timing", ()), ("measure", ()), ("lateral", ("woofer",))]),
 ], ids=["one-driver-preset", "beside-a-two-driver-stop"])
 def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected) -> None:
     """A stop naming its driver plays it alone in the far field on MEASURE's
     sweep, with no CHECK or timing take for it; a stop that plays every driver
     keeps both (#5696, ADR-0366)."""
     request = (ac.request_for_preset(stops, targets=_CARDIOID) if isinstance(stops, mp.Preset)
-               else ac.AngleCaptureRequest(stops=stops))
+               else ac.AngleCaptureRequest(stops=stops, program="speaker/mark"))
     captures = prepare_plan_captures(request)
     assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected
     assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
@@ -627,7 +627,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
                                     "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels",
-                                    "preset_description", "layout_use_when", "layout_list"])
+                                    "preset_description", "layout_use_when", "layout_list", "timing_take"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "purposes_missing":
@@ -667,8 +667,8 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         config["layouts"]["room_quick"]["moverr"] = "arm"  # type: ignore[index]
     elif broken == "mover":
         config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
-    elif broken == "room_sweep":
-        config["presets"][0]["room_sweep"] = "yes"
+    elif broken in ("room_sweep", "timing_take"):
+        config["presets"][0][broken] = "yes"
     elif broken == "room_sweep_mode":
         config["presets"][0].update(purposes=["room"], regime="summed", room_sweep=True)
     elif broken == "regime":

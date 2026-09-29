@@ -1345,7 +1345,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     def engine(**kw):
         async def capture_record(record):
             return await kw["records"].inner.bank({**record, "stimulus_id": "sweep", "stimulus_dbfs": -20,
-                "phase": record["program_phase"],
                 "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
                     "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
         return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],

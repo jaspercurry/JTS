@@ -40,9 +40,9 @@ from .journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_TIMING,
     PHASE_VERIFY,
 )
 
@@ -66,11 +66,10 @@ LEVEL_PROBE_START_BACKOFF_DB = 30.0
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
 #: The phases whose capture OPENS a session's playback, and so carries the
-#: courtesy prelude (#1677). No env/config switch. :data:`PHASE_ENTRY_BASELINE`
-#: is stage 1's LAST capture rather than an opener, but it PLAYS the announced
-#: program.
+#: courtesy prelude (#1677). No env/config switch. :data:`PHASE_TIMING` plays
+#: VERIFY's program, prelude included.
 COURTESY_PRELUDE_PHASES = frozenset(
-    {PHASE_CHECK, PHASE_VERIFY, PHASE_ENTRY_BASELINE}
+    {PHASE_CHECK, PHASE_VERIFY, PHASE_TIMING}
 )
 
 
@@ -110,7 +109,7 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
 # --------------------------------------------------------------------------- #
 
 SUMMED_SWEEP_PHASES = frozenset(
-    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_ENTRY_BASELINE}
+    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_TIMING}
 )
 
 #: Position groups omit the courtesy prelude: each pose is not a new session.
@@ -372,7 +371,7 @@ def program_for_phase(
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
-    The compared pair gets the same ``verify`` object (shared
+    The timing take and VERIFY get the same ``verify`` object (shared
     ``stimulus_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
     the same ``cloud`` object.
 
@@ -395,7 +394,7 @@ def program_for_phase(
     if phase in GROUP_SUMMED_SWEEP_PHASES:
         # One composed sweep serves both position groups: same excitation, same
         # min-cap clamp, same ``program.phase`` ("verify") so the analyzer routes
-        # it unchanged. What differs from the compared pair is the courtesy
+        # it unchanged. What differs from ``verify`` is the courtesy
         # prelude alone, which is analysis-invisible (``KIND_COURTESY_TONE`` is
         # not a ``STIMULUS_KIND``).
         return cloud

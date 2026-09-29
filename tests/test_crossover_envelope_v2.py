@@ -60,7 +60,7 @@ def _status(**v2) -> dict:
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": v2,
         "capture": {"status": "awaiting_capture"} if v2.get("phase") in {
-            "measure", "verify", "cloud_measure", "cloud_verify", "lateral", "entry_baseline",
+            "measure", "verify", "cloud_measure", "cloud_verify", "lateral", "timing",
         } and not v2.get("failure") else None,
     }
 

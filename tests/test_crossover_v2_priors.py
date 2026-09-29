@@ -28,9 +28,8 @@ from jasper.active_speaker.branch_chain import radiating_band_hz
 from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_names import driver_baseline_gain_name, driver_delay_name
 from jasper.active_speaker.crossover_v2 import priors, summed_alignment
-from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.record_index import Measurement
-from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
+from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 
 from tests.crossover_v2_fixtures import FC_HZ, _preset
@@ -430,7 +429,6 @@ class C:
 def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     monkeypatch, tmp_path, position_deg, shape, reason, repeats
 ):
-    baseline = SimpleNamespace(artifact_ref="sum", reference_mark=REFERENCE_MARK_DESIGN_AXIS)
     # The cardioid preset lists its rear woofer last; its chain must never stand in for the front woofer's.
     preset = _rear_pair("mono")[0] if shape == "cardioid" else PRESET
     filters = {"common": {"type": "Gain", "parameters": {"gain": -3.0}},
@@ -470,7 +468,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         pipeline.insert(0, {"type": "Mixer", "name": "split"})
     events = []
     monkeypatch.setattr(summed_alignment, "log_event", lambda logger, event, **fields: events.append(fields))
-    row = Measurement("sum.json", "session", "summed", "entry_baseline", position_deg, 0, "candidate", None, "timing")
+    row = Measurement("sum.json", "session", "summed", "timing", position_deg, 0, "candidate", None, "timing")
     documents = [(replace(row, path=f"sum-{i}.json"), {"take_id": "sum" if i == 0 else f"sum-{i}",
                   "graph_scope": "timing", "graph_fingerprint": "submitted", "provenance": {"graph": {"fingerprint": "played"}}})
                  for i in range(repeats)]
@@ -488,7 +486,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     hz = np.linspace(1200, 5000, 100)
     raw = SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros(hz.size), validity_floor_hz=1000)
     monkeypatch.setattr(summed_alignment, "analyze_program_capture", lambda *a, **k: SimpleNamespace(summed_response=raw))
-    conductor = _wired_conductor(measure_entry_baseline=baseline)
+    conductor = _wired_conductor(timing_prior="sum")
     conductor._seams = replace(conductor._seams, summed_alignment_reference=lambda b, p: summed_alignment.session_reference(tmp_path, b, preset))
     reference = conductor.measure_priors().summed_alignment
     assert (reference is not None) is (position_deg == 0 and shape in ("valid", "cardioid"))
@@ -508,7 +506,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
 
 
 @pytest.mark.parametrize("available", [True, False])
-def test_two_measure_attempts_share_reference_until_baseline_changes(available):
+def test_two_measure_attempts_share_reference_until_the_timing_prior_changes(available):
     from jasper.active_speaker.crossover_v2 import journey  # lazy: avoid measurement-stack import cost outside this test
     from unittest.mock import Mock
 
@@ -524,9 +522,7 @@ def test_two_measure_attempts_share_reference_until_baseline_changes(available):
     _run_phase(conductor, 2, 2)
     assert seam.call_count == 1
     assert conductor.measure_priors().summed_alignment is reference
-    conductor.set_entry_baseline(
-        replace(conductor.measure_entry_baseline, artifact_ref="changed")
-    )
+    conductor.set_timing_prior("changed")
     assert conductor.measure_priors().summed_alignment is reference
     assert seam.call_count == 2
     assert fakes.analyzed[-1][0] == journey.PHASE_MEASURE
@@ -545,20 +541,16 @@ def test_measure_attempt_geometry_carries_its_pose(position, vertical):
     assert (geometry.position_deg, geometry.vertical_deg) == (position, vertical)
 
 
-@pytest.mark.parametrize("scope, pose", [("timing", (0, 0)), ("timing", (20, 0)),
-    ("timing", (0, 20)), ("candidate", (0, 0)), ("applied", (0, 0))])
-def test_timing_baseline_banks_only_the_design_axis_and_played_fingerprint(monkeypatch, scope, pose):
+@pytest.mark.parametrize("scope, pose, fingerprint", [("timing", (0, 0), "played"), ("timing", (20, 0), "played"),
+    ("timing", (0, 20), "played"), ("timing", (0, 0), ""), ("candidate", (0, 0), "played"), ("applied", (0, 0), "played")])
+def test_a_timing_take_is_the_prior_only_at_the_mark_on_a_played_graph(monkeypatch, scope, pose, fingerprint):
     events = []
     monkeypatch.setattr(summed_alignment, "log_event", lambda logger, event, **fields: events.append((event, fields)))
     hz = np.geomspace(1200, 5000, 100)
     record = {"position_deg": pose[0], "vertical_deg": pose[1], "graph_scope": scope,
-              "take_id": "sum", "graph_fingerprint": "submitted",
-              "provenance": {"graph": {"fingerprint": "played"}}}
-    baseline = banked_entry_baseline(record, SimpleNamespace(stimulus_id="sum",
+              "take_id": "sum", "provenance": {"graph": {"fingerprint": fingerprint}}}
+    prior = timing_prior(record, SimpleNamespace(stimulus_id="sum",
         summed_response=SimpleNamespace(freqs_hz=hz, magnitude_db=np.zeros_like(hz))))
-    assert (baseline is not None) == (scope == "timing" and pose == (0, 0))
+    assert prior == ("sum" if (scope, pose, fingerprint) == ("timing", (0, 0), "played") else None)
     assert events == ([] if scope == "timing" else [("active_speaker.summed_reference_unreadable",
-        {"code": "summed_reference_unreadable", "reason": "entry_baseline_scope"})])
-    if baseline is not None:
-        assert baseline.graph_fingerprint == "played"
-        assert baseline.artifact_ref == "sum"
+        {"code": "summed_reference_unreadable", "reason": "timing_take_scope"})])

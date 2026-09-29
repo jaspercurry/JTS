@@ -3346,7 +3346,7 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import summed_at
-    return {"plan": summed_at([0, 20]).to_dict()}
+    return {"plan": {**summed_at([0, 20]).to_dict(), "program": "tournament/express"}}
 
 
 def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
@@ -3481,7 +3481,7 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(
 
 
 @pytest.mark.parametrize("levels,phases", [
-    (None, ("entry_baseline", "lateral", "lateral")),
+    (None, ("timing", "lateral", "lateral")),
     ((-18, -23), ("lateral",)),
     ((-8, -18), ("lateral",)),
 ])

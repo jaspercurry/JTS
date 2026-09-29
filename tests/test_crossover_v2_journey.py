@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_ENTRY_BASELINE,
+    PHASE_TIMING,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -48,7 +48,7 @@ STAGE1_MAP = {
     4: PHASE_LATERAL,
     5: PHASE_CLOUD_MEASURE,
     6: PHASE_CLOUD_MEASURE,
-    7: PHASE_ENTRY_BASELINE,
+    7: PHASE_TIMING,
 }
 
 #: The three-entry pre-cloud shape, and the one-entry verify re-arm.
@@ -75,11 +75,11 @@ def test_the_plan_orders_phases_canonically_not_by_map_iteration():
         PHASE_MEASURE,
         PHASE_LATERAL,
         PHASE_CLOUD_MEASURE,
-        PHASE_ENTRY_BASELINE,
+        PHASE_TIMING,
     )
     # And the entry baseline really is last, which is the whole of its
     # comparability argument — it is the capture immediately before apply.
-    assert plan.phases[-1] == PHASE_ENTRY_BASELINE
+    assert plan.phases[-1] == PHASE_TIMING
 
 
 def test_a_session_walks_only_the_phases_its_map_addresses():
@@ -149,11 +149,11 @@ def test_a_declaration_overrides_the_walk_in_both_directions():
 
 def test_accepted_capture_phases_is_canonically_ordered_for_the_snapshot():
     journey = _journey(STAGE1_MAP)
-    journey.accept(PHASE_ENTRY_BASELINE, 7)
+    journey.accept(PHASE_TIMING, 7)
     journey.accept(PHASE_CHECK, 1)
     journey.accept(PHASE_MEASURE, 2)
     assert journey.accepted_capture_phases() == (
-        PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE
+        PHASE_CHECK, PHASE_MEASURE, PHASE_TIMING
     )
 
 

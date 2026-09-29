@@ -68,7 +68,7 @@ def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
         ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
         for angle in angles for candidate in candidates),
-        template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE))
+        template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE), program="tournament/express")
 
 
 def _analysis(_record):
@@ -737,14 +737,14 @@ def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, 
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
 
-def test_a_hand_written_branch_plan_resolves_its_base_entry_as_a_summed_take():
+def test_a_hand_written_branch_plan_resolves_its_timing_take_as_a_summed_take():
     plan = ac.AngleCaptureRequest(
-        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),),
+        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),), program="speaker/mark",
     )
     request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
     captures = plan_run.prepare_plan_captures(request, roles_bands=tuple(_roles()))
 
-    entry = next(c for c in captures if c.spec.program_phase == "entry_baseline")
+    entry = next(c for c in captures if c.spec.program_phase == "timing")
     assert (entry.stop.regime, entry.stop.branch_pair) == (ac.REGIME_SUMMED, "drivers")
     assert entry.spec.branch_target_ids == ()
     assert {c.spec.branch_target_ids for c in captures if c.spec.graph_scope == "candidate_branches"} == {
@@ -774,32 +774,35 @@ def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
     timing = [capture for capture in captures
               if capture.spec.graph_scope == "timing"]
     assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in timing] == [
-        (0, "entry_baseline")]
+        (0, "timing")]
 
 
-@pytest.mark.parametrize(("regime", "candidate", "purpose", "phases", "scope"), [
-    ("per_driver", "base", "speaker", ("check", "entry_baseline", "measure"), "timing"),
-    ("summed", "base", "speaker", ("entry_baseline", "lateral"), "timing"),
-    ("summed", "candidate-a", "speaker", ("lateral",), None),
-    ("summed", "base", "room", ("lateral",), None),
-    ("summed", "base", "rear", ("lateral",), None),
-    ("summed", "base", "bass", ("lateral",), None),
-    ("summed", "base", "reference", ("lateral",), None),
+@pytest.mark.parametrize(("regime", "candidate", "purpose", "program", "phases", "scope"), [
+    ("per_driver", "base", "speaker", "speaker/mark", ("check", "timing", "measure"), "timing"),
+    ("summed", "base", "speaker", "tournament/express", ("timing", "lateral"), "timing"),
+    ("summed", "candidate-a", "speaker", "speaker/mark", ("lateral",), None),
+    ("per_driver", "base", "speaker", "", ("check", "measure"), None),
+    ("summed", "base", "room", "room/seat", ("lateral",), None),
+    ("summed", "base", "rear", "rear/express", ("lateral",), None),
+    ("summed", "base", "bass", "bass/axis", ("lateral",), None),
+    ("summed", "base", "reference", "nearfield/each", ("lateral",), None),
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
-def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, purpose, phases, scope, repeats):
+def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, purpose, program, phases, scope, repeats):
+    """The timing take is the named preset's (its ``timing_take`` flag), taken on the base; a plan
+    naming no preset takes none."""
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(20, regime, candidate_id=candidate, purpose=purpose),),
-        candidates=(candidate,), repeats=repeats,
+        candidates=(candidate,), repeats=repeats, program=program,
     )
     captures = plan_run.prepare_plan_captures(request)
-    phase_repeats = {"check": 1, "entry_baseline": repeats, "measure": repeats, "lateral": repeats}
+    phase_repeats = {"check": 1, "timing": repeats, "measure": repeats, "lateral": repeats}
     assert tuple(capture.spec.program_phase for capture in captures) == tuple(
         phase for phase in phases for _ in range(phase_repeats[phase]))
     assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
     assert [capture.stop.angle_deg for capture in captures[-repeats:]] == [20] * repeats
     assert all(capture.stop.angle_deg == 0 for capture in captures[:-repeats])
-    baseline = [capture for capture in captures if capture.spec.program_phase == "entry_baseline"]
+    baseline = [capture for capture in captures if capture.spec.program_phase == "timing"]
     assert [capture.repeat for capture in baseline] == (list(range(1, repeats + 1)) if scope else [])
     assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
                == (scope, "summed", (0,), 0) for capture in baseline)
@@ -1058,12 +1061,12 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     ("speaker", "baseline_express", True, 5), ("room", "seat_express", False, 3),
     ("rear", "rear_express", False, 3),
 ])
-def test_program_entry_baseline_and_placement_count(purpose, layout, entry, poses):
+def test_program_timing_take_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_preset(run_preset(purpose, layout))
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
-    assert any(c.spec.program_phase == "entry_baseline" for c in captures) is entry
+    assert any(c.spec.program_phase == "timing" for c in captures) is entry
     assert plan_run.preview_schedule(request, captures, context)["poses"] == poses
 
 
@@ -1133,7 +1136,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
         level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
-        level_source=source,
+        level_source=source, program="speaker/mark",
     )
     door = _run_door(tmp_path, box, fakes, manifest)
     door.build_session = Mock(wraps=door.build_session)
@@ -1155,7 +1158,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
                                                   "level_source": source}}
     assert {row["capture_basis"]["level_db"] for row in manifest.to_dict()["sets"]} == {level}
     assert [(call["spec"].program_phase, call["level_db"]) for call in fakes.play.calls] == [
-        (phase, level) for phase in ("check", "entry_baseline", "measure")]
+        (phase, level) for phase in ("check", "timing", "measure")]
 
 
 async def test_manifest_discloses_program_default_without_a_seat_reference():

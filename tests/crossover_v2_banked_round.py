@@ -86,9 +86,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_CHECK,
-    PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_MEASURE,
+    PHASE_TIMING,
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.record_store import (
@@ -612,7 +612,7 @@ def phase_capture_record(
     }
 
 
-def entry_baseline_record(
+def timing_take_record(
     *,
     index: int,
     attempt: int,
@@ -643,8 +643,8 @@ def entry_baseline_record(
     ``""`` because no instruction was issued.
     """
     identity = _take_identity(
-        position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
-        phase=PHASE_ENTRY_BASELINE, index=index, attempt=attempt,
+        position_id=f"{PHASE_TIMING}_{index:02d}",
+        phase=PHASE_TIMING, index=index, attempt=attempt,
         run_id=run_id, wav_sha256=wav_sha256,
         graph_fingerprint=graph_fingerprint, claim=claim,
     )
@@ -736,7 +736,7 @@ def bank_measure_round(
         # has a sibling take of another phase to pass over rather than a clear
         # field.
         *poses,
-        entry_baseline_record(
+        timing_take_record(
             index=3 + len(poses), attempt=1,
             stimulus_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
             # Plausible values so the record is whole, never a number any pin reads.

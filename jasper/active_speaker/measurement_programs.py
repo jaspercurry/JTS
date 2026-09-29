@@ -387,6 +387,8 @@ class Preset:
     #: What it plays and when to run it, one sentence each, for the agent's catalog.
     description: str = ""
     use_when: str = ""
+    #: Whether a run takes the ADR-0319 timing take, MEASURE's in-session prior.
+    timing_take: bool = False
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -397,6 +399,8 @@ class Preset:
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
                 (set(self.purposes) != {PURPOSE_SPEAKER} or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
+        if not isinstance(self.timing_take, bool):
+            raise ValueError("timing_take must be a boolean")
 
     @property
     def purpose(self) -> str:
@@ -535,7 +539,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
         unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair", "description", "use_when"}
+                              "room_sweep", "branch_pair", "description", "use_when", "timing_take"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -574,6 +578,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
             description=_text(row.get("description"), f"preset {preset_id} description"),
             use_when=_text(row.get("use_when"), f"preset {preset_id} use_when"),
+            timing_take=row.get("timing_take", False),
         )
     return MappingProxyType(presets), MappingProxyType(layouts)
 

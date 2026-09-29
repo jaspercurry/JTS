@@ -13,11 +13,11 @@ from jasper.audio_measurement.program import RoleBand
 from .angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop, resolve_request, stop_specs, design_axis_spec
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.contracts import REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD
-from .crossover_v2.journey import PHASE_CHECK, PHASE_ENTRY_BASELINE, PHASE_MEASURE, PHASE_LATERAL
+from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import MeasureSpec
 from .measurement_programs import (
     BASE_CANDIDATE, REGIME_NEAR_FIELD, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
-    POSE_KIND_BEARING, BRANCH_PAIR_DRIVERS, candidate_identity,
+    UnknownPresetError, candidate_identity, preset,
 )
 
 
@@ -47,19 +47,18 @@ def prepare_plan_captures(
             AngleStop(0, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE and stop.purpose == PURPOSE_SPEAKER), None)
-    # The speaker flow needs an entry baseline; other rounds use their first take as the level reference.
-    if base_stop is not None:
-        base_request = replace(request, stops=(replace(base_stop, angle_deg=0, elevation_deg=0,
-            kind=POSE_KIND_BEARING, distance_m=None, seat_offset_m=None,
-            headline="", detail="", regime=REGIME_SUMMED, branch_pair=BRANCH_PAIR_DRIVERS),),
+    # A preset's timing take plays the base's front drivers summed at the mark (ADR-0319), so it
+    # needs a base stop that plays every driver (ADR-0366).
+    if _takes_timing(request.program) and any(
+            candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.driver for stop in request.stops):
+        base_request = replace(request, stops=(AngleStop(0, REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request,
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
         captures.extend(PlanCapture(base_request.stops[0], replace(
-            base_spec, graph_scope="timing", program_phase=PHASE_ENTRY_BASELINE,
+            base_spec, graph_scope="timing", program_phase=PHASE_TIMING,
         ), repeat) for repeat in range(1, request.repeats + 1))
     for offset, spec in enumerate(placed):
         stop = request.stops[offset // request.repeats]
@@ -74,6 +73,14 @@ def prepare_plan_captures(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
     return tuple(captures)
+
+
+def _takes_timing(program: str) -> bool:
+    """Whether the run's preset takes the timing take; a plan naming no preset takes none."""
+    try:
+        return preset(program).timing_take
+    except UnknownPresetError:
+        return False
 
 
 def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:

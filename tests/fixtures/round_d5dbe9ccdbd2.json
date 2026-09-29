@@ -23,7 +23,7 @@
         "takes": [
           {
             "attempt": 1,
-            "phase": "entry_baseline",
+            "phase": "timing",
             "pose": {"deg": 0, "distance_m": 1.0, "elevation_deg": 0, "kind": "bearing", "place": ["bearing", 0, 0, null, null], "seat_offset_m": null},
             "role": "summed",
             "selected": true,

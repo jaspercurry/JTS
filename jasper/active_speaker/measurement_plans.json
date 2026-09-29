@@ -127,10 +127,10 @@
       "mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
   "presets": [
-    {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purposes": ["speaker"], "regime": "per_driver", "room_sweep": true,
+    {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purposes": ["speaker"], "regime": "per_driver", "room_sweep": true, "timing_take": true,
      "description": "The level check and the timing take, then each driver alone at each pose, plus one summed sweep per pose kept as room evidence.",
      "use_when": "Use to linearize each driver and set the crossover, and to trial a speaker document with candidates."},
-    {"preset": "tournament/express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purposes": ["speaker"], "regime": "per_driver",
+    {"preset": "tournament/express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purposes": ["speaker"], "regime": "per_driver", "timing_take": true,
      "description": "The level check and the timing take, then each driver alone once per pose; with candidates, each candidate summed at each pose.",
      "use_when": "Use to compare two or three speaker candidates side by side."},
     {"preset": "branches/express", "layout": "tournament_express", "purposes": ["speaker"], "regime": "branches",

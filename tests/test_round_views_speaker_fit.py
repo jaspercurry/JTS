@@ -478,7 +478,7 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
     measured["takes"][0].update(role="woofer", analysis=stored["analysis"])
     base = manifest_set([(row_path, record)], set_id="base-set")
     base["capture_basis"].update(graph_scope="timing", candidate_id="projected-timing-fp")
-    base["takes"][0].update(phase="entry_baseline", role="summed")
+    base["takes"][0].update(phase="timing", role="summed")
     manifest = write_manifest(root, groups=[base, measured])
     looked_up = []
 
@@ -773,7 +773,7 @@ def test_packet_fits_only_drivers_and_keeps_refusal_codes(speaker_round, tmp_pat
         curve = next((c for c in record["curves"] if c["role"] == role), record["curves"][0])
         group["takes"][0].update(role=role, curve={**curve, "role": role})
         if refused and role == "woofer":
-            group["takes"][0]["phase"] = "entry_baseline"
+            group["takes"][0]["phase"] = "timing"
         groups.append(group)
     write_manifest(root, groups=groups)
     mark_state(inputs.session_dir, "applied")
