@@ -7,7 +7,7 @@
 
 """Render the installed tuning docs' generated blocks from their owners.
 
-See ADR-0204 for the CLI menu and ADR-0181 for one owner per fact.
+See ADR-0204 and ADR-0393 for the CLI menu and ADR-0181 for one owner per fact.
 
 Usage::
 
@@ -23,6 +23,8 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
+
+from jasper.active_speaker.round_view_artifacts import CATALOG, CatalogRow
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNBOOK = ROOT / "docs" / "tuning-operator-runbook.md"
@@ -194,34 +196,37 @@ def _subcommand_names(parser: argparse.ArgumentParser) -> tuple[str, ...]:
     return ()
 
 
-def _subcommand_labels(parser: argparse.ArgumentParser) -> tuple[str, ...]:
-    names = _subcommand_names(parser)
-    action = next((item for item in parser._actions
-                   if isinstance(item, argparse._SubParsersAction)), None)
-    help_by_name = {} if action is None else {
-        choice.dest: choice.help or "" for choice in action._choices_actions
-    }
-    return tuple(
-        f"{name} {help_by_name[name].split()[0]}"
-        if help_by_name.get(name, "").startswith("[") else name
-        for name in names
-    )
+def _catalogued(prog: str, name: str, verb: argparse.ArgumentParser) -> bool:
+    """A catalog row calls this verb as is, or with the option it cannot run without."""
+    calls = [tuple(command.split()) for command in CATALOG]
+    required = any(action.required and action.option_strings for action in verb._actions)
+    return (prog, name) in calls or (required and any(call[:2] == (prog, name) for call in calls))
 
 
 def _tool_row(module_name: str) -> str:
+    """One CLI, naming only the verbs with no catalog line of their own."""
     module = importlib.import_module(module_name)
     parser = module.build_parser()
-    subcommands = _subcommand_labels(parser)
+    verbs = next((action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction)), {})
+    subcommands = [name for name, verb in verbs.items() if not _catalogued(parser.prog, name, verb)]
     tool = parser.prog + (" " + "\\|".join(subcommands) if subcommands else "")
     description = " ".join((parser.description or "").split())
     where = Path(cast(str, module.__file__)).resolve().relative_to(ROOT)
     return f"| `{tool}` | {description} | {module.AUTHORITY_TIER} | `{where}` |"
 
 
+def _catalog_line(command: str, row: CatalogRow) -> str:
+    """One catalog row: the call, what it answers and needs, what it reads, and whose rounds."""
+    cells = (f"`{' '.join((command, *row.argv))}`", row.question, row.needs, row.reads, ", ".join(row.programs) or "all")
+    return "| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |"
+
+
 def render_table() -> str:
     header = "| Tool | Does | Authority | Where |\n|---|---|---|---|"
     rows = "\n".join(_tool_row(name) for name in TUNING_TOOL_MODULES)
-    return f"{BEGIN_MARKER}\n{header}\n{rows}\n{END_MARKER}"
+    catalog = "\n".join(_catalog_line(command, row) for command, row in CATALOG.items())
+    return (f"{BEGIN_MARKER}\n{header}\n{rows}\n\n| Tool | Answers | Needs | Reads | Programs |\n"
+            f"|---|---|---|---|---|\n{catalog}\n{END_MARKER}")
 
 
 def _spliced(text: str, begin: str, end_marker: str, generated: str) -> str:

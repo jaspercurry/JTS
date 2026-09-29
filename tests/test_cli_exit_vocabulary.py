@@ -41,6 +41,7 @@ from jasper.active_speaker.crossover_v2 import prescription_document, room_selec
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
+from jasper.active_speaker.round_view_artifacts import CATALOG
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
@@ -264,6 +265,8 @@ def test_document_failures_use_the_shared_contract(module_name, verb, tmp_path, 
 #: The ceiling on a numeric array an answer may carry: a curve or a grid
 #: belongs in the artifact the answer names, never in the answer.
 MAX_ANSWER_ARRAY = 16
+#: The keys every answer shares; the rest are the fields its catalog row names.
+_ENVELOPE = {"view", "schema", "subject", "parameters", "out", "bytes"}
 
 _NO_CAPTURES = "the fixture banks no WAVs, so no capture ring and no summed takes"
 
@@ -406,6 +409,7 @@ _ROUND_SET_TAKES = frozenset({"round_id", "set_id", "take_ids"})
 #: How each view is run to an answer -- or, for a view no fixture here can
 #: feed, why not.
 _VIEW_RUN: dict[str, str | _ViewRun] = {
+    "catalog": "the catalog reads no round and writes no artifact; test_round_views_catalog pins its answer",
     "repeat": _ViewRun(_on_fixture_round(_repeat_argv)),
     "candidates": _ViewRun(_on_fixture_round(lambda r: ["candidates", str(r.measured)])),
     "directivity": _ViewRun(
@@ -562,6 +566,9 @@ def test_every_view_answers_under_one_envelope(view_answer: _Answered) -> None:
     assert [set(one) for one in subject.get("rounds", [subject])] == [run.subject] * len(subject.get("rounds", [subject]))
     assert set(answer["parameters"]) == run.parameters
     assert run.recorded is None or run.recorded(answer["parameters"], view_answer.artifact)
+    row = CATALOG.get(f"{round_views.PROG} {view_answer.view}") or CATALOG[
+        f"{round_views.PROG} {view_answer.view} --scope {answer['scope']}"]
+    assert answer.keys() - _ENVELOPE <= set(row.answer_fields)
 
 
 def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _Answered) -> None:
@@ -676,6 +683,7 @@ def test_every_other_tuning_answer_carries_the_view_envelope(
     assert "take_ids" not in answer["subject"]
     assert "status" not in answer
     assert row not in _OTHER_ENVELOPES or (answer["subject"], answer["parameters"]) == _OTHER_ENVELOPES[row]
+    assert row not in CATALOG or answer.keys() - _ENVELOPE <= set(CATALOG[row].answer_fields)
 
 
 def _unanalysed_room_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:

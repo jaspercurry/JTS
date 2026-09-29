@@ -17,11 +17,8 @@ from typing import Any
 from jasper.active_speaker import round_bank
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS as ANSWER_SCHEMAS
 from jasper.active_speaker.round_view_artifacts import (
-    PROG as PROG,
-    ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
-    VIEW_PURPOSES as VIEW_PURPOSES, ViewArtifact as ViewArtifact,
-    TAKES_THIS_ROUND as TAKES_THIS_ROUND, TAKES_THIS_BUNDLE as TAKES_THIS_BUNDLE,
-    context_artifacts as context_artifacts,
+    PROG as PROG, ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, CATALOG as CATALOG, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
+    context_artifacts as context_artifacts, view_rows as view_rows,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
@@ -47,7 +44,7 @@ from jasper.cli._refusal import (
 )
 from jasper.cli._report import write_report
 
-AUTHORITY_TIER = "advisory (analysis views save artifacts)"
+AUTHORITY_TIER = "advisory (`catalog` reads; the analysis views save artifacts)"
 _ROUND_TOOL_ERRORS = ROUND_INPUT_ERRORS
 
 #: What every round-directory positional takes, said once. Both shapes: the

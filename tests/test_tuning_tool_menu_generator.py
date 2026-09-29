@@ -5,12 +5,13 @@
 """The tuning runbook's tool-menu table is generated, and stays generated.
 
 ADR-0204 / ticket 6.4: the runbook's per-tool menu is a rendering of each
-CLI's own ``prog``/``description``/``AUTHORITY_TIER``, never a second,
-hand-typed description of them (the counted-in-one-place pattern,
-ADR-0181). This is the regeneration pin: committed ``docs/tuning-operator-
-runbook.md`` must equal what ``scripts/generate-tuning-tool-menu.py`` would
-write right now, so a CLI edited without regenerating fails here instead of
-drifting silently into the runbook.
+CLI's own ``prog``/``description``/``AUTHORITY_TIER`` and of each tool
+catalog row, never a second, hand-typed description of them (the
+counted-in-one-place pattern, ADR-0181). This is the regeneration pin:
+committed ``docs/tuning-operator-runbook.md`` must equal what
+``scripts/generate-tuning-tool-menu.py`` would write right now, so a CLI or
+row edited without regenerating fails here instead of drifting silently
+into the runbook.
 
 The script is a script, not a package module (scripts/derive-crossover-
 incident-fixture.py's own tests document why), so it is loaded by path.
@@ -110,6 +111,23 @@ def test_every_row_names_a_real_tool_at_a_real_path():
         # the four columns regardless of how many subcommands a tool has.
         columns = row.removeprefix("| ").removesuffix(" |").split(" | ")
         assert len(columns) == 4, columns
+
+
+def test_the_menu_gives_every_catalog_row_one_line():
+    table = menu.render_table()
+    lines = table[table.index("| Tool | Answers"):].splitlines()[2:-1]
+    assert len(lines) == len(menu.CATALOG) and all(line.count(" | ") == 4 for line in lines)
+
+
+@pytest.mark.parametrize("module_name,verbs", [
+    ("jasper.cli.crossover_prescriber", ["judge", "compose"]),
+    ("jasper.cli.round_views", ["catalog"]),
+])
+def test_a_verb_leaves_the_cli_table_only_when_a_row_calls_it(module_name, verbs):
+    """Plain ``judge`` stays, since only its previews are rows; ``sweep`` goes,
+    since it cannot run without a ``--scope`` and both scopes are rows."""
+    tool = menu._tool_row(module_name).split("`")[1]
+    assert tool.split(" ", 1)[1].split("\\|") == verbs
 
 
 def test_every_covered_tool_declares_its_own_authority_tier():
