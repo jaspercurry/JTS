@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a plan, bank its packet, list and show banked rounds, and apply candidates."""
+"""List measurement presets, run a plan, bank its packet, list and show banked rounds, and apply candidates."""
 from __future__ import annotations
 
 import argparse
@@ -39,7 +39,7 @@ from ._refusal import (
 
 PROG = "jasper-round"
 DEFAULT_TIMEOUT_S = 900.0
-AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status`/`list`/`show` read)"
+AUTHORITY_TIER = "mutating-with-gates (`run`/`trial`/`placed`/`stop`/`wait`/`apply`/`reset` write; `run`/`trial` may move the arm; `status`/`list`/`show`/`presets` read)"
 LOST_ANSWER_ADVICE = "the apply may have taken effect; read the live candidate before trying again"
 _BEARING_LIST = re.compile(r"-\d+(\.\d+)?(,[+-]?\d+(\.\d+)?)*")
 
@@ -344,6 +344,22 @@ def _cmd_list(args: argparse.Namespace) -> int:
                   rounds=shown, truncated=len(rows) > args.limit)
 
 
+def _cmd_presets(args: argparse.Namespace) -> int:
+    from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context  # lazy: reads this speaker's setup
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for  # lazy: refusal copy imports NumPy
+    from jasper.active_speaker.preset_catalog import preset_catalog  # lazy: composes each layout's schedule
+    from jasper.active_speaker.setup_status import conductor_status  # lazy: reads this speaker's setup
+
+    try:
+        context = resolve_conductor_context(conductor_status(), require_banked_level=False)
+    except CrossoverV2Refused as exc:
+        code = exc.code or "measure_box_not_ready"
+        return failed(EXIT_REFUSED, code, str(exc), code=code, next_action=exc.next_action or refusal_copy_for(code)[1])
+    presets = preset_catalog(context)
+    return answer("presets", schema=ANSWER_SCHEMAS[f"{PROG} presets"], subject={}, parameters={},
+                  line=f"{len(presets)} presets; run one with jasper-round run --request", presets=presets)
+
+
 def _cmd_show(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.round_inputs import (  # lazy: keeps the CLI parser numpy-free
         ROUND_INPUT_ERRORS, RoundSetRefused, round_inputs, subject,
@@ -447,6 +463,11 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help=show_help, description=show_help)
     show.add_argument("round", metavar="<round-id|path>", help="a banked round id from list, or a round directory")
     show.set_defaults(func=_cmd_show)
+    catalog_help = ("List the measurement presets: what each plays, and per layout its poses, the outputs its "
+                    "driver poses play on this speaker, and one level's captures and seconds.")
+    catalog = sub.add_parser("presets", help=catalog_help, description=catalog_help)
+    catalog.add_argument("--json", action="store_true", help="answer as JSON, as every verb does")
+    catalog.set_defaults(func=_cmd_presets)
     return parser
 
 
@@ -458,7 +479,7 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     if args.command in ("run", "trial") and args.dry_run and not is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
-    if args.command in ("list", "show"):
+    if args.command in ("list", "show", "presets"):
         return int(args.func(args))
     client = WizardClient(
         host_header=args.hostname,

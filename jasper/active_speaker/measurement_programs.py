@@ -384,6 +384,9 @@ class Preset:
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
     #: or :data:`CUSTOM_LAYOUT` for an inline list (ADR-0366 §6).
     layouts: tuple[str, ...] = ()
+    #: What it plays and when to run it, one sentence each, for the agent's catalog.
+    description: str = ""
+    use_when: str = ""
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -408,6 +411,15 @@ class Preset:
     @property
     def capture_count(self) -> int:
         return sum(p.repeats + self.room_sweep for p in self.poses)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """A named pose set that presets offer, with the mover it pins (ADR-0366 §6)."""
+    poses: tuple[ProgramPose, ...]
+    mover: str | None
+    description: str
+    use_when: str
 
 
 class LayoutNotOfferedError(ValueError):
@@ -480,9 +492,7 @@ def _config_text(path: str | Path | None) -> str:
     return resources.files(__package__).joinpath("measurement_plans.json").read_text(encoding="utf-8")
 
 
-def _load_presets(
-    path: str | Path | None = None,
-) -> tuple[Mapping[str, Preset], Mapping[str, tuple[tuple[ProgramPose, ...], str | None]]]:
+def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset], Mapping[str, Layout]]:
     raw = json.loads(_config_text(path))
     if not isinstance(raw, dict):
         raise ValueError("measurement plan must be an object")
@@ -504,20 +514,18 @@ def _load_presets(
     layouts_raw = raw.get("layouts")
     if not isinstance(layouts_raw, dict) or not layouts_raw:
         raise ValueError("measurement plan layouts must be a nonempty object")
-    layouts: dict[str, tuple[ProgramPose, ...]] = {}
-    movers: dict[str, str] = {}
+    layouts: dict[str, Layout] = {}
     for name, values in layouts_raw.items():
         name = _text(name, "layout name")
-        if isinstance(values, dict):
-            unknown = set(values) - {"poses", "mover"}
-            if unknown:
-                raise ValueError(f"layout {name!r} has unknown fields: {sorted(unknown)}")
-            if "mover" in values:
-                movers[name] = _text(values["mover"], f"layout {name!r} mover")
-            values = values.get("poses")
-        if not isinstance(values, list) or not values:
+        if not isinstance(values, dict) or set(values) - {"poses", "mover", "description", "use_when"}:
+            raise ValueError(f"layout {name!r} must be an object of poses, mover, description and use_when")
+        poses = values.get("poses")
+        if not isinstance(poses, list) or not poses:
             raise ValueError(f"layout {name!r} must contain at least one pose")
-        layouts[name] = tuple(_pose(value, name, index) for index, value in enumerate(values))
+        layouts[name] = Layout(
+            tuple(_pose(value, name, index) for index, value in enumerate(poses)),
+            _text(values["mover"], f"layout {name!r} mover") if "mover" in values else None,
+            *(_text(values.get(key), f"layout {name!r} {key}") for key in ("description", "use_when")))
 
     rows = raw.get("presets")
     if not isinstance(rows, list) or not rows:
@@ -527,7 +535,7 @@ def _load_presets(
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
         unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair"}
+                              "room_sweep", "branch_pair", "description", "use_when"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -556,17 +564,18 @@ def _load_presets(
             raise ValueError(f"preset {preset_id} purposes must be a list")
         presets[preset_id] = Preset(
             preset_id,
-            layouts[layout],
+            layouts[layout].poses,
             purposes=tuple(_text(value, f"preset {preset_id} purpose") for value in purposes),
             regime=row.get("regime", REGIME_PER_DRIVER),
-            mover=movers.get(layout),
+            mover=layouts[layout].mover,
             layout=layout, layouts=tuple(offered), levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
+            description=_text(row.get("description"), f"preset {preset_id} description"),
+            use_when=_text(row.get("use_when"), f"preset {preset_id} use_when"),
         )
-    named = {name: (poses, movers.get(name)) for name, poses in layouts.items()}
-    return MappingProxyType(presets), MappingProxyType(named)
+    return MappingProxyType(presets), MappingProxyType(layouts)
 
 
 def load_presets(path: str | Path | None = None) -> Mapping[str, Preset]:
@@ -597,6 +606,11 @@ def preset(name: str) -> Preset:
     return found
 
 
+def named_layout(name: str) -> Layout:
+    """The layout a preset offers by this name (``seat_express``)."""
+    return _LAYOUTS[name]
+
+
 def run_preset(name: str, layout: str | None = None, poses: str | Sequence[Any] | None = None) -> Preset:
     """Resolve a run's preset (a bare program name is its first preset) at a named
     layout it offers, or at an inline list of pose objects or whole-degree bearings,
@@ -606,8 +620,8 @@ def run_preset(name: str, layout: str | None = None, poses: str | Sequence[Any] 
     if layout is not None:
         if layout not in selected.layouts:
             raise LayoutNotOfferedError(selected.preset, layout, selected.layouts)
-        layout_poses, mover = _LAYOUTS[layout]
-        selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
+        named = _LAYOUTS[layout]
+        selected = replace(selected, layout=layout, poses=named.poses, mover=named.mover)
     if poses is None:
         return selected
     if isinstance(poses, str):
@@ -643,6 +657,15 @@ def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:
     """Each declared output of the role a layout pose names; one output (``woofer:rear``)
     is no role, so it, like a role with no declared output, plays as named."""
     return tuple(target for target in targets if measurement_target_parts(target)[0] == named) or (named,)
+
+
+def offered_here(plan: Preset, *, programs: Collection[str], targets: Collection[str]) -> bool:
+    """Whether a speaker offering ``programs`` (:func:`programs_for_topology`), whose
+    ``targets`` each play alone (:func:`near_field_drivers`), runs this preset at its
+    layout. The measure page offers only these, and the preset catalog prices only these."""
+    return not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
+                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
+                or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))
 
 
 def trial_preset(
