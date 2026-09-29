@@ -30,7 +30,7 @@ from jasper.audio_measurement.program import (
     KIND_SWEEP,
     is_level_probe,
 )
-from jasper.platform.json_fields import finite_float
+from jasper.platform.json_fields import CodedFieldError, JsonFields, finite_float
 from jasper.platform.log_event import log_event
 from jasper.platform.volume_latch import fader_matches
 
@@ -47,14 +47,12 @@ from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     unavailable,
 )
-from jasper.audio_measurement.program_analysis import (
-    CAPTURE_BOUND_MARGIN_S,
-)
 
 from .journey import PHASE_MEASURE
 from .record_index import measurement_documents, record_path
 
 logger = logging.getLogger(__name__)
+_FIELDS = JsonFields(CodedFieldError)
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -103,17 +101,13 @@ def distortion_evidence(program: ExcitationProgram, analysis: Any, samples: np.n
     sweeps = [segment for segment in program.stimulus_segments() if segment.kind == KIND_SWEEP]
     if not sweeps or is_level_probe(program):
         return None
-    rate = program.sample_rate_hz
-    capture = deconv.cap_capture_length(
-        np.asarray(samples, dtype=np.float64).ravel(), sweep_len=program.total_samples, sample_rate=rate,
-        max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S)
     anchors = {location.segment_id: location.scheduled_start for location in analysis.locations}
     epsilon = analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0
     by_role: dict[str, list] = {}
     try:
         for segment in sweeps:
             by_role.setdefault(str(segment.role), []).append(read_segment_distortion(
-                program, capture, segment.segment_id, anchors[segment.segment_id],
+                program, samples, segment.segment_id, anchors[segment.segment_id],
                 orders=HARMONIC_ORDERS, calibration=calibration, epsilon=epsilon))
         roles = [_role_block(role, readings, HARMONIC_ORDERS) for role, readings in sorted(by_role.items())]
     except ValueError as exc:
@@ -305,14 +299,14 @@ def read_round_harmonics(bundle_dir: Path) -> dict[str, Any]:
         if "analysis_error" in document:
             refused.append({**take, "reason": TAKE_CURVES_NOT_BANKED, "analysis_error": document["analysis_error"]})
             continue
-        analysis = document.get("analysis")
-        if not isinstance(analysis, Mapping) or "distortion" not in analysis:
+        analysis = _FIELDS.mapping(document.get("analysis", {}), f"{take['record']} analysis")
+        if "distortion" not in analysis:
             raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": take["record"], "field": "analysis.distortion"})
         reading = analysis["distortion"]
         if reading is None:
             # Its program plays no per-driver sweep, or is a level probe.
             continue
-        if reading.get("status") == "unavailable":
+        if _FIELDS.mapping(reading, f"{take['record']} analysis.distortion").get("status") == "unavailable":
             refused.append({**take, "reason": reading["reason"]})
             continue
         read.append({**take, "calibration": document.get("capture_calibration")})

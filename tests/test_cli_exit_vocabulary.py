@@ -46,6 +46,7 @@ from jasper.active_speaker.round_view_artifacts import CATALOG
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
+    bank_executor_take,
     bank_measure_round,
     bank_seat_round,
     bank_verify_round,
@@ -268,8 +269,6 @@ def test_document_failures_use_the_shared_contract(module_name, verb, tmp_path, 
 MAX_ANSWER_ARRAY = 16
 #: The keys every answer shares; the rest are the fields its catalog row names.
 _ENVELOPE = {"view", "schema", "subject", "parameters", "out", "bytes"}
-
-_NO_CAPTURES = "the fixture banks no WAVs, so no capture ring and no summed takes"
 
 
 class _FixtureRound(NamedTuple):
@@ -722,6 +721,14 @@ def _disagreeing_grids_distortion_argv(request: pytest.FixtureRequest, root: Pat
     return ["distortion", str(bank_driver_take(root, monkeypatch)[0])]
 
 
+def _malformed_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    """A branch take whose banked reading is not an object."""
+    record = bank_executor_take(root, request.getfixturevalue("monkeypatch"), raw_record={"graph_scope": "candidate_branches"})
+    path, = root.glob("sessions/*/evidence/v1/artifacts/crossover_v2/*/positions/*.json")
+    path.write_text(json.dumps({**record, "analysis": {**record["analysis"], "distortion": ["not an object"]}}))
+    return ["distortion", str(next(root.glob("sessions/*")))]
+
+
 def _ghost_bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     bundle = request.getfixturevalue("summed_capture_bundle")[0]
     write_manifest(bundle, program="bass", groups=[manifest_set([("ghost.json", {"take_id": "ghost"})], set_id="bass")])
@@ -787,6 +794,7 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
 #: that names a take with no record.
 _UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
     "bass (a take with no record)": (_ghost_bass_argv, None),
+    "distortion (a reading that is not an object)": (_malformed_distortion_argv, "field_not_object"),
     "frequency (record)": (lambda request, root: _analyzed_frequency_argv(request, root, "record"),
                            "commissioning_evidence_integrity_mismatch"),
     "frequency (reference)": (lambda request, root: _analyzed_frequency_argv(request, root, "reference"), None),

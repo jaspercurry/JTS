@@ -173,7 +173,7 @@ def _round_source(root: Path) -> tuple[dict, Any]:
     """The seat round's own record as a take template, and its reopened store."""
     inputs = round_inputs(root)
     source = next(record for _, record in measurement_documents(inputs.session_dir))
-    store, _identity = _reopen(root)
+    store = _reopen(root)
     return {key: value for key, value in source.items()
             # The store writes these two and refuses a record that carries them.
             if key not in ("schema_version", "capture_session_id")}, store

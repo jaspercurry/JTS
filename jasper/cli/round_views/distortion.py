@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from jasper.active_speaker.crossover_v2.harmonic_evidence import read_round_harmonics
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -31,17 +32,22 @@ from ._common import (
     subject,
 )
 
-def _cmd_distortion(args: argparse.Namespace) -> int:
-    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, args.bundle_dir)
-    artifact = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_round_harmonics, inputs.session_dir)
-    captures = artifact["captures"]
-    read = subject(inputs, take_ids=[take["take_id"] for take in captures["read"]])
-    # Only the swept roles, each over the band its takes read.
+def _read(session_dir: Path) -> tuple[dict[str, Any], dict[str, list[list[float]]]]:
+    """The view, and each swept role's bands as its takes read them."""
+    artifact = read_round_harmonics(session_dir)
     band_hz: dict[str, list[list[float]]] = {}
     for block in artifact["roles"]:
         read_bands = band_hz.setdefault(block["role"], [])
         if block["sweep"]["read_band_hz"] not in read_bands:
             read_bands.append(block["sweep"]["read_band_hz"])
+    return artifact, band_hz
+
+
+def _cmd_distortion(args: argparse.Namespace) -> int:
+    inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, args.bundle_dir)
+    artifact, band_hz = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _read, inputs.session_dir)
+    captures = artifact["captures"]
+    read = subject(inputs, take_ids=[take["take_id"] for take in captures["read"]])
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)
     return answer(

@@ -94,10 +94,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.record_store import (
     BankedRecordStore,
 )
-from jasper.attribution.session_identity import (
-    ALIAS_CAPTURE_SESSION_ID,
-    SessionIdentity,
-)
 
 from tests.active_speaker_fixtures import mono_output_topology
 
@@ -883,21 +879,15 @@ def bank_seat_round(
     return round_dir
 
 
-def _reopen(round_dir: Path) -> tuple[BankedRecordStore, SessionIdentity]:
-    """The store a banked round was written through, and its two-namespace id."""
+def _reopen(round_dir: Path) -> BankedRecordStore:
+    """The store a banked round was written through."""
     bundle_dir, = (Path(round_dir) / "bundle").iterdir()
     session_id = str(json.loads((bundle_dir / "info.json").read_text())["session_id"])
-    return (
-        BankedRecordStore(
-            evidence=CommissioningEvidenceStore.open(
-                bundle_dir, expected_session_id=session_id,
-            ),
-            capture_session_id=_CAPTURE_SESSION_ID,
+    return BankedRecordStore(
+        evidence=CommissioningEvidenceStore.open(
+            bundle_dir, expected_session_id=session_id,
         ),
-        SessionIdentity(
-            session_id=session_id,
-            aliases={ALIAS_CAPTURE_SESSION_ID: _CAPTURE_SESSION_ID},
-        ),
+        capture_session_id=_CAPTURE_SESSION_ID,
     )
 
 
