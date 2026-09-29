@@ -26,8 +26,6 @@
 # Run by systemd at boot via jasper-wifi-guardian.service (Type=oneshot,
 # after NetworkManager-wait-online). Pure bash, mirrors
 # jasper-aec-reconcile's shape and test seams.
-#
-# PSK exposure: it sits on nmcli's argv for the 30 s connect window.
 
 set -uo pipefail
 
@@ -286,16 +284,17 @@ emit recreate_attempt "ssid=$SSID"
 stderr_tmp="$(mktemp "${TMPDIR:-/tmp}/wifi-guardian.stderr.XXXXXX")"
 trap 'rm -f "$stderr_tmp"' EXIT
 
-# nmcli's connect path: pass `password ARG` for keyed networks, omit it
-# for open networks. nmcli reads the security mode from the beacon at
-# connect time (WPA2 vs WPA3/SAE), so the stashed `key_mgmt` only gates
-# whether we pass the password arg at all.
+# nmcli reads WPA2 vs WPA3/SAE from the beacon, so the stashed `key_mgmt`
+# only gates whether a PSK is sent. It rides stdin to `--ask`, never argv,
+# which /proc/<pid>/cmdline exposes (#5067). nmcli's prompt and echo go to
+# stdout, which is the journal, so stdout is dropped.
 if [[ -z "$PSK" || "$KEY_MGMT" == "none" ]]; then
     "$NMCLI" --wait 30 device wifi connect "$SSID" 2>"$stderr_tmp"
     rc=$?
 else
-    "$NMCLI" --wait 30 device wifi connect "$SSID" password "$PSK" 2>"$stderr_tmp"
-    rc=$?
+    printf '%s\n' "$PSK" |
+        "$NMCLI" --wait 30 --ask device wifi connect "$SSID" >/dev/null 2>"$stderr_tmp"
+    rc=${PIPESTATUS[1]}
 fi
 
 if [[ $rc -eq 0 ]]; then

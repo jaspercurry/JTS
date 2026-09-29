@@ -9,11 +9,11 @@ into the guardian stash helpers. We mock _run_nmcli to control the
 returncode + stdout, then assert the stash file ends up in the right
 state.
 
-PSK redaction is also verified here: even though the wizard's
-``_run_nmcli_secret`` is the canonical PSK-on-the-wire scrubber, the
-guardian hook is the only thing that PERSISTS the PSK to disk. We
-double-check it doesn't accidentally log the PSK from the hook layer
-either.
+PSK redaction is also verified here: even though the PSK never rides
+nmcli argv (it goes over the child's stdin — see
+``jasper.web.wifi_setup._connect_wifi_command``), the guardian hook is
+the only thing that PERSISTS the PSK to disk. We double-check it
+doesn't accidentally log the PSK from the hook layer either.
 """
 from __future__ import annotations
 
@@ -70,8 +70,7 @@ def test_connect_new_success_writes_stash(stash_path, monkeypatch):
         _mock_proc(returncode=0),  # _harden_wifi_profile
         _saved_profile("Home", "myhomepsk", "wpa-psk"),  # _read_profile_secrets
     ])
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         ok, msg = wifi_setup.connect_new("Home", "myhomepsk")
 
     assert ok is True
@@ -124,10 +123,7 @@ def test_connect_new_success_hardens_nm_profile(stash_path, monkeypatch):
         calls.append(list(cmd))
         return _mock_proc(returncode=0)
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(
-             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
-         ):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
 
     assert ok is True
@@ -151,8 +147,7 @@ def test_connect_new_hardening_nonzero_does_not_block_connect(stash_path):
             return _mock_proc(returncode=1, stderr="Error: hardening failed")
         return _mock_proc(returncode=0)
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
 
     assert ok is True
@@ -168,8 +163,7 @@ def test_connect_new_hardening_oserror_does_not_block_connect(stash_path):
             raise FileNotFoundError("nmcli not found")
         return _mock_proc(returncode=0)
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, _ = wifi_setup.connect_new("Home", "myhomepsk")
 
     assert ok is True
@@ -184,8 +178,7 @@ def test_connect_saved_hardening_failure_does_not_block_connect(stash_path):
             return _mock_proc(returncode=1, stderr="Error: hardening failed")
         return _mock_proc(returncode=0)
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, _ = wifi_setup.connect_saved("Home")
 
     assert ok is True
@@ -204,8 +197,7 @@ def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
         _mock_proc(returncode=0),  # _harden_wifi_profile
         _saved_profile("GuestNet"),  # _read_profile_secrets
     ])
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         ok, _ = wifi_setup.connect_new("GuestNet", None)
 
     assert ok is True
@@ -239,10 +231,7 @@ def test_connect_new_retries_hidden_on_ssid_lookup_failure(
             return _saved_profile("HiddenHome", "myhomepsk", "wpa-psk")
         return _mock_proc()
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(
-             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
-         ):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, msg = wifi_setup.connect_new("HiddenHome", "myhomepsk")
 
     assert ok is True
@@ -265,10 +254,7 @@ def test_connect_new_explicit_hidden_uses_hidden_yes(stash_path, monkeypatch):
         calls.append(list(cmd))
         return _mock_proc(returncode=0)
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
-         patch.object(
-             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
-         ):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect):
         ok, _ = wifi_setup.connect_new("HiddenHome", "p", hidden=True)
 
     assert ok is True
@@ -289,8 +275,7 @@ def test_connect_new_failure_does_not_write_stash(stash_path):
         _mock_proc(returncode=4,
                    stderr="Error: Connection activation failed: (4) ...\n"),
     ])
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         ok, _ = wifi_setup.connect_new("Home", "wrongpsk")
 
     assert ok is False
@@ -318,7 +303,6 @@ def test_connect_new_stash_failure_does_not_block_connect(
         raise OSError("simulated full disk")
 
     with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect), \
          patch.object(
              wifi_guardian_persistence, "write_stash", side_effect=boom,
          ):
@@ -343,8 +327,7 @@ def test_connect_new_enterprise_skips_stash(stash_path, monkeypatch, caplog):
         _mock_proc(returncode=0),  # _harden_wifi_profile
         _saved_profile("EnterpriseNet", key_mgmt="wpa-eap"),  # _read_profile_secrets
     ])
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         with caplog.at_level("INFO"):
             ok, _ = wifi_setup.connect_new("EnterpriseNet", "ignored")
 
@@ -368,8 +351,7 @@ def test_connect_new_psk_never_in_log_records(stash_path, caplog):
         _mock_proc(returncode=0),  # _harden_wifi_profile
         _saved_profile("Home", psk, "wpa-psk"),  # _read_profile_secrets
     ])
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect), \
-         patch.object(wifi_setup, "_run_nmcli_secret", side_effect=side_effect):
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=side_effect):
         with caplog.at_level("DEBUG"):
             wifi_setup.connect_new("Home", psk)
 
