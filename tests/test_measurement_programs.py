@@ -626,11 +626,15 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
                                     "mover", "room_sweep", "room_sweep_mode", "offers_unknown", "offers_without_default",
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
-                                    "purposes_not_text", "levels"])
+                                    "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "purposes_missing":
         del config["presets"][0]["purposes"]  # type: ignore[index]
+    elif broken.startswith("driver_purposes"):
+        # Every purpose, not only the first, admits each driver the row's poses play alone.
+        next(row for row in config["presets"] if row["preset"] == "drivers/each")["purposes"] = (
+            ["speaker", "reference"] if broken.endswith("reversed") else ["reference", "speaker"])
     elif broken.startswith("purposes_"):
         config["presets"][0].update(regime="summed", room_sweep=False, purposes={
             "purposes_unknown": ["other"], "purposes_none": [], "purposes_regime": ["rear", "room"],

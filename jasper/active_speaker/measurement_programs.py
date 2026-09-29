@@ -227,6 +227,20 @@ def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> s
     return driver
 
 
+def validated_purposes(purposes: Sequence[str], regime: str, drivers: Collection[str]) -> tuple[str, ...]:
+    """What a preset's or a stop's takes serve, each named once. Every purpose,
+    not only the first, must admit the regime and each driver a pose plays
+    alone, so their order never decides what loads (ADR-0383)."""
+    purposes = tuple(purposes)
+    if not purposes or len(set(purposes)) < len(purposes):
+        raise ValueError("a measurement names its purposes, each once")
+    for purpose in purposes:
+        validated_capture_purpose(purpose, regime)
+        for driver in drivers:
+            validated_pose_driver(driver, regime=regime, purpose=purpose)
+    return purposes
+
+
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
     """The branch pair a take names, judged against the regime that plays it."""
     if branch_pair not in BRANCH_PAIRS:
@@ -374,15 +388,11 @@ class Preset:
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement preset must contain at least one pose")
-        if not self.purposes or len(set(self.purposes)) < len(self.purposes):
-            raise ValueError("a measurement preset names its purposes, each once")
-        for purpose in self.purposes:
-            validated_capture_purpose(purpose, self.regime)
+        object.__setattr__(self, "purposes", validated_purposes(
+            self.purposes, self.regime, [pose.driver for pose in self.poses]))
         validated_branch_pair(self.branch_pair, self.regime)
-        for pose in self.poses:
-            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
-                (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
+                (set(self.purposes) != {PURPOSE_SPEAKER} or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
 
     @property
