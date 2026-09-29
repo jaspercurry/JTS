@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle, analyzed_measurements
 from jasper.active_speaker.measurement_bass import bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import TAKE_BASS_NOT_BANKED, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
@@ -864,6 +864,25 @@ def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bund
     assert measured.details["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
     assert (gated.details["window"], gated.details["calibration"]) == (
         "gated", {"applied": False, "calibration_id": None})
+
+
+def test_a_take_banked_before_its_bass_reading_refuses_the_bass_view_by_that_field(
+    summed_capture_bundle, monkeypatch, capsys,
+):
+    bundle, _, _, bank = summed_capture_bundle
+    banked_blocks = analysis_blocks
+
+    def before_the_field(analysis, program):
+        blocks = banked_blocks(analysis, program)
+        del blocks["analysis"]["bass"]
+        return blocks
+
+    monkeypatch.setattr(sys.modules[__name__], "analysis_blocks", before_the_field)
+    asyncio.run(bank("baseline"))
+    write_manifest(bundle, program="bass")
+    assert round_views_main(["bass", str(bundle)]) == EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["reason"], json.loads(answer["detail"])["field"]) == (TAKE_BASS_NOT_BANKED, "analysis.bass")
 
 
 @pytest.mark.parametrize('summed_capture_bundle', [20000, 200], indirect=True)
