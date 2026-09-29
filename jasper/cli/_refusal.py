@@ -97,11 +97,10 @@ def envelope(
 
 def answer(
     view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-    parameters: Mapping[str, Any], out: Path | None = None, line: str, sort_keys: bool = True, **fields: Any,
+    parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
 ) -> int:
     """Print :func:`envelope`'s answer and its one human line (ADR-0237)."""
-    return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line,
-                    sort_keys=sort_keys)
+    return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line)
 
 
 def refused(

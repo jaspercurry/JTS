@@ -34,7 +34,7 @@ from jasper.logging_setup import configure_logging
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,
-    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, failed,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, envelope, failed,
 )
 
 PROG = "jasper-round"
@@ -263,9 +263,10 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
         return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
                       error.reason if isinstance(error, RoundBankError) else "write_failed",
                       {"error": str(error), **arm} if arm else str(error))
-    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} wait"], subject={"round_id": banked.path.name},
-                  parameters={}, line="\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]),
-                  sort_keys=False, **wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run), **arm)
+    return answered(envelope(args.command, schema=ANSWER_SCHEMAS[f"{PROG} wait"], subject={"round_id": banked.path.name},
+                             parameters={}, **wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run),
+                             **arm),
+                    "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:
