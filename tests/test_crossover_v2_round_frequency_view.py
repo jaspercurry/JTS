@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle, analyzed_measurements
 from jasper.active_speaker.measurement_bass import bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
@@ -791,15 +791,19 @@ def _without_recordings(bundle: Path) -> None:
         path.unlink()
 
 
-@pytest.mark.parametrize("purpose,program", [
-    ("room", build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))),
+@pytest.mark.parametrize("purpose,program,gap", [
+    ("room", build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14)), None),
     ("bass", repeat_summed_program(build_verify_program(2500, sweep_band_hz=(20, 1100), sweep_s=1.5, gain_db=-30),
-                                   passes=3, quiet_samples=96000, cooldown_s=2.0)),
+                                   passes=3, quiet_samples=96000, cooldown_s=2.0), None),
+    *(("room", build_verify_program(2500, sweep_band_hz=band, sweep_s=1.5, gain_db=-30,
+                                    leading_pilot_gains_db=(-24, -14)), REASON_COVERAGE_SHORT)
+      for band in ((250, 20000), (100, 300))),
 ])
-def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monkeypatch, purpose, program):
+def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monkeypatch, purpose, program, gap):
     """The capture host banks a summed take's curves and bass reading, bit for
     bit, as a decode of its recording reads them, and the reader then serves
-    them with the recording gone."""
+    them with the recording gone. A sweep above the bass band, or too narrow
+    for H3 in it, banks its curves and the harmonics' coded gap."""
     pcm = render_program_pcm(program)[:, 0] * 0.4 * 10 ** (-20 / 20)
     signal = np.concatenate([np.zeros(800), pcm + 2 * pcm ** 2, np.zeros(5000)])
     signal += np.random.default_rng(8).normal(0, 1e-6, signal.size)
@@ -820,7 +824,8 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
     reading = record["analysis"]["bass"]
     assert (record["curves"], reading) == (decoded["curves"], decoded["analysis"]["bass"])
     assert {curve["window"] for curve in record["curves"]} == {"ungated"}
-    assert reading["bands"] and reading["harmonics"]["available"]
+    assert reading["harmonics"].get("reason") == gap
+    assert gap or (reading["bands"] and reading["harmonics"]["orders"])
 
     _without_recordings(bundle)
     banked, = analyzed_measurements(bundle)
@@ -883,6 +888,18 @@ def test_a_take_banked_before_its_bass_reading_refuses_the_bass_view_by_that_fie
     assert round_views_main(["bass", str(bundle)]) == EXIT_REFUSED
     answer = json.loads(capsys.readouterr().out)
     assert (answer["reason"], json.loads(answer["detail"])["field"]) == (TAKE_CURVES_NOT_BANKED, "analysis.bass")
+
+
+def test_a_selected_take_whose_analysis_failed_refuses_the_bass_view_by_name(summed_capture_bundle, tmp_path, capsys):
+    bundle, _, _, bank = summed_capture_bundle
+    error = {"code": "internal_error", "error_type": "ValueError"}
+    asyncio.run(bank("baseline"))
+    asyncio.run(bank("failed", analyzed=False, analysis_error=error))
+    write_manifest(bundle, program="bass")
+    assert round_views_main(["bass", str(bundle), "--out", str(tmp_path / "bass.json")]) == EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    detail = json.loads(answer["detail"])
+    assert (answer["reason"], detail["take_id"], detail["analysis_error"]) == (TAKE_CURVES_NOT_BANKED, "failed", error)
 
 
 @pytest.mark.parametrize('summed_capture_bundle', [20000, 200], indirect=True)

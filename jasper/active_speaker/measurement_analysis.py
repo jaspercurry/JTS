@@ -52,12 +52,17 @@ def _reopened(bundle_dir: Path, paths: Iterable[str] | None) -> Iterator[tuple[s
         yield path, record
 
 
-def analyzed_measurements(bundle_dir: Path, *, paths: Iterable[str] | None = None) -> Iterator[BankedMeasurement]:
+def analyzed_measurements(
+    bundle_dir: Path, *, paths: Iterable[str] | None = None, refuse_failed: bool = False,
+) -> Iterator[BankedMeasurement]:
     """Each take's banked analysis (ADR-0383), with its recording's identity
-    checked and its bytes never read. A take whose analysis failed has none and
-    is passed over."""
+    checked and its bytes never read. A take whose analysis failed has none: it
+    is passed over, or with ``refuse_failed`` refuses by name."""
     for path, record in _reopened(bundle_dir, paths):
         if "analysis_error" in record:
+            if refuse_failed:
+                raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
+                    "record": path, "take_id": record.get("take_id"), "analysis_error": record["analysis_error"]})
             continue
         if "curves" not in record:
             raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": path})
