@@ -676,7 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
             f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
             f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
             f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
-        command.add_argument("--round", dest="round", metavar="DIR", help=f"judge the document against this round: {_ROUND_HELP}")
+        command.add_argument("--round", dest="round", metavar="DIR", help=f"the round the document reads its evidence from: {_ROUND_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
