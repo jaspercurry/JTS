@@ -18,6 +18,9 @@ from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.web import correction_crossover_v2_volume as v2volume
 from jasper.web import correction_crossover_v2_state as v2state
 
+import asyncio
+import concurrent.futures
+import inspect
 import io
 import json
 import logging
@@ -38,6 +41,7 @@ from jasper.web import (
     correction_runtime,
     correction_setup,
 )
+from tests._async_wait import DEFAULT_SIGNAL_TIMEOUT_S
 from tests._log_events import event_fields, event_records
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
@@ -57,21 +61,65 @@ def _saved_passive_layout(tmp_path, monkeypatch):
     save_output_topology(_full_range_stereo(), path)
 
 
-def test_run_async_timeout_cancels_loop_task():
-    import asyncio
-    import concurrent.futures
+def test_run_async_timeout_returns_after_a_started_coroutine_drains(monkeypatch):
+    started = threading.Event()
+    finalized = threading.Event()
 
-    cancelled = threading.Event()
-
-    async def never_finishes():
+    async def body():
+        started.set()
         try:
             await asyncio.Event().wait()
         finally:
-            cancelled.set()
+            await asyncio.sleep(0.05)
+            finalized.set()
 
+    schedule = asyncio.run_coroutine_threadsafe
+
+    def schedule_then_wait_for_start(coro, loop):
+        fut = schedule(coro, loop)
+        assert started.wait(DEFAULT_SIGNAL_TIMEOUT_S)
+        return fut
+
+    # run_async's timeout starts only once body runs, so it fires mid-body.
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", schedule_then_wait_for_start)
     with pytest.raises(concurrent.futures.TimeoutError):
-        correction_runtime.run_async(never_finishes(), timeout=0.01)
-    assert cancelled.wait(timeout=2)
+        correction_runtime.run_async(body(), timeout=0.01)
+    assert finalized.is_set()
+
+
+def test_run_async_timeout_before_the_first_step_abandons_the_coroutine():
+    loop = correction_runtime.ensure_loop()
+    release_loop = threading.Event()
+    ran = threading.Event()
+    raised: list[BaseException] = []
+
+    async def body():
+        ran.set()
+
+    coro = body()
+
+    def call():
+        try:
+            correction_runtime.run_async(coro, timeout=0.01)
+        except concurrent.futures.TimeoutError as exc:
+            raised.append(exc)
+
+    # Hold the loop past the join, so the timeout's cancel lands before the
+    # task's first step and the caller must return without the loop.
+    loop.call_soon_threadsafe(release_loop.wait, DEFAULT_SIGNAL_TIMEOUT_S)
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    try:
+        caller.join(timeout=5.0)
+        returned = not caller.is_alive()
+    finally:
+        release_loop.set()
+    # One round trip, so the loop has run the cancelled task before the checks.
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(DEFAULT_SIGNAL_TIMEOUT_S)
+    assert returned
+    assert len(raised) == 1
+    assert not ran.is_set()
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
 
 
 def _render() -> str:
