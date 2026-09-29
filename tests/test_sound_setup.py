@@ -4348,10 +4348,8 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
     assert last_response["last_dsp_apply"]["op_id"] == live_emits[-1]["epoch"]
 
 
-async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
-    floor_tone, tmp_path: Path,
-):
-    settings_path = tmp_path / "settings.json"
+async def test_audition_volume_floor_holds_updates_and_restores_on_stop(floor_tone):
+    settings_path = Path(os.environ["JASPER_SOUND_SETTINGS_PATH"])
     fake = _owned(_FakeCamilla(db=-18.0))
     fake.muted = True
 
@@ -4492,12 +4490,16 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(floor_t
     await _play(floor_tone, fake)
     runner = FakeVolumeFloorToneRunner.instances[0]
     update_entered, release_update = asyncio.Event(), asyncio.Event()
+    write_fader = fake.set_volume_db
 
-    async def slow_update(_muted: bool) -> None:
+    async def slow_relevel(db: float, *, best_effort: bool = False) -> bool:
+        """Hold the update's relevel in its fader write once, before its new claim is back."""
+        del fake.set_volume_db
         update_entered.set()
         await release_update.wait()
+        return await write_fader(db, best_effort=best_effort)
 
-    fake.mute_hook = slow_update
+    fake.set_volume_db = slow_relevel
     update_task = asyncio.create_task(_play(floor_tone, fake, -36.0))
     await asyncio.wait_for(update_entered.wait(), timeout=1.0)
 
