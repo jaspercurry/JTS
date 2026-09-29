@@ -105,7 +105,7 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group():
 
 def _inverted_walk(**template):
     return ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
         template=ac.walk_template(
             kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED, **template,
         ),
@@ -140,7 +140,7 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
     template overlay is refused where the walk is stated, not at the open."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),),
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id, purpose="speaker"),),
             template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
         )
     assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE

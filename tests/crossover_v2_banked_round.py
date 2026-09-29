@@ -912,7 +912,7 @@ def bank_seat_round(
                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 gating_applied=False,
                 **stamp,
-            ), **_seat_capture(store, program, stop.index, magnitude)}
+            ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": stop.prompt.purpose}
             for stop, magnitude in zip(stops, magnitudes)
         ),
         _receipt("r3"),
@@ -970,8 +970,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
-        stop = planned.stop if planned else angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
-                                                                    candidate_id="speaker-candidate", **(pose or {}))
+        stop = planned.stop if planned else angle_capture.AngleStop(
+            0, angle_capture.REGIME_SUMMED, candidate_id="speaker-candidate", **{"purpose": "speaker", **(pose or {})})
         request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
         spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
                                                         candidate_id=stop.candidate_id, program_phase=program.phase)

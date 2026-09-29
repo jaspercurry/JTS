@@ -57,7 +57,6 @@ from .measurement_programs import (
     REGIME_BRANCHES,
     REGIME_NEAR_FIELD,
     REGIMES,
-    resolved_measurement_purpose,
     validated_branch_pair,
     validated_capture_purpose,
     validated_pose_driver,
@@ -259,7 +258,7 @@ class AngleStop:
         )
         try:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
-            object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
+            object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.regime))
             validated_branch_pair(self.branch_pair, self.regime)
             validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
@@ -705,7 +704,7 @@ def stop_specs(
             positions=(stop.angle_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,))
-                if roles_bands and resolved_measurement_purpose(stop.purpose, stop.kind) != PURPOSE_SPEAKER else None
+                if roles_bands and stop.purpose != PURPOSE_SPEAKER else None
             ) or (),
             sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
@@ -732,7 +731,7 @@ def per_driver_at(
     to :class:`AngleStop` UNCOERCED (see :func:`_validated_angle`).
     """
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_PER_DRIVER) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER) for a in angles_deg),
         mover=mover,
     )
 
@@ -742,7 +741,7 @@ def summed_at(
 ) -> AngleCaptureRequest:
     """Summed captures at each angle -- the system response off the axis."""
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_SUMMED) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_SUMMED, purpose=PURPOSE_SPEAKER) for a in angles_deg),
         mover=mover,
     )
 
@@ -756,8 +755,8 @@ def both_at(
     """
     stops: list[AngleStop] = []
     for angle in angles_deg:
-        stops.append(AngleStop(angle, REGIME_PER_DRIVER))
-        stops.append(AngleStop(angle, REGIME_SUMMED))
+        stops.append(AngleStop(angle, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER))
+        stops.append(AngleStop(angle, REGIME_SUMMED, purpose=PURPOSE_SPEAKER))
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 

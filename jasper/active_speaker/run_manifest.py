@@ -21,10 +21,10 @@ from jasper.speaker_layout import measurement_target_parts
 from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
-from .crossover_v2.record_index import Measurement, measurement_documents
+from .crossover_v2.record_index import Measurement, measurement_documents, take_purpose
 from .crossover_v2.refusal_copy import TakeVerdict
 from .crossover_v2.session_seams import RecordStore
-from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity, resolved_measurement_purpose
+from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity
 
 RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
@@ -39,11 +39,12 @@ def kept_measurements(
 
     A kept take is one its verdict accepted and its run manifest selected for
     its stop, so a refused take, or one a retake or redo replaced, is never
-    read. A bundle with no run manifest keeps none (#2902).
+    read. A bundle with no run manifest keeps none, and a kept take that names
+    no purpose refuses (#2902).
     """
     kept = _kept_record_ids(Path(bundle_dir))
     for row, document in measurement_documents(bundle_dir):
-        if row.phase in phases and document.get("measurement_purpose") in purposes and row.path in kept:
+        if row.phase in phases and row.path in kept and take_purpose(row, document) in purposes:
             yield row, document
 
 
@@ -231,11 +232,8 @@ class RunManifest:
             "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
             "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
+            "measurement_purpose": self._context["purpose"],
         }
-        if "measurement_purpose" not in record:
-            planned["measurement_purpose"] = resolved_measurement_purpose(
-                self._context.get("purpose"), pose["kind"],
-            )
         context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                                    if key in self._context}
         return {**planned, **record, **context}

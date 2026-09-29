@@ -495,7 +495,7 @@ def _run_phase(conductor, index, attempt, result=None):
     program = conductor.program_for_phase(phase)
     manifest = RunManifest(conductor.session_id, SimpleNamespace())
     manifest.begin(
-        {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0}},
+        {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0}, "purpose": "speaker"},
         attempt=attempt,
         pose_index=0,
     )
@@ -1005,7 +1005,7 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER
-    return {"plan": AngleCaptureRequest(stops=(AngleStop(0, REGIME_PER_DRIVER),)).to_dict()}
+    return {"plan": AngleCaptureRequest(stops=(AngleStop(0, REGIME_PER_DRIVER, purpose="speaker"),)).to_dict()}
 
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:

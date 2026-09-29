@@ -41,8 +41,8 @@ from jasper.active_speaker.session_volume_plan import (
 )
 
 from ..measurement_programs import (
-    POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT,
-    gate_exemption, pose_place, resolved_measurement_purpose,
+    POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT, PURPOSE_SPEAKER,
+    gate_exemption, pose_place,
 )
 from ..round_copy import millimetres
 from .contracts import (
@@ -330,6 +330,7 @@ def _pose(
         lateral_sign=_LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0),
         vertical_sign=vertical_sign,
         vertical_offset_cm=offset_cm if vertical_sign else 0.0,
+        purpose=PURPOSE_SPEAKER,
     )
 
 
@@ -407,12 +408,14 @@ LATERAL_MARK_PROMPT = CloudPositionPrompt(
     detail="Nothing to move yet.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    purpose=PURPOSE_SPEAKER,
 )
 LATERAL_MARK_RETURN_PROMPT = CloudPositionPrompt(
     headline="Last one: put the microphone back on the mark.",
     detail="Same spot, same height, pointed at the speaker.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    purpose=PURPOSE_SPEAKER,
 )
 
 # The four SIDE poses both angle walks are made of, derived from the cloud table
@@ -456,6 +459,7 @@ VERIFY_MARK_PROMPT = CloudPositionPrompt(
     detail="Same spot, same height, pointed at the speaker.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    purpose=PURPOSE_SPEAKER,
 )
 
 CLOUD_VERIFY_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
@@ -993,7 +997,7 @@ def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
 def room_sweep_band_hz(
     roles: Sequence[RoleBand], prompts: Sequence[CloudPositionPrompt],
 ) -> tuple[float, float] | None:
-    if any(gate_exemption(resolved_measurement_purpose(p.purpose, p.kind)) for p in prompts):
+    if any(gate_exemption(p.purpose) for p in prompts):
         return summed_sweep_band_hz(roles)
     return None
 

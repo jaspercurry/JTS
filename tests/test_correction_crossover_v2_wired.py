@@ -755,7 +755,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     checks = iter([False, False, False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
-    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver"),), repeats=repeats,
+    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver", purpose="speaker"),), repeats=repeats,
                                   level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
@@ -1144,7 +1144,7 @@ def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(m
     correction_run_host.bind_plan_analysis(conductor, records, evidence={},
                                            manifest=SimpleNamespace(calibration={}, capture_record=dict))
 
-    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1, "measurement_purpose": "speaker",
                           "program": conductor.program_for_phase("verify").to_dict(), **pose})
 
     assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
@@ -1241,7 +1241,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 @pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
 @pytest.mark.parametrize("pose,distance", [
     ({}, 1.0), ({"distance_m": 1.25}, 1.25),
-    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1)}, None),
+    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1), "purpose": "room"}, None),
 ])
 def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error, pose, distance):
     record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error, pose=pose)
@@ -1319,8 +1319,9 @@ _TAKE_RECORD_KEYS = frozenset({
 ], ids=["speaker", "reference", "room", "bass", "rear", "check"])
 def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, layout, candidates, phase, kind, targets):
     """A take of every purpose banks the same keys, naming its run, preset,
-    layout, pose and targets; a CHECK take banks no curves (ADR-0383). A preset
-    with a level ladder banks one take per rung, each on its own child run."""
+    layout, pose, targets and its stop's purpose, a CHECK take its speaker
+    program's; a CHECK take banks no curves (ADR-0383, #2902). A preset with a
+    level ladder banks one take per rung, each on its own child run."""
     preset = run_preset(name, layout)
     request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
     ladder = preflight_levels(request, ready_facts(request), preset.levels) if preset.levels else None
@@ -1342,8 +1343,8 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
         assert set(pose) == {"kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
         assert (pose["kind"], pose["distance_m"], pose["seat_offset_m"], pose["driver"]) == (
             record["pose_kind"], record["mark_distance_m"], record["seat_offset_m"], record["pose_driver"])
-        assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"]) == (
-            preset.preset, preset.layout, targets, kind, driver)
+        assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"],
+                record["measurement_purpose"]) == (preset.preset, preset.layout, targets, kind, driver, preset.purpose)
         assert (record["curves"] == []) is (phase == "check")
 
 
@@ -1360,7 +1361,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
     monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
-    manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "purpose": "speaker", "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())

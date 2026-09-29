@@ -22,7 +22,7 @@ from typing import Any, Iterator, Mapping, Sequence
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.json_fields import as_mapping
+from jasper.json_fields import CodedFieldError, as_mapping
 
 from ..bundles import BUNDLE_KIND
 from ..commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
@@ -41,6 +41,7 @@ __all__ = [
     "measurement_documents",
     "reopen_measurement_capture",
     "reopen_measurement_record",
+    "take_purpose",
 ]
 
 
@@ -167,6 +168,15 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         document.get("seat_offset_m"),
         document.get("mark_distance_m"),
     )
+
+
+def take_purpose(row: Measurement, document: Mapping[str, Any]) -> str:
+    """The purpose a banked take names. A take that names none refuses by that
+    field; no purpose is inferred from its pose (#2902)."""
+    purpose = document.get("measurement_purpose")
+    if not isinstance(purpose, str) or not purpose:
+        raise CodedFieldError(f"{row.path}: measurement_purpose is required", code="field_required")
+    return purpose
 
 
 def _load(take: Path) -> Mapping[str, Any]:

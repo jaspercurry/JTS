@@ -72,7 +72,7 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
     response = control_client.ControlResponse(200, b'{"muted": true, "percent": 0}' if muted else b'{"muted": false, "percent": 35}')
     read = Mock(return_value=response, side_effect=control_client.ControlError() if muted is None else None)
     monkeypatch.setattr(control_client, "get", read)
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     ready = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
@@ -100,7 +100,7 @@ def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
         woofer_peak=None, tweeter_peak=None, sensitivities={"woofer": 84.0, "tweeter": 109.2})
     monkeypatch.setattr(control_client, "get", Mock(return_value=control_client.ControlResponse(
         200, b'{"muted": false, "percent": 35}')))
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     ready = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
@@ -274,7 +274,7 @@ def test_preflight_per_driver_layout(layout):
     ("capacity", "walk_over_capture_capacity"),
 ])
 def test_preflight_issues(change, code):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, kind="seat", seat_offset_m=(0, 0, 0)),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, kind="seat", seat_offset_m=(0, 0, 0), purpose="room"),))
     facts = ready_facts(plan)
     if change == "candidate":
         plan = replace(plan, candidates=("missing",), stops=(replace(plan.stops[0], candidate_id="missing"),))
@@ -305,7 +305,7 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     candidate = _room_candidate(tuning_profile)
     name = candidate.fingerprint
     plan = AngleCaptureRequest(
-        tuple(AngleStop(angle, REGIME_SUMMED, candidate_id=cid) for angle in (0, 20, 0) for cid in ("", name)),
+        tuple(AngleStop(angle, REGIME_SUMMED, candidate_id=cid, purpose="speaker") for angle in (0, 20, 0) for cid in ("", name)),
         candidates=("base", name), repeats=2,
     )
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
@@ -327,7 +327,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
     from jasper.audio_measurement import calibration, household_mic
 
-    plan = request_for_preset(preset("branches/express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = request_for_preset(preset("branches/express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
@@ -358,7 +358,7 @@ def test_supplied_facts_do_not_read_files(monkeypatch):
     def unexpected_read(*args, **kwargs):
         pytest.fail("preflight attempted an external read")
 
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
     monkeypatch.setattr(seat_level_reference, "load_seat_level_reference", unexpected_read)
     monkeypatch.setattr(calibration, "resolve_mic_sensitivity", unexpected_read)
@@ -371,7 +371,7 @@ def test_candidates_are_proved_as_composed(tuning_profile, bass):
     if bass:
         candidate = replace(candidate, bass_extension=BASS_EXTENSION)
     name = candidate.fingerprint
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()
     assert report.schedule[0].graph_scope == "candidate"
@@ -389,7 +389,7 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
         if step["type"] == "Filter":
             step["names"] = [n for n in step["names"] if not n.endswith("_hp")]
     monkeypatch.setattr(owner, "compile_candidate_config", lambda *args, **kwargs: yaml.safe_dump(graph))
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     issue, = report.issues
     assert issue.code == "measurement_candidate_invalid"
@@ -398,7 +398,7 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
 
 @pytest.mark.parametrize("level_db", [None, -25, -9, -8.9, 0])
 def test_run_level_keeps_anchor_and_clamps_to_statement_ceiling(level_db):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan)
     report = preflight(plan, facts)
     requested = -18 if level_db is None else level_db
@@ -492,7 +492,7 @@ def test_later_rung_holds_when_previous_capture_spl_is_missing(missing, requeste
     ("1234", None, -10, 0), ("1234", None, -14, 2), (None, "1234", -10, 0), (None, "1234", -14, 2),
 ])
 def test_calibrated_microphones_resolve_the_banked_anchor(banked, serial, sens_factor, delta):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=0))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=0))
     facts = ready_facts(plan)
     record = {**facts.anchor.record, "mic_sensitivity": {"sens_factor_db": -12.0, "serial": banked}}
     facts = replace(facts, anchor=AnchorFacts(record, MicSensitivity(sens_factor, 18, serial)))
@@ -509,7 +509,7 @@ def test_calibrated_microphones_resolve_the_banked_anchor(banked, serial, sens_f
 @pytest.mark.parametrize("carried_reference", [-25, -10])
 @pytest.mark.parametrize("requested", [None, 0])
 def test_plan_replaces_carried_anchor_without_raising_the_fader(carried_reference, requested):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
     banked, _ = resolve_anchor_level(facts=facts.anchor)
     carried = replace(banked, anchor_db_spl=60, reference_volume_db=carried_reference)
@@ -527,7 +527,7 @@ def test_plan_replaces_carried_anchor_without_raising_the_fader(carried_referenc
 
 @pytest.mark.parametrize("anchor_spl", [126, 135])
 def test_margin_clamp_below_policy_floor_refuses(anchor_spl):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "measured_db_spl": anchor_spl}))
     report = preflight(plan, facts)
@@ -542,7 +542,7 @@ def test_admitted_fader_and_spl_stay_bounded_over_candidate_grid(tuning_profile,
     base = _room_candidate(tuning_profile)
     descriptors = [{}, *(_boost(boost) for boost in (6, 18, 20))]
     candidates = [replace(base, bass_extension=descriptor) for descriptor in descriptors]
-    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, candidate_id=c.fingerprint) for c in candidates),
+    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, candidate_id=c.fingerprint, purpose="speaker") for c in candidates),
                                candidates=tuple(c.fingerprint for c in candidates))
     applied = _boost(applied_boost) if applied_boost else {}
     facts = ready_facts(plan, candidates={c.fingerprint: c for c in candidates}, applied_bass_extension=applied)
@@ -661,7 +661,7 @@ def test_unreadable_bass_descriptor_blocks_the_margin():
 
 @pytest.mark.parametrize("same", [True, False])
 def test_live_opener_compares_the_composed_program_identity(monkeypatch, same):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=-12.46))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=-12.46))
     anchor = ready_facts(plan).anchor
     record = {**anchor.record, "measured_db_spl": 74.23, "reference_volume_db": -22.23}
     monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: record)
@@ -723,7 +723,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     (None, (550, 800), (350, 1000, -71.3), -46.3),
 ])
 def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, fc_hz, band, ambient_row, floor):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), level=LevelPolicy(level_db=level_db))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=level_db))
     anchor = ready_facts(plan).anchor
     sensitivity = replace(anchor.sensitivity, sens_factor_db=-12.07)
     report = {"bands": [{"band_hz": [lo, hi], "level_dbfs": dbfs} for lo, hi, dbfs in (
@@ -784,7 +784,7 @@ def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purpo
     ("arm", None, False), ("arm", False, True), ("arm", True, False), ("human", False, False),
 ])
 def test_rig_clear_attestation_is_only_required_when_asked(mover, attested, blocking):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover=mover)
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), mover=mover)
     report = preflight(plan, ready_facts(plan, rig_clear_attested=attested))
     assert report.blocking is blocking
     assert [issue.code for issue in report.issues] == (["walk_rig_clear_not_attested"] if blocking else [])
@@ -792,7 +792,7 @@ def test_rig_clear_attestation_is_only_required_when_asked(mover, attested, bloc
 
 @pytest.mark.parametrize("attested,available", [(None, True), (False, False), (True, True)])
 def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, available):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),), mover="arm")
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), mover="arm")
     ready = ready_facts(plan)
     detect = Mock(side_effect=AssertionError)
     monkeypatch.setattr(arm_walk.TurntableMover, "available", detect)

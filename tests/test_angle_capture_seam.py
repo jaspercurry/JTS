@@ -142,7 +142,7 @@ def test_pose_at_angle_refuses_an_unmeasurable_bearing(bad: int) -> None:
 def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
     """Whole degrees is the resolution the placement is honest at."""
     with pytest.raises(contracts.CrossoverV2FlowError):
-        ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER)  # type: ignore[arg-type]
+        ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER, purpose="speaker")  # type: ignore[arg-type]
 
 
 # --- the whole-degree contract binds EVERY door, not just two --------------- #
@@ -210,11 +210,11 @@ def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
 
 def test_angle_stop_and_pose_share_the_numpy_and_bool_rules() -> None:
     """The other two doors agree with the constructors -- one validator, not three."""
-    assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED).angle_deg == 22
+    assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED, purpose="speaker").angle_deg == 22
     assert capture_plan.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
     for bad in (np.float64(22.0), True, 22.5, "22"):
         with pytest.raises(contracts.CrossoverV2FlowError):
-            ac.AngleStop(bad, ac.REGIME_SUMMED)  # type: ignore[arg-type]
+            ac.AngleStop(bad, ac.REGIME_SUMMED, purpose="speaker")  # type: ignore[arg-type]
         with pytest.raises(contracts.CrossoverV2FlowError):
             ac.pose_at_angle(bad)  # type: ignore[arg-type]
 
@@ -295,9 +295,9 @@ def test_empty_and_unknown_requests_are_refused() -> None:
     with pytest.raises(contracts.CrossoverV2FlowError, match="at least one stop"):
         ac.AngleCaptureRequest(stops=())
     with pytest.raises(contracts.CrossoverV2FlowError, match="mover"):
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), mover="robot")
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), mover="robot")
     with pytest.raises(contracts.CrossoverV2FlowError, match="regime"):
-        ac.AngleStop(0, "sine")
+        ac.AngleStop(0, "sine", purpose="speaker")
 
 
 # --------------------------------------------------------------------------- #
@@ -695,7 +695,7 @@ def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
     """
     with pytest.raises(ac.LateralWalkRefused) as caught:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(angle_deg, ac.REGIME_PER_DRIVER, elevation_deg),),
+            stops=(ac.AngleStop(angle_deg, ac.REGIME_PER_DRIVER, elevation_deg, purpose="speaker"),),
             mover=mover,
         )
     assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
@@ -714,7 +714,7 @@ def test_a_person_may_be_asked_to_raise_within_reach(elevation_deg: int) -> None
     the number the request asked for.
     """
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(22, ac.REGIME_PER_DRIVER, elevation_deg),),
+        stops=(ac.AngleStop(22, ac.REGIME_PER_DRIVER, elevation_deg, purpose="speaker"),),
         mover=ac.MOVER_HUMAN,
     )
     stop, = ac.resolve_request(request)
@@ -1025,9 +1025,9 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(layout: 
     [
         ac.AngleStop(
             0, ac.REGIME_SUMMED,
-            kind=mp.POSE_KIND_SEAT, seat_offset_m=(0.0, 0.0, 0.0),
+            kind=mp.POSE_KIND_SEAT, seat_offset_m=(0.0, 0.0, 0.0), purpose="room",
         ),
-        ac.AngleStop(0, ac.REGIME_SUMMED, kind=mp.POSE_KIND_CLOSE, distance_m=0.3),
+        ac.AngleStop(0, ac.REGIME_SUMMED, kind=mp.POSE_KIND_CLOSE, distance_m=0.3, purpose="reference"),
     ],
     ids=["seat", "close"],
 )
@@ -1327,7 +1327,7 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
             template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields),
         )
     assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
@@ -1348,7 +1348,7 @@ def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED),),
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),),
             template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **identity),
         )
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
@@ -1366,8 +1366,8 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     )
     request = ac.AngleCaptureRequest(
         stops=(
-            ac.AngleStop(0, ac.REGIME_PER_DRIVER),
-            ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a"),
+            ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),
+            ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a", purpose="speaker"),
         ),
         candidates=("base", "fp-a"), template=template,
     )
@@ -1406,7 +1406,7 @@ def test_a_summed_sweep_beside_an_overlay_is_refused_as_not_measurable(overlay: 
 
 def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
         template=ac.walk_template(kind=MEASURE_KIND_VERIFY),
     )
     assert ac.design_axis_spec(request).kind == MEASURE_KIND_CANDIDATE
@@ -1414,7 +1414,7 @@ def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
 
 def test_a_template_that_is_not_a_spec_is_refused() -> None:
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),), template=None)
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),), template=None)
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
@@ -1422,10 +1422,10 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
 def test_template_accepts_only_the_base_candidate_token(candidate_id):
     template = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id=candidate_id)
     if candidate_id == "base":
-        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template).template == template
+        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), template=template).template == template
     else:
         with pytest.raises(ac.LateralWalkRefused) as refused:
-            ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED),), template=template)
+            ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), template=template)
         assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
@@ -1475,7 +1475,7 @@ def test_a_branch_row_names_its_pair_through_the_round_trip_and_onto_the_spec(ro
 
 def test_only_a_branches_stop_may_name_a_branch_pair():
     with pytest.raises(contracts.CrossoverV2FlowError):
-        ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR)
+        ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR, purpose="speaker")
 
 
 @pytest.mark.parametrize("preset, candidates, parent", [
