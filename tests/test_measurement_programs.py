@@ -352,7 +352,7 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
 def test_counts_split_moves_from_captures(
     poses: tuple[object, ...], moves: int, captures: int
 ) -> None:
-    row = mp.Preset(preset="t/t", poses=poses)
+    row = mp.Preset(preset="t/t", poses=poses, purposes=(mp.PURPOSE_SPEAKER,))
 
     assert row.mic_move_count == moves
     assert row.capture_count == captures
@@ -624,12 +624,14 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("broken", ["empty", "repeats", "regime", "mode", "layout_key",
                                     "mover", "room_sweep", "room_sweep_mode", "offers_unknown", "offers_without_default",
-                                    "branch_pair", "branch_pair_regime", "purposes_unknown", "purposes_none",
-                                    "purposes_regime", "purposes_not_list", "purposes_duplicate", "purposes_not_text",
-                                    "levels"])
+                                    "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
+                                    "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
+                                    "purposes_not_text", "levels"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
-    if broken.startswith("purposes_"):
+    if broken == "purposes_missing":
+        del config["presets"][0]["purposes"]  # type: ignore[index]
+    elif broken.startswith("purposes_"):
         config["presets"][0].update(regime="summed", room_sweep=False, purposes={
             "purposes_unknown": ["other"], "purposes_none": [], "purposes_regime": ["rear", "room"],
             "purposes_not_list": "rear", "purposes_duplicate": ["rear", "rear"], "purposes_not_text": [None],

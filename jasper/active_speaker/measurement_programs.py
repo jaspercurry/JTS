@@ -359,7 +359,7 @@ class Preset:
     preset: str
     poses: tuple[ProgramPose, ...]
     #: What its takes serve, its program's first (ADR-0336, ADR-0383).
-    purposes: tuple[str, ...] = (PURPOSE_SPEAKER,)
+    purposes: tuple[str, ...]
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
     layout: str = ""
@@ -523,6 +523,7 @@ def _load_presets(
         try:
             preset_id = _text(row["preset"], f"preset {index} id")
             layout = _text(row["layout"], f"preset {index} layout")
+            purposes = row["purposes"]
         except KeyError as exc:
             raise ValueError(f"preset {index} is missing {exc.args[0]}") from None
         offered = row.get("layouts", [layout])
@@ -541,7 +542,6 @@ def _load_presets(
         levels = row.get("levels")
         if levels not in (None, "auto"):
             raise ValueError(f"preset {preset_id} levels must be 'auto', got {levels!r}")
-        purposes = row.get("purposes", [PURPOSE_SPEAKER])
         if not isinstance(purposes, list):
             raise ValueError(f"preset {preset_id} purposes must be a list")
         presets[preset_id] = Preset(
