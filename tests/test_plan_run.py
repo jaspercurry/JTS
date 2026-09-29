@@ -68,7 +68,7 @@ def _walk(angles, candidates=("fp-a",)):
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE))
 
 
-def _analysis(_record, _record_id):
+def _analysis(_record):
     return ProgramAnalysis(phase="verify", stimulus_id="test", locations=(_loc("sweep"),))
 
 
@@ -333,12 +333,12 @@ def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
 def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
     signals, gate = plan_run.RunSignals(), AnsweredGate()
     calls = 0
-    def analyze(record, record_id):
+    def analyze(record):
         nonlocal calls
         calls += 1
         if calls == 1:
             getattr(signals, action).set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, fakes = asyncio.run(_run_gated(_walk([0, 20]), gate=gate, analyze=analyze, signals=signals))
     if action == "retake":
         assert fakes.play.bearings == [0, 0, 20]
@@ -353,9 +353,9 @@ def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
 
 def test_progress_and_manifest_are_published_during_the_run():
     gate, seen = AnsweredGate(), []
-    def analyze(record, record_id):
+    def analyze(record):
         seen.append(gate.published())
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, _ = asyncio.run(_run_gated(_walk([0, 20], ("fp-a", "fp-b")), gate=gate, analyze=analyze))
     assert [(r["run"]["pose"], r["run"]["poses"], r["run"]["config"], r["run"]["configs"], r["run"]["attempt"])
             for r in seen] == [(1, 2, 1, 2, 1), (1, 2, 2, 2, 1), (2, 2, 1, 2, 1), (2, 2, 2, 2, 1)]
@@ -445,9 +445,9 @@ def test_done_requires_every_stimulus_at_the_last_stop(monkeypatch, accepted):
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     request = _walk([0])
     request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
-    def analyze(record, record_id):
+    def analyze(record):
         signals.complete.set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     result, fakes = asyncio.run(_run_gated(request, analyze=analyze, signals=signals))
     assert len(fakes.banked) == 2
     assert result.status == ("complete" if accepted else "partial")
@@ -462,7 +462,7 @@ def test_run_never_applies_a_tune(monkeypatch, action):
     monkeypatch.setattr(correction_crossover_v2_apply, "handle_v2_apply", apply)
     signals = plan_run.RunSignals()
     calls = 0
-    def analyze(record, record_id):
+    def analyze(record):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -470,7 +470,7 @@ def test_run_never_applies_a_tune(monkeypatch, action):
                 raise asyncio.CancelledError
             if action == "complete":
                 signals.complete.set()
-        return _analysis(record, record_id)
+        return _analysis(record)
     verdicts = iter([TakeVerdict(action == "accept", REASON_CLIPPED if action in {"retake_same", "stop"} else None,
                                next=action if action in {"retake_same", "stop"} else "accept", charge="speaker"), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
@@ -556,10 +556,10 @@ def test_failed_analysis_keeps_the_raw_record(monkeypatch):
 
 def test_real_assessor_sees_glitch_and_retries_once():
     calls = 0
-    def analyze(record, record_id):
+    def analyze(record):
         nonlocal calls
         calls += 1
-        return replace(_analysis(record, record_id), discontinuity_samples=1024 if calls == 1 else 0)
+        return replace(_analysis(record), discontinuity_samples=1024 if calls == 1 else 0)
     result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
     assert len(fakes.banked) == 2
     assert result.takes[0]["fault"] == REASON_DRIFT_BASELINES_DISAGREE
@@ -788,28 +788,27 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
 _MIC = MicSensitivity(-12.0)
 
 
-class _LevelStore(_Store):
-    """Banks each take as the web host does: the program it played, at the
-    peak it asked for under its ceiling, and what the microphone read."""
+class _LevelRecords:
+    """Hands each take to its manifest as the web host does: the program it
+    played, at the peak it asked for under its ceiling, and what the microphone read."""
 
-    def __init__(self, records, readings, probe_db, ceiling_db):
-        super().__init__(records)
-        self.readings, self.probe_db, self.ceiling_db = iter(readings), probe_db, ceiling_db
+    def __init__(self, manifest, readings, probe_db, ceiling_db):
+        self.manifest, self.readings, self.probe_db, self.ceiling_db = manifest, iter(readings), probe_db, ceiling_db
 
     async def bank(self, record):
-        if record.get("kind") != RUN_MANIFEST_KIND:
-            band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
-            peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
-            reading = next(self.readings)
-            program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
-                                                 downstream_gain_db=0.0, channels=1)
-                       if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
-                       build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
-            record.update(
-                program=program.to_dict(),
-                capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
-                                           "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
-        return await super().bank(record)
+        record = self.manifest.capture_record(record)
+        band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
+        peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
+        reading = next(self.readings)
+        program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                             downstream_gain_db=0.0, channels=1)
+                   if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
+                   build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
+        record.update(
+            program=program.to_dict(),
+            capture_integrity={"spl": {"max_window_db_spl": reading, "loudest_half_second_db_spl": reading - 3,
+                                       "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
+        return await self.manifest.bank(record)
 
 
 class _RedoOnPlacementGate(AnsweredGate):
@@ -832,7 +831,7 @@ class _RedoOnPlacementGate(AnsweredGate):
             raise
 
 
-def _heard_analysis(record, _record_id):
+def _heard_analysis(record):
     """The play's located sweeps read what the microphone heard, 30 dB over the room (ADR-0364)."""
     program = ExcitationProgram.from_dict(record["program"])
     heard = _MIC.dbfs_from_db_spl(record["capture_integrity"]["spl"]["max_window_db_spl"])
@@ -848,7 +847,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
     ``redo_at``, take 0 being just after the first placement is confirmed."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
-    manifest = RunManifest("run", _LevelStore(fakes.records, readings, probe_db=-42.0, ceiling_db=ceiling_db))
+    manifest = RunManifest("run", _Store(fakes.records))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
 
@@ -861,7 +860,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         return capture_dispatch.assess(analysis, **kwargs)
 
     async def run():
-        async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (
+        records = _LevelRecords(manifest, readings, probe_db=-42.0, ceiling_db=ceiling_db)
+        async with open_session(replace(fakes, records=records), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
                 request, session=session, manifest=manifest, gate=gate if web else None, aborts=_ABORTS,
@@ -1146,18 +1146,15 @@ async def test_bass_levels_refuse_when_no_level_is_admissible():
 @pytest.fixture
 def rung_spl(monkeypatch):
     measurements = {}
-    bank = _Store.bank
+    bank = RunManifest.bank
 
     async def measured_bank(self, record):
-        if "level_db" in record:
-            level = record["level_db"]
-            record["capture_integrity"] = {"spl": measurements.get(round(level, 2), {
-                "loudest_half_second_db_spl": 93 + level, "max_window_db_spl": 93 + level,
-                "ceiling_db_spl": 85})}
-            record["stimulus_id"] = "bass-sweep"
-        return await bank(self, record)
+        level = record["level_db"]
+        return await bank(self, {**record, "stimulus_id": "bass-sweep", "capture_integrity": {
+            "spl": measurements.get(round(level, 2), {"loudest_half_second_db_spl": 93 + level,
+                                                      "max_window_db_spl": 93 + level, "ceiling_db_spl": 85})}})
 
-    monkeypatch.setattr(_Store, "bank", measured_bank)
+    monkeypatch.setattr(RunManifest, "bank", measured_bank)
     return measurements
 
 

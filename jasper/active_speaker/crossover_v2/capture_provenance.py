@@ -20,7 +20,7 @@ from .planning import analysis_json
 from .spatial import MARK_DISTANCE_M, analysis_curve_records
 
 
-def _finite(value: Any) -> Any:
+def finite_json(value: Any) -> Any:
     """``value`` with every non-finite float nulled and every key kept.
 
     The evidence store refuses a non-finite number, so one unmeasurable
@@ -30,9 +30,9 @@ def _finite(value: Any) -> Any:
     if isinstance(value, float):
         return finite_float(value)
     if isinstance(value, Mapping):
-        return {key: _finite(item) for key, item in value.items()}
+        return {key: finite_json(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_finite(item) for item in value]
+        return [finite_json(item) for item in value]
     return value
 
 
@@ -43,7 +43,7 @@ def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]
     columns of ``diagnostic``, and the distortion view gates its replay
     against it.
     """
-    return _finite({
+    return finite_json({
         "curves": analysis_curve_records(analysis, program),
         "analysis": analysis_json(analysis),
         "diagnostic": analysis_diagnostic_summary(analysis),

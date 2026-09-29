@@ -928,10 +928,11 @@ async def test_executor_retains_summed_reference_before_measure(
     production = v2evidence.bind_production_analyze(resolve_calibration=None)
     conductor._seams = replace(conductor._seams, analyze=production,
         summed_alignment_reference=lambda b, p: summed_alignment.session_reference(Path("bundle"), b, p))
-    saved = []
+    saved, analyses = [], []
 
     async def bank(record):
         saved.append(record)
+        analyses.append(analyze(record))
         return record["take_id"] + ".json"
 
     records = core_capture.CapturedRecordStore(SimpleNamespace(bank=bank), None)
@@ -950,8 +951,8 @@ async def test_executor_retains_summed_reference_before_measure(
         record = {"take_id": f"wired-take-{index}", "index": index, "attempt": 1, "phase": phase,
                   "program_phase": phase, "position_deg": position, "vertical_deg": vertical,
                   "graph_scope": scope, "graph_fingerprint": "played-graph"}
-        record_id = await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
-        analysis = analyze(saved[-1], record_id)
+        await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
+        analysis = analyses[-1]
     available = banked and position == vertical == 0 and scope == "timing"
     assert conductor.measure_priors().summed_alignment is (
         reference if available else None
@@ -1020,8 +1021,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
             assert peak == pytest.approx(gain)
         record = {"take_id": "engine", "index": 1, "attempt": attempt, "program": program.to_dict()}
         records.enrich(None, record)
-        records.after_bank(record, "take")
-        analysis = await asyncio.to_thread(analyze, record, "take")
+        analysis = await asyncio.to_thread(analyze, record)
         verdict = await asyncio.to_thread(assessor, analysis, phase=phase, program=program, gain_ceiling_db=ceilings)
         if clipped_take:
             assert verdict.fault == "clipped"
@@ -1076,8 +1076,7 @@ def test_host_binds_session_level_only_to_check_priors(
             for attempt in (1, 2):
                 record = {"take_id": "engine", "index": index, "attempt": attempt, "program": program.to_dict()}
                 records.enrich(None, record)
-                records.after_bank(record, "take")
-                analyze(record, "take")
+                analyze(record)
                 assert fakes.analyzed[-1][3].target_capture_dbfs == pytest.approx(expected.target_capture_dbfs)
     resolve.assert_called_once_with(_device())
     assert door.sensitivity is sensitivity
@@ -1300,12 +1299,12 @@ _TAKE_RECORD_KEYS = frozenset({
     "analysis", "attempt", "baseline_record_id", "branch_diagnostic", "candidate_id", "capture_calibration",
     "capture_device", "capture_index", "capture_integrity", "capture_session_id", "capture_setup", "captured_at",
     "cleared_layers", "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses",
-    "incident", "index", "inverted_role", "kind", "layout", "level_db", "level_match_trims_db", "level_matched",
+    "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
     "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program", "program_phase",
     "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
-    "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "vertical_deg",
-    "wav_bytes", "wav_path", "wav_sha256",
+    "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "verdict",
+    "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })
 
 
@@ -1367,8 +1366,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
-    records.after_bank(record, "take")
-    analysis = await asyncio.to_thread(analyze, record, "take")
+    analysis = await asyncio.to_thread(analyze, record)
     level = level_drift_verdict(loudest_half_second_db_spl=73, level_reference_db_spl=70, same_pose=True)
     verdict = await asyncio.to_thread(assessor, analysis, phase="verify", program=program, level_verdict=level)
     await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)

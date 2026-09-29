@@ -121,9 +121,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             **({"provenance": captured.to_dict()} if captured is not None else {}),
         }, layout=conductor.source_preset.channel_map.layout)
 
-    def after_bank(record: Any, record_id: str) -> None:
-        answers[record_id] = answers.pop(record["take_id"])
-        _, analysis = answers[record_id]
+    def after_bank(record: Any, _record_id: str) -> None:
+        _, analysis = answers.pop(record["take_id"])
         if (record.get("phase") == PHASE_ENTRY_BASELINE and not isinstance(analysis, Exception)
                 and conductor.measure_entry_baseline is None):
             conductor.set_entry_baseline(banked_entry_baseline(record, analysis))
@@ -147,9 +146,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                                 "curve_fingerprint": calibration.get("curve_fingerprint")}
         return analysis
 
-    def analyze(record: Any, record_id: str) -> Any:
+    def analyze(record: Any) -> Any:
         nonlocal index, phase, answer
-        answer, analysis = answers.pop(record_id)
+        answer, analysis = answers[record["take_id"]]
         index = index_of(record)
         phase = conductor.phase_of_index(index)
         if isinstance(analysis, Exception):

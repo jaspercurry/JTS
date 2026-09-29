@@ -58,7 +58,7 @@ from .round_copy import PLACE_MICROPHONE, take_counts
 
 logger = logging.getLogger(__name__)
 _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
-Analyze = Callable[[Mapping[str, Any], str], ProgramAnalysis]
+Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
 
 
 @dataclass
@@ -372,6 +372,31 @@ async def _run(
             level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
         return level_observations[take_id]
 
+    failures: dict[str, Exception] = {}
+
+    def judge(item: _Work, spec: MeasureSpec, record: Mapping[str, Any]) -> tuple[TakeVerdict, Mapping[str, Any]]:
+        level_verdict = observe_level(record)
+        try:
+            analysis = analyze(record)
+            program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
+            assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
+                                            spl=(record.get("capture_integrity") or {}).get("spl"),
+                                            program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
+                                            near_field=bool(item.stop["pose"].get("driver")),
+                                            level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
+            if program is not None and is_level_probe(program):
+                log_event(logger, "active_speaker.level_probe", fields={
+                    "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
+                    "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
+                    "next_gain_db": assessed.next_gain_db,
+                    **{key: value for key, value in assessed.evidence.items()
+                       if key.startswith("level_")}})
+        except Exception as exc:  # noqa: BLE001 - the take banks a stop; the loop re-raises after measure
+            failures[str(record["take_id"])] = exc
+            assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
+                                   evidence={"error_type": type(exc).__name__})
+        return assessed, level_verdict.evidence
+
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, CaptureStopped, asyncio.CancelledError)
@@ -498,8 +523,10 @@ async def _run(
                 if gate:
                     gate.publish(progress)
                 attempts[offset] = attempt
+                # The bank judges each take before it writes the record (ADR-0383).
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
-                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent)
+                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent,
+                               judge=partial(judge, item, spec))
                 token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
                 try:
                     outcome = await measure(session, spec) if measure else await session.measure(spec)
@@ -511,24 +538,11 @@ async def _run(
                 for ordinal, (record, record_id) in enumerate(records):
                     level_verdict = observe_level(record)
                     if record_id:
-                        try:
-                            analysis = await asyncio.to_thread(analyze, record, record_id)
-                            program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
-                            assessed = await asyncio.to_thread(assessor or assess, analysis, phase=program.phase if program else spec.program_phase or "verify",
-                                              spl=(record.get("capture_integrity") or {}).get("spl"),
-                                              program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
-                                              near_field=at_driver, level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
-                            if program is not None and is_level_probe(program):
-                                log_event(logger, "active_speaker.level_probe", fields={
-                                    "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
-                                    "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
-                                    "next_gain_db": assessed.next_gain_db,
-                                    **{key: value for key, value in assessed.evidence.items()
-                                       if key.startswith("level_")}})
-                        except (ValueError, KeyError, OSError) as exc:
-                            manifest.detail = exception_detail(exc)
-                            assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
-                                                   evidence={"error_type": type(exc).__name__})
+                        if (failure := failures.pop(str(record["take_id"]), None)) is not None:
+                            if not isinstance(failure, (ValueError, KeyError, OSError)):
+                                raise failure
+                            manifest.detail = exception_detail(failure)
+                        assessed = TakeVerdict(**record["verdict"])
                     else:
                         incident = next((s.incident for s in outcome.stimuli if s.incident), "")
                         assessed = TakeVerdict(False, fault=incident if incident in REASON_REGISTRY else REASON_INTERNAL_ERROR,

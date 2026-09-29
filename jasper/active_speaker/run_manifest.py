@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Collection, Iterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import median
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from jasper.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
@@ -30,6 +31,13 @@ RUN_MANIFEST_KIND = "jts_run_manifest"
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 TAKE_MEASURED = "measured"
 TAKE_INCOMPLETE = "incomplete"
+#: A take's own verdict and its level observation, judged on its record before it banks (ADR-0383).
+TakeJudge = Callable[[Mapping[str, Any]], tuple[TakeVerdict, Mapping[str, Any]]]
+
+
+def _take_level(basis: Mapping[str, Any], observed: Mapping[str, Any]) -> dict[str, Any]:
+    return {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")},
+            **{key: observed.get(key) for key in ("loudest_half_second_db_spl", "level_delta_db")}}
 
 
 def kept_measurements(
@@ -165,6 +173,7 @@ class RunManifest:
     path: str = ""
     pending_records: list[tuple[Mapping[str, Any], str]] = field(default_factory=list, repr=False)
     _context: dict[str, Any] = field(default_factory=dict, repr=False)
+    _judge: TakeJudge | None = field(default=None, repr=False)
     _ordinal: int = 0
     _attempts: int = 0
     _sets: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
@@ -208,10 +217,12 @@ class RunManifest:
             return "partial"
         return "complete"
 
-    def begin(self, stop: Mapping[str, Any], *, attempt: int, pose_index: int, replay: bool = False) -> None:
+    def begin(self, stop: Mapping[str, Any], *, attempt: int, pose_index: int, replay: bool = False,
+              judge: TakeJudge | None = None) -> None:
         self.pending_records.clear()
         self._attempts += 1
         self._context = {**stop, "attempt": attempt, "pose_index": pose_index, **({"replay": True} if replay else {})}
+        self._judge = judge
 
     def discard_pose(self, pose_index: int) -> None:
         """A redo's pose keeps its takes banked, but none stays kept or a level reference (#5722)."""
@@ -239,7 +250,12 @@ class RunManifest:
         return {**planned, **record, **context}
 
     async def bank(self, record: Mapping[str, Any]) -> str:
+        from .crossover_v2.capture_provenance import finite_json  # lazy: it loads the analysis stack
+
         payload = self.capture_record(record)
+        assert self._judge is not None
+        verdict, observed = await asyncio.to_thread(self._judge, payload)
+        payload.update(finite_json({"verdict": asdict(verdict), "level": _take_level(capture_basis(payload), observed)}))
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
         return record_id
@@ -302,10 +318,7 @@ class RunManifest:
             row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
                    "phase": record["phase"] if "phase" in record else self._context.get("phase"),
                    "side": basis["side"], "role": role,
-                   "level": {**{key: basis.get(key) for key in
-                             ("level_db", "stimulus_dbfs", "stimulus_id")},
-                             "loudest_half_second_db_spl": level_observation.get("loudest_half_second_db_spl"),
-                             "level_delta_db": level_observation.get("level_delta_db")},
+                   "level": _take_level(basis, level_observation),
                    "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
                    "screens": verdict.screens,
                    "quality": {"status": status,
