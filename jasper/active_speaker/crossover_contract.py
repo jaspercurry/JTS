@@ -59,8 +59,6 @@ def crossover_snapshot_state(
     *,
     expected_topology_id: str | None = None,
     expected_topology_fingerprint: str | None = None,
-    expected_domain: str = "full",
-    require_applied: bool = True,
 ) -> dict[str, Any]:
     """Validate immutable Layer-A ownership and return one stable verdict."""
     profile = as_mapping(profile)
@@ -69,18 +67,19 @@ def crossover_snapshot_state(
     reason: str | None = None
     detail: str
 
-    if require_applied and profile.get("status") != "applied":
+    if profile.get("status") != "applied":
         reason = "active_crossover_profile_not_applied"
         detail = "Apply a crossover profile before continuing."
     elif not snapshot:
         reason = "active_applied_profile_snapshot_missing"
-        detail = "The applied crossover predates immutable graph snapshots."
+        detail = ("The applied crossover has no recomposition_snapshot. Use Save to speaker at "
+                  "/sound/speaker/, or apply a banked candidate with jasper-round apply.")
     elif snapshot.get("schema_version") != 1:
         reason = "active_applied_profile_snapshot_invalid"
         detail = "The applied crossover snapshot schema is not supported."
-    elif snapshot.get("domain") != expected_domain:
+    elif snapshot.get("domain") != "full":
         reason = "active_applied_profile_snapshot_domain_invalid"
-        detail = f"The crossover snapshot is not a valid {expected_domain} graph."
+        detail = "The crossover snapshot is not a valid full graph."
     elif expected_topology_id and snapshot.get("topology_id") != expected_topology_id:
         reason = "active_applied_profile_snapshot_topology_stale"
         detail = "The applied crossover belongs to a different output topology."
@@ -129,46 +128,4 @@ def crossover_snapshot_state(
         "detail": detail,
         "owner": owner,
         "snapshot_available": bool(snapshot),
-    }
-
-
-def legacy_manual_preservation_state(
-    applied_profile: Mapping[str, Any] | None,
-    *,
-    current_source_fingerprint: str | None,
-) -> dict[str, Any]:
-    """Whether a legacy manual graph can be snapshotted without filter drift."""
-    applied = as_mapping(applied_profile)
-    source = as_mapping(applied.get("source"))
-    applied_fingerprint = str(source.get("fingerprint") or "")
-    current_fingerprint = str(current_source_fingerprint or "")
-    legacy = bool(
-        applied.get("status") == "applied"
-        and not isinstance(applied.get("recomposition_snapshot"), Mapping)
-    )
-    exact_match = bool(
-        legacy
-        and applied_fingerprint
-        and current_fingerprint
-        and applied_fingerprint == current_fingerprint
-    )
-    reason = None if exact_match else (
-        "manual_crossover_not_legacy_applied"
-        if not legacy
-        else "manual_crossover_source_changed"
-    )
-    detail = (
-        "The currently applied manual crossover can be preserved exactly."
-        if exact_match
-        else (
-            "The saved crossover inputs changed after this manual crossover was "
-            "applied. Edit and apply the manual crossover again, or tune automatically."
-        )
-    )
-    return {
-        "ready": exact_match,
-        "reason": reason,
-        "detail": detail,
-        "applied_source_fingerprint": applied_fingerprint or None,
-        "current_source_fingerprint": current_fingerprint or None,
     }
