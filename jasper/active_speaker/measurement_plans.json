@@ -3,8 +3,14 @@
     "bass": {"ceiling_hz": 1100.0}
   },
   "layouts": {
-    "speaker_mark": [{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2}],
-    "baseline_full": [
+    "speaker_mark": {
+      "description": "The design mark, 1 m on axis, taken twice.",
+      "use_when": "Use by default: the speaker fit and its trials need only the mark.",
+      "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2}]},
+    "baseline_full": {
+      "description": "Thirteen poses 1 m out: on axis four times, every 10 degrees to 40 degrees left and right, and 10 and 20 degrees up and down.",
+      "use_when": "Use when a crossover decision needs the full listening window.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
       {"azimuth_deg": -10, "elevation_deg": 0},
       {"azimuth_deg": 10, "elevation_deg": 0},
@@ -18,21 +24,33 @@
       {"azimuth_deg": 0, "elevation_deg": 10},
       {"azimuth_deg": 0, "elevation_deg": -20},
       {"azimuth_deg": 0, "elevation_deg": 20}
-    ],
-    "baseline_express": [
+    ]},
+    "baseline_express": {
+      "description": "Five poses 1 m out: on axis four times, 20 degrees left and right, and 10 degrees up and down.",
+      "use_when": "Use when one speaker round should collect driver fits, repeats and off-axis evidence together.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0},
       {"azimuth_deg": 0, "elevation_deg": -10},
       {"azimuth_deg": 0, "elevation_deg": 10}
-    ],
-    "tournament_express": [{"azimuth_deg": 0, "elevation_deg": 0}],
-    "tournament_full": [
+    ]},
+    "tournament_express": {
+      "description": "The design mark, 1 m on axis, taken once.",
+      "use_when": "Use to compare candidates at one spot.",
+      "poses": [{"azimuth_deg": 0, "elevation_deg": 0}]},
+    "tournament_full": {
+      "description": "Three poses 1 m out: on axis and 20 degrees left and right.",
+      "use_when": "Use to compare candidates across the listening window.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
-    ],
-    "seat_cube": [
+    ]},
+    "seat_cube": {
+      "description": "Seven seat poses: the head centre and 30 cm to each side of it along the right, forward and up axes.",
+      "use_when": "Use when three seats give too noisy a room average.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, 0.0, 0.0]},
@@ -40,8 +58,11 @@
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, -0.3, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.3]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, -0.3]}
-    ],
-    "seat_cloud": [
+    ]},
+    "seat_cloud": {
+      "description": "Eleven seat poses: a 3 by 3 grid 30 cm apart around the head centre, plus 30 cm above and below it.",
+      "use_when": "Use for the widest listening-area average.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [-0.3, 0.3, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.3, 0.0]},
@@ -53,45 +74,91 @@
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, -0.3, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.3]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, -0.3]}
-    ],
-    "seat_express": {"mover": "human", "poses": [
+    ]},
+    "seat_express": {
+      "description": "Three seat poses held by hand: the head centre, 30 cm right of it and 30 cm forward of it.",
+      "use_when": "Use for room, bass and rear takes at the listening seat by hand.",
+      "mover": "human", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.3, 0.0, 0.0]},
       {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0.0, 0.3, 0.0]}
     ]},
-    "bass_axis": {"mover": "arm", "poses": [{"azimuth_deg": 0, "elevation_deg": 0}]},
-    "room_quick": {"mover": "arm", "poses": [
+    "bass_axis": {
+      "description": "The design mark, 1 m on axis, placed by the arm.",
+      "use_when": "Use for bass takes on the arm.",
+      "mover": "arm", "poses": [{"azimuth_deg": 0, "elevation_deg": 0}]},
+    "room_quick": {
+      "description": "Three arm bearings 1 m out: on axis and 20 degrees left and right.",
+      "use_when": "Use for quick arm smoke tests; these poses are not the listening seat.",
+      "mover": "arm", "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
     ]},
-    "rear_express": [
+    "rear_express": {
+      "description": "Three poses 1 m out: on axis twice, and 20 degrees left and right.",
+      "use_when": "Use for rear takes in front of the speaker that the arm can reach.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0}
-    ],
-    "rear_wide": [
+    ]},
+    "rear_wide": {
+      "description": "Five poses 1 m out: on axis twice, and 20 and 45 degrees left and right.",
+      "use_when": "Use when the rear stage's effect matters further off axis.",
+      "poses": [
       {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2},
       {"azimuth_deg": -20, "elevation_deg": 0},
       {"azimuth_deg": 20, "elevation_deg": 0},
       {"azimuth_deg": -45, "elevation_deg": 0},
       {"azimuth_deg": 45, "elevation_deg": 0}
-    ],
-    "nearfield_woofer": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer"}]},
-    "drivers_each": [{"azimuth_deg": 0, "elevation_deg": 0, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}],
-    "rear_behind": {"mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
+    ]},
+    "nearfield_woofer": {
+      "description": "The woofer at 15 mm and then 30 mm from its dust cap, held by hand.",
+      "use_when": "Use for near-field woofer takes; each declared woofer output plays in turn.",
+      "mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.03, "driver": "woofer"}]},
+    "drivers_each": {
+      "description": "The design mark, 1 m on axis, once for the woofer role and once for the tweeter.",
+      "use_when": "Use to take each driver alone without moving the microphone.",
+      "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]},
+    "rear_behind": {
+      "description": "Two poses held by hand: 1 m in front of the cabinet, then behind it, halfway to the wall.",
+      "use_when": "Use to read the cardioid null toward the wall, which the arm cannot reach.",
+      "mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
   "presets": [
-    {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purposes": ["speaker"], "regime": "per_driver", "room_sweep": true},
-    {"preset": "tournament/express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purposes": ["speaker"], "regime": "per_driver"},
-    {"preset": "branches/express", "layout": "tournament_express", "purposes": ["speaker"], "regime": "branches"},
-    {"preset": "front_rear/express", "layout": "tournament_express", "purposes": ["speaker"], "regime": "branches", "branch_pair": "front_rear"},
-    {"preset": "rear/express", "layout": "rear_express", "layouts": ["rear_express", "rear_wide", "rear_behind"], "purposes": ["rear"], "regime": "summed"},
-    {"preset": "rear/seat", "layout": "seat_express", "purposes": ["rear", "room"], "regime": "summed"},
-    {"preset": "rear/pair", "layout": "rear_express", "layouts": ["rear_express", "speaker_mark", "rear_behind"], "purposes": ["rear"], "regime": "branches", "branch_pair": "front_rear"},
-    {"preset": "room/seat", "layout": "seat_express", "layouts": ["seat_express", "seat_cloud", "seat_cube", "room_quick"], "purposes": ["room"], "regime": "summed"},
-    {"preset": "bass/axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purposes": ["bass"], "regime": "summed", "levels": "auto", "stimulus": "bass"},
-    {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "near_field"},
-    {"preset": "drivers/each", "layout": "drivers_each", "purposes": ["reference"], "regime": "per_driver"}
+    {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purposes": ["speaker"], "regime": "per_driver", "room_sweep": true,
+     "description": "The level check and the timing take, then each driver alone at each pose, plus one summed sweep per pose kept as room evidence.",
+     "use_when": "Use to linearize each driver and set the crossover, and to trial a speaker document with candidates."},
+    {"preset": "tournament/express", "layout": "tournament_express", "layouts": ["tournament_express", "tournament_full"], "purposes": ["speaker"], "regime": "per_driver",
+     "description": "The level check and the timing take, then each driver alone once per pose; with candidates, each candidate summed at each pose.",
+     "use_when": "Use to compare two or three speaker candidates side by side."},
+    {"preset": "branches/express", "layout": "tournament_express", "purposes": ["speaker"], "regime": "branches",
+     "description": "Each driver's branch of one saved candidate, on one clock, at the mark.",
+     "use_when": "Use for a branch diagnostic round before a driver or blend preview; name the candidate with candidates."},
+    {"preset": "front_rear/express", "layout": "tournament_express", "purposes": ["speaker"], "regime": "branches", "branch_pair": "front_rear",
+     "description": "The front and rear woofer branches of one saved candidate, as that candidate plays them, on one clock at the mark.",
+     "use_when": "Use on a cardioid speaker to read the woofer pair through a candidate's own rear stage; name the candidate with candidates."},
+    {"preset": "rear/express", "layout": "rear_express", "layouts": ["rear_express", "rear_wide", "rear_behind"], "purposes": ["rear"], "regime": "summed",
+     "description": "The whole speaker summed at each pose, through the applied tune or each named candidate.",
+     "use_when": "Use to trial rear documents with candidates at bearings, or in front of and behind the cabinet with rear_behind."},
+    {"preset": "rear/seat", "layout": "seat_express", "purposes": ["rear", "room"], "regime": "summed",
+     "description": "The whole speaker summed at the seat poses, read by both the rear and the room views.",
+     "use_when": "Use for the hand rear trial: compare rear candidates at the seats, then fit room from the chosen set."},
+    {"preset": "rear/pair", "layout": "rear_express", "layouts": ["rear_express", "speaker_mark", "rear_behind"], "purposes": ["rear"], "regime": "branches", "branch_pair": "front_rear",
+     "description": "The front and rear woofers each alone, on one clock at each pose, through the applied tune or one named candidate with its rear stage cleared.",
+     "use_when": "Use on a cardioid speaker to bank the pair model that rear previews fit from."},
+    {"preset": "room/seat", "layout": "seat_express", "layouts": ["seat_express", "seat_cloud", "seat_cube", "room_quick"], "purposes": ["room"], "regime": "summed",
+     "description": "The whole speaker summed at the listening seat poses, through the applied tune or each named candidate.",
+     "use_when": "Use to fit or trial room correction, and again after any upstream change."},
+    {"preset": "bass/axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purposes": ["bass"], "regime": "summed", "levels": "auto", "stimulus": "bass",
+     "description": "A bass sweep up to 1.1 kHz, summed with room correction off, at a ladder of levels from the seat reference down.",
+     "use_when": "Use to fit or trial bass extension; by hand, pick seat_express."},
+    {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "near_field",
+     "description": "Each declared woofer output alone, close to its dust cap, as reference evidence.",
+     "use_when": "Use for near-field woofer references; no tuning program reads them yet."},
+    {"preset": "drivers/each", "layout": "drivers_each", "purposes": ["reference"], "regime": "per_driver",
+     "description": "Each declared driver output alone at the mark at its own level, with no level check or timing take.",
+     "use_when": "Use for gated one-driver references at the mark; narrow it to one output with driver."}
   ]
 }

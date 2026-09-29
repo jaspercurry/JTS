@@ -626,11 +626,18 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
                                     "mover", "room_sweep", "room_sweep_mode", "offers_unknown", "offers_without_default",
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
-                                    "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels"])
+                                    "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels",
+                                    "preset_description", "layout_use_when", "layout_list"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "purposes_missing":
         del config["presets"][0]["purposes"]  # type: ignore[index]
+    elif broken == "preset_description":
+        del config["presets"][0]["description"]  # type: ignore[index]
+    elif broken == "layout_use_when":
+        del config["layouts"]["room_quick"]["use_when"]  # type: ignore[index]
+    elif broken == "layout_list":
+        config["layouts"]["room_quick"] = config["layouts"]["room_quick"]["poses"]  # type: ignore[index]
     elif broken.startswith("driver_purposes"):
         # Every purpose, not only the first, admits each driver the row's poses play alone.
         next(row for row in config["presets"] if row["preset"] == "drivers/each")["purposes"] = (

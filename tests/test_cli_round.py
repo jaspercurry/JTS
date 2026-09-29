@@ -47,9 +47,9 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers, run_preset
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, run_preset
 from jasper.active_speaker.preflight import PreflightReport
-from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -1055,6 +1055,60 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
     assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
+
+
+_PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair", "room_sweep",
+                "cleared_layers", "stimulus", "level_ladder_db", "layout", "layouts"}
+_LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
+
+
+@pytest.mark.parametrize("cardioid,targets", [
+    (False, {"drivers/each": ["woofer", "tweeter"], "nearfield/each": ["woofer"]}),
+    (True, {"drivers/each": ["woofer", "woofer:rear", "tweeter"], "nearfield/each": ["woofer", "woofer:rear"]}),
+])
+def test_presets_lists_every_preset_and_each_layout_it_offers(monkeypatch, capsys, cardioid, targets):
+    """`presets --json` lists every preset and its layouts, with the outputs their driver poses
+    play on this speaker and one level's captures and seconds (#5737 A3b)."""
+    def with_rear(values):
+        return {**values, "woofer:rear": values["woofer"]}
+
+    context = _inline_context()
+    context = replace(context, topology=_rear_pair("mono")[1] if cardioid else mono_output_topology(),
+                      driver_bands=with_rear({role.role: role.band for role in context.roles_bands}),
+                      driver_caps_dbfs=with_rear(context.driver_caps_dbfs),
+                      driver_sweep_duration_limits_s=with_rear(context.driver_sweep_duration_limits_s))
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *_args, **_kwargs: context)
+    monkeypatch.setattr("jasper.active_speaker.setup_status.conductor_status", lambda: {})
+
+    code, body = _run(["presets", "--json"], _opener(), monkeypatch, capsys)
+
+    rows = [(row, layout) for row in body["presets"] for layout in row["layouts"]]
+    assert (code, body["view"], body["schema"], body["subject"], body["parameters"]) == (
+        cli.EXIT_OK, "presets", ANSWER_SCHEMAS["jasper-round presets"], {}, {})
+    assert [row["preset"] for row in body["presets"]] == list(available_presets())
+    assert [set(row) for row in body["presets"]] == [_PRESET_KEYS] * len(available_presets())
+    assert [set(layout) for _, layout in rows] == [_LAYOUT_KEYS] * len(rows)
+    assert all(row["description"] and row["use_when"] and layout["description"] and layout["use_when"]
+               for row, layout in rows)
+    assert [(row["preset"], layout["layout"], len(layout["poses"])) for row, layout in rows] == [
+        (name, layout, len(run_preset(name, layout).poses)) for name in available_presets() for layout in preset(name).layouts]
+    assert {row["preset"]: row["level_ladder_db"] for row in body["presets"] if row["level_ladder_db"]} == {
+        "bass/axis": list(LEVEL_OFFSETS_DB)}
+    assert {(row["preset"], layout["refused"]) for row, layout in rows if layout["refused"]} == {
+        ("branches/express", "measurement_candidate_required"), ("front_rear/express", "measurement_candidate_required")}
+    assert all(layout["captures"] > 0 and layout["seconds"] > 0 for _, layout in rows if not layout["refused"])
+    assert {row["preset"]: layout["targets"] for row, layout in rows if layout["targets"]} == targets
+
+
+def test_presets_refuses_by_code_when_the_speaker_cannot_measure(monkeypatch, capsys):
+    def not_ready(*_args, **_kwargs):
+        raise CrossoverV2Refused(REASON_REGISTRY["measure_box_not_ready"].message, code="measure_box_not_ready")
+
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", not_ready)
+    monkeypatch.setattr("jasper.active_speaker.setup_status.conductor_status", lambda: {})
+    code, body = _run(["presets", "--json"], _opener(), monkeypatch, capsys)
+    assert (code, body["code"], body["next_action"]["id"]) == (cli.EXIT_REFUSED, "measure_box_not_ready", "speaker_setup")
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
