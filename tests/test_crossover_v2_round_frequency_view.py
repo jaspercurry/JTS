@@ -23,7 +23,7 @@ from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
 from jasper.active_speaker.crossover_v2 import gate_sweep
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, analysis_provenance
-from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
+from jasper.active_speaker.crossover_v2.journey import PHASE_TIMING
 from jasper.active_speaker.crossover_v2.record_index import reopen_measurement_record
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
@@ -810,7 +810,7 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
     record = bank_executor_take(tmp_path, monkeypatch, program=program,
                                 recording=(signal * (2 ** 31 - 1)).astype(np.int32),
                                 pose={"kind": "seat", "seat_offset_m": (0.0, 0.0, 0.0), "purpose": purpose},
-                                raw_record={"measurement_status": "captured", "program_phase": "lateral"})
+                                raw_record={"measurement_status": "captured", "phase": "lateral"})
     bundle, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     path, = (take.record_path for take in analyzed_measurements(bundle))
     wav = reopen_measurement_record(bundle, path)[1]()
@@ -1146,7 +1146,7 @@ def test_bass_table_take_purpose_overrides_run_fallback(bass_run, capsys, purpos
 @pytest.mark.parametrize('round_count', [1, 2])
 @pytest.mark.parametrize('missing_set', [None, '4dc59eaec1e3', '8b2a90f77f31'])
 @pytest.mark.parametrize('ignored_phase,ignored_purpose', [
-    (PHASE_ENTRY_BASELINE, 'bass'), ('lateral', 'room'), ('measure', 'bass'),
+    (PHASE_TIMING, 'bass'), ('lateral', 'room'), ('measure', 'bass'),
 ])
 def test_bass_table_joins_only_sets_with_lateral_bass_takes(
     bass_run, capsys, round_count, missing_set, ignored_phase, ignored_purpose,
@@ -1299,7 +1299,7 @@ def test_bass_compare_accepts_two_manifest_set_flags(bass_run, capsys):
 
 @pytest.mark.parametrize('case,reason', [
     ('fingerprint', None), ('one_level', None), ('repeat', None), ('two_candidates', None), ('partial_levels', None),
-    ('unselected', None), ('entry_baseline', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
+    ('unselected', None), ('timing', None), ('missing_pose', 'bass_fit_pairs_unavailable'),
     ('duplicate', 'bass_fit_pairs_unavailable'), ('run', 'bass_fit_run_mismatch'),
     ('candidate', 'bass_fit_candidate_unreadable'),
 ])
@@ -1310,9 +1310,9 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         takes = takes[:2]
     elif case == 'partial_levels':
         takes = takes[:-1]
-    elif case == 'entry_baseline':
+    elif case == 'timing':
         entry = copy.deepcopy(takes[0])
-        entry['record'].update(take_id='entry', phase=PHASE_ENTRY_BASELINE)
+        entry['record'].update(take_id='entry', phase=PHASE_TIMING)
         entry['record_path'] = 'entry.json'
         takes.append(entry)
     elif case in ('repeat', 'duplicate', 'two_candidates', 'unselected'):
@@ -1356,7 +1356,7 @@ def test_bass_run_pairs_only_selected_matching_takes(bass_run, monkeypatch, caps
         tables = run['tables']
         assert len(tables) == (2 if case == 'two_candidates' else 1)
         assert len(tables[0]['levels']) == (1 if case == 'one_level' else 2 if case == 'partial_levels' else 3)
-        if case == 'entry_baseline':
+        if case == 'timing':
             assert run['schema'] == 'jts_bass_run_table/2'
         if case == 'repeat':
             assert tables[0]['levels'][-1]['take_pair_count'] == 2

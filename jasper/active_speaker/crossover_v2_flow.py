@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     Mapping,
@@ -91,11 +90,6 @@ from .crossover_v2.alignment_prescription import (
 )
 from .measurement_programs import gate_exemption
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.active_speaker.crossover_v2.round_evidence import (
-        EntryBaseline,
-    )
-
 logger = logging.getLogger(__name__)
 
 MEASUREMENT_DISTANCE_M = 1.0
@@ -160,7 +154,7 @@ class CrossoverV2Session:
         index_phase_map: Mapping[int, str] | None = None,
         post_apply_verifies: bool | None = None,
         measure_predicted_sum: Any = None,
-        measure_entry_baseline: "EntryBaseline | None" = None,
+        timing_prior: str | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ]
@@ -263,8 +257,7 @@ class CrossoverV2Session:
             ),
             target_bands=target_bands or {},
         )
-        # Composed ONCE and held: ``program_for_phase`` answers by object identity;
-        # before→after comparability depends on it.
+        # Composed ONCE and held: ``program_for_phase`` answers by object identity.
         self._check_program = self._excitation.check_program()
         self._measure_program: ExcitationProgram | None = (
             self._excitation.measure_program(self._gain_plan_db)
@@ -292,7 +285,7 @@ class CrossoverV2Session:
         self._slot_attempts: dict[str, SlotAttempts] = {}
         self._armed_capture: tuple[int, int] | None = None
         self._measure_predicted_sum: Any = measure_predicted_sum
-        self._measure_entry_baseline: "EntryBaseline | None" = measure_entry_baseline
+        self._timing_prior = timing_prior
 
     @property
     def source_preset(self) -> Any:
@@ -327,19 +320,18 @@ class CrossoverV2Session:
         return self._seams.analyze
 
     def summed_alignment_reference(self) -> Any:
-        baseline = self.measure_entry_baseline
-        key = baseline.artifact_ref if baseline is not None else None
+        take_id = self._timing_prior
         cached = getattr(self, "_summed_alignment_reference_cache", None)
-        if cached is None or cached[0] != key:
+        if cached is None or cached[0] != take_id:
             seam = self._seams.summed_alignment_reference
             reference = (
-                _unreadable("no_entry_baseline")
-                if baseline is None
-                else seam(baseline, self.source_preset)
+                _unreadable("no_timing_prior")
+                if take_id is None
+                else seam(take_id, self.source_preset)
                 if seam
                 else None
             )
-            cached = self._summed_alignment_reference_cache = (key, reference)
+            cached = self._summed_alignment_reference_cache = (take_id, reference)
         return cached[1]
 
     def set_program(self, phase: str, program: ExcitationProgram) -> None:
@@ -353,8 +345,8 @@ class CrossoverV2Session:
     def set_excitation(self, excitation: _programs.SessionExcitation) -> None:
         self._excitation = excitation
 
-    def set_entry_baseline(self, baseline: EntryBaseline | None) -> None:
-        self._measure_entry_baseline = baseline
+    def set_timing_prior(self, take_id: str | None) -> None:
+        self._timing_prior = take_id
 
     def _compose_measure_program(
         self,
@@ -420,9 +412,9 @@ class CrossoverV2Session:
         return self._measure_predicted_sum
 
     @property
-    def measure_entry_baseline(self) -> "EntryBaseline | None":
-        """The session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
-        return self._measure_entry_baseline
+    def timing_prior(self) -> str | None:
+        """The id of the session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
+        return self._timing_prior
 
     @property
     def armed_capture(self) -> tuple[int, int] | None:

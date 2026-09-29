@@ -22,7 +22,7 @@ from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from .journey import PHASE_ENTRY_BASELINE
+from .journey import PHASE_TIMING
 from jasper.active_speaker import bundles
 from jasper.active_speaker.candidate_bank import _candidate_roots, _directories
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -441,7 +441,7 @@ class SetTakes(NamedTuple):
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> SetTakes:
-        takes = tuple(take for take in row["takes"] if take.get("phase") != PHASE_ENTRY_BASELINE)
+        takes = tuple(take for take in row["takes"] if take.get("phase") != PHASE_TIMING)
         return cls(row["set_id"], row["capture_basis"], takes)
 
     @property

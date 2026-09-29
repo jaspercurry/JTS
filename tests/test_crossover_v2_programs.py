@@ -419,8 +419,8 @@ def test_the_compared_pair_gets_the_same_object():
     for phase in sorted(SUMMED_SWEEP_PHASES - GROUP_SUMMED_SWEEP_PHASES):
         assert c.program_for_phase(phase) is verify
 
-    assert journey.PHASE_ENTRY_BASELINE in SUMMED_SWEEP_PHASES
-    assert journey.PHASE_ENTRY_BASELINE not in GROUP_SUMMED_SWEEP_PHASES
+    assert journey.PHASE_TIMING in SUMMED_SWEEP_PHASES
+    assert journey.PHASE_TIMING not in GROUP_SUMMED_SWEEP_PHASES
 
 
 def test_every_position_group_gets_the_same_object():
@@ -513,7 +513,7 @@ def test_a_capture_the_household_began_inside_a_running_session_is_not():
         assert not courtesy_prelude_for_phase(phase), phase
 
 
-def test_the_entry_baseline_is_announced_because_its_twin_is():
+def test_the_timing_take_is_announced_because_its_twin_is():
     """Not an opener — held to the rule by ``stimulus_id``, and stated as such.
 
     Stage 1's last capture carries the prelude for one reason: its program
@@ -523,11 +523,11 @@ def test_the_entry_baseline_is_announced_because_its_twin_is():
     """
     c = _conductor(CAPS)
 
-    assert _has_prelude(c.program_for_phase(journey.PHASE_ENTRY_BASELINE))
-    assert c.program_for_phase(journey.PHASE_ENTRY_BASELINE) is c.program_for_phase(
+    assert _has_prelude(c.program_for_phase(journey.PHASE_TIMING))
+    assert c.program_for_phase(journey.PHASE_TIMING) is c.program_for_phase(
         journey.PHASE_VERIFY
     )
-    assert journey.PHASE_ENTRY_BASELINE in COURTESY_PRELUDE_PHASES
+    assert journey.PHASE_TIMING in COURTESY_PRELUDE_PHASES
 
 
 def test_the_conductor_translates_the_refusal_into_its_own_error():

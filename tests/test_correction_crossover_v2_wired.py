@@ -756,7 +756,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
     request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver", purpose="speaker"),), repeats=repeats,
-                                  level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+                                  level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")), program="speaker/mark")
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
     manifest = RunManifest("check-exhaustion", _Store(fakes.records))
@@ -781,7 +781,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     events = event_field_maps(caplog, "correction.crossover_v2_authorized")
     expected = [("check", a, a - 1) for a in range(1, 5)]
     if check_passes:
-        expected += [(phase, 1, 3) for phase in ["entry_baseline"] * repeats + ["measure"] * repeats]
+        expected += [(phase, 1, 3) for phase in ["timing"] * repeats + ["measure"] * repeats]
     assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
     assert len(programs) == manifest.takes_measured == len(expected)
     assert fakes.graph.restores == 1
@@ -916,8 +916,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 async def test_executor_retains_summed_reference_before_measure(
     monkeypatch, caplog, banked, position, vertical, scope
 ):
-    conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "entry_baseline", 3: "measure"},
-                           measure_entry_baseline=None)
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "check", 2: "timing", 3: "measure"}, timing_prior=None)
     monkeypatch.setattr(conductor, "_applied_alignment", lambda: AppliedAlignment(191.6, "normal", "authored_by_model"))
     conductor._check_ambient_report = {"bands": [{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -45}]}
     freqs = np.linspace(100, 20000, 100)
@@ -942,14 +941,14 @@ async def test_executor_retains_summed_reference_before_measure(
     impulse[200] = 1
     measure = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
                                     sweep_durations={"woofer": .3, "tweeter": .3})
-    captures = ([(2, "entry_baseline", conductor.program_for_phase("entry_baseline"))] if banked else [])
+    captures = ([(2, "timing", conductor.program_for_phase("timing"))] if banked else [])
     captures.append((3, "measure", measure))
     caplog.set_level(logging.INFO)
     for index, phase, program in captures:
         samples = _synthesize(program, woofer_ir=impulse, tweeter_ir=impulse, noise=0)
         wav, _ = encode_wav_s32((samples * (2**31 - 1)).astype(np.int32), sample_rate_hz=RATE)
         record = {"take_id": f"wired-take-{index}", "index": index, "attempt": 1, "phase": phase,
-                  "program_phase": phase, "position_deg": position, "vertical_deg": vertical,
+                  "position_deg": position, "vertical_deg": vertical,
                   "graph_scope": scope, "graph_fingerprint": "played-graph"}
         await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
         analysis = analyses[-1]
@@ -960,36 +959,33 @@ async def test_executor_retains_summed_reference_before_measure(
     events = event_field_maps(caplog, "active_speaker.summed_reference_unreadable")
     if available:
         build_reference.assert_called_once()
-        baseline = build_reference.call_args.args[1]
-        assert baseline.artifact_ref == saved[0]["take_id"]
-        assert baseline.graph_fingerprint == saved[0]["graph_fingerprint"]
+        assert build_reference.call_args.args[1] == saved[0]["take_id"]
         assert events == []
     else:
         build_reference.assert_not_called()
-        reasons = (["entry_baseline_scope"] if banked and scope != "timing" else []) + ["no_entry_baseline"]
+        reasons = (["timing_take_scope"] if banked and scope != "timing" else []) + ["no_timing_prior"]
         assert events == [{"code": "summed_reference_unreadable", "reason": reason} for reason in reasons]
         assert analysis.candidate.alignment_objective == "saved_timing"
 
 
 @pytest.mark.parametrize("responses", [(False, True, False), (True, True, False), (False, False, False)])
 def test_executor_anchors_the_first_readable_summed_repeat(responses):
-    conductor = _conductor(FlowSeams(), index_phase_map={1: "entry_baseline"}, measure_entry_baseline=None)
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "timing"}, timing_prior=None)
     records = SimpleNamespace(enrich=None, after_bank=None)
     correction_run_host.bind_plan_analysis(conductor, records,
         manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
-    program = conductor.program_for_phase("entry_baseline")
+    program = conductor.program_for_phase("timing")
     anchor = None
     for index, readable in enumerate(responses):
         analysis = _verify_analysis(program)
         analysis = analysis if readable else replace(analysis, summed_response=None)
         conductor._seams = replace(conductor._seams, analyze=lambda *a, **kw: analysis)
-        record = {"take_id": f"sum-{index}", "index": 1, "program_phase": "entry_baseline", "graph_scope": "timing",
+        record = {"take_id": f"sum-{index}", "index": 1, "phase": "timing", "graph_scope": "timing",
                   "position_deg": 0, "vertical_deg": 0, "graph_fingerprint": "played", "program": program.to_dict()}
         enriched = records.enrich(None, record)
         records.after_bank(enriched, record["take_id"] + ".json")
         anchor = anchor or (record["take_id"] if readable else None)
-        baseline = conductor._measure_entry_baseline
-        assert (baseline.artifact_ref if baseline else None) == anchor
+        assert conductor.timing_prior == anchor
 
 
 @pytest.mark.parametrize("phase", ["check", "measure"])
@@ -1150,7 +1146,7 @@ def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(m
 
 
 @pytest.mark.parametrize("scope, phase", [
-    ("drivers", "check"), ("drivers", "measure"), ("timing", "entry_baseline"),
+    ("drivers", "check"), ("drivers", "measure"), ("timing", "timing"),
     ("candidate", "verify"), ("candidate_branches", "lateral"),
 ])
 def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, phase):
@@ -1330,7 +1326,7 @@ _TAKE_RECORD_KEYS = frozenset({
     "cleared_layers", "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses",
     "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
-    "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program", "program_phase",
+    "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program",
     "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
     "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "verdict",
     "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
@@ -1344,7 +1340,8 @@ _TAKE_RECORD_KEYS = frozenset({
     ("bass/axis", None, (), "lateral", "bearing", []),
     ("rear/pair", "rear_behind", ("speaker-candidate",), "lateral", "behind", ["woofer", "woofer:rear"]),
     ("speaker/mark", None, (), "check", "bearing", []),
-], ids=["speaker", "reference", "room", "bass", "rear", "check"])
+    ("speaker/mark", None, (), "timing", "bearing", []),
+], ids=["speaker", "reference", "room", "bass", "rear", "check", "timing"])
 def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, layout, candidates, phase, kind, targets):
     """A take of every purpose banks the same keys, naming its run, preset,
     layout, pose, targets and its stop's purpose, a CHECK take its speaker
@@ -1367,7 +1364,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     driver = planned.stop.driver or None
     for record in takes:
         pose = record["pose"]
-        assert set(record) == _TAKE_RECORD_KEYS
+        assert (set(record), record["phase"]) == (_TAKE_RECORD_KEYS, phase)
         assert set(pose) == {"kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
         assert (pose["kind"], pose["distance_m"], pose["seat_offset_m"], pose["driver"]) == (
             record["pose_kind"], record["mark_distance_m"], record["seat_offset_m"], record["pose_driver"])

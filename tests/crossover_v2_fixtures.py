@@ -40,17 +40,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.active_speaker.crossover_v2 import journey
-from jasper.active_speaker.crossover_v2.contracts import (
-    REFERENCE_MARK_DESIGN_AXIS,
-)
-from jasper.active_speaker.crossover_v2.round_evidence import (
-    EntryBaseline,
-    measured_response_from_analysis,
-)
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
-    PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -397,24 +389,6 @@ def _fixture_applied_profile(
     }
 
 
-_ENTRY_BASELINE_SCALE = 1.5
-
-
-def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
-    measured = measured_response_from_analysis(
-        _verify_analysis(
-            conductor.program_for_phase(PHASE_VERIFY),
-            summed_db=_in_room_summed_db() * _ENTRY_BASELINE_SCALE,
-        ),
-        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-    )
-    return EntryBaseline.from_measurement(
-        measured,
-        graph_fingerprint="fixture_entry_graph",
-        captured_at="2026-08-10T00:00:00Z",
-    )
-
-
 def _conductor(
     fakes: FakeSeams,
     *,
@@ -426,7 +400,7 @@ def _conductor(
 ) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
-    supplied_baseline = "measure_entry_baseline" in kwargs
+    supplied_prior = "timing_prior" in kwargs
     conductor = CrossoverV2Session(
         session_id=kwargs.pop("session_id", SESSION),
         source_preset=source_preset,
@@ -438,10 +412,8 @@ def _conductor(
         driver_spacing_m=driver_spacing_m,
         **kwargs,
     )
-    if not supplied_baseline and (
-        journey.PHASE_ENTRY_BASELINE not in conductor.snapshot().session_phases
-    ):
-        conductor.set_entry_baseline(_fixture_entry_baseline(conductor))
+    if not supplied_prior and journey.PHASE_TIMING not in conductor.snapshot().session_phases:
+        conductor.set_timing_prior("fixture-timing-take")
     return conductor
 
 

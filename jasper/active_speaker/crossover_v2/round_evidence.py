@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One summed capture reduced, and the session's timing prior built from it."""
+"""One summed capture reduced; a timing take becomes MEASURE's prior only when it reduces (ADR-0319)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "BENEFIT_CURVE_MAX_BINS",
-    "EntryBaseline",
     "MeasuredResponse",
     "measured_response_from_analysis",
 ]
@@ -100,39 +99,3 @@ def _validity_clamp(grid: np.ndarray, validity_floor_hz: Any) -> tuple[bool, ...
     if not np.isfinite(floor):
         return (False,) * int(grid.size)
     return tuple(bool(value) for value in (np.asarray(grid, dtype=float) < floor))
-
-
-@dataclass(frozen=True)
-class EntryBaseline:
-    """The session's timing take (ADR-0319), the prior MEASURE reads its summed
-    alignment from. It lives only in the session: nothing persists it (ADR-0390).
-    """
-
-    stimulus_id: str
-    reference_mark: str
-    curve: ResponseCurve
-    excluded: tuple[bool, ...]
-    graph_fingerprint: str
-    captured_at: str
-    artifact_ref: str = ""
-
-    @classmethod
-    def from_measurement(
-        cls,
-        measured: MeasuredResponse,
-        *,
-        graph_fingerprint: str,
-        captured_at: str,
-        artifact_ref: str = "",
-    ) -> "EntryBaseline":
-        return cls(
-            stimulus_id=measured.stimulus_id,
-            reference_mark=measured.reference_mark,
-            curve=measured.curve,
-            excluded=measured.excluded,
-            graph_fingerprint=_text(
-                graph_fingerprint, field_name="graph_fingerprint"
-            ),
-            captured_at=_text(captured_at, field_name="captured_at"),
-            artifact_ref=str(artifact_ref or ""),
-        )

@@ -30,7 +30,7 @@ from tests.crossover_v2_banked_round import (
     LateralPose,
     TakeClaim,
     cloud_position_record,
-    entry_baseline_record,
+    timing_take_record,
     lateral_pose_record,
     phase_capture_record,
     pose_kind_fields,
@@ -81,7 +81,7 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
 def test_every_take_builder_states_one_identity_under_one_vocabulary():
     """The common core, asserted as a SET rather than key by key.
 
-    A cloud position, a walk pose, an entry baseline and an unprompted-phase
+    A cloud position, a walk pose, a timing take and an unprompted-phase
     capture are different captures and their grading columns are never
     meaningful for each other — but the six facts that say WHICH take this is
     are the same question four times, and a reader that had to spell them
@@ -135,7 +135,7 @@ def _pose_record(**overrides):
 
 
 def _entry_record(**overrides):
-    """One retained entry-baseline take, with only the field under test named."""
+    """One retained timing take, with only the field under test named."""
     fields = {
         "index": 9, "attempt": 1, "run_id": "sess", "stimulus_id": "prog",
         "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
@@ -143,7 +143,7 @@ def _entry_record(**overrides):
         "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }
-    return entry_baseline_record(**{**fields, **overrides})
+    return timing_take_record(**{**fields, **overrides})
 
 
 def _phase_record(**overrides):
@@ -668,7 +668,7 @@ def test_the_storage_seam_names_the_take_the_record_names():
     The seam names the bundle path and the builder names the record inside it.
     While the two spelled the convention separately a change to one silently
     made the path and its contents disagree about which take it was; worse, for
-    the entry baseline (whose ``position_id`` IS a take id already) the second
+    the timing take (whose ``position_id`` IS a take id already) the second
     mint appended a second ``_aNN`` every time. The seam re-mints nothing now:
     the record carries ``take_id`` and the store names the artifact from it.
     """
@@ -700,10 +700,10 @@ def test_the_storage_seam_names_the_take_the_record_names():
     assert take_id == "cloud_measure_03_a07"
 
 
-def test_an_entry_baseline_take_id_carries_index_and_attempt():
+def test_a_timing_take_id_carries_index_and_attempt():
     """The same rule on the phase that is NOT a group member.
 
-    The entry baseline rides the same retention seam and lands in the same
+    The timing take rides the same retention seam and lands in the same
     ``position_artifacts`` namespace, so it needs the same collision-free id —
     but nothing in the group bookkeeping would give it one.
 
@@ -711,7 +711,7 @@ def test_an_entry_baseline_take_id_carries_index_and_attempt():
     """
     record = _entry_record(index=9, attempt=2)
 
-    assert record["take_id"] == "entry_baseline_09_a02"
+    assert record["take_id"] == "timing_09_a02"
     assert record["position_id"] == record["take_id"]
 
 

@@ -417,7 +417,8 @@ class AngleCaptureRequest:
     """One ordered walk, with adjacent candidates at each pose.
 
     ``program`` (the preset id) and ``layout`` (its named layout, or ``custom``)
-    are provenance; geometry and purpose come from the stops.
+    are provenance, and the preset's ``timing_take`` decides the timing take;
+    geometry and purpose come from the stops.
     ``template`` supplies stimulus and overlays to the two spec builders.
     """
 

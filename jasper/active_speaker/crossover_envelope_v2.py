@@ -21,12 +21,12 @@ from .crossover_v2.journey import (
     PHASE_APPLYING,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
-    PHASE_ENTRY_BASELINE,
     PHASE_CLOUD_VERIFY,
     PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_REVIEW,
+    PHASE_TIMING,
     PHASE_VERIFY,
     PRE_CLOUD_CAPTURE_PHASES,
     pending_capture_phase,
@@ -68,9 +68,7 @@ _PHASE_STEP = {
     PHASE_MEASURE: "measure",
     PHASE_CLOUD_MEASURE: "measure",
     PHASE_LATERAL: "measure",
-    # #2291's entry baseline is the LAST thing stage 1 measures — still
-    # measuring, nothing applied yet.
-    PHASE_ENTRY_BASELINE: "measure",
+    PHASE_TIMING: "measure",
     PHASE_APPLYING: "measure",
     PHASE_REVIEW: "measure",
     PHASE_VERIFY: "verify",
@@ -361,15 +359,13 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             next_action=None,
             status=status,
         )
-    elif phase == PHASE_ENTRY_BASELINE:
-        # #2291's "before" capture. "on the mark", not "BACK on the mark":
-        # this follows MEASURE, where the microphone never left.
+    elif phase == PHASE_TIMING:
         env = _envelope(
             screen="measure", active_step=active_step,
             verdict=(
-                "One last measurement, on the mark and held still — this "
-                "is how your speaker sounds now, so JTS can tell you whether "
-                "the tuning actually improved it."
+                "Keep the microphone still on the mark — JTS is measuring the "
+                "drivers together to read their timing. Follow the measurement "
+                "page; it continues automatically."
             ),
             next_action=None,
             status=status,

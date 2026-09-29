@@ -38,15 +38,10 @@ PHASE_CLOUD_VERIFY = "cloud_verify"
 # summed sweep, so it is NOT in ``SUMMED_SWEEP_PHASES``: same protected-neutral
 # commissioning graph, same stimulus, same gains as MEASURE.
 PHASE_LATERAL = "lateral"
-# #2291's "before" measurement: ONE summed sweep at the design-axis mark, taken
-# as the last thing stage 1 does. Membership in ``SUMMED_SWEEP_PHASES``'s
-# COMPARED pair (not ``GROUP_SUMMED_SWEEP_PHASES``; both live in ``.programs``)
-# routes ``program_for_phase`` to the very same ``_verify_program`` object, so
-# this capture and VERIFY's share a ``stimulus_id``: a SHA-256 over the excitation
-# schedule and every segment's gain, but not the session fader (#5012), so that
-# equality means the same stimulus, not the same level. Deliberately NOT a
-# :data:`GROUP_PHASES` member: one capture at one mark, not a walk.
-PHASE_ENTRY_BASELINE = "entry_baseline"
+# The ADR-0319 timing take: the front drivers summed at the design-axis mark,
+# MEASURE's in-session prior. One capture at one mark, so not a
+# :data:`GROUP_PHASES` member.
+PHASE_TIMING = "timing"
 # Measured, awaiting an explicit candidate decision; nothing has been applied.
 PHASE_REVIEW = "review"
 # Every capture in an applied or measurement-free session has finished.
@@ -62,10 +57,7 @@ CAPTURE_PHASES = (
     PHASE_MEASURE,
     PHASE_LATERAL,
     PHASE_CLOUD_MEASURE,
-    # LAST in stage 1, and so immediately before apply — that adjacency is the
-    # whole point of the entry baseline (#2291): the less the room, the mic and
-    # the household have moved, the more of the difference is the graph.
-    PHASE_ENTRY_BASELINE,
+    PHASE_TIMING,
     PHASE_VERIFY,
     PHASE_CLOUD_VERIFY,
 )

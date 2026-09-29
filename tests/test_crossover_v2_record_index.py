@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
 from jasper.active_speaker.crossover_v2.feature_classifier import load_round_pose_curves
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_ENTRY_BASELINE,
+    PHASE_TIMING,
     PHASE_LATERAL,
     PHASE_MEASURE,
 )
@@ -159,7 +159,7 @@ async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
     assert [row.candidate_id for row in found] == ["fp-a"]
 
 
-@pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_ENTRY_BASELINE])
+@pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_TIMING])
 async def test_the_phase_axis_selects_the_takes_that_ARE_that_phase(store, phase):
     """What a take IS, beside what it MEASURES — two columns, two questions.
 
@@ -288,15 +288,15 @@ def _session(round_dir: Path) -> Path:
 _SCANNERS = {
     "room_ceiling": _Scanner(
         lambda root: room_ceiling(_session(root)).trusted_floor_hz,
-        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, 300.0, 450.0),
+        PHASE_MEASURE, PHASE_TIMING, PURPOSE_ROOM, 300.0, 450.0),
     "delay_pair": _Scanner(
         lambda root: Path(select_pose_curve_pair(
             _session(root), phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
             roles=("woofer", "tweeter")).take.path).stem,
-        PHASE_MEASURE, PHASE_ENTRY_BASELINE, PURPOSE_REAR, "take_0002", "take_0003"),
+        PHASE_MEASURE, PHASE_TIMING, PURPOSE_REAR, "take_0002", "take_0003"),
     "pose_bank": _Scanner(
         lambda root: sorted({curve.pose_id for curve in load_round_pose_curves(_session(root))}),
-        PHASE_LATERAL, PHASE_ENTRY_BASELINE, PURPOSE_ROOM, ["take_0001", "take_0002"],
+        PHASE_LATERAL, PHASE_TIMING, PURPOSE_ROOM, ["take_0001", "take_0002"],
         ["take_0001", "take_0002", "take_0003"]),
     "candidate_ladder": _Scanner(
         lambda root: candidate_ladder(root, round_inputs(root))["summary"]["candidates"],
@@ -363,7 +363,7 @@ def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatc
     assert pair is not None and pair.document["take_id"] == measure["take_id"]
     assert sorted(curve.role for curve in load_round_pose_curves(bundle)) == ["tweeter", "woofer"]
 
-    lateral = bank_executor_take(tmp_path / "lateral", monkeypatch, raw_record={"program_phase": PHASE_LATERAL})
+    lateral = bank_executor_take(tmp_path / "lateral", monkeypatch, raw_record={"phase": PHASE_LATERAL})
     bundle = bundle_of(tmp_path / "lateral")
     with pytest.raises(EvidenceUnavailable) as refused:
         candidate_ladder(bundle, round_inputs(bundle))
