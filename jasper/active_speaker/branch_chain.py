@@ -515,7 +515,7 @@ def rear_stage_response(
     return summed, front
 
 
-def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
+def rear_stage_peak_db(document: Mapping[str, Any] | None) -> float:
     """Peak the cardioid stage alone puts above unity, dB: its realised peak (ADR-0324).
 
     Every chain is evaluated as the complex response of its gain, polarity,

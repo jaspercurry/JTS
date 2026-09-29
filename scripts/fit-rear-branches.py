@@ -32,7 +32,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from jasper.active_speaker.branch_chain import (
-    camilla_filter_response, rear_branch_sum_headroom_db, rear_stage_chain_response, rear_stage_response,
+    camilla_filter_response, rear_stage_chain_response, rear_stage_peak_db, rear_stage_response,
 )
 from jasper.active_speaker.rear_calibration import (
     KIND,
@@ -458,8 +458,8 @@ def report_lines(
         f" {'meets' if met else 'MISSES'} the {SUPPRESSION_FLOOR_DB:g} dB floor",
         f"- common_delay_ms {document['common_delay_ms']:g} ms;"
         f" front chain gain {document['front']['gain_db']:+.2f} dB",
-        f"- rear stage's own peak as written / unmuted: {rear_branch_sum_headroom_db(document):.3f}"
-        f" / {rear_branch_sum_headroom_db(unmuted):.3f} dB",
+        f"- rear stage's own peak as written / unmuted: {rear_stage_peak_db(document):.3f}"
+        f" / {rear_stage_peak_db(unmuted):.3f} dB",
     ]
     return lines, met
 

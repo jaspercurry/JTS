@@ -35,8 +35,8 @@ from jasper.active_speaker.branch_chain import (
     crossover_response_db,
     headroom_charge_db,
     radiating_band_hz,
-    rear_branch_sum_headroom_db,
     rear_stage_chain_response,
+    rear_stage_peak_db,
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
@@ -1173,8 +1173,8 @@ _RESONANT_HIGHPASS = _biquad("Highpass", freq=100.0, q=1.0)
 
 def _jts3_document() -> dict:
     """jts3's fitted cardioid document: a low-passed bass branch against an
-    inverted, delayed, band-limited cancellation branch. Charging the in-phase
-    sum of the two branch gains cost 5.372 dB of program here.
+    inverted, delayed, band-limited cancellation branch. Summing the two branch
+    gains in phase would read 5.372 dB here.
     """
     peaking = _biquad("Peaking", freq=190.0, q=0.996, gain=-6.36)
     return _branches(
@@ -1194,10 +1194,10 @@ def _jts3_document() -> dict:
     pytest.param(_branches(), 6.0206, id="two_open_branches_sum_in_phase"),
     pytest.param(
         _branches(cancellation=_chain(filters=[_biquad("Peaking", freq=190.0, q=0.996, gain=6.0)])),
-        9.528697248729678, id="a_boosted_filter_is_charged",
+        9.528697248729678, id="a_boosted_filter_raises_it",
     ),
     pytest.param(_branches(cancellation=_chain(inverted=True)), 0.0, id="an_inverted_twin_cancels"),
-    pytest.param(_branches(rear_muted=True), 0.0, id="a_muted_rear_charges_nothing"),
+    pytest.param(_branches(rear_muted=True), 0.0, id="a_muted_rear_adds_nothing"),
     pytest.param(
         _branches(bass=_chain(muted=True),
                   cancellation=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
@@ -1206,15 +1206,15 @@ def _jts3_document() -> dict:
     pytest.param(
         _branches(cancellation=_chain(inverted=True),
                   front=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
-        1.2493, id="the_front_chain_is_charged_too",
+        1.2493, id="the_front_chain_counts_too",
     ),
     pytest.param(_jts3_document(), 0.1939, id="the_fitted_jts3_document"),
 ])
-def test_the_rear_charge_is_the_compiled_stages_realised_peak(document, expected):
-    """The charge is what the stage actually puts above unity, not what two
+def test_the_rear_stage_peak_is_the_compiled_stages_realised_peak(document, expected):
+    """The peak is what the stage actually puts above unity, not what two
     branches would sum to if their filters let them both run wide open.
     """
-    assert rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=1e-3)
+    assert rear_stage_peak_db(document) == pytest.approx(expected, abs=1e-3)
 
 
 def _muted_rear_front(*filters: dict) -> dict:
@@ -1240,14 +1240,14 @@ _NARROW_ALLPASS = _biquad("Allpass", freq=200.0, q=MAX_ALLPASS_Q)
         _rear_document(rear={"mode": "fir", "coefficients": [1.0], "sample_rate_hz": 48000,
                              "normalization": "as_supplied", "added_latency_ms": 0.0, "sha256": ""},
                        front=_chain(filters=[deepcopy(_RESONANT_HIGHPASS)])),
-        1.2493, id="a_fir_rear_still_charges_the_front_chain",
+        1.2493, id="a_fir_rear_still_counts_the_front_chain",
     ),
 ])
-def test_the_charge_bounds_every_term_the_graph_can_raise(document, expected):
+def test_the_stage_peak_bounds_every_term_the_graph_can_raise(document, expected):
     """An upper bound, so a term is evaluated rather than argued away: shelf
     steepness the graph carries verbatim, and the front chain in every rear mode.
     """
-    assert rear_branch_sum_headroom_db(document) == pytest.approx(expected, abs=0.005)
+    assert rear_stage_peak_db(document) == pytest.approx(expected, abs=0.005)
 
 
 def test_a_narrow_allpass_peak_cannot_hide_between_grid_points():
@@ -1263,4 +1263,4 @@ def test_a_narrow_allpass_peak_cannot_hide_between_grid_points():
     )
     truth = 20.0 * np.log10(np.max(np.abs(summed)))
     assert truth > 5.0
-    assert rear_branch_sum_headroom_db(document) == pytest.approx(truth, abs=0.05)
+    assert rear_stage_peak_db(document) == pytest.approx(truth, abs=0.05)

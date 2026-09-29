@@ -413,8 +413,8 @@ branch and set its delay from the pattern ratio above. Start its gain at 0 dB; i
 rear reads louder than the front at the low end of the band, shape it with
 a low shelf rather than a flat cut. A delay-and-invert pair loses forward
 level below c / (4·D); the same Peaking boost on BOTH rear branches in that
-band (up to +6 dB, ADR-0326) pays it back, and the stage's realised peak is
-charged to program headroom. Keep the bass branch in phase. Carry a filter
+band (up to +6 dB, ADR-0326) pays it back, and the program charge pays for
+the boost (ADR-0385). Keep the bass branch in phase. Carry a filter
 that flattens the front woofer itself on all three chains, so the rear/front
 ratio stays the one you fitted.
 
