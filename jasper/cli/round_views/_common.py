@@ -3,14 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """What every view here shares: the artifact table, the round reader, the
-publisher, the answer envelope, and the flags more than one subcommand takes.
+publisher, the subject an answer names, and the flags more than one subcommand
+takes.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_UNWRITABLE as REASON_UNWRITABLE,
 )
 from jasper.cli._refusal import (
-    answered,
+    answer as answer,
     EXIT_REFUSED,
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
@@ -114,25 +115,6 @@ def _write(
         EXIT_WRITE_FAILED, (OSError,), write_report, {**payload, "schema": schema}, out, default_path,
         make_parents=make_parents,
     )
-
-
-def answer(
-    view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
-    parameters: Mapping[str, Any], out: Path | None = None, line: str, **fields: Any,
-) -> int:
-    """Print scalar results and an artifact pointer (ADR-0237) under the
-    envelope every view shares: the view and its answer version, what it read
-    (one :func:`subject`, or a list of them as ``rounds`` for a view that
-    compares rounds), and the analysis parameters it used."""
-    # See ADR-0344
-    document = {
-        "view": view, "schema": schema, "parameters": dict(parameters),
-        "subject": dict(subject) if isinstance(subject, Mapping) else {"rounds": [dict(one) for one in subject]},
-        **fields,
-    }
-    if out is not None:
-        document.update(out=str(out), bytes=out.stat().st_size)
-    return answered(document, line)
 
 
 def subject(

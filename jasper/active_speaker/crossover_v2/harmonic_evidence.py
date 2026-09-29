@@ -85,7 +85,6 @@ __all__ = [
     "FIDELITY_TOLERANCE",
     "HARMONICS_ARTIFACT",
     "HARMONICS_ARTIFACT_KIND",
-    "HARMONICS_SCHEMA_VERSION",
     "HARMONIC_ORDERS",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_CAPTURE_PASSED_THE_GATES",
@@ -99,11 +98,6 @@ __all__ = [
     "rebuild_measure_program",
     "round_bands_hz",
 ]
-
-#: Bumped when a field changes MEANING, never for an additive widening — the
-#: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps: a reader that
-#: ignores what it does not know is not misled by a new key.
-HARMONICS_SCHEMA_VERSION = 3
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -1116,7 +1110,6 @@ def read_round_harmonics(
 
     return {
         "artifact_kind": HARMONICS_ARTIFACT_KIND,
-        "artifact_schema_version": HARMONICS_SCHEMA_VERSION,
         "round_dir": round_dir.name,
         "orders": list(orders),
         "program": {

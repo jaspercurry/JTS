@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from ._report import render_report
 
@@ -74,6 +74,25 @@ def answered(document: Mapping[str, Any], line: str = "", *, sort_keys: bool = T
     if line:
         print(line, file=sys.stderr)
     return EXIT_OK
+
+
+def answer(
+    view: str, *, schema: str | None, subject: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    parameters: Mapping[str, Any], out: Path | None = None, line: str = "", **fields: Any,
+) -> int:
+    """Print an analysis answer (ADR-0237) under the envelope every one shares:
+    the view and its answer version, what it read (one subject, or a list of
+    them as ``rounds`` for a view that compares rounds), the analysis
+    parameters it used, and the artifact it wrote, when it wrote one."""
+    # See ADR-0344
+    document = {
+        "view": view, "schema": schema, "parameters": dict(parameters),
+        "subject": dict(subject) if isinstance(subject, Mapping) else {"rounds": [dict(one) for one in subject]},
+        **fields,
+    }
+    if out is not None:
+        document.update(out=str(out), bytes=out.stat().st_size)
+    return answered(document, line)
 
 
 def refused(

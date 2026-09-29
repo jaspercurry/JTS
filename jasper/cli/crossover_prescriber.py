@@ -13,10 +13,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answered, failed, read_source_bytes
-from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
+from ._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, failed, read_source_bytes
+from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts, subject
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
+from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS, PROG as ROUND_VIEWS_PROG
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -55,6 +55,19 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
 REASON_UNWRITABLE = "output_unwritable"
+
+
+def _answer(args: argparse.Namespace, row: str, round_dir: str | None,
+            parameters: Mapping[str, Any] | None = None, **fields: Any) -> int:
+    """This verb's answer under the envelope every analysis answer shares (ADR-0344)."""
+    try:
+        inputs = round_inputs(Path(round_dir)) if round_dir else None
+    except (CrossoverEvidencePacketError, OSError):  # status reports an unreadable round and names none
+        inputs = None
+    take = getattr(args, "preview", False) and args.take
+    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} {row}"],
+                  subject=subject(inputs, set_id=getattr(args, "set", None), take_ids=[take] if take else None),
+                  parameters=parameters or {}, **fields)
 
 
 def _document_evidence(args: argparse.Namespace, document: Mapping[str, Any]) -> PrescriptionEvidence:
@@ -128,22 +141,23 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any]) ->
                      **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
                         else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
-    return answered({"section": kind,
-                     "axes": [{"paths": paths, "values": values} for paths, values in axes],
-                     "variants": rows, "adopted": False, "banked": False})
+    return _answer(args, "judge --preview --vary", args.round,
+                   {"axes": [{"paths": paths, "values": values} for paths, values in axes]},
+                   section=kind, variants=rows, adopted=False, banked=False)
 
 
-def _preview_out(result: Mapping[str, Any], out: Path) -> int:
-    """The whole preview to ``out``; the answer names it and keeps the forecast's summary."""
+def _preview_out(args: argparse.Namespace, result: Mapping[str, Any]) -> int:
+    """The whole preview to ``--out``; the answer names it and keeps the forecast's summary."""
+    out = Path(args.out)
     try:
         atomic_write_json(out, result)
     except OSError as exc:
         return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
-    return answered({
-        "section": result["section"], "sections": result["sections"], "out": str(out), "bytes": out.stat().st_size,
+    return _answer(
+        args, "judge --preview", args.round, out=out, section=result["section"], sections=result["sections"],
         **({"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph" else {}),
-        "adopted": False, "banked": False,
-    })
+        adopted=False, banked=False,
+    )
 
 
 def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
@@ -165,20 +179,20 @@ def _cmd_document(args: argparse.Namespace) -> int:
             if args.vary:
                 return _cmd_vary_document(args, document)
             result = _preview_document(args, document)
-            return _preview_out(result, Path(args.out)) if args.out else answered(result)
+            return _preview_out(args, result) if args.out else _answer(args, "judge --preview", args.round, **result)
         base, base_profile = _document_base(document, root)
         evidence = _document_evidence(args, document)
         candidate = judge_prescription_document(document, base=base, evidence=evidence,
                                                  base_profile=base_profile)
-        answer = {"candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
-                  "program_charge_db": program_charge_db(candidate),
-                  "measurement_status": "unmeasured", "adopted": False,
-                  "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
+        fields: dict[str, Any] = {
+            "candidate_fingerprint": candidate.fingerprint, "resolution": candidate.analysis["resolution"],
+            "program_charge_db": program_charge_db(candidate), "measurement_status": "unmeasured", "adopted": False,
+            "packet_contracts": contract_currency(round_inputs(Path(args.round))) if args.round else None}
         if args.command == "judge":
-            answer["sections"] = candidate.analysis["evidence"]["prescriptions"]
+            fields["sections"] = candidate.analysis["evidence"]["prescriptions"]
         else:
             try:
-                answer["out"] = str(publish_authored_candidate(candidate, root=root).path)
+                fields["out"] = publish_authored_candidate(candidate, root=root).path
             except (OSError, BundleError) as exc:
                 raise PrescriptionDocumentRefused(REASON_UNWRITABLE, None, str(exc)) from exc
     except PrescriptionDocumentRefused as exc:
@@ -190,7 +204,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         refusal = PrescriptionDocumentRefused(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE), None, str(exc))
         return _document_failure(refusal, EXIT_UNREADABLE)
-    return answered(answer)
+    return _answer(args, args.command, args.round, **fields)
 
 
 def _load_packet(args: argparse.Namespace, *, inputs: RoundInputs | None = None) -> dict[str, Any]:
@@ -225,13 +239,14 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
         code = getattr(exc, "code", REASON_EVIDENCE_UNREADABLE)
         return failed(EXIT_UNREADABLE, code, str(exc))
-    if args.out:
+    out = Path(args.out) if args.out else None
+    if out is not None:
         try:
-            Path(args.out).write_text(payload, encoding="utf-8")
+            out.write_text(payload, encoding="utf-8")
         except OSError as exc:
             return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
-    print(payload)
-    return EXIT_OK
+    return _answer(args, "contract", args.round, {"section": args.section}, out=out,
+                   contracts=contracts if args.section == "all" else {args.section: document})
 
 
 
@@ -576,7 +591,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_error = str(exc)
 
-    return answered(status_document(
+    return _answer(args, "status", args.session_dir, **status_document(
         packet, packet_error,
         session_dir=args.session_dir,
         applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,

@@ -68,7 +68,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER, schema="jts_repeatability/1"),
     "candidates": ViewArtifact("candidates.json", schema="jts_candidates/2"),
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,), schema="jts_directivity/1"),
-    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/1"),
+    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/2"),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>"), schema=FREQUENCY_VIEW_SCHEMA),
     "impulse": ViewArtifact("impulse.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_impulse/1", per_take=True),
     "group-delay": ViewArtifact("group_delay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_group_delay/1",
@@ -93,7 +93,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/2"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/3"),
+    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/4"),
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
     ),
@@ -116,10 +116,18 @@ VIEW_PURPOSES = {
 }
 
 #: The answers whose shape no row above names: they write no artifact, or
-#: one no inventory lists.
+#: one no inventory lists. Keyed by command; a view's omits ``jasper-round-views``.
 ANSWER_SCHEMAS = {
     "speaker-fit": "jts_speaker_fit/1",
     "repeat --set": "jts_repeat/1",
+    "jasper-crossover-prescriber judge": "jts_prescription_judgement/1",
+    "jasper-crossover-prescriber judge --preview": "jts_prescription_preview/1",
+    "jasper-crossover-prescriber judge --preview --vary": "jts_prescription_preview_grid/1",
+    "jasper-crossover-prescriber compose": "jts_prescription_candidate/1",
+    "jasper-crossover-prescriber contract": "jts_prescription_contract/1",
+    "jasper-crossover-prescriber status": "jts_prescriber_status/1",
+    "jasper-round list": "jts_round_list/1",
+    "jasper-round show": "jts_round_show/1",
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
