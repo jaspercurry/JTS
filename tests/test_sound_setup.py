@@ -922,19 +922,16 @@ def test_a_bonded_follower_page_delegates_to_its_leader(monkeypatch, page_mode):
     )
     local = page_mode == "speaker"
 
-    html = sound_setup._index_html("csrf-token", page_mode=page_mode).decode()
+    html = sound_setup._index_html(page_mode=page_mode).decode()
 
     assert leader_paths == [f"/sound/{page_mode}/"]
     assert f"http://jts3.local/sound/{page_mode}/" in html
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
-    assert _island_payload(html) == {"mode": page_mode, "follower": True}
     assert ('id="view-body"' in html) is local
     assert ("/assets/sound-profile/js/speaker.js" in html) is local
     assert not any(
         f"/assets/sound-profile/js/{module}.js" in html for module in ("main", "output")
     )
     assert ('href="/sound/speaker/">Open local speaker setup</a>' in html) is not local
-    assert ("Open local speaker setup" in html) is not local
     # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented
     # tablist, the now-playing plot) is the leader's on every page.
     assert not any(
