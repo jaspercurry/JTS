@@ -535,7 +535,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
 @pytest.mark.parametrize("purpose,view", [
     (purpose, view)
     for purpose in ("speaker", "room", "bass")
-    for view, _, _ in bookkeeping_views(purpose)
+    for view, _, _ in bookkeeping_views((purpose,))
 ])
 def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, request, purpose, view):
     from tests.test_active_speaker_crossover_v2_round_views import _make_round_dir
