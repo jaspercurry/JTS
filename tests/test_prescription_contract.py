@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
 from dataclasses import replace
@@ -32,7 +33,7 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 from jasper.active_speaker.crossover_v2.round_inputs import (
     contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs, set_artifact_name,
 )
-from jasper.active_speaker import candidate_bank, candidate_parts
+from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
 from jasper.active_speaker.speaker_fit import SpeakerFitUnreadable, _fit_vocabularies
@@ -64,10 +65,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "abb5696cca7f71bf2c21fcbda4ffdf3a701e59b2f6921328c4eb4258c15f3394"),
-    ("mono", True, "6ba74e229997d8567b9e3d926a5a5a62a6719bfb80ea00441c8010e796ed6798"),
-    ("stereo", False, "003d4edbbd0e8e3c0a1aae688f282a3c57c04f9c419130c906360c310aea7712"),
-    ("stereo", True, "30677ecd9b06e7c51627c4858e9a0cb32c99a189720db5ef58c149528d592e2a"),
+    ("mono", False, "715aff882d4eda2521b463a50c61e8a96ac425043ef1522a4eecf82b5687be51"),
+    ("mono", True, "46ebf20ed8f20dc64ade00c5cc6f2fe4d1c31395b96f615885356479749ffb33"),
+    ("stereo", False, "32b09b8edf3a5f440653f2d1e4cc3a1a1a0e9645f73b747c32fb80fe2a2dcf41"),
+    ("stereo", True, "a514c1cec032ebf4a405444a8db44026b8541a531e55122cbc8e7372ba50caec"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -308,7 +309,20 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic.OPTIONAL_FIELDS} == {
         "compressor_factor": 10.0, "compressor_attack_s": 0.01, "compressor_release_s": 0.25}
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
-    assert contract["shared_headroom"]["adr"] == "ADR-0257"
+
+
+def test_the_layers_the_bass_contract_calls_uncharged_leave_the_charge_unmoved():
+    """ADR-0385, ADR-0359: the block names the one charge and the bass reserve, and a bass
+    boost leaves the emitted graph's charge where it was."""
+    block = prescription_contracts(programs=("bass",))["bass"]["shared_headroom"]
+    named = [getattr(importlib.import_module(module), name) for module, _, name in
+             (block[field].rpartition(".") for field in ("charge_function", "bass_reserve_function"))]
+    assert named == [program_headroom.charge_db, dynamic.dynamic_bass_gain_reserve_db]
+    assert "bass_extension" in set(block["uncharged_layers"]) - set(block["charged_layers"])
+    candidate = _candidate(linearization={"woofer": {"filters": [
+        {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 4.0}]}})
+    boosted = replace(candidate, bass_extension=_descriptor().payload())
+    assert candidate_parts.program_charge_db(boosted) == candidate_parts.program_charge_db(candidate) > 0.0
 
 
 def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
