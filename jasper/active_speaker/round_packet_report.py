@@ -85,7 +85,7 @@ def _short_id(candidate_id: Any) -> str:
 def rear_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
     """Numbers-only lines for each banked ``rear`` comparison: the band, its
     reference and repeat spread, then one line per candidate naming its
-    changed control family, headroom cost and worst pooled regression."""
+    changed control family and worst pooled regression."""
     def number(value: float | None) -> str:
         return f"{value:.1f}" if value is not None else "null"
 
@@ -116,7 +116,6 @@ def rear_lines(entries: Sequence[Mapping[str, Any]]) -> list[str]:
             lines.append(
                 f"  {_short_id(candidate['candidate_id'])} {candidate['role']}: "
                 f"change_family={candidate['change_family'] or 'none'}; "
-                f"headroom_change_db={number(candidate['headroom_change_db'])}; "
                 f"worst_regression={worst_repr}"
             )
     return lines

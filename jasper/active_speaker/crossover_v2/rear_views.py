@@ -31,7 +31,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from jasper.active_speaker.baseline_profile import applied_layer_names
-from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
+from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_banked_candidate
 from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT,
@@ -401,14 +401,11 @@ def rear_document(
                    for take in batch[incumbent_id][repeated]]
     spread = {**repeat_spread(repeats), "candidate_id": incumbent_id, "position": repeated}
 
-    incumbent_charge = rear_branch_sum_headroom_db(incumbent_section) if incumbent_section else None
     candidates = []
     for name in sorted(batch):
         section, section_reason = sections[name]
         changed = ([] if name == incumbent_id or not section
                    else changed_section_paths(section, incumbent_section))
-        charge = incumbent_charge if name == incumbent_id else (
-            rear_branch_sum_headroom_db(section) if section else None)
         rows = incumbent_rows if name == incumbent_id else _position_rows(
             batch[name], zeros, reference_late, reference_curve, incumbent=incumbent_rows, **figures)
         candidates.append({
@@ -417,9 +414,6 @@ def rear_document(
                     else ROLE_REAR_MUTED if section.get("rear_muted") is True else ROLE_VARIANT,
             "changed": changed, "change_family": section_change_family(changed),
             "section_reason": section_reason,
-            "headroom_charge_db": charge,
-            "headroom_change_db": None if charge is None or incumbent_charge is None
-                                  else charge - incumbent_charge,
             "level_db": _shared([basis.get("level_db") for basis in bases[name]]),
             "repeats": {key: len(group) for key, group in sorted(batch[name].items())},
             "positions": rows,

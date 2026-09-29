@@ -123,14 +123,14 @@ def _preview_document(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The preview, and the :func:`subject` of the round, set and take it read."""
     kind = preview_kind(document)
-    base, evidence, selected, capture_id, cabinet = None, None, None, None, None
+    selected, capture_id, cabinet = None, None, None
     try:
+        base, _ = _document_base(document, Path(args.root) if args.root else None)
         if kind == "rear_calibration":
             cabinet = rear_cabinet_channels(classify_output_contract(load_output_topology()))
         else:
-            base, _ = _document_base(document, Path(args.root) if args.root else None)
             selected = _document_set(args, document, inputs)
-            evidence = _document_evidence(args, document, inputs)
+        evidence = _document_evidence(args, document, inputs)
         if kind == "emitted_graph" and inputs is not None:
             selected = selected or resolve_set(inputs, args.set)
             capture_id = selected.take_id(args.take)
@@ -169,7 +169,8 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any], in
         except OSError as exc:
             return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
         rows.append({"out": str(path), "values": values,
-                     **(summary_rows(result["preview"]) if result["section"] == "rear_calibration"
+                     **({"program_charge_db": result["program_charge_db"], **summary_rows(result["preview"])}
+                        if result["section"] == "rear_calibration"
                         else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
                         else {"preview": result["preview"]})})
     return _answer(args, "judge --preview --vary", read,

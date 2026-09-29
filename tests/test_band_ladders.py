@@ -111,7 +111,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload, _ = result
         if builder == "rear_preview":
             takes = rear_views.pair_takes([{"branch_diagnostic": _branch_diagnostic()}])
-            payload = rear_preview._position(takes, payload, diagnostic_seed(48000), 0)
+            payload = rear_preview._position(takes, payload, diagnostic_seed(48000))
         else:
             low, high = payload["coverage_hz"]
             expected = tuple((lo, hi) for lo, hi in expected if lo >= low and hi <= high)
