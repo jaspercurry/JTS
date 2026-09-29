@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tuning tool catalog, and the round artifacts with the command that makes each."""
+"""The tuning tool catalog (ADR-0393), and the round artifacts with the command that makes each."""
 from __future__ import annotations
 
 from pathlib import Path

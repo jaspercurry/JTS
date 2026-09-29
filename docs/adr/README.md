@@ -256,7 +256,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0201](0201-fdw-stays-out-of-the-correction-path-funded-as-diagnostic-evidence.md) | FDW stays out of the correction path; funded as diagnostic evidence | accepted |
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
 | [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
-| [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
+| [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | §1-§2 amended by 0393 |
 | [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | amended by 0367 |
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
@@ -366,3 +366,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0389](0389-the-jasper-round-action-verbs-answer-through-the-envelope.md) | The `jasper-round` action verbs answer through ADR-0387's envelope: their `parameters` are the resolved plan's values, a blocking dry run is a refusal record, and `status` names the wizard's state `state` | accepted |
 | [0390](0390-there-is-no-discrete-before.md) | There is no discrete "before": no take, packet block, state copy, view or page series is kept as a round's "before", a comparison with an earlier take uses #5737 P6's comparand rule, and the ADR-0319 timing take stays | accepted |
 | [0391](0391-one-comparand-rule.md) | One comparand rule: a take's comparand is its round's base take at its place, preferring its own run, else the newest selected take banked earlier with the same place, drivers and graph scope; `round_inputs.comparand` owns it, the same-round A/B decides, and every comparison discloses `compare_capture_basis` | accepted |
+| [0393](0393-a-tools-catalog-row-is-the-source-of-its-help-and-its-menu-line.md) | A tool's catalog row is the source of its help and its menu line: one row per tool an agent can call states its question, needs, reads, programs, argv and answer fields, and `jasper-round-views catalog` lists them | accepted |

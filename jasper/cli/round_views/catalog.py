@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tool catalog: every tool an agent can call, listed from the rows that also make the runbook's menu."""
+"""The tool catalog: every tool an agent can call, listed from the rows that also make the runbook's menu (ADR-0393)."""
 
 from __future__ import annotations
 

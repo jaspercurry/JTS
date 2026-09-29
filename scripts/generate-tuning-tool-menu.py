@@ -7,7 +7,7 @@
 
 """Render the installed tuning docs' generated blocks from their owners.
 
-See ADR-0204 for the CLI menu and ADR-0181 for one owner per fact.
+See ADR-0204 and ADR-0393 for the CLI menu and ADR-0181 for one owner per fact.
 
 Usage::
 
