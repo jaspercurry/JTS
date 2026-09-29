@@ -124,9 +124,10 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
     "compare": CatalogRow("compare.json", ("<round-a>", TAKES_THIS_ROUND, "--a-take", "<take-id>", "--b-take", "<take-id>"),
                           schema="jts_compare/2", per_take=True, reads=READS_RECORDING,
         question="How does take B differ from take A, or from a forecast, through one window and smoothing?",
-        needs="two takes by their ids, from one round or two; or one take and a judge --preview --out forecast",
-        answer_fields=("bands", "basis", "bins", "level_offset_db", "max_abs_db", "max_abs_hz", "mean_abs_db",
-                       "relative_arrival_ms", "rms_db", "same_recording")),
+        needs=("two takes by their ids, from one round or two; one take and its comparand (no --a-* flag); "
+               "or one take and a judge --preview --out forecast"),
+        answer_fields=("bands", "basis", "bins", "comparand", "level_offset_db", "max_abs_db", "max_abs_hz",
+                       "mean_abs_db", "relative_arrival_ms", "rms_db", "same_recording")),
     "frequency": CatalogRow(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR),
                             builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA,
         question="What frequency response did each take bank, for one or two rounds, bundles or documents?",
