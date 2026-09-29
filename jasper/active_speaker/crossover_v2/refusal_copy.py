@@ -356,7 +356,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
         evidence_reasons.REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum "
                                            "is not comparable with the measured sum.",
-        evidence_reasons.TAKE_CURVES_NOT_BANKED: "No take in the measurement banked analysed curves, so there are none to draw.",
+        evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank the analysed curves this view reads.",
     },
     ("measure_repeats", "Measure repeat takes at the mark"): {
         evidence_reasons.REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",

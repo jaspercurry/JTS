@@ -35,6 +35,7 @@ from jasper.active_speaker.linearization_fit import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion, required_driver_roles
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
@@ -519,6 +520,19 @@ def test_unknown_set_uses_registry_refusal(speaker_round, capsys):
     assert result["reason"] in REASON_REGISTRY
     assert result["status"] == "refused"
     assert result["detail"]["set_id"] == "unknown"
+
+
+@pytest.mark.parametrize("field", ["validity_floor_hz", "repeat_curves"])
+def test_a_curve_banked_without_a_fit_input_refuses_by_that_field(speaker_round, capsys, field):
+    """#2902: every banked curve carries both fit inputs, so one without refuses by name."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    del record["curves"][0][field]
+    take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
+    refusal = json.loads(capsys.readouterr().out)
+    assert (refusal["reason"], json.loads(refusal["detail"])["field"]) == (TAKE_CURVES_NOT_BANKED, field)
 
 
 @pytest.mark.parametrize("applied", [False, True])

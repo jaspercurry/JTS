@@ -91,7 +91,7 @@ def design_clouds(inputs: RoundInputs, manifest: Mapping[str, Any]) -> dict[str,
                         relative_artifact_path(inputs.session_dir, path)
                         curve = next(c for c in json.loads(path.read_text()).get("curves", ()) if c["role"] == role)
                     parsed = response_from_banked_curve(curve)
-                    if parsed is None or parsed[0].role != role:
+                    if parsed[0].role != role:
                         raise ValueError("design pose has no fit response")
                     responses.append(parsed[0])
                     lo = max(lo, parsed[1][0], parsed[0].freqs_hz[0], parsed[0].fit_floor_hz or 0.0)
@@ -194,12 +194,8 @@ def speaker_fit(
     regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
     curves = {curve["role"]: curve for curve in curves_for_take(record, manifest)}
-    drivers = []
-    for role, band in bands.items():
-        response = response_from_banked_curve(curves[role])
-        if response is None:
-            raise RoundViewsError(f"fit inputs are not banked for {role}")
-        drivers.append(DriverEvidence(role, response[0], band, classes.get(role, "unknown")))
+    drivers = [DriverEvidence(role, response_from_banked_curve(curves[role])[0], band, classes.get(role, "unknown"))
+               for role, band in bands.items()]
     branches = fit_branches(
         drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},
         vocabulary=vocabularies,
