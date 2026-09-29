@@ -32,15 +32,17 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from jasper import fanin_coupling, ring_assets, ring_conf
+from jasper.dsp_control import fanin_coupling
+from jasper import ring_assets
+from jasper.dsp_control import ring_conf
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     devices_playback_is_pipe,
     parse_camilla_devices_config,
 )
 from jasper.env_file import env_value, read_value
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     OUTPUTD_DEFAULT_CONTENT_FORMAT,
@@ -145,7 +147,7 @@ class LoadedCamillaGraph:
     """One snapshot of a selected CamillaDSP graph.
 
     The width gate compares device, format and channels from one revision. ``devices``
-    is :func:`~jasper.camilla_config_contract.parse_camilla_devices_config`'s
+    is :func:`~jasper.dsp_control.camilla_config_contract.parse_camilla_devices_config`'s
     subset over that single read.
 
     ``note`` is empty when the graph WAS read, and otherwise says why not. Never
@@ -265,7 +267,7 @@ def graph_wire_declarations(
     """What the LOADED CamillaDSP graph declares, for each lane that IS a ring.
 
     The graph is a declaring end only for a lane whose device is one of the three
-    ring PCMs (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`): a lane on the
+    ring PCMs (:data:`~jasper.dsp_control.fanin_coupling.RING_PCM_DEVICES`): a lane on the
     dsnoop capture or the ALSA active lane declares a width for a transport that
     is not the ring. So this returns ZERO declarations on an unarmed box and one
     or two on an armed one.
@@ -431,7 +433,7 @@ def ring_edge_width_ready(
     """The shm_ring PREFLIGHT gate: do ALL the declaring ends state one wire?
 
     THE INVARIANT. For each ring, ``(sample_format, channels)`` is resolved once
-    per box by ``jasper.fanin_coupling.resolve_ring_wire``, and every end that
+    per box by ``jasper.dsp_control.fanin_coupling.resolve_ring_wire``, and every end that
     declares a geometry must declare exactly that. Any end that cannot ⇒ refuse
     to arm: the gate fails closed and retains applied changes —
     never a fallback (ADR-0100) — naming the end and the value it declared.

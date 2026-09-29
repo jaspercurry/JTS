@@ -13,7 +13,7 @@ from typing import Any
 from . import home_assistant as _ha_env
 from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
-from .camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (

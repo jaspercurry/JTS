@@ -22,7 +22,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import ring_assets, ring_conf, ring_header
+from jasper import ring_assets
+from jasper.dsp_control import ring_conf
+from jasper import ring_header
 from jasper.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
@@ -33,7 +35,7 @@ from .transport_camilla_fixtures import (
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.audio_hardware import reconcile_outputd_lane
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CAPTURE_DEVICE,
@@ -44,12 +46,12 @@ from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GraphSafety,
 )
-from jasper.outputd_active_lane import (
+from jasper.dsp_control.outputd_active_lane import (
     OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE,
     OUTPUTD_LEGAL_ENDPOINT_DEVICES,
     _outputd_endpoint_width,
 )
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
@@ -581,7 +583,7 @@ def test_the_accepted_device_rides_the_decision_so_the_marker_derives_from_it():
     different graphs (a re-emit landing between the reads is enough). The
     decision therefore reports which endpoint it accepted.
     """
-    from jasper.outputd_active_lane import OutputdActiveLaneDecision
+    from jasper.dsp_control.outputd_active_lane import OutputdActiveLaneDecision
 
     decision = OutputdActiveLaneDecision(
         ok=True, width=2, reason="x", endpoint_device=RING_ACTIVE_PLAYBACK_DEVICE
@@ -648,7 +650,7 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     written by a different owner, which is what gives the comparison something to
     disagree with.
     """
-    from jasper.fanin_coupling import COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
+    from jasper.dsp_control.fanin_coupling import COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling(outputd_env={})
@@ -677,10 +679,10 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     and a reachable-but-undeclared one is the unhandled case the design claims
     cannot exist.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHAPES
+    from jasper.dsp_control.fanin_coupling import TRANSPORT_SHAPES
     from jasper.transport_coherence import transport_topology_for_coupling
 
-    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+    from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     produced = {
         transport_topology_for_coupling(
@@ -1206,7 +1208,7 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     does not simply delete everything.
     """
     import jasper.fanin.coupling_reconcile as cr
-    from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS
+    from jasper.dsp_control.fanin_coupling import DEFAULT_FANIN_RING_SLOTS
     paths = _point_all_ring_files_at(monkeypatch, tmp_path)
     # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
     # explicitly (the ring-wire default flip), so a "coherent" fixture file must
@@ -1283,7 +1285,7 @@ def test_a_fourth_ring_block_must_render_or_fail_loud(monkeypatch, tmp_path):
     with no declared width raises.
     """
     from jasper import ring_assets as ra
-    from jasper.fanin_coupling import RingWire
+    from jasper.dsp_control.fanin_coupling import RingWire
 
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(RING_CONF.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1386,7 +1388,7 @@ def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_p
     """
     from jasper.audio_hardware.dac import latency_floor_for
     from jasper.cli.doctor import audio_runtime_ring
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
+    from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 
     floor = latency_floor_for("hifiberry_dac8x")
     assert floor is not None and floor.outputd_period_frames == RING_SLOT_FRAMES, (
@@ -1425,7 +1427,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
     """
     from jasper.cli.doctor import audio_runtime_fanin
     from jasper.cli.doctor._evidence import evidence
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
     monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
@@ -1433,7 +1435,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
     evidence.seed("camilla_devices:/tmp/loaded.yml", {
@@ -1472,7 +1474,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     """
     from jasper.cli.doctor import audio_runtime_fanin
     from jasper.cli.doctor._evidence import evidence
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
     monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
@@ -1480,7 +1482,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
     )
     evidence.seed("camilla_config", ("/tmp/statefile.yml", "/tmp/loaded.yml"))
     evidence.seed("camilla_devices:/tmp/loaded.yml", {
@@ -1500,7 +1502,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     # in its message, but the same reason — asserted here so both remain on
     # the forward ladder rather than collapsing into the plain graph-drift one.
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     cleared = audio_runtime_fanin.check_fanin_coupling()
     assert cleared.status == "warn"
@@ -1693,7 +1695,7 @@ def test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_sto
     pins that refusal, since it is the load-bearing half of the argument.
     """
     from jasper.sound.flat_verifier import flat_program_graph_blocked_reason
-    from jasper.fanin_coupling import capture_kwargs_for_coupling
+    from jasper.dsp_control.fanin_coupling import capture_kwargs_for_coupling
 
     # The kwargs are unconditionally the STEREO ring's...
     kwargs = capture_kwargs_for_coupling()
@@ -1732,7 +1734,7 @@ def test_resolve_output_layout_answers_the_ring_without_reading_the_marker(
     layouts = []
     for marker_armed in (False, True):
         monkeypatch.setattr(
-            "jasper.fanin_coupling.ring_active_endpoint_armed",
+            "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed",
             lambda env=None, armed=marker_armed: armed,
         )
         layout = resolve_output_layout(topo, env={})
@@ -2175,7 +2177,7 @@ def _outputd_env(
 
 
 def _ring_path_written(actions):
-    from jasper.fanin_coupling import OUTPUTD_RING_PATH_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_PATH_ENV_VAR
 
     for action in actions:
         if action.action == "set" and action.key == OUTPUTD_RING_PATH_ENV_VAR:
@@ -2208,7 +2210,7 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     # reaches the ring and still derives the marker SET, which is only true
     # because the chooser stopped reading it.
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
     )
     device = resolve_output_layout(topology, env={}).playback_device
     for _ in range(3):
@@ -2959,13 +2961,13 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     reconciler cannot emit that pair for any input text, checked here against
     the PR's own Python-side coherence twin rather than by re-stating the rule.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.dsp_control.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
     from jasper.transport_coherence import (
         transport_coherence_report,
         transport_topology_for_coupling,
     )
     from jasper.fanin.coupling_reconcile import _outputd_actions
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_RING_PATH_ENV_VAR,
     )
 

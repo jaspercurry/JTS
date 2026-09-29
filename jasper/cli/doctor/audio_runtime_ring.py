@@ -17,9 +17,11 @@ import subprocess
 import time
 from typing import Any
 
-from ... import ring_assets, ring_conf, ring_header
+from ... import ring_assets
+from jasper.dsp_control import ring_conf
+from ... import ring_header
 from ...audio_hardware.dac import latency_floor_for
-from ...fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from ...output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -115,7 +117,7 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     block, or a torn declaration — nothing safe to ask ALSA for).
 
     From the conf.d block itself, NOT from
-    :func:`~jasper.fanin_coupling.resolve_ring_wire`: the ioplug advertises
+    :func:`~jasper.dsp_control.fanin_coupling.resolve_ring_wire`: the ioplug advertises
     exactly what the file on disk declares as its hw_params constraint, and conf
     rendering and ring coupling are independently gated, so a box can carry a
     per-box-rendered conf.d while sitting coupling-inert (or the reverse). An
@@ -284,7 +286,7 @@ def check_content_transport_coherence() -> CheckResult:
     from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.paths import crossover_statefile
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -393,7 +395,7 @@ def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present.
 
     Three assets: the compiled ioplug .so, the conf.d PCM definitions
-    (jasper.ring_conf.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
+    (jasper.dsp_control.ring_conf.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
     Since ADR-0100 they are load-bearing on every box.
 
     Statuses:
@@ -471,7 +473,7 @@ def check_ring_platform_assets() -> CheckResult:
 def _resolved_ring_wire():
     """The ring wire an arm would render, or None when evidence is unavailable."""
     try:
-        from ...fanin_coupling import resolve_ring_wire
+        from jasper.dsp_control.fanin_coupling import resolve_ring_wire
 
         wire = resolve_ring_wire(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
@@ -885,7 +887,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     label = "ring geometry"
     try:
         from jasper.fanin.ring_readiness import resolve_effective_fanin_ring_slots
-        from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+        from jasper.dsp_control.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
             label,

@@ -24,7 +24,7 @@ import time
 from types import SimpleNamespace
 
 from ...accounts import legacy_cache_path, registry_path
-from ...camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config

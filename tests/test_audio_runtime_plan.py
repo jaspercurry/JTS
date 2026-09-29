@@ -44,7 +44,7 @@ from jasper.transport_coherence import (
     transport_topology_for_coupling,
 )
 from jasper.env_load import EnvFileState
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     TRANSPORT_DAC_CONTENT_RING,
@@ -539,7 +539,7 @@ def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
     the active leader's program bake — and a second hand-rolled key list is
     exactly how they would drift apart.
     """
-    from jasper.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
+    from jasper.dsp_control.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
 
     full = capture_kwargs_for_coupling()
     assert set(CAPTURE_HALF_KEYS) == {"capture_device", "capture_format"}
@@ -686,7 +686,7 @@ def test_the_lane_arms_on_exactly_the_dumb_member_cells():
     must emit the marker on exactly the cells the rule admits, or the two have
     drifted apart.
     """
-    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
     from jasper.multiroom.grouping_env import outputd_grouping_env
 
@@ -1037,7 +1037,7 @@ def test_transport_coherence_shm_ring_flags_a_ring_end_that_declares_another_wir
     is now reachable from real per-box state, and the wire-side half of the
     mutation is pinned here — move the resolver and the axis follows it.
     """
-    import jasper.fanin_coupling as coupling
+    import jasper.dsp_control.fanin_coupling as coupling
 
     monkeypatch.setattr(
         coupling,
@@ -1122,7 +1122,7 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
     would keep reporting stereo for a ring built otherwise, which is exactly
     the kind of observability that confirms a shear instead of catching it.
     """
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
         "jasper.transport_coherence.resolve_ring_wire",
@@ -1273,7 +1273,7 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
     still fire here, while the bridge and post-DSP ones must NOT: a marker-armed
     box declares no bridge by construction.
     """
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE
 
     healthy = transport_coherence.transport_coherence_report(
         outputd_env=_MARKER_ARMED_ENV,

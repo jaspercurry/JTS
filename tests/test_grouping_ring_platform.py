@@ -43,9 +43,10 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_conf, ring_header
+from jasper.dsp_control import ring_conf
+from jasper import ring_header
 from jasper.cli.doctor import audio_runtime_ring
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.config import GroupingConfig
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_CHANNELS,
@@ -241,7 +242,7 @@ def _confd_field(key: str) -> str:
 
     Deliberately reads the SHIPPED file with the ring platform's own block
     parser rather than a private regex, so "how a jts_ring block is read" keeps
-    one owner (:mod:`jasper.ring_conf`, which the conf.d renderer and every
+    one owner (:mod:`jasper.dsp_control.ring_conf`, which the conf.d renderer and every
     doctor check already share).
     """
     readers = {
@@ -383,9 +384,9 @@ def test_the_grouping_ring_slot_is_one_ring_slot():
     """The chunk this ring's period reads is itself the box's ring slot.
 
     ``GROUPING_RING_PERIOD_FRAMES`` reads
-    :data:`jasper.fanin_coupling.RING_CAMILLA_CHUNKSIZE`, and that chunk is a
+    :data:`jasper.dsp_control.fanin_coupling.RING_CAMILLA_CHUNKSIZE`, and that chunk is a
     separate declaration whose whole justification is that one chunk is one
-    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` slot — a link the two have
+    :data:`jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` slot — a link the two have
     only by value. Moving the slot without moving the chunk would leave this
     ring's geometry derived for a chunk that spans a different number of slots,
     which the emitter cannot see.

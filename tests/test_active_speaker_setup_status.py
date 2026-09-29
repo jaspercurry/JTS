@@ -500,7 +500,7 @@ def test_commissioning_summary_transport_follows_the_box(
     second-source-of-truth failure the single helper exists to prevent.
     """
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
     )
     result = setup_mod.commissioning_summary(
         topology_factory(),

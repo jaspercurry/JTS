@@ -31,7 +31,7 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
-from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control._health_fields import (
     as_int,
     as_int_or_none,

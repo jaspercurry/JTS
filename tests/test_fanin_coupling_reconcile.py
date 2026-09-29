@@ -26,7 +26,7 @@ from jasper.fanin.coupling_reconcile import (
 )
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import ring_edge_width_ready
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -869,7 +869,7 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
 
 def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
     """Simulate an emitted format that differs from the program wire."""
-    import jasper.fanin_coupling as coupling
+    import jasper.dsp_control.fanin_coupling as coupling
 
     real = coupling.capture_kwargs_for_coupling
 
@@ -888,7 +888,7 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
 
 def test_ring_edge_width_ready_passes_on_the_fixed_wide_wire():
     """The fixed program wire agrees at every declaring end."""
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
+    from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 
     ok, detail = ring_edge_width_ready()
     assert ok is True
@@ -1138,7 +1138,7 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     resolved wire's wide default and refuses every CONFIRM-path test here for a
     reason unrelated to whatever axis (slots/period) it is isolating.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1870,7 +1870,7 @@ def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
     The heal is logged rather than silent: a box that had been refusing outputd's
     attach has just stopped, and the journal has to say when.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,

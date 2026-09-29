@@ -48,7 +48,7 @@ from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
 )
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
 from jasper.output_topology import OutputTopology
 from tests._log_events import event_fields, event_records

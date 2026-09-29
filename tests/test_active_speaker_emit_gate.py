@@ -580,13 +580,13 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     websocket connection to an already-running CamillaDSP daemon -- there is
     no purely offline validator in that package to call standalone. The
     closest hardware-free equivalent already established in this codebase is
-    jasper.dsp_apply.validate_camilla_config, which shells out to the REAL
+    jasper.dsp_control.dsp_apply.validate_camilla_config, which shells out to the REAL
     Rust camilladsp binary's own `--check` flag (the same validation SetConfig
     runs, just without a live daemon connection) -- so it is used here
     instead. Skips (matching validate_camilla_config's own MISSING
     classification) when that binary is not installed, which is every
     developer machine and CI runner today (the binary is Pi-only)."""
-    from jasper.dsp_apply import ValidationStatus, validate_camilla_config
+    from jasper.dsp_control.dsp_apply import ValidationStatus, validate_camilla_config
 
     yaml_text = emit_active_speaker_program_config(
         _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM

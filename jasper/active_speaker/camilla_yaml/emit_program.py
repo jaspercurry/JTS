@@ -11,14 +11,14 @@ from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
 from jasper.camilla_emit import emit_devices_block
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.log_event import log_event
 
 from ..camilla_names import output_commission_mute_name, program_protection_name

@@ -24,14 +24,14 @@ from jasper.active_speaker.state_paths import (
     BASELINE_PROFILE_STATE_ENV as STATE_PATH_ENV,
 )
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
 from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
@@ -393,7 +393,7 @@ async def test_driver_commissioning_emits_a_coherent_graph_on_the_active_ring(
     topology, preset = commissioning_box
     emits = _recorded_commissioning_emit(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed",
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed",
         lambda env=None: route == "marker",
     )
 
@@ -420,7 +420,7 @@ async def test_every_ring_pcm_shares_one_capture_transport():
     """Ring A is the source for EVERY ring sink, so a ring emit's pair is
     coherent whichever member it names (ADR-0100)."""
     from jasper.active_speaker.camilla_yaml import capture_device_for_playback
-    from jasper.fanin_coupling import RING_PCM_DEVICES
+    from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES
 
     assert RING_PLAYBACK_DEVICE in RING_PCM_DEVICES
     assert RING_PLAYBACK_DEVICE != RING_ACTIVE_PLAYBACK_DEVICE
@@ -516,7 +516,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, marker: str):
     reads it FRESH on every call, and a monkeypatched predicate cannot fail that
     way.
     """
-    from jasper.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
 
     outputd_env = Path(tmp_path) / "outputd.env"
     outputd_env.write_text(
@@ -657,7 +657,7 @@ async def test_boot_anchor_derives_the_ring_device_block(
     literal would pass against a graph that had drifted from what fan-in
     declares. Both routes: the production marker and an explicit override."""
     from jasper.active_speaker.camilla_yaml import active_emit_devices
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_ENABLE_RATE_ADJUST,
         RING_CAMILLA_QUEUELIMIT,
@@ -667,7 +667,7 @@ async def test_boot_anchor_derives_the_ring_device_block(
 
     topology, preset = commissioning_box
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
     )
     yaml = _anchor_yaml(
         topology,
@@ -769,7 +769,7 @@ async def test_the_prepared_line_names_the_transport_it_actually_emitted(
     record down — never an empty value, which reads as the next field.
     """
     from jasper.active_speaker import staging as staging_mod
-    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import resolve_ring_wire
 
     topology, preset = commissioning_box
     if wire is None:
@@ -828,14 +828,14 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     commissioning_box, tmp_path,
 ):
     """Only transport device/geometry fields may change; hearing and graph fields stay."""
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_ENABLE_RATE_ADJUST,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
     )
 
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_WIDE
+    from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 
     wire = RING_WIRE_FORMAT_WIDE
     topology, preset = commissioning_box

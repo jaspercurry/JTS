@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from jasper.audio_hardware.dac import by_id as _dac_by_id
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.json_fields import issue as _issue
 from jasper.output_topology import (
     OutputTopology,

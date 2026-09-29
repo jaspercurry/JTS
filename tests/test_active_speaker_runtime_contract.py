@@ -50,7 +50,7 @@ from jasper.active_speaker.output_contract import (
     CONTRACT_SUBWOOFER_PRESENT,
     classify_output_contract,
 )
-from jasper.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
+from jasper.dsp_control.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
 from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, FLAT_PROGRAM_GRAPH_UNCONFIGURED, flat_program_graph_block, flat_program_graph_blocked_reason
 from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -4229,8 +4229,8 @@ def test_parked_write_refuses_a_config_camilladsp_rejects(
     not accept turns a merely-uncommissioned box into a restart-looping one.
     The writer preflights and refuses, and nothing lands on the real name.
     """
-    from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
-    import jasper.dsp_apply as dsp_apply_mod
+    from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+    import jasper.dsp_control.dsp_apply as dsp_apply_mod
 
     topology = _active_topology("mono", "active_2_way")
     parked_path = tmp_path / "active_speaker_parked.yml"
@@ -4536,7 +4536,7 @@ def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
     an unconditional rewrite meant two validation subprocesses and two inode
     churns on every deploy of an already-parked box.
     """
-    import jasper.dsp_apply as dsp_apply_mod
+    import jasper.dsp_control.dsp_apply as dsp_apply_mod
 
     topology = _active_topology("mono", "active_2_way")
     parked_path = tmp_path / "active_speaker_parked.yml"

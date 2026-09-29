@@ -807,7 +807,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    outputd_active_lane = (REPO / "jasper" / "outputd_active_lane.py").read_text()
+    outputd_active_lane = (REPO / "jasper" / "dsp_control" / "outputd_active_lane.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
@@ -946,8 +946,8 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width(
     included (both were unpinned until `parse_camilla_devices_config` learned
     them).
     """
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
     cutover = REPO / "deploy" / "camilladsp" / "outputd-cutover.yml"
     emitted = parse_camilla_devices_config(

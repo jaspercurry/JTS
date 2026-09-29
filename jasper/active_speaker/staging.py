@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.camilla_config_contract import read_camilla_devices_config
-from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.dsp_control.camilla_config_contract import read_camilla_devices_config
+from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
 from jasper.output_topology import (
@@ -42,7 +42,7 @@ from .camilla_yaml import (
     emit_active_speaker_commissioning_config,
 )
 from .camilla_names import STARTUP_MUTE_GAIN_DB
-from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .environment import classify_camilla_config_text
 from .graph_evidence import (
     all_commission_mutes_engaged as _all_commission_mutes_engaged,
@@ -90,7 +90,7 @@ STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 # Bounded, never open-ended: this wait sits on a /sound/ web request and on the
 # `baseline-reemit` CLI that deploys and operator ladder steps invoke.
 # It exceeds the holder's longest bounded step -- one `camilladsp --check`
-# inside :func:`~jasper.dsp_apply.validate_camilla_config`, which caps itself --
+# inside :func:`~jasper.dsp_control.dsp_apply.validate_camilla_config`, which caps itself --
 # so an ordinary overlap waits its turn instead of refusing, and a refusal
 # means something genuinely abnormal is holding the pair.
 STAGED_ANCHOR_LOCK_TIMEOUT_SEC = 15.0
@@ -179,7 +179,7 @@ def staged_anchor_lock(
     respect to the other's.
 
     LOCK ORDERING: innermost, always. The driver-capture route already holds
-    :func:`~jasper.dsp_apply.dsp_writer_lock` when it reaches the stager, so
+    :func:`~jasper.dsp_control.dsp_apply.dsp_writer_lock` when it reaches the stager, so
     the only nesting is ``dsp writer -> staged anchor``. Nothing may acquire
     the DSP writer lock while holding this one, and nothing may re-enter this
     lock: ``flock`` is per open file description, so a second acquisition in

@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.dsp_apply import same_config_file, dsp_writer_lock
+from jasper.dsp_control.dsp_apply import same_config_file, dsp_writer_lock
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CONFIG_DIR, camilla_statefile
-from jasper.fanin_coupling import capture_kwargs_for_coupling
+from jasper.dsp_control.fanin_coupling import capture_kwargs_for_coupling
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -247,7 +247,7 @@ async def load_profile_config(
     load, confirm, and optionally persist the saved profile.
     """
 
-    from jasper.dsp_apply import apply_dsp_config
+    from jasper.dsp_control.dsp_apply import apply_dsp_config
     from jasper.sound.camilla_yaml import (
         sound_audition_config_path,
         sound_config_path,

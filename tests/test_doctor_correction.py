@@ -277,7 +277,7 @@ def _hand_written_config_on_the_jts_ring():
     """An operator config with no JTS provenance that plays out of the ring
     JTS itself uses — naming the device is not provenance."""
 
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
+    from jasper.dsp_control.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
 
     return (
         "devices:\n"

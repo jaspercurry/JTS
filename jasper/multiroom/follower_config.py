@@ -211,7 +211,7 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
     :func:`precheck_active_follower` has built + re-proven it, and after
     snapclient is feeding the grouping ring (so CamillaDSP locks at once).
     """
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     from .grouping_ring import GROUPING_RING_PCM
 
@@ -306,7 +306,7 @@ async def restore_active_camilla_solo(
     dsp-apply for the same reason.
     """
     from jasper.active_speaker.graph_selector import safe_graph_for_current_topology
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
     from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     cam = camilla_factory()

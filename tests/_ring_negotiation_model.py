@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
     RING_SLOT_FRAMES,

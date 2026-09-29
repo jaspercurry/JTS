@@ -44,7 +44,7 @@ from jasper.active_speaker.round_packet import banked_evidence, store_banked_evi
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset

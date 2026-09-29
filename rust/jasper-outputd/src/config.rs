@@ -59,7 +59,7 @@ pub enum ContentBridgeMode {
 pub const DEFAULT_SHM_RING_PATH: &str = "/dev/shm/jts-ring/content.ring";
 /// The ACTIVE ring's file — a roleful (crossover) box's POST-crossover
 /// per-driver hop, distinct from `DEFAULT_SHM_RING_PATH`'s full-range stereo
-/// program. Mirrored by `jasper.fanin_coupling.DEFAULT_OUTPUTD_ACTIVE_RING_PATH`
+/// program. Mirrored by `jasper.dsp_control.fanin_coupling.DEFAULT_OUTPUTD_ACTIVE_RING_PATH`
 /// and by `pcm.jts_ring_active_playback`'s `path` in the ring conf.d; the three
 /// literals are pinned equal by `tests/test_ring_active_endpoint.py`.
 ///
@@ -84,7 +84,7 @@ pub const DEFAULT_DAC_CONTENT_RING_PATH: &str = "/dev/shm/jts-ring/dac-content.r
 pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 
 /// Frames per slot on that ring — the box's ring slot, Python twin
-/// `jasper.fanin_coupling.RING_SLOT_FRAMES` (#3656). The slot IS the reader's
+/// `jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` (#3656). The slot IS the reader's
 /// period, which is what lets outputd consume a whole DAC period per DAC period
 /// and never hold a partial slot; every DAC profile declaring a latency floor
 /// runs outputd here. A box whose `period_frames` is not this value — the
@@ -156,7 +156,7 @@ pub struct Config {
     /// Unset or blank falls back to `S16_LE`, which now means a box that has
     /// not yet reconciled or whose probe could not run:
     /// `deploy/bin/jasper-audio-hardware-reconcile` emits this key on every
-    /// box, from `jasper.fanin_coupling.content_lane_format_for_coupling`, and
+    /// box, from `jasper.dsp_control.fanin_coupling.content_lane_format_for_coupling`, and
     /// answers the fixed `S32_LE` program wire.
     pub content_format: SampleFormat,
     pub dac_pcm: String,
@@ -1575,7 +1575,7 @@ mod tests {
         // enum does, not because a content hop can be read at that width.
         // Neither transport can — `alsa_backend`'s ingest refuses it
         // park-class, `shm_ring_source` refuses it at the same exit code — and
-        // no writer can emit it (`jasper.fanin_coupling` answers only S16_LE or
+        // no writer can emit it (`jasper.dsp_control.fanin_coupling` answers only S16_LE or
         // S32_LE). The parse and the refusals are separate layers on purpose.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),

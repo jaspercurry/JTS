@@ -29,7 +29,7 @@ from jasper.audio_measurement.correction_lane import (
     popen_correction_play,
 )
 from jasper.camilla import CamillaUnavailable
-from jasper.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
+from jasper.dsp_control.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S, dsp_writer_lock
 from jasper.log_event import log_event
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.sound.settings import SoundSettings, load_sound_settings

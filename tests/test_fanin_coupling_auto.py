@@ -28,7 +28,7 @@ from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
 from jasper.fanin import latency_mode as lm
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAMILLA_CHUNKSIZE,
@@ -374,7 +374,7 @@ def _armed_outputd_env() -> str:
     that key's single writer and derives it from the coupling, so the fixture
     derives it the same way rather than naming a literal that could drift.
     """
-    from jasper.fanin_coupling import content_lane_format_for_coupling
+    from jasper.dsp_control.fanin_coupling import content_lane_format_for_coupling
 
     return (
         "JASPER_OUTPUTD_CONTENT_FORMAT="

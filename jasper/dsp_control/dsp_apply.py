@@ -42,7 +42,7 @@ from jasper.atomic_io import (
     atomic_write_text,
     read_json_mapping,
 )
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     VolumeLimitViolation,
     check_volume_limit,
 )
@@ -50,7 +50,7 @@ from jasper.json_fields import finite_float, sha256_file, utc_now_iso
 from jasper.log_event import log_event
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR, resolve_state_path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.dsp_apply")
 
 DEFAULT_DSP_APPLY_STATE_PATH = Path("/var/lib/jasper/dsp_apply_state.json")
 DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S = 10.0

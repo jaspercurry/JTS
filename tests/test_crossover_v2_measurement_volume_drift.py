@@ -632,7 +632,7 @@ def _drive(
     on_emit: Any = None,
 ) -> list[str]:
     """Use the shared composer and playback owner; replace hardware and admission."""
-    from jasper import dsp_apply
+    from jasper.dsp_control import dsp_apply
     from jasper.active_speaker import measurement_emit, program_admission, program_playback
     from jasper.active_speaker.crossover_v2 import door
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec

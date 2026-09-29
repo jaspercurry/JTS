@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from jasper.atomic_io import atomic_write_text
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
 from jasper.fanin.status import USBSINK_INPUT_LABEL
 from jasper.json_fields import as_mapping
 from jasper.paths import resolve_state_path

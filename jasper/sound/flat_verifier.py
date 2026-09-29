@@ -33,7 +33,7 @@ from jasper.active_speaker.output_contract import (
     flat_full_range_outputs,
     topology_allows_flat_dac_graph,
 )
-from jasper.camilla_config_contract import playback_is_pipe
+from jasper.dsp_control.camilla_config_contract import playback_is_pipe
 from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
 from jasper.json_fields import issue as _issue
 from jasper.multiroom.snapfifo import SNAPFIFO

@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_conf
-from jasper.fanin_coupling import (
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_SLOTS,
     RING_SLOT_FRAMES,
     RING_WIRE_FORMAT_WIDE,

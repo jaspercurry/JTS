@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
-from jasper.fanin_coupling import RING_A_CHANNELS
+from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS
 from jasper.speaker_layout import measurement_target_id
 
 from ..camilla_names import (

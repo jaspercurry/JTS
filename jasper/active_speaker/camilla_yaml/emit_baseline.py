@@ -9,7 +9,7 @@ from typing import Any, Collection, Mapping, Sequence
 
 import yaml as yaml_lib
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
@@ -17,7 +17,7 @@ from jasper.camilla_config_contract import (
 )
 from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
 from jasper.camilla_emit import emit_devices_block
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..camilla_names import blend_correction_name, room_peq_name
 from ..graph_safety import view_from_yaml_dict

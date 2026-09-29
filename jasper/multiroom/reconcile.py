@@ -37,14 +37,14 @@ from .. import atomic_io
 from .. import tts_routing as _tts_routing
 from ..camilla import CamillaUnavailable
 from ..control import restart_broker
-from ..dsp_apply import DspApplyError
+from jasper.dsp_control.dsp_apply import DspApplyError
 from ..env_load import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
     AIRPLAY_GROUPING_ENV_FILE,
     OUTPUTD_GROUPING_ENV_FILE,
     VOICE_GROUPING_ENV_FILE,
 )
-from ..fanin_coupling import DAC_CONTENT_LANE_ENV, RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV, RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..service_units import (

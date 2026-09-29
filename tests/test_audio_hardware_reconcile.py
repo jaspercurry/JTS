@@ -31,8 +31,9 @@ from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
-from jasper import audio_runtime_plan, ring_conf
-from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
+from jasper import audio_runtime_plan
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES, RingWire
 from jasper.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
@@ -586,7 +587,7 @@ def _active_graph_env(
     the gate would decline and fall through to the passive branch.
     """
     from jasper.active_speaker import emit_active_speaker_baseline_config
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     topology, preset = _preset_and_topology(channels)
     active_config = tmp_path / "active_speaker_baseline.yml"
@@ -638,7 +639,7 @@ def _active_leader_graph_env(
     from jasper.active_speaker import (
         emit_active_speaker_program_bake_config,
     )
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     topology, preset = _preset_and_topology(channels, strict=True)
@@ -2270,7 +2271,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
 ):
     """The current legal endpoint set cannot reach this accepted/no-endpoint
     case. Both lane markers must still agree if that set grows."""
-    from jasper.outputd_active_lane import OutputdActiveLaneDecision
+    from jasper.dsp_control.outputd_active_lane import OutputdActiveLaneDecision
 
     result = _run_reconcile(
         tmp_path,
@@ -2279,7 +2280,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
         "test",
         extra_env=_active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
         patches={
-            "jasper.outputd_active_lane.outputd_active_lane_decision":
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision":
                 lambda *_a, **_k: OutputdActiveLaneDecision(
                     ok=True, width=4, reason="accepted", endpoint_device=None
                 ),
@@ -2466,7 +2467,7 @@ def test_dual_apple_park_names_an_unavailable_active_graph_contract(tmp_path: Pa
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(_dual_apple_topology(tmp_path)),
         },
         patches={
-            "jasper.outputd_active_lane.outputd_active_lane_decision": (
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract module unusable"))
             )
         },
@@ -2966,7 +2967,7 @@ _FLOOR_PLAN_PROBE_FAILS = {
 def test_reconcile_emits_the_declared_latency_floor(
     tmp_path: Path, listing: str, dac_id: str
 ):
-    from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
+    from jasper.dsp_control.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
 
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
@@ -3212,7 +3213,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
 ) -> None:
     """The validator's literal note prefix is the only link to the stage
     reader's transient-result classification."""
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from tests.test_ring_active_endpoint import (
         _active_topology,
         _emit_active_baseline,
@@ -3617,7 +3618,7 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 # --- the content-lane format axis ---------------------------------------------
 # The reconciler is the single writer of JASPER_OUTPUTD_CONTENT_FORMAT, and its
 # value comes from the SAME function that decides what CamillaDSP emits
-# (jasper.fanin_coupling.content_lane_format_for_coupling) — so outputd cannot
+# (jasper.dsp_control.fanin_coupling.content_lane_format_for_coupling) — so outputd cannot
 # ask for a width the emitters do not produce.
 
 
@@ -3682,7 +3683,7 @@ def test_reconcile_no_longer_narrows_for_the_removed_rate_match_bridge(
 
 # The two registry/policy probes that must degrade rather than write a guess.
 _CONTENT_FORMAT_PROBE_FAILS = {
-    "jasper.fanin_coupling.content_lane_format_for_coupling": _raises(
+    "jasper.dsp_control.fanin_coupling.content_lane_format_for_coupling": _raises(
         RuntimeError("coupling policy unavailable")
     )
 }
@@ -3709,7 +3710,7 @@ _PROBE_FAILURES = {
     "active_graph_decision": (
         {
             **_LANE_CAP_ANSWERS_FOUR,
-            "jasper.outputd_active_lane.outputd_active_lane_decision": (
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract gone"))
             ),
         },

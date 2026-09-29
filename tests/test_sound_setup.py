@@ -57,7 +57,7 @@ from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.biquad import PeqFilter
 from jasper.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
     DspApplyState,
     camilla_graph_mutation,
     dsp_write_epoch,
@@ -5442,7 +5442,7 @@ async def test_apply_profile_blocks_a_carrier_that_cannot_host_eq(
     dry-runs the active carrier), so jasper-doctor's check_dsp_apply_state
     stays clean on an active speaker.
     """
-    from jasper.dsp_apply import last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
@@ -5498,7 +5498,7 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     # pass every other test but fail this one.
     import io
 
-    from jasper.dsp_apply import last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.

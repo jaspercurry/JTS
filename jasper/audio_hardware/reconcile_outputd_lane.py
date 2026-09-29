@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 # The ACTIVE RING's playback PCM — the ONE legal active endpoint. This module
 # never CHOOSES it; the active-lane decision reports which endpoint the live
 # graph targets, and this literal is only how the answer is recognized. Mirrors
-# jasper.fanin_coupling.RING_ACTIVE_PLAYBACK_DEVICE and the conf.d block name;
+# jasper.dsp_control.fanin_coupling.RING_ACTIVE_PLAYBACK_DEVICE and the conf.d block name;
 # pinned equal by tests/test_ring_active_endpoint.py.
 RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
@@ -157,7 +157,7 @@ def apply_audio_runtime_env(run: Pass) -> bool:
     try:
         # lazy: patch target — the tests replace it on the source
         # module, which only a per-call import sees.
-        from jasper.fanin_coupling import content_lane_format_for_coupling
+        from jasper.dsp_control.fanin_coupling import content_lane_format_for_coupling
 
         content_format = content_lane_format_for_coupling()
     # noqa reason: any failure leaves the key alone rather than narrowing the

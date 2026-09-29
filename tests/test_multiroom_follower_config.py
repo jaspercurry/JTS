@@ -32,7 +32,7 @@ import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker import graph_selector, graph_types
-import jasper.dsp_apply as dsp_apply_mod
+import jasper.dsp_control.dsp_apply as dsp_apply_mod
 import jasper.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
@@ -55,8 +55,8 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
 )
 from jasper.active_speaker.camilla_yaml import active_emit_devices
-from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CHUNKSIZE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_FORMAT,
     GROUPING_RING_PCM,

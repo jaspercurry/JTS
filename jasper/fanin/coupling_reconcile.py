@@ -4,7 +4,7 @@
 
 """Ordered convergence of the fan-in -> CamillaDSP ring coupling.
 
-:mod:`jasper.fanin_coupling` owns the *vocabulary* (the ring device names, the
+:mod:`jasper.dsp_control.fanin_coupling` owns the *vocabulary* (the ring device names, the
 emit kwargs); this module owns the *convergence* across the three audio daemons.
 
 ONE TRANSPORT (ADR-0100). fan-in writes Ring A (program.ring) that CamillaDSP
@@ -46,7 +46,7 @@ from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import env_value, read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     DEFAULT_OUTPUTD_RING_PATH,
@@ -61,7 +61,15 @@ from jasper.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
 # spine below starts it before restarting outputd — see :func:`_converge_ring`.
 from jasper import (
-    env_load, fanin_coupling, ring_assets, ring_conf, service_units, source_intent_units,
+    env_load, )
+from jasper.dsp_control import (
+    fanin_coupling, )
+from jasper import (
+    ring_assets, )
+from jasper.dsp_control import (
+    ring_conf, )
+from jasper import (
+    service_units, source_intent_units,
 )
 
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH

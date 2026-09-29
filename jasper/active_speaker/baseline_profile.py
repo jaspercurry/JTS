@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.dsp_apply import same_config_file
+from jasper.dsp_control.dsp_apply import same_config_file
 from jasper.output_topology import canonical_fingerprint as _fingerprint
 
 from .camilla_yaml import _branch_context, linearization_headroom_db

@@ -22,7 +22,7 @@ from jasper.audio_hardware.dac import (
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_reconcile
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_PLAYBACK_DEVICE,
 )
@@ -72,7 +72,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     from jasper.audio_runtime_plan import (
         output_endpoint_evidence_from_statefiles as _real_endpoint_evidence,
     )
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     # ONE on-disk statefile pair drives BOTH halves — no stubbed evidence
     # resolution. The first version of this guard canned
@@ -218,7 +218,7 @@ def _stage_floor_above_the_slot(monkeypatch, tmp_path):
     """Ring A's slot is fan-in's COMPILE-TIME RING_SLOT_FRAMES, so a DAC whose
     floor is not exactly that never gets a rendered conf.d. A documented product
     boundary, not drift."""
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
+    from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 
     monkeypatch.setattr(
         audio_runtime_ring,
@@ -926,7 +926,7 @@ def test_probe_sources_the_conf_declared_wire_not_the_resolver(monkeypatch, tmp_
     monkeypatch.setattr(audio_runtime_ring, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime_ring.shutil, "which", lambda t: f"/usr/bin/{t}")
 
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     def _must_not_be_called(*a, **k):  # pragma: no cover - must never run
         raise AssertionError(
@@ -968,12 +968,12 @@ def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
     — the probe reads a LITERAL in the file, not the ioplug's absent-key
     default. The shipped file changed to spell the token because the
     resolver's default went wide while the C ioplug's compiled-in default
-    (mirrored by ``jasper.ring_conf.RING_CONF_DEFAULT_FORMAT``) stayed
+    (mirrored by ``jasper.dsp_control.ring_conf.RING_CONF_DEFAULT_FORMAT``) stayed
     S16_LE: an omitted ``format`` key would now declare the OPPOSITE of what
     every other end of the ring resolves. That same disagreement is what makes
     the ioplug capability gate LIVE fleet-wide now (``ring_wire_caps_ready`` /
     ``ring_ioplug_wire_supported``) rather than dormant — see
-    :data:`~jasper.ring_conf.RING_CONF_DEFAULT_FORMAT`'s own docstring.
+    :data:`~jasper.dsp_control.ring_conf.RING_CONF_DEFAULT_FORMAT`'s own docstring.
 
     THE CHANNELS AXIS IS UNCHANGED: no block declares ``channels``, so it
     still answers via the ioplug's absent-key default (2), not a literal and
@@ -983,7 +983,7 @@ def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
     topology, which still coincides today — both land on S32_LE/2ch/2ch now —
     a drift between the two independent policies would show up here as a
     failing cross-check, not as the probe's own source."""
-    from jasper.fanin_coupling import resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import resolve_ring_wire
 
     shipped = (
         Path(__file__).resolve().parents[1]

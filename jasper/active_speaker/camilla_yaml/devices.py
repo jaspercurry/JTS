@@ -7,9 +7,9 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
-from jasper.camilla_config_contract import DEFAULT_CAPTURE_FORMAT, resolve_enable_rate_adjust
-from jasper.camilla_latency import resolve_camilla_latency_for_devices
-from jasper.fanin_coupling import (
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAPTURE_FORMAT, resolve_enable_rate_adjust
+from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_GEOMETRY,
@@ -135,7 +135,7 @@ def active_emit_devices(
     derivation.
 
     Ring membership is over ALL THREE ring PCMs
-    (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against the
+    (:data:`~jasper.dsp_control.fanin_coupling.RING_PCM_DEVICES`), not one ``==`` against the
     active ring, so this is the site that answers for a ring PCM rather than the
     site that happens to know one name. What the ring branch answers:
 
@@ -147,10 +147,10 @@ def active_emit_devices(
       compares capture CHANNELS, 2 == 2, and the width gate only holds
       ring-NAMED lanes). Moving both halves together makes it unreachable.
     - ``capture_format`` / ``playback_format`` —
-      :func:`~jasper.fanin_coupling.resolve_ring_wire`, ONE format for both
+      :func:`~jasper.dsp_control.fanin_coupling.resolve_ring_wire`, ONE format for both
       because the three rings share the fixed S32_LE program wire.
     - ``chunksize`` / ``target_level`` / ``queuelimit`` /
-      ``enable_rate_adjust`` — :data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`
+      ``enable_rate_adjust`` — :data:`~jasper.dsp_control.fanin_coupling.RING_CAMILLA_GEOMETRY`
       whole, the certified pairing passed EXPLICITLY rather than the box floor an
       ordinary stereo graph carries (ADR-0218).
 

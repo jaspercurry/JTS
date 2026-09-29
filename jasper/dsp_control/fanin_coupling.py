@@ -43,7 +43,7 @@ RING_SLOTS_ENV_VAR = "JASPER_FANIN_RING_SLOTS"
 # Ring A/B slot size in frames. Compile-time on the other three ends with no env
 # override, so this is the only slot size the transport carries: mirrors
 # rust/jasper-ring/src/layout.rs RING_SLOT_FRAMES and c/jts-ring-ioplug/
-# pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD. jasper.ring_conf.render_ring_conf_wire
+# pcm_jts_ring.c JTS_RING_DEFAULT_PERIOD. jasper.dsp_control.ring_conf.render_ring_conf_wire
 # refuses any other period — the ioplug would attach against a geometry fan-in
 # never builds and crash at arm instead of refusing.
 RING_SLOT_FRAMES = 128
@@ -617,7 +617,7 @@ def content_lane_format_for_coupling() -> str:
     NOT a sink-type axis: a bonded leader's File/pipe sink is pinned to
     ``DEFAULT_PIPE_SINK_FORMAT`` and does not write this hop at all. Callers that
     need the format for an arbitrary sink want
-    ``jasper.camilla_config_contract`` instead.
+    ``jasper.dsp_control.camilla_config_contract`` instead.
     """
     value = capture_kwargs_for_coupling().get("playback_format")
     if isinstance(value, str) and value:

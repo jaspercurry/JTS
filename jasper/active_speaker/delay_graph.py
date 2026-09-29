@@ -15,7 +15,7 @@ import math
 from typing import Any, Literal, Mapping, NoReturn, TypeAlias
 
 from jasper.camilla_emit import fmt
-from jasper.camilla_config_contract import ensure_volume_limit_db
+from jasper.dsp_control.camilla_config_contract import ensure_volume_limit_db
 from jasper.json_fields import finite_float
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US, DspPredecessor, NullWalkError

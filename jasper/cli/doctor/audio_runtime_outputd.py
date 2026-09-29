@@ -300,12 +300,12 @@ def _outputd_buffer_health(
     """Validate the content hop's buffer geometry and return ring detail.
 
     ``content_hop`` is the resolved transport shape's name
-    (:data:`jasper.fanin_coupling.TRANSPORT_SHAPES`), which is what decides
+    (:data:`jasper.dsp_control.fanin_coupling.TRANSPORT_SHAPES`), which is what decides
     both branches below AND which ring's width the observed channels are held
     to — the ACTIVE shape reads the post-crossover per-driver ring. Taking the
     resolved shape rather than re-reading markers keeps one env read per check.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_TRANSPORT_SHAPES,
         TRANSPORT_DAC_CONTENT_RING,
         TRANSPORT_SHM_RING_ACTIVE,
@@ -382,7 +382,7 @@ def _outputd_buffer_health(
         # its own declaration, which proves nothing about a ring that does not
         # exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
-            from jasper.fanin_coupling import resolve_ring_wire
+            from jasper.dsp_control.fanin_coupling import resolve_ring_wire
 
             # TOPOLOGY-THREADED, like every reconciler gate that compares this
             # wire (``ring_edge_width_ready`` / ``ring_wire_caps_ready``): the
@@ -521,7 +521,7 @@ def _outputd_transport_health(
     Whether that env is the RIGHT one for this box is
     :func:`check_content_transport_coherence`'s.
     """
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
     from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.paths import crossover_statefile
 

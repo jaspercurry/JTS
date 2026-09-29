@@ -291,7 +291,7 @@ class Pass:
         ``(False, reason)`` and every caller fails closed.
         """
         try:
-            from jasper.outputd_active_lane import (  # lazy: graph proof import cost on active-endpoint paths
+            from jasper.dsp_control.outputd_active_lane import (  # lazy: graph proof import cost on active-endpoint paths
                 outputd_active_lane_decision,
             )
 

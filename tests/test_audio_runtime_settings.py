@@ -32,7 +32,7 @@ from jasper.audio_runtime_settings import (
     outputd_env_buffer_pair_error,
 )
 from jasper.audio_runtime_plan import build_audio_runtime_plan
-from jasper.camilla_config_contract import DEFAULT_TARGET_LEVEL
+from jasper.dsp_control.camilla_config_contract import DEFAULT_TARGET_LEVEL
 
 
 ROOT = Path(__file__).resolve().parents[1]

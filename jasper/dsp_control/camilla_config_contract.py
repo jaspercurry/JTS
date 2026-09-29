@@ -9,7 +9,7 @@ defaults to build and inspect CamillaDSP YAML without pulling NumPy/SciPy
 into the combined ``jasper-web`` process.
 
 Vocabulary only. Resolution that reads hardware, the environment or the lab
-override artifact lives above, in :mod:`jasper.camilla_latency`.
+override artifact lives above, in :mod:`jasper.dsp_control.camilla_latency`.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any, Mapping
 
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
 from jasper.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
     RING_PCM_DEVICES,
@@ -45,7 +45,7 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # The bonded-leader pipe sink (jasper.sound.camilla_yaml's playback_pipe_path
 # axis) and the active-speaker parked graph's /dev/null File sink are pinned
 # to THIS format, independently of
-# :data:`~jasper.fanin_coupling.DEFAULT_PLAYBACK_FORMAT`: snapserver's pipe
+# :data:`~jasper.dsp_control.fanin_coupling.DEFAULT_PLAYBACK_FORMAT`: snapserver's pipe
 # source is a fixed-format wire contract —
 # jasper.multiroom.reconcile_plan.snapserver_argv hardcodes `sampleformat=
 # 48000:16:2` — so a future DEFAULT_PLAYBACK_FORMAT widening (the
@@ -89,9 +89,9 @@ def resolve_enable_rate_adjust(playback_device: str | None) -> bool:
 
     A property of the SINK, never of the graph's role. False for ``None``, the
     clockless ``File`` sink
-    :func:`~jasper.camilla_latency.resolve_camilla_latency_for_devices` reads
+    :func:`~jasper.dsp_control.camilla_latency.resolve_camilla_latency_for_devices` reads
     the same way, because it has no output clock to follow. False for a ring
-    PCM (:data:`~jasper.fanin_coupling.RING_PCM_DEVICES`) because it is an
+    PCM (:data:`~jasper.dsp_control.fanin_coupling.RING_PCM_DEVICES`) because it is an
     ioplug: alsa-lib reports card -1 for every ioplug, so CamillaDSP builds no
     HCtl and has no mixer element to actuate, and a requested ``true`` would
     only echo back on ``capture_status.rate_adjust`` while nothing moved. True

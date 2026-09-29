@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
 from jasper.camilla_emit import emit_devices_block, fmt
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from .decorate_rear import _mute_unfitted_rear_outputs

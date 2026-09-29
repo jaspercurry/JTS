@@ -24,7 +24,7 @@ from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.playback_route import resolve_active_playback_device
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
@@ -87,7 +87,7 @@ from jasper.active_speaker.safe_playback import (
     load_safe_playback_state,
     stop_safe_playback_session,
 )
-from jasper.dsp_apply import validate_camilla_config
+from jasper.dsp_control.dsp_apply import validate_camilla_config
 from jasper.output_topology import OutputTopology, OutputTopologyError
 from jasper.output_topology_store import load_output_topology_strict
 from jasper.paths import camilla_statefile

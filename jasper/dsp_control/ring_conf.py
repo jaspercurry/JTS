@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jasper.atomic_io import atomic_write_text
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_SLOT_FRAMES
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_SLOT_FRAMES
 
 if TYPE_CHECKING:
-    from jasper.fanin_coupling import RingWire
+    from jasper.dsp_control.fanin_coupling import RingWire
 
 
 # The conf.d PCM block name for Ring A (fan-in's program ring). ``n_slots`` under
@@ -66,7 +66,7 @@ RING_CONF_N_SLOTS = 2
 # match the conf.d n_slots"), and rendering this constant into that block
 # would shear a coherent operator override (env + conf.d) on the next
 # hardware reconcile. Ring A's n_slots is owned by
-# ``jasper.fanin_coupling.DEFAULT_FANIN_RING_SLOTS`` /
+# ``jasper.dsp_control.fanin_coupling.DEFAULT_FANIN_RING_SLOTS`` /
 # ``JASPER_FANIN_RING_SLOTS``, never this constant — the two rings are sized
 # independently on purpose (``rust/jasper-ring/src/layout.rs``'s
 # ``RING_SLOTS`` doc comment).
@@ -375,7 +375,7 @@ def render_ring_conf_wire(
 ) -> RingConfWireRender:
     """Rewrite the ring conf.d so every PCM block declares ``wire``.
 
-    ``wire`` is a :class:`~jasper.fanin_coupling.RingWire` — the ONE per-box
+    ``wire`` is a :class:`~jasper.dsp_control.fanin_coupling.RingWire` — the ONE per-box
     resolution of the ring's geometry. Taking the resolved object rather than
     four loose scalars is deliberate: the four ends of the ring must declare the
     same tuple, so a call site cannot pass a format from one resolution and a
@@ -412,7 +412,7 @@ def render_ring_conf_wire(
       which the three rings legitimately differ, which is why the parsers above
       are block-scoped.
 
-    **The only renderable period is** :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`.
+    **The only renderable period is** :data:`~jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES`.
     Ring A's slot size is fan-in's COMPILE-TIME constant
     (``rust/jasper-ring/src/layout.rs`` ``RING_SLOT_FRAMES``, with no env
     override; ``mixer.rs`` creates the ring with it), so writing any other

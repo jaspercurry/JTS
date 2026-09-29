@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
@@ -31,7 +31,7 @@ from jasper.camilla_config_contract import (
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import PeqFilter
-from jasper.camilla_latency import resolve_camilla_latency_for_devices
+from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.camilla_emit import (
     FLAT_PROGRAM_WIDTH,
     MONO_SUM_GAIN_DB,
@@ -42,7 +42,7 @@ from jasper.camilla_emit import (
     mono_sum_sources,
 )
 from jasper.camilla_stereo_prefix import build_stereo_prefix
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from .profile import (
@@ -373,7 +373,7 @@ def emit_sound_config(
     the ALSA loopback. ``None`` (default — solo) is **byte-identical**
     to before this parameter existed (the solo-impact contract). The
     pipe sink's emitted ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``
-    (``jasper.camilla_config_contract``), a DIFFERENT axis from
+    (``jasper.dsp_control.camilla_config_contract``), a DIFFERENT axis from
     ``playback_format`` — snapserver's pipe source is a fixed-format wire
     contract (``sampleformat=48000:16:2``,
     ``jasper.multiroom.reconcile_plan.snapserver_argv``), so the ALSA loopback
@@ -389,7 +389,7 @@ def emit_sound_config(
     the resolver below answers ``False`` for.
 
     ``enable_rate_adjust`` defaults to
-    :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`'s answer
+    :func:`~jasper.dsp_control.camilla_config_contract.resolve_enable_rate_adjust`'s answer
     for the sink this call emits — see it for why the sink decides. It stays a
     parameter only as the lab/explicit seam, so a lab emit can set it; no live
     caller passes one.
@@ -596,7 +596,7 @@ def emit_sound_config(
     # Playback sink: ALSA loopback (solo — the default, byte-identical) or the
     # bonded-leader File/pipe sink feeding snapserver. D4: a pipe is pinned to
     # DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see the guard above and
-    # the constant's own comment (jasper.camilla_config_contract).
+    # the constant's own comment (jasper.dsp_control.camilla_config_contract).
     devices_yaml = emit_devices_block(
         samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
         target_level=target_level, enable_rate_adjust=enable_rate_adjust,
@@ -797,7 +797,7 @@ def emit_flat_outputd_cutover_config(
     a wide graph from it rather than counting live channels it cannot place.
     """
 
-    from jasper.fanin_coupling import RING_CAMILLA_GEOMETRY, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_CAMILLA_GEOMETRY, resolve_ring_wire
 
     # BOTH HALVES ARE THE RING (ADR-0100) — capture is Ring A and playback is
     # Ring B, both off the module defaults — so this graph passes the certified

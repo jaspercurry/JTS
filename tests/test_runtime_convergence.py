@@ -217,7 +217,7 @@ def test_post_publication_fsync_failure_does_not_restore_old_graph(
 def test_graph_writer_cannot_enter_between_park_and_commit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from jasper.dsp_apply import camilla_graph_mutation
+    from jasper.dsp_control.dsp_apply import camilla_graph_mutation
 
     topology = _topology([])
     lock_path = tmp_path / "graph.lock"

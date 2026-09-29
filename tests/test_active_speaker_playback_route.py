@@ -23,7 +23,7 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X,
     INNOMAKER_HIFI_AMP_PRO,
 )
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.playback_route import resolve_output_layout
 from jasper.output_topology import (
     OUTPUT_TOPOLOGY_KIND,

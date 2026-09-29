@@ -8,7 +8,7 @@ Native-render derivation: see
 ``docs/adr/0304-the-bass-level-axis-is-fixed-level-windows.md``.
 
 This module owns its own binary resolution and subprocess shape. It does
-**not** import :mod:`jasper.dsp_apply` — that module's ``_camilladsp_binary``
+**not** import :mod:`jasper.dsp_control.dsp_apply` — that module's ``_camilladsp_binary``
 prefers ``JASPER_CAMILLADSP_BIN`` (R5 explicitly forbids that for renders: a
 set-but-different override must refuse, not be silently preferred), and its
 ``--check`` validation invocation is a different operation from a real render.

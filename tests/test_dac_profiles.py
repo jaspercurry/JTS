@@ -626,7 +626,7 @@ def test_innomaker_floor_period_is_what_makes_the_ring_reachable() -> None:
     floor reaches shm_ring only by EQUALLING it. Pinned against the constant
     rather than the literal 128, so moving one moves this test with it.
     """
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
+    from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 
     floor = dac.latency_floor_for(INNOMAKER_HIFI_AMP_PRO_ID)
     assert floor is not None

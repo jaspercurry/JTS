@@ -843,7 +843,7 @@ def test_displaced_token_is_checked_after_writer_lock(compare_box, monkeypatch):
     async def overtaken(*args, **kwargs):
         path.write_text(json.dumps({**state, "token": "new-owner"}))
         yield
-    monkeypatch.setattr("jasper.dsp_apply.dsp_writer_lock", overtaken)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply.dsp_writer_lock", overtaken)
     verdict = asyncio.run(stop_audition(cam=cam, expect_token=state["token"]))
     assert verdict["status"] == "superseded"
     assert cam.ducked == [False]

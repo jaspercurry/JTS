@@ -51,7 +51,7 @@ def _patch_ring_coupled_box(
     Call this LAST, after ``_patch_status_reader``: that one points the
     endpoint evidence at the stereo ring, so an earlier call is silently undone.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
@@ -96,7 +96,7 @@ def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
     layer reported such a box on an env it is not running — which is what made
     the transport checks contradict the grouping doctor.
     """
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 
     base = tmp_path / "outputd.env"
     base.write_text(f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n", encoding="utf-8")
@@ -406,7 +406,7 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
 
 
 def _buffer_health(data, *, period=128, content_hop=None):
-    from jasper.fanin_coupling import COUPLING_SHM_RING as TRANSPORT_SHM_RING
+    from jasper.dsp_control.fanin_coupling import COUPLING_SHM_RING as TRANSPORT_SHM_RING
 
     return audio_runtime_outputd._outputd_buffer_health(
         data,
@@ -503,7 +503,7 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
     doctor contradicting the reconciler that armed it.
     """
     import jasper.fanin.ring_readiness as rh
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     sentinel = object()
     monkeypatch.setattr(rh, "load_topology_for_wire", lambda: sentinel)
@@ -979,7 +979,7 @@ def _case_marker_armed_member_ok(monkeypatch, tmp_path):
             period_frames=1024,
         ),
     )
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
     monkeypatch.setattr(
         audio_runtime_plan,

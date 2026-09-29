@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAPTURE_DEVICE,
@@ -19,7 +19,7 @@ from jasper.fanin_coupling import (
     resolve_ring_slots,
     ring_capacity_frames,
 )
-from jasper.camilla_config_contract import parse_camilla_devices_config
+from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 
@@ -51,7 +51,7 @@ def test_content_lane_format_is_one_definition_for_both_ends_of_the_hop():
     second route to select (ADR-0100), and the function takes no token to
     pretend otherwise.
     """
-    from jasper.fanin_coupling import content_lane_format_for_coupling
+    from jasper.dsp_control.fanin_coupling import content_lane_format_for_coupling
 
     assert content_lane_format_for_coupling() == RING_WIRE_FORMAT_WIDE
     # The answer is the kwargs' own value, not a second literal: it tracks
@@ -124,7 +124,7 @@ def test_capture_kwargs_are_the_ring():
     silently in the middle of an EQ save. So: no env, no file, the full ring
     topology.
     """
-    from jasper import fanin_coupling
+    from jasper.dsp_control import fanin_coupling
 
     assert fanin_coupling.capture_kwargs_for_coupling() == {
         "capture_device": RING_CAPTURE_DEVICE,
@@ -146,7 +146,7 @@ def test_outputd_bridge_is_ring_truth_table_matches_the_daemon():
     speaker reported SILENT. Everything else answers away from the ring, which
     is also what outputd does with those values: it parks.
     """
-    from jasper.fanin_coupling import outputd_bridge_is_ring
+    from jasper.dsp_control.fanin_coupling import outputd_bridge_is_ring
 
     # Undeclared, in all three shapes a caller can hand over.
     for undeclared in (None, "", "   "):
@@ -186,7 +186,7 @@ def test_the_central_ring_predicate_reads_both_keys(env, expected):
     ring. The marker is read through outputd's `env_bool` accept-set, so a
     CLEARED key (the grouping reconciler's own disable spelling) is not armed.
     """
-    from jasper.fanin_coupling import outputd_content_is_central_ring
+    from jasper.dsp_control.fanin_coupling import outputd_content_is_central_ring
 
     assert outputd_content_is_central_ring(env) is expected
 
@@ -208,7 +208,7 @@ def test_served_and_contradicted_split_every_marker_armed_box(bridge, served):
     EX_CONFIG on the marker beside a DECLARED one. The two predicates partition
     the armed boxes so no surface has to guess which side it is on.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         dac_content_marker_contradicted,
         dac_content_ring_served,
     )
@@ -227,8 +227,8 @@ def test_served_and_contradicted_split_every_marker_armed_box(bridge, served):
 
 def test_the_marker_predicate_reads_the_key_the_ring_module_owns():
     """One key, one owner: the reader and the writer's constant must agree."""
-    from jasper.fanin_coupling import dac_content_lane_marker_armed
-    from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+    from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 
     assert DAC_CONTENT_LANE_ENV == "JASPER_OUTPUTD_DAC_CONTENT_LANE"
     assert dac_content_lane_marker_armed({DAC_CONTENT_LANE_ENV: "1"}) is True
@@ -246,7 +246,7 @@ def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
     from pathlib import Path
     import re
 
-    from jasper.fanin_coupling import _OUTPUTD_RING_BRIDGE_SPELLINGS
+    from jasper.dsp_control.fanin_coupling import _OUTPUTD_RING_BRIDGE_SPELLINGS
 
     config_rs = (
         Path(__file__).resolve().parents[1]
@@ -266,7 +266,7 @@ def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
 
 
 def test_resolve_outputd_ring_path_fail_safe():
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
         resolve_outputd_ring_path,
     )
@@ -281,7 +281,7 @@ def test_resolve_outputd_ring_path_fail_safe():
 
 
 def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_A_CHANNELS,
         RING_SLOT_FRAMES,
         resolve_ring_wire,
@@ -296,7 +296,7 @@ def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
 
 def test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology():
     """Only channel geometry varies with topology; the program format is fixed."""
-    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import (
         _active_topology,
         _full_range_mono,
@@ -330,7 +330,7 @@ def test_resolve_ring_wire_reads_ring_b_channels_from_the_topology(monkeypatch):
     answer is what separates the two.
     """
     import jasper.active_speaker.output_contract as oc
-    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     topology = _full_range_stereo()
@@ -348,7 +348,7 @@ def test_resolve_ring_wire_falls_back_to_the_shipped_width_for_no_ring_topology(
     # the conf.d on that box declares, which is the shipped stereo geometry.
     # Refusing to ARM is the preflights' job, not the resolver's.
     import jasper.active_speaker.output_contract as oc
-    from jasper.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
     from tests.test_active_speaker_runtime_contract import _full_range_stereo
 
     monkeypatch.setattr(oc, "ring_channels_for_topology", lambda _t: None)
@@ -380,7 +380,7 @@ def test_ring_wire_formats_are_exactly_the_two_the_ioplug_accepts():
 def test_capture_kwargs_take_their_format_from_the_resolver(monkeypatch):
     # The emitted config's width is the resolver's answer, not a constant the
     # emitter re-derives. Patch the resolver; both ring ends must follow.
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
         fc,

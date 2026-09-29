@@ -315,7 +315,7 @@ def check_bass_extension_profile() -> CheckResult:
 
 @doctor_check()
 def check_dsp_apply_state() -> CheckResult:
-    from jasper.dsp_apply import last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 
     state = last_dsp_apply_state()
     if state is None:

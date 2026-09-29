@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import jasper.dsp_apply as dsp_apply_module
+import jasper.dsp_control.dsp_apply as dsp_apply_module
 
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
     CANONICAL_DSP_WRITER_LOCK_PATH,
     CamillaConfigValidationResult,
     DSP_PROOF_ANCHOR_MISSING,
@@ -422,7 +422,7 @@ def test_validate_camilla_config_timeout_output_is_json_safe(
             stderr=b"partial stderr",
         )
 
-    monkeypatch.setattr("jasper.dsp_apply.subprocess.run", fake_run)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply.subprocess.run", fake_run)
 
     result = validate_camilla_config(cfg)
 
@@ -560,7 +560,7 @@ def test_validate_rejects_ambiguous_volume_limit_without_binary(
     monkeypatch,
     text: str,
 ):
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     cfg = tmp_path / "candidate.yml"
     cfg.write_text(text)
@@ -577,7 +577,7 @@ def test_validate_limit_check_applies_without_camilladsp_binary(
 ):
     """Dev machines without CamillaDSP skip the CLI preflight (MISSING is
     ok_to_apply) but must still get the pure-Python safety rejection."""
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     cfg = tmp_path / "candidate.yml"
     cfg.write_text("---\ndevices:\n  volume_limit: 6.0\n")
@@ -592,7 +592,7 @@ def test_validate_limit_check_applies_without_camilladsp_binary(
 def test_validate_accepts_zero_volume_limit_without_binary(
     tmp_path: Path, monkeypatch,
 ):
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     cfg = tmp_path / "candidate.yml"
     cfg.write_text("---\ndevices:\n  volume_limit: 0.0\n")

@@ -18,7 +18,7 @@ from typing import Any, Callable, Sequence, TypeVar
 from .. import librespot_state
 from ..accessories import status as accessory_status
 from ..active_speaker.audition import audition_summary
-from ..dsp_apply import last_dsp_apply_state
+from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 from ..json_fields import as_mapping
 from ..music_sources import MUSIC_SOURCE_VALUES, Source
 from ..fanin.status import (
