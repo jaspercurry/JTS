@@ -41,27 +41,34 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 
-def read_json(path: Path) -> tuple[Any, str]:
-    """One artifact, or the reason it is absent or unreadable."""
+#: A file handed to the builder that could not be read or parsed.
+SOURCE_UNREADABLE = "source_unreadable"
+#: A readable document whose field holds the wrong type, which ``field_null`` would misname.
+FIELD_MALFORMED = "field_malformed"
+
+
+def read_json(path: Path) -> tuple[Any, str, str]:
+    """One artifact, or the code for why it is absent or unreadable and the sentence behind it."""
     if not path.exists():
-        return None, "source_absent"
+        return None, "source_absent", ""
     try:
-        return json.loads(path.read_text()), ""
+        return json.loads(path.read_text()), "", ""
     except (OSError, UnicodeDecodeError) as exc:
-        return None, f"unreadable: {type(exc).__name__}"
+        return None, SOURCE_UNREADABLE, f"unreadable: {type(exc).__name__}"
     except json.JSONDecodeError as exc:
-        return None, f"not valid JSON: {exc.msg}"
+        return None, SOURCE_UNREADABLE, f"not valid JSON: {exc.msg}"
 
 
-def absence(source_reason: str, present: bool, field: str) -> dict[str, Any]:
-    """Which of the two absences this is, said explicitly.
+def absence(source_reason: str, present: bool, field: str, detail: str = "") -> dict[str, Any]:
+    """Which absence this is, said as a code, with ``detail`` the sentence behind it.
 
-    ``source_absent`` when the artifact never arrived, ``field_null`` when it
-    did and the field inside it is null. Merging them is the reading defect
-    this packet exists partly to fix.
+    ``source_absent`` when the artifact never arrived, ``source_unreadable``
+    when it arrived and could not be read, ``field_null`` when it was read and
+    the field inside it is null. Merging them is the reading defect this
+    packet exists partly to fix.
     """
     if source_reason or not present:
-        return {**unavailable(source_reason or "field_null"), "field": field}
+        return {**unavailable(source_reason or "field_null", detail or None), "field": field}
     return {}
 
 
@@ -136,7 +143,7 @@ def round_program_dir(
     return round_dir
 
 
-def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
+def _harmonics_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
     Verbatim: the instrument that produced it (``jasper-round-views distortion``, over
@@ -151,7 +158,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {
             # A file that PARSED into a non-object has no read reason.
-            **unavailable(reason or "field_null", None if reason else (
+            **unavailable(reason or "field_null", (detail or None) if reason else (
                 f"the {HARMONICS_ARTIFACT} banked for this round parsed as "
                 f"{type(raw).__name__}, not as a JSON object, so there is no "
                 "reading in it to publish"
@@ -225,7 +232,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     }
 
 
-def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
+def _classification_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     """The banked feature verdicts and the working behind them, not re-derived.
 
     TWO views of one artifact, side by side and deliberately not joined.
@@ -252,7 +259,7 @@ def _classification_block(raw: Any, reason: str) -> dict[str, Any]:
     columns that merely LOOK like uncertainties are not — ``gate_slack`` most
     of all, a dB bar beside a dB reading rather than an error bar on it.
     """
-    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT)
+    absent = absence(reason, raw is not None, CLASSIFICATION_ARTIFACT, detail)
     if absent:
         return {
             **absent,

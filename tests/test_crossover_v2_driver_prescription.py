@@ -488,7 +488,7 @@ def test_the_packet_carries_the_bands_and_the_verdicts(packet):
 def test_a_missing_draft_is_reported_not_papered_over(tmp_path):
     packet = _speaker(tmp_path, draft=None)
 
-    assert (packet["drivers"]["status"], packet["drivers"]["reason"]) == ("unavailable", "no driver design draft was supplied")
+    assert (packet["drivers"]["status"], packet["drivers"]["reason"]) == ("unavailable", "source_absent")
     assert any(
         entry["field"] == "drivers.passbands_hz"
         for entry in packet["not_evaluated"]
@@ -2999,11 +2999,7 @@ def test_incumbent_identity_carries_applied_profile_displacement(
 
     field = packet["incumbent"]["identity"]["applied_profile_displacement"]
     if expected is None:
-        assert field == {
-            "status": "unavailable",
-            "reason": "no CamillaDSP statefile was supplied",
-            "field": "camilla_statefile",
-        }
+        assert (field["status"], field["reason"], field["field"]) == ("unavailable", "source_absent", "camilla_statefile")
     else:
         assert field == expected
 

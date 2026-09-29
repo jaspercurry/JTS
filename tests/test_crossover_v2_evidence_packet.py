@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
@@ -49,8 +50,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "f6aae9710dbe208807f1a68c9f81dda2411232a049043a4212fc9cbc6eb252f1")
-    assert packet["packet_fingerprint"] == "08813105e37533a646d185c9a092af0be31c853bf205a600f2ee806ea401b281"
+        "14ef39824d667b7e5959f2179732d4f5cbf64ab2aa9fc2e7155c02197b1b972b")
+    assert packet["packet_fingerprint"] == "b4a24008a8bf4b1d12c823ff1c542e739e6c3968e36a484800d4ce2e9c79c10e"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
@@ -521,7 +522,7 @@ def test_the_session_block_reads_the_declaration_the_caller_resolved(
         return
     assert block["status"] == "unavailable"
     assert block["field"] == "declared_geometry"
-    assert (block["reason"] == "source_absent") is (stored is None)
+    assert block["reason"] == ("source_absent" if stored is None else DECLARED_GEOMETRY_UNREADABLE)
 
 
 def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
@@ -533,7 +534,8 @@ def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
 
     block = build_crossover_evidence_packet(session, declared_geometry_path=declared)["session"]["declared_geometry"]
 
-    assert (block["status"], block["refused_field"]) == ("unavailable", "front_wall_m")
+    assert (block["status"], block["reason"], block["refused_field"]) == (
+        "unavailable", DECLARED_GEOMETRY_UNREADABLE, "front_wall_m")
 
 
 def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(

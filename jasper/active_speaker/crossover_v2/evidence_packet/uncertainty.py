@@ -48,7 +48,7 @@ def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
 
     Takes every phase, because an SNR is an SNR whichever capture produced it.
     """
-    raw, _ = read_json(path)
+    raw = read_json(path)[0]
     if not isinstance(raw, dict):
         return None
     if raw.get("kind") != POSITION_EVIDENCE_KIND:
@@ -144,8 +144,8 @@ def _repeat_floor_source(path: Path | None) -> tuple[dict[str, Any] | None, str]
     record = load_repeat_floor(state_path=path)
     if record is not None:
         return record, ""
-    _, reason = read_json(path)
-    return None, reason or f"not a {REPEAT_FLOOR_KIND} record"
+    _, reason, detail = read_json(path)
+    return None, detail or reason or f"not a {REPEAT_FLOOR_KIND} record"
 
 
 def _repeat_floor_component(

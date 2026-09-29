@@ -380,7 +380,7 @@ def test_the_draft_to_packet_flow_carries_every_carrier(tmp_path):
 def test_the_two_absences_are_not_merged(tmp_path):
     """No draft passed, versus a draft nobody typed into: different fixes."""
     no_draft = _packet(tmp_path / "a", None)[OPERATOR_NOTES_BLOCK]
-    assert (no_draft["status"], no_draft["reason"]) == ("unavailable", "no driver design draft was supplied")
+    assert (no_draft["status"], no_draft["reason"]) == ("unavailable", "source_absent")
 
     silent = _packet(
         tmp_path / "b", _draft(build_notes=None, driver_notes=None, legacy_notes=None)

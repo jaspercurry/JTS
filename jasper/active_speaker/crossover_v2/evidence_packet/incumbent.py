@@ -19,30 +19,30 @@ from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.json_fields import as_mapping, finite_float
 
 from ..round_inputs import recent_round_sessions, round_artifact_dir
-from .offline_reads import absence, read_json
+from .offline_reads import FIELD_MALFORMED, SOURCE_UNREADABLE, absence, read_json
 
 
-def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
-    """The applied-profile SSOT, and why there is none when there is none.
+def read_applied_profile(path: Path | None) -> tuple[dict[str, Any] | None, str, str]:
+    """The applied-profile SSOT, or the code for why there is none and the sentence behind it.
 
     One owner for "what is this speaker playing":
     :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`.
     It collapses every failure into ``None``, so the REASON is read separately
     on that path. A file that parsed but the loader rejected has three causes,
-    and rather than re-derive that verdict here the reason ECHOES the
+    and rather than re-derive that verdict here the sentence ECHOES the
     document's own three self-describing fields.
     """
 
     if path is None:
-        return None, "no applied baseline profile was supplied"
+        return None, "source_absent", "no applied baseline profile was supplied"
     profile = load_applied_baseline_profile_state(path)
     if profile is not None:
-        return profile, ""
-    raw, reason = read_json(path)
+        return profile, "", ""
+    raw, reason, detail = read_json(path)
     if reason:
-        return None, reason
+        return None, reason, detail
     document = as_mapping(raw)
-    return None, (
+    return None, SOURCE_UNREADABLE, (
         "the file is not an applied baseline profile this install can read "
         f"(kind={document.get('kind')!r}, "
         f"artifact_schema_version={document.get('artifact_schema_version')!r}, "
@@ -50,9 +50,15 @@ def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, st
     )
 
 
+def applied_profile_source(path: Path | None) -> tuple[dict[str, Any] | None, str]:
+    """The applied-profile SSOT, and why there is none when there is none, in words."""
+    profile, reason, detail = read_applied_profile(path)
+    return profile, detail or reason
+
+
 def read_candidate(round_dir: Path) -> Mapping[str, Any]:
     """One round's ``candidate.json`` as a plain mapping, without revalidation."""
-    raw, _reason = read_json(round_dir / "candidate.json")
+    raw = read_json(round_dir / "candidate.json")[0]
     return as_mapping(raw)
 
 #: How many rounds of structural history are carried.
@@ -197,6 +203,7 @@ def _structural_history_block(session_dir: Path) -> dict[str, Any]:
 def _incumbent_block(
     profile: dict[str, Any] | None,
     profile_reason: str,
+    profile_detail: str,
     state: Mapping[str, Any],
     statefile_path: Path | None,
 ) -> dict[str, Any]:
@@ -246,10 +253,11 @@ def _incumbent_block(
             # be a malformed record — a different fact from a missing one, and
             # ``absence``'s bare ``field_null`` would spell them the same.
             else absence(
-                profile_reason
-                or "the profile is readable but its blend_correction is not a list",
+                profile_reason or FIELD_MALFORMED,
                 False,
                 "applied_baseline_profile.blend_correction",
+                profile_detail if profile_reason
+                else "the profile is readable but its blend_correction is not a list",
             )
         ),
         "identity": (
@@ -263,9 +271,10 @@ def _incumbent_block(
                     )
                     if statefile_path is not None
                     else absence(
-                        "no CamillaDSP statefile was supplied",
+                        "source_absent",
                         False,
                         "camilla_statefile",
+                        "no CamillaDSP statefile was supplied",
                     )
                 ),
                 "note": (
@@ -275,7 +284,7 @@ def _incumbent_block(
                 ),
             }
             if profile
-            else absence(profile_reason, False, "applied_baseline_profile")
+            else absence(profile_reason, False, "applied_baseline_profile", profile_detail)
         ),
         "note": (
             "a prescription is a TOTAL, not a delta: prescribe the whole "
@@ -296,7 +305,7 @@ def _incumbent_block(
                 }
                 if profile
                 else absence(
-                    profile_reason, False, "applied_baseline_profile.linearization"
+                    profile_reason, False, "applied_baseline_profile.linearization", profile_detail
                 )
             ),
             "source": (
