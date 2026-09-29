@@ -198,7 +198,8 @@ class _SeatLevelSession:
             proc = self._process
             target = self._target_db_spl
             result = self._result
-        if proc is not None and proc.poll() is None:
+        # _reap clears _process only as it records _result, so no poll() here (#5925).
+        if proc is not None:
             return {"state": "running", "target_db_spl": target}
         if result is not None:
             if result["force_stopped"]:
