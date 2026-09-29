@@ -34,7 +34,7 @@ from jasper.runtime_config.audio_profile_state import (
     runtime_env_from_mapping,
 )
 from ..atomic_io import read_json_mapping
-from ..audio_input_view import build_microphone_settings_view
+from jasper.runtime.audio_input_view import build_microphone_settings_view
 from ..env_file import read_env_file
 from ..env_load import env_file_path, read_env_file_state, DEFAULT_AEC_MODE_PATH
 from jasper.audio_routes.usb_mic import (

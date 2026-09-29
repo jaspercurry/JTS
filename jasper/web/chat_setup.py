@@ -14,7 +14,7 @@ from typing import Any
 
 from ..platform import systemd
 from . import _wizard_cli
-from ..conversation_history import ConversationStore, read_settings, write_settings
+from jasper.runtime.conversation_history import ConversationStore, read_settings, write_settings
 from ._common import (
     begin_request,
     dispatch_get,

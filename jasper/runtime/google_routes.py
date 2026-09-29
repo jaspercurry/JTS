@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from jasper.service_state import location_state
-from .identity.reader import DEFAULT_HOSTNAME, resolve_hostname
-from .log_event import log_event
-from .tools import fence_untrusted
+from jasper.identity.reader import DEFAULT_HOSTNAME, resolve_hostname
+from jasper.log_event import log_event
+from jasper.tools import fence_untrusted
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.google_routes")
 
 GOOGLE_ROUTES_ENDPOINT = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_ROUTES_API_KEY_ENV = "GOOGLE_ROUTES_API_KEY"

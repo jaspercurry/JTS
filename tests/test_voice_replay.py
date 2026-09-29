@@ -18,8 +18,8 @@ from openai.types.realtime import (
     ResponseDoneEvent,
 )
 
-from jasper.mic_capture import MicCapture
-from jasper.tts_playout import confirmed_tts_flush
+from jasper.runtime.mic_capture import MicCapture
+from jasper.runtime.tts_playout import confirmed_tts_flush
 from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 from jasper.tools import ToolRegistry
 from jasper.service_state.vad import SpeechVAD

@@ -16,7 +16,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from jasper.conversation_history import ConversationStore
+from jasper.runtime.conversation_history import ConversationStore
 from jasper.voice.catalog import InterruptReconcile
 from jasper.voice.wake_detect import CAPTURE_RING_FRAMES, LegRuntime
 from jasper.voice_daemon import WakeEventStore, WakeLoop

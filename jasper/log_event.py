@@ -70,7 +70,7 @@ def json_mode_enabled(env: dict[str, str] | None = None) -> bool:
     Read per call (one dict lookup) rather than cached at import so a
     test — or an operator flipping the env for one daemon — gets the
     live value without import-order surprises. Mirrors the lazy read
-    in ``jasper.flight_recorder``. The set is the truthy half of
+    in ``jasper.runtime.flight_recorder``. The set is the truthy half of
     ``jasper.env_load.parse_bool_value``, spelled here to stay stdlib-only.
     """
     source = os.environ if env is None else env
@@ -173,7 +173,7 @@ def log_event(
     # `jasper_event` carries the event name as a record attribute. The
     # rendered message interpolates every field value, so it does not
     # identify the call site; handlers that group records by origin
-    # (jasper.flight_recorder) need the name separately.
+    # (jasper.runtime.flight_recorder) need the name separately.
     extra = {"jasper_event": name}
     # Only thread exc_info when asked, so the common (non-exception)
     # path is exactly `logger.log(level, message)` — same LogRecord

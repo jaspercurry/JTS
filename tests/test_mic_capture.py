@@ -18,8 +18,8 @@ import pytest
 from jasper.service_state.wake_ports import parse_udp_device
 
 from tests._sounddevice_stub import stub_sounddevice
-import jasper.mic_capture as mic_capture
-from jasper.mic_capture import (
+import jasper.runtime.mic_capture as mic_capture
+from jasper.runtime.mic_capture import (
     CAPTURE_MAX_FRAMES,
     MicCapture,
     UdpMicCapture,
@@ -140,7 +140,7 @@ async def test_direct_capture_closes_device_when_lifecycle_fails(
     if close_fails:
         stream.close.side_effect = RuntimeError("close")
     stub_sounddevice(monkeypatch, SimpleNamespace(InputStream=lambda **kwargs: stream))
-    monkeypatch.setattr("jasper.mic_capture._log_audio_open_failure", Mock())
+    monkeypatch.setattr("jasper.runtime.mic_capture._log_audio_open_failure", Mock())
     cap = MicCapture("unused")
     with pytest.raises(RuntimeError) as caught:
         async with cap:
@@ -203,7 +203,7 @@ async def test_capture_overload_keeps_recent_order_and_bounds_notifications(tran
 async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
     queue = _CaptureQueue()
     now = [10.0]
-    monkeypatch.setattr("jasper.mic_capture.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("jasper.runtime.mic_capture.time.monotonic", lambda: now[0])
     queue.put_nowait(np.array([1], dtype=np.int16))
     now[0] = 12.0
     queue.put_nowait(np.array([2], dtype=np.int16))
@@ -215,7 +215,7 @@ async def test_capture_discards_expired_audio_and_reports_gap(monkeypatch):
 
 def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, caplog):
     monkeypatch.setattr(
-        "jasper.mic_capture.read_mic_presence",
+        "jasper.runtime.mic_capture.read_mic_presence",
         lambda: SimpleNamespace(absent_confirmed=True),
     )
     with caplog.at_level(logging.WARNING, logger="jasper.mic_capture"):

@@ -55,7 +55,7 @@ def test_require_usable_input_raises_when_nothing_opened() -> None:
     """
     import pytest
 
-    from jasper.mic_capture import InputDeviceUnavailable
+    from jasper.runtime.mic_capture import InputDeviceUnavailable
     from jasper.voice.daemon_main import _require_usable_input
 
     with pytest.raises(InputDeviceUnavailable) as exc:

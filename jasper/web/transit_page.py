@@ -10,7 +10,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import google_routes
+from jasper.runtime import google_routes
 from jasper.service_state import location_state
 from .. import transit
 from ..transit import citibike

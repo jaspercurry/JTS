@@ -22,7 +22,7 @@ from http import HTTPStatus
 from typing import Any, Callable
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
-from jasper.measurement_window import HeldWindow
+from jasper.runtime.measurement_window import HeldWindow
 from jasper.log_event import log_event
 
 from . import active_speaker_flow

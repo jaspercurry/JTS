@@ -177,7 +177,7 @@ docs = [
 id = "conversation-history"
 safety = "voice-runtime"
 code = [
-  "jasper/conversation_history.py",
+  "jasper/runtime/conversation_history.py",
   "jasper/web/chat_setup.py",
   "jasper/cli/doctor/web.py",
   "deploy/systemd/jasper-chat-web.*",
@@ -193,8 +193,8 @@ docs = [
 id = "voice-runtime-and-providers"
 safety = "voice-runtime"
 code = [
-  "jasper/mic_capture.py",
-  "jasper/tts_playout.py",
+  "jasper/runtime/mic_capture.py",
+  "jasper/runtime/tts_playout.py",
   "jasper/service_state/tts_routing.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
@@ -257,9 +257,8 @@ code = [
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
   "jasper/runtime_config/audio_profile_state.py",
-  "jasper/audio_validation*.py",
   "jasper/cli/audio_hw_validate.py",
-  "jasper/audio_input_view.py",
+  "jasper/runtime/audio_input_view.py",
   "jasper/control/aec_endpoints.py",
   "jasper/mics/**",
   "jasper/xvf/**",
@@ -281,6 +280,7 @@ code = [
   "jasper/audio_control/audio_validation_probes.py",
   "jasper/audio_control/audio_validation_readiness.py",
   "jasper/audio_routes/audio_validation_route.py",
+  "jasper/runtime/audio_validation.py",
 ]
 docs = [
   # Current truth for this subsystem: the reference/transport contract and the
@@ -417,7 +417,7 @@ code = [
   "jasper/cli/doctor/renderers.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/control/audio_*.py",
-  "jasper/measurement_window.py",
+  "jasper/runtime/measurement_window.py",
   "jasper/fanin/coupling_auto.py",
   "jasper/accessories/reconcile.py",
   "scripts/claim-librespot.sh",
@@ -540,7 +540,7 @@ code = [
   "jasper/active_speaker/**",
   "jasper/attribution/**",
   "jasper/bass_extension/**",
-  "jasper/measurement_window.py",
+  "jasper/runtime/measurement_window.py",
   "jasper/audio_measurement/**",
   "jasper/web/correction_*.py",
   "jasper/web/sound_setup.py",
@@ -595,7 +595,7 @@ docs = [
 id = "transit-and-citibike"
 safety = "safe-ci"
 code = [
-  "jasper/google_routes.py",
+  "jasper/runtime/google_routes.py",
   "jasper/transit/subway.py",
   "jasper/transit/bus.py",
   "jasper/transit/**",
@@ -751,7 +751,7 @@ code = [
   "jasper/_oom_adj.py",
   "jasper/watchdog.py",
   "jasper/audio_control/debug_mode.py",
-  "jasper/flight_recorder.py",
+  "jasper/runtime/flight_recorder.py",
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",
   "jasper/control/single_flight.py",

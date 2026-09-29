@@ -35,17 +35,17 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
-import jasper.tts_playout as tts_mod
+import jasper.runtime.tts_playout as tts_mod
 import jasper.voice.measurement_hold as measurement_hold_mod
 from jasper.cues import AudioCueManager
 from jasper.cues.registry import find
-from jasper.measurement_window import (
+from jasper.runtime.measurement_window import (
     MEASUREMENT_LEASE_REFRESH_SEC,
     MEASUREMENT_LEASE_RETRY_SEC,
     VOICE_MEASURE_PAUSE_TIMEOUT_SEC,
     _voice_uds_command,
 )
-from jasper.tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.voice.control_socket import serve
 from jasper.voice.measurement_hold import (
     MEASUREMENT_AUTOCLEAR_SEC,

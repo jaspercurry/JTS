@@ -7,7 +7,7 @@ window (issues #1786, #1898, #1913).
 
 A window is opened and closed by `MeasurementHold.pause_response()` /
 `MeasurementHold.resume()` (the coordinator's MEASURE_PAUSE/RESUME UDS
-commands — see `jasper.measurement_window.measurement_window()`,
+commands — see `jasper.runtime.measurement_window.measurement_window()`,
 which the crossover-v2 flow holds open for a whole run via
 `crossover_v2.door.isolation_hold()`). Refusal happens at one
 admission authority asked at two moments: `AssistantOutputGate`
@@ -31,7 +31,7 @@ import numpy as np
 
 import pytest
 
-from jasper.tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.audio_control.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
 from jasper.service_state.mic_mute_persistence import read_mic_muted, write_mic_muted

@@ -72,7 +72,7 @@ def _process_optional_engine(
         return engine, engine.process(input_bytes, ref_bytes), None
     except Exception as exc:  # noqa: BLE001
         if failure_message is not None:
-            # stacklevel=2: see jasper/flight_recorder.py — the auto-dump key
+            # stacklevel=2: see jasper/runtime/flight_recorder.py — the auto-dump key
             # is the record's file:line, so the caller's must survive.
             logger.exception(failure_message, exc, stacklevel=2)
         return None, b"", exc

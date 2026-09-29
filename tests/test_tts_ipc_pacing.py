@@ -31,8 +31,8 @@ import time
 
 import numpy as np
 
-import jasper.tts_playout as tts_mod
-from jasper.tts_playout import TtsPlayout
+import jasper.runtime.tts_playout as tts_mod
+from jasper.runtime.tts_playout import TtsPlayout
 
 from tests._playout import FakeOutputdStream, playout_over_fake_stream
 

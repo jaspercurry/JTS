@@ -563,7 +563,7 @@ def test_main_parks_on_a_refused_bind_instead_of_climbing_to_reboot(
     import errno
 
     import jasper.control.server as srv_mod
-    from jasper import flight_recorder
+    from jasper.runtime import flight_recorder
     from jasper.control import audio_health_sampler, system_metrics
     from tests._log_events import event_fields
 

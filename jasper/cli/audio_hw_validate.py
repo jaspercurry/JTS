@@ -28,7 +28,7 @@ from jasper.audio_control.audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
 )
-from ..audio_validation import (
+from jasper.runtime.audio_validation import (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
     DEFAULT_HARDWARE_OBSERVE_SECONDS,

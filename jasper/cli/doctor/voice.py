@@ -753,7 +753,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
 @doctor_check(label="Google Routes", needs_cfg=True)
 def check_google_routes(cfg: Config) -> CheckResult:
     """Verify Google Routes configuration without making a billable API call."""
-    from ... import google_routes
+    from jasper.runtime import google_routes
 
     label = "Google Routes"
     status = google_routes.config_status(os.environ)

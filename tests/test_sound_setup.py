@@ -1693,7 +1693,7 @@ RECONCILE_FAILED = {"ok": False, "error": "private backend detail"}
 
 def _stub_reconcile(monkeypatch, result: dict) -> None:
     monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
+        "jasper.runtime.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: result,
     )
 
@@ -5156,7 +5156,7 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
         parked_safe_graph_decision(topology, config_path=parked),
         statefile_path=statefile, topology=topology,
     )
-    monkeypatch.setattr("jasper.output_topology_runtime.trigger_reconcile", reconcile)
+    monkeypatch.setattr("jasper.runtime.output_topology_runtime.trigger_reconcile", reconcile)
 
     sound_setup._repin_output_topology_payload({})
 

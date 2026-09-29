@@ -21,7 +21,7 @@ from typing import Any
 from jasper.accessories import status as accessory_status
 from jasper.log_event import log_event
 
-from ..mic_capture import MicCapture
+from jasper.runtime.mic_capture import MicCapture
 
 logger = logging.getLogger("jasper.voice_daemon")
 

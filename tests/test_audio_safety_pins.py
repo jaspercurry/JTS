@@ -32,7 +32,7 @@ import pytest
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
-from jasper.tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 
 REPO = Path(__file__).resolve().parents[1]
 

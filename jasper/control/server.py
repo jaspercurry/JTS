@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any, Callable
 
 from jasper.log_event import log_event
-from .. import flight_recorder
+from jasper.runtime import flight_recorder
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
@@ -930,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     # install() holds the jasper logger at DEBUG for the in-RAM ring, keeps
     # the journal at INFO, applies the /system Debug card's toggle, and wires
-    # SIGUSR1 -> dump. See jasper/flight_recorder.py.
+    # SIGUSR1 -> dump. See jasper/runtime/flight_recorder.py.
     flight_recorder.install("control")
 
     # The live pair-balance trim patches the graph from this process, so its

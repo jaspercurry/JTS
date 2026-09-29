@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 import jasper.mux as mux_module
-from jasper import measurement_window as coordinator
-from jasper.measurement_window import (
+from jasper.runtime import measurement_window as coordinator
+from jasper.runtime.measurement_window import (
     MeasurementWindowError,
     measurement_window,
 )

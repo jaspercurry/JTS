@@ -30,7 +30,7 @@ from jasper.runtime_config.audio_profile_state import (
     runtime_env_from_mapping,
     validation_profile as _audio_validation_profile,
 )
-from ...audio_validation import CHIP_AEC_PROFILE
+from jasper.runtime.audio_validation import CHIP_AEC_PROFILE
 from jasper.audio_control.audio_validation_probes import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
 from jasper.audio_resources.audio_validation_artifacts import latest_artifact_summary as _audio_validation_summary
 from ...chip_aec.health import STATUS_READY

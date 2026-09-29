@@ -44,7 +44,7 @@ import stat as _stat
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ... import conversation_history
+from jasper.runtime import conversation_history
 from jasper.service_state import mic_mute_persistence
 from jasper.playback_state import mux_mode_persistence
 from ...active_speaker.design_draft import DEFAULT_DESIGN_DRAFT_PATH

@@ -14,7 +14,7 @@ graph would prove nothing about the fader it strands.
 from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
-from jasper import measurement_window as coordinator
+from jasper.runtime import measurement_window as coordinator
 
 import asyncio
 from contextlib import asynccontextmanager

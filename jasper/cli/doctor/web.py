@@ -254,7 +254,7 @@ def check_conversation_history() -> CheckResult:
     enables history. Once configured on, the read-side store must open cleanly
     or `/assistant/chat/` cannot show the log jasper-voice writes.
     """
-    from ...conversation_history import health
+    from jasper.runtime.conversation_history import health
 
     label = "conversation history"
     info = health(warn_unavailable=True)

@@ -20,7 +20,7 @@ import pytest
 from jasper.runtime_config import audio_profile_state
 from jasper.playback_state import wake_conditions
 from jasper.cli import wake_enroll
-from jasper.mic_capture import UdpMicCapture as RealUdpMicCapture
+from jasper.runtime.mic_capture import UdpMicCapture as RealUdpMicCapture
 from jasper.wake_corpus import (
     active_session,
     bridge_session,
@@ -1297,7 +1297,7 @@ def test_recorder_usable_after_stop_retry_abandoned(
     """A stop whose publication is given up leaves no socket bound: the
     quiesced capture closed them, so the next Start binds the same ports.
     Real sockets: the fake capture never binds one."""
-    monkeypatch.setattr("jasper.mic_capture.UdpMicCapture", RealUdpMicCapture)
+    monkeypatch.setattr("jasper.runtime.mic_capture.UdpMicCapture", RealUdpMicCapture)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_INITIAL_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_SEC", 0.001)
     monkeypatch.setattr(clip_recording, "STOP_RETRY_MAX_ATTEMPTS", 3)

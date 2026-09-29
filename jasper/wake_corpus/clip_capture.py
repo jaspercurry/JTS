@@ -77,7 +77,7 @@ class RecordingTask:
         self.current_rms_dbfs: float = -100.0
 
     async def start(self) -> None:
-        from jasper.mic_capture import UdpMicCapture  # lazy: test seam — tests/wake_corpus_setup_fixtures.py patches jasper.mic_capture.UdpMicCapture at call time
+        from jasper.runtime.mic_capture import UdpMicCapture  # lazy: test seam — tests/wake_corpus_setup_fixtures.py patches jasper.runtime.mic_capture.UdpMicCapture at call time
 
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()

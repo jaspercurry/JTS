@@ -50,7 +50,7 @@ Topology:
                                                           detection.
 
 Every leg's token and UDP port is owned by `jasper.playback_state.wake_legs`. Why UDP
-rather than an snd-aloop card: see `UdpMicCapture` in jasper/mic_capture.py.
+rather than an snd-aloop card: see `UdpMicCapture` in jasper/runtime/mic_capture.py.
 
 Reference and mic run on independent clock domains — outputd's DAC-paced
 sender against the XVF chip's USB UAC2 clock — and will drift. AEC3's delay
@@ -969,8 +969,8 @@ def _park(code: int, reason: str, detail: str) -> int:
 def main() -> int:
     configure_logging()
     # Log flight recorder + runtime debug toggle. See
-    # jasper/flight_recorder.py.
-    from .. import flight_recorder
+    # jasper/runtime/flight_recorder.py.
+    from jasper.runtime import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)
     # Resolve the reference source before anything reads it: the stats

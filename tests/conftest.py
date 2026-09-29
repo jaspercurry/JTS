@@ -417,7 +417,7 @@ def bare_root_logger():
 def logging_sandbox(monkeypatch):
     """A deterministic single 'journal' StreamHandler on a clean root, yielded
     so tests can assert its level."""
-    from jasper import flight_recorder as fr
+    from jasper.runtime import flight_recorder as fr
 
     with bare_root_logger() as root:
         console = logging.StreamHandler(io.StringIO())

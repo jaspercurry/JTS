@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import output_topology_runtime as topology_runtime
+from jasper.runtime import output_topology_runtime as topology_runtime
 from jasper.audio_routes.output_hardware import OutputHardwareState, write_state
 from jasper.audio_routes.output_topology import OutputTopology
 from jasper.audio_routes.output_topology_store import load_output_topology_strict, save_output_topology

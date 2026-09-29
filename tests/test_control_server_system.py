@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 import pytest
 
 from jasper.accessories import status as accessory_status
-from jasper.measurement_window import MEASUREMENT_FANIN_LABEL
+from jasper.runtime.measurement_window import MEASUREMENT_FANIN_LABEL
 from jasper.service_units import JASPER_VOICE_SERVICE
 from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from jasper.control import state_aggregate, usb_gadget_forensics

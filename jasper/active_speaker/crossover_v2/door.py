@@ -85,7 +85,7 @@ async def isolation_hold(
     wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
     plan: Any = None,
 ) -> AsyncIterator[IsolationHold]:
-    from jasper.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window  # lazy: coordinator boundary
+    from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window  # lazy: coordinator boundary
     from ..session_volume_plan import (  # lazy: live plan binding
         DEFAULT_SESSION_VOLUME_STATE_PATH, SessionVolumePlan, live_measurement_session,
     )

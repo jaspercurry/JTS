@@ -33,7 +33,7 @@ RECONCILE_WINDOW_SEC="${JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC:-300}"
 # Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
 # directory when the unit stops without a restart, which is exactly the park
 # this record reports. jasper-outputd.service's ExecStartPost removes it when
-# outputd next reaches READY; jasper/outputd_failure_reconcile_state.py reads it.
+# outputd next reaches READY; jasper/runtime/outputd_failure_reconcile_state.py reads it.
 PARK_RECORD="${JASPER_OUTPUTD_RECONCILE_PARK_STATE:-/run/jasper-outputd-failure-reconcile.park}"
 
 log() {
