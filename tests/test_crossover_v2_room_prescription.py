@@ -350,7 +350,8 @@ def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by):
                                 "rationale": "room", "sections": {"room": _document()}}))
     named = str(round_dir if named_by == "bank" else round_inputs(round_dir).session_dir)
     assert cli.main(["contract", "--round", named, "--section", "room"]) == 0
-    assert json.loads(capsys.readouterr().out)["sections"]["room"]["evidence_status"] == ROOM_NOT_BANKED
+    served = json.loads(capsys.readouterr().out)["sections"]["room"]
+    assert (served["status"], served["reason"]) == ("unavailable", ROOM_NOT_BANKED)
     assert cli.main(["judge", str(path), "--round", named, "--root", str(root)]) == 1
     answer = json.loads(capsys.readouterr().out)
     assert (answer["code"], answer["detail"]["section"], answer["next_action"]["id"]) == (

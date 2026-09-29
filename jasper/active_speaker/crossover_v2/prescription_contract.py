@@ -16,6 +16,7 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.design_inputs import declared_by_target
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
@@ -228,6 +229,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
     except (KeyError, TypeError, ValueError, ExcitationSafetyPlanError):
         pass
     shared = {"basis_artifacts": {"type": "array", "items": {"type": "string"}}}
+    one_way = preset is not None and preset.way_count == 1
     return {
         "way_count": preset.way_count if preset else None,
         "evidence_declarations": {
@@ -239,7 +241,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         },
         "driver": {
             "filters_are_a_total": driver_format["filters_are_a_total"],
-            "evidence_status": "evaluated" if passbands else driver.PASSBAND_UNAVAILABLE,
+            **({"status": "available"} if passbands else unavailable(driver.PASSBAND_UNAVAILABLE)),
             "schema": _document(driver_format, {
                 blend.PACKET_FINGERPRINT_FIELD: {"type": "string"},
                 "filters": {"type": "array", "items": _filter(driver_role=True)},
@@ -268,7 +270,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         },
         "blend": {
             "filters_are_a_total": blend_format["filters_are_a_total"],
-            "evidence_status": "evaluated" if band else blend.REGION_UNAVAILABLE,
+            **({"status": "available"} if band else unavailable(blend.REGION_UNAVAILABLE)),
             "schema": _document(blend_format, {
                 blend.PACKET_FINGERPRINT_FIELD: {"type": "string"},
                 "filters": {"type": "array", "items": _filter(), "maxItems": blend.BLEND_MAX_FILTERS},
@@ -279,15 +281,14 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "q_max_boost": blend.PRESCRIPTION_MAX_BOOST_Q,
                 "max_filter_boost_db": blend.PRESCRIPTION_MAX_FILTER_BOOST_DB,
                 "max_composed_boost_db": blend.PRESCRIPTION_MAX_TOTAL_BOOST_DB,
-                "boost_route": {"available": False, "reason": blend.BOOST_ROUTE_UNAVAILABLE,
-                                "detail": "The route refuses every boost today."},
+                "boost_route": unavailable(blend.BOOST_ROUTE_UNAVAILABLE, "The route refuses every boost today."),
             },
             "refusal_codes": sorted(blend.BLEND_PRESCRIPTION_REFUSAL_REASONS),
             "prohibited_keys": sorted(blend.PROHIBITED_PRESCRIPTION_KEYS),
         },
         "alignment": {
-            "evidence_status": (alignment.ALIGNMENT_NO_CROSSOVER_REGION if preset and preset.way_count == 1
-                                else "evaluated" if corner else alignment.PRESCRIPTION_FC_UNKNOWN),
+            **(unavailable(alignment.ALIGNMENT_NO_CROSSOVER_REGION) if one_way else {"status": "available"}
+               if corner else unavailable(alignment.PRESCRIPTION_FC_UNKNOWN)),
             "entry": alignment_format["entry"], "request_key": alignment_format["key"],
             "schema": _request_schema(alignment_format, alignment.ALIGNMENT_PRESCRIPTION_KIND,
                                       alignment.ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
@@ -300,8 +301,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             "refusal_codes": sorted(alignment.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS),
         },
         "topology": {
-            "evidence_status": (topology.TOPOLOGY_NO_CROSSOVER_REGION if preset and preset.way_count == 1
-                                else "evaluated" if topology_bounds["fc_hz"] else topology.TOPOLOGY_MALFORMED),
+            **(unavailable(topology.TOPOLOGY_NO_CROSSOVER_REGION) if one_way else {"status": "available"}
+               if topology_bounds["fc_hz"] else unavailable(topology.TOPOLOGY_MALFORMED)),
             "entry": topology_format["entry"], "request_key": topology_format["key"],
             "schema": _request_schema(topology_format, topology.TOPOLOGY_PRESCRIPTION_KIND,
                                       topology.TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION,
@@ -345,7 +346,6 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
         "prohibited_keys": sorted(blend.PROHIBITED_PRESCRIPTION_KEYS),
         "bounds": {key: value for key, value in format_["bounds"].items()
                    if not isinstance(value, str)},
-        "evidence_status": room.ROOM_MEDIAN_UNAVAILABLE,
     }
     result["bounds"].update(band_hz=None, ceiling_hz=None, ceiling_source=None,
                             freqs_hz=None, cut_floor_db=None, boost_cap_db=None,
@@ -354,9 +354,8 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
     try:
         median = room.read_room_median(raw)
     except room.RoomPrescriptionRefused as exc:
-        result["evidence_status"] = exc.reason
-        return result
-    result["evidence_status"] = "evaluated"
+        return {**result, **unavailable(exc.reason)}
+    result["status"] = "available"
     features = persistence.get("features")
     result["persistence_status"] = "evaluated" if isinstance(features, list) else "not_evaluated"
     result["bounds"].update(
@@ -398,7 +397,7 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "bounds": {"delta_highpass_hz_exclusive_upper_field": "detector_lowpass_hz",
                    "linkwitz_transform": {"adr": "ADR-0359", "target_hz_exclusive_upper_field": "source_hz"}},
         "refusal_codes": format_["refusal_reasons"],
-        **bass_prescription.bass_evidence_status(evidence),
+        **bass_prescription.bass_evidence_summary(evidence),
         "shared_headroom": {
             "adrs": ["ADR-0385", "ADR-0359", "ADR-0121"],
             "charge_function": "jasper.active_speaker.program_headroom.charge_db",

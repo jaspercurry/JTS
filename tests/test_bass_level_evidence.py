@@ -425,5 +425,5 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == payload
     finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=RoundViewsError("missing inputs")))
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == {
-        "status": "unavailable", "code": "bass_fit_inputs_missing", "error_type": "RoundViewsError",
+        "status": "unavailable", "reason": "bass_fit_inputs_missing", "error_type": "RoundViewsError",
     }

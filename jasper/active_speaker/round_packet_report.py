@@ -161,7 +161,7 @@ def packet_index(
                  for take_id, roles in roles_by_take.items() if {"woofer", rear} <= roles.keys()]
     decisions: dict[str, dict[str, list[str]]] = {}
     for set_id, limits in packet["limits"].items():
-        if limits.get("status") == "unavailable":
+        if limits.get("status") == "unavailable" and "schema" not in limits:
             decisions.setdefault("unavailable", {}).setdefault(limits["reason"], []).append(set_id)
         sections = {"decision": limits} if "schema" in limits else limits
         for name, contract in sections.items():
