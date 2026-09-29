@@ -319,7 +319,7 @@ def load_round_captures(
             {
                 "phases": sorted(set(missing_program)),
                 "captures_dropped": len(missing_program),
-                "programs_dir": str(round_dir),
+                "round_dir": round_dir.name,
                 "programs_present": [path.name for path in banked_programs],
                 "matched_by": "provenance.stimulus.wav_sha256",
                 "captures": census,
@@ -341,7 +341,6 @@ def load_round_captures(
                 "admissible_phases": sorted(ADMISSIBLE_PHASES),
                 "phases_seen": seen_phases,
                 "session_id": session_id,
-                "programs_dir": str(round_dir),
                 "dumps_dir": dumps_dir.name,
                 "note": _NO_CAPTURE_REMEDY[reason],
                 "captures": census,

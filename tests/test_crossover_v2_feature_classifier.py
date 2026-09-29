@@ -1836,6 +1836,7 @@ def test_a_refusal_exits_two_and_banks_nothing(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == fx.NO_FEATURES_DETECTED
     assert payload["reason"] in fx.CLASSIFICATION_REFUSAL_REASONS
+    assert "programs_dir" in json.loads(payload["detail"])
 
 
 def test_failed_controls_exit_zero_and_bank_their_own_disclosure(

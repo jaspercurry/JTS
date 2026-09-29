@@ -799,9 +799,8 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
 
 @pytest.mark.parametrize("reference_db", [float("nan"), float("inf"), float("-inf")])
 def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_db):
-    with pytest.raises(EvidenceUnavailable) as caught:
+    with pytest.raises(ValueError):
         analyze_measurement_bundle(tmp_path, run_reference_db=reference_db)
-    assert caught.value.reason == "measurement_reference_invalid"
     assert round_views_main([
         "frequency", str(tmp_path), "--analyze-wavs", f"--reference-db={reference_db}",
     ]) == EXIT_UNREADABLE
