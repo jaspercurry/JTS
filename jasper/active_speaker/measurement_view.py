@@ -7,10 +7,7 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import (
-    BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, RUNNABLE_PROGRAMS, Preset,
-    available_presets, plan_poses, preset, run_preset,
-)
+from .measurement_programs import Preset, available_presets, offered_here, plan_poses, preset, run_preset
 from .round_copy import round_lines, packet_lines, round_verdict
 from .wizard_client import CAPTURE_CANCEL_PATH
 
@@ -62,10 +59,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     targets = view["near_field_drivers"]
     rows = [preset(name) for name in available_presets()]
     plans = {_choice_id(row, layout): run_preset(row.preset, layout) for row in rows for layout in row.layouts}
-    plans = {key: plan for key, plan in plans.items()
-             if not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
-                     or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
-                     or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))}
+    plans = {key: plan for key, plan in plans.items() if offered_here(plan, programs=programs, targets=targets)}
     default = preset(view["next_action"].get("program") or programs[0])
     refused = bool(selected_id) and selected_id not in plans
     default_id = selected_id or default.preset

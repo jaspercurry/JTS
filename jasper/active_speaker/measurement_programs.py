@@ -659,6 +659,15 @@ def _outputs(named: str, targets: Sequence[str]) -> tuple[str, ...]:
     return tuple(target for target in targets if measurement_target_parts(target)[0] == named) or (named,)
 
 
+def offered_here(plan: Preset, *, programs: Collection[str], targets: Collection[str]) -> bool:
+    """Whether a speaker offering ``programs`` (:func:`programs_for_topology`), whose
+    ``targets`` each play alone (:func:`near_field_drivers`), runs this preset at its
+    layout. The measure page offers only these, and the preset catalog prices only these."""
+    return not ((plan.purpose in RUNNABLE_PROGRAMS and plan.purpose not in programs)
+                or (plan.branch_pair == BRANCH_PAIR_FRONT_REAR and PURPOSE_REAR not in programs)
+                or not {pose.driver for pose in plan.poses if pose.driver} <= set(targets))
+
+
 def trial_preset(
     sections: Collection[str], mover: str | None = None, layout: str | None = None,
 ) -> Preset | None:

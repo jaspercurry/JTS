@@ -152,7 +152,7 @@
      "description": "The whole speaker summed at the listening seat poses, through the applied tune or each named candidate.",
      "use_when": "Use to fit or trial room correction, and again after any upstream change."},
     {"preset": "bass/axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purposes": ["bass"], "regime": "summed", "levels": "auto", "stimulus": "bass",
-     "description": "A bass sweep up to 1.1 kHz, summed with room correction off, at a ladder of levels from the seat reference down.",
+     "description": "A bass sweep up to 1.1 kHz, summed at a ladder of levels from the seat reference down, with room correction off, and with the applied bass extension off too when no candidate is named.",
      "use_when": "Use to fit or trial bass extension; by hand, pick seat_express."},
     {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "near_field",
      "description": "Each declared woofer output alone, close to its dust cap, as reference evidence.",

@@ -47,7 +47,9 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, run_preset
+from jasper.active_speaker.measurement_programs import (
+    RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
+)
 from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.measurement import active_driver_targets
@@ -63,6 +65,7 @@ from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
+from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import (
     FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
@@ -1062,24 +1065,42 @@ _PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "bran
 _LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
 
 
-@pytest.mark.parametrize("cardioid,targets", [
-    (False, {"drivers/each": ["woofer", "tweeter"], "nearfield/each": ["woofer"]}),
-    (True, {"drivers/each": ["woofer", "woofer:rear", "tweeter"], "nearfield/each": ["woofer", "woofer:rear"]}),
-])
-def test_presets_lists_every_preset_and_each_layout_it_offers(monkeypatch, capsys, cardioid, targets):
-    """`presets --json` lists every preset and its layouts, with the outputs their driver poses
-    play on this speaker and one level's captures and seconds (#5737 A3b)."""
-    def with_rear(values):
-        return {**values, "woofer:rear": values["woofer"]}
+_NOT_OFFERED, _CANDIDATE_REQUIRED = "measurement_program_not_offered", "measurement_candidate_required"
+_SPEAKER = {"speaker/mark", "tournament/express", "branches/express", "front_rear/express"}
+_REAR = {"front_rear/express", "rear/express", "rear/seat", "rear/pair"}
+_ALONE = {"drivers/each", "nearfield/each"}
 
+
+def _speaker_context(topology):
+    """The inline context on ``topology``, with a band, cap and sweep limit for each output it declares."""
     context = _inline_context()
-    context = replace(context, topology=_rear_pair("mono")[1] if cardioid else mono_output_topology(),
-                      driver_bands=with_rear({role.role: role.band for role in context.roles_bands}),
-                      driver_caps_dbfs=with_rear(context.driver_caps_dbfs),
-                      driver_sweep_duration_limits_s=with_rear(context.driver_sweep_duration_limits_s))
+    outputs = dict.fromkeys(measurement_target_id(target["role"], target.get("output_variant", "primary"))
+                            for target in active_driver_targets(topology))
+    band, cap = context.roles_bands[0].band, context.driver_caps_dbfs["woofer"]
+    return replace(context, topology=topology, driver_bands=dict.fromkeys(outputs, band),
+                   driver_caps_dbfs={**context.driver_caps_dbfs, **dict.fromkeys(outputs, cap)},
+                   driver_sweep_duration_limits_s={**context.driver_sweep_duration_limits_s,
+                                                   **dict.fromkeys(outputs, 6.0)})
+
+
+@pytest.mark.parametrize("topology,hidden,targets", [
+    pytest.param(mono_output_topology(mode="full_range_passive"), _SPEAKER | _REAR | _ALONE, {}, id="one_way_passive"),
+    pytest.param(mono_output_topology(), _REAR, {"drivers/each": ["woofer", "tweeter"], "nearfield/each": ["woofer"]},
+                 id="two_way"),
+    pytest.param(_rear_pair("mono")[1], set(), {"drivers/each": ["woofer", "woofer:rear", "tweeter"],
+                                                 "nearfield/each": ["woofer", "woofer:rear"]}, id="cardioid"),
+    pytest.param(_active_topology("stereo", "active_2_way"), _REAR | _ALONE, {}, id="stereo_pair"),
+])
+def test_presets_lists_every_preset_and_prices_what_the_page_offers(monkeypatch, capsys, topology, hidden, targets):
+    """`presets --json` lists every preset and layout. It prices one level of each layout the
+    measure page offers this speaker, and marks the rest not offered (#5737 A3b)."""
+    context, programs = _speaker_context(topology), programs_for_topology(topology)
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *_args, **_kwargs: context)
     monkeypatch.setattr("jasper.active_speaker.setup_status.conductor_status", lambda: {})
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": programs, "near_field_drivers": near_field_drivers(topology), "next_action": {"program": programs[0]}})
+    offered = {choice["id"] for choice in measurement_view.round_choices({})}
 
     code, body = _run(["presets", "--json"], _opener(), monkeypatch, capsys)
 
@@ -1095,9 +1116,13 @@ def test_presets_lists_every_preset_and_each_layout_it_offers(monkeypatch, capsy
         (name, layout, len(run_preset(name, layout).poses)) for name in available_presets() for layout in preset(name).layouts]
     assert {row["preset"]: row["level_ladder_db"] for row in body["presets"] if row["level_ladder_db"]} == {
         "bass/axis": list(LEVEL_OFFSETS_DB)}
-    assert {(row["preset"], layout["refused"]) for row, layout in rows if layout["refused"]} == {
-        ("branches/express", "measurement_candidate_required"), ("front_rear/express", "measurement_candidate_required")}
-    assert all(layout["captures"] > 0 and layout["seconds"] > 0 for _, layout in rows if not layout["refused"])
+    assert {row["preset"] if layout["layout"] == row["layout"] else f"{row['preset']}@{layout['layout']}"
+            for row, layout in rows if layout["refused"] != _NOT_OFFERED} == offered
+    assert {row["preset"] for row, layout in rows if layout["refused"] == _NOT_OFFERED} == hidden
+    assert {row["preset"] for row, layout in rows if layout["refused"] == _CANDIDATE_REQUIRED} == {
+        "branches/express", "front_rear/express"} - hidden
+    assert all(layout["captures"] > 0 and layout["seconds"] > 0 if not layout["refused"]
+               else layout["captures"] is layout["seconds"] is None for _, layout in rows)
     assert {row["preset"]: layout["targets"] for row, layout in rows if layout["targets"]} == targets
 
 
