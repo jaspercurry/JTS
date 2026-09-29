@@ -27,6 +27,7 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE, load_declared_geometry
 from jasper.platform.json_fields import as_mapping
 
@@ -126,9 +127,6 @@ __all__ = [
 #: ``packet.json``'s copy of the packet its bank built, less the derived views
 #: and the fingerprint, which ``packet.json`` carries beside it.
 EVIDENCE_KEY = "evidence"
-
-#: A banked round's ``packet.json`` holds no :data:`EVIDENCE_KEY`, and nothing rebuilds it (ADR-0383).
-EVIDENCE_NOT_BANKED = "evidence_not_banked"
 
 #: The one block that carries operator prose. Named in ``privacy`` so the
 #: document points at its own quarantine, and asserted to RESOLVE by

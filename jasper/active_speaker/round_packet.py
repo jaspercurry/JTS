@@ -22,7 +22,8 @@ from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fi
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
-    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, RoundInputs, round_inputs, prescription_sources, ROUND_INPUT_ERRORS,
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, round_inputs, prescription_sources,
+    ROUND_INPUT_ERRORS,
 )
 from .frequency_plot import prepare_plot_curve, render_frequency_view
 from .frequency_view import build_frequency_view, FREQUENCY_VIEW_FILENAME
@@ -103,11 +104,12 @@ def banked_evidence(inputs: RoundInputs) -> tuple[dict[str, Any], Exception | No
 def store_banked_evidence(round_dir: Path) -> Exception | None:
     """Store a round's evidence in its ``packet.json`` when a bank other than
     :func:`write_round_packet` banks it, keeping what the file already holds.
-    It names its round as that bank does: a packet's bass evidence binds on ``round_id``."""
+    It names its round as that bank does: a packet's bass evidence binds on ``round_id``.
+    A file it creates takes this build's ``schema``; one another bank wrote keeps its own."""
     stored, error = banked_evidence(round_inputs(round_dir))
     path = round_dir / PACKET_FILENAME
     packet = json.loads(path.read_text()) if path.is_file() else {}
-    atomic_write_json(path, {"round_id": round_dir.name, **packet, **stored})
+    atomic_write_json(path, {"schema": ROUND_PACKET_SCHEMA, "round_id": round_dir.name, **packet, **stored})
     return error
 
 
@@ -242,7 +244,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
     axis = commissioning_alignment(alignments) or {}
-    packet = {"schema": "jts_round_packet/4", "round_id": target.name, "run_id": manifest.get("run_id"),
+    packet = {"schema": ROUND_PACKET_SCHEMA, "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "program": manifest.get("program"), "layout": manifest.get("layout"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),

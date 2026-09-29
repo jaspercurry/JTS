@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_median,
     room_median_sha256,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, round_inputs
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -343,7 +343,7 @@ def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by):
     root = tmp_path / "candidates"
     base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
     round_dir = bank_seat_round(tmp_path)
-    (round_dir / "packet.json").write_text(json.dumps({"room": []}))
+    (round_dir / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": []}))
     (round_dir / "room.json").write_text(json.dumps({"median": _room_median()}))
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,

@@ -31,7 +31,8 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
     BASE_NOT_BANKED, CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs, set_artifact_name,
+    ROUND_PACKET_SCHEMA, contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs,
+    set_artifact_name,
 )
 from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
@@ -106,7 +107,7 @@ def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, caps
 
 @pytest.fixture
 def bass_packet():
-    return {"round_id": "round-1", "packet_fingerprint": "p" * 64,
+    return {"schema": ROUND_PACKET_SCHEMA, "round_id": "round-1", "packet_fingerprint": "p" * 64,
             "bass": [{"set_id": "set-1", "takes": [{"bands": [
                 {"band_hz": list(band), "estimated_snr_db": 30, "fundamental_qualified": True}
                 for band in BASS_BANDS_HZ]}]}],
@@ -406,7 +407,7 @@ def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, name
     set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"] if named_set else None
     view = bank / set_artifact_name("room.json", set_id)
     stored = json.loads((bank / "room.json").read_text())
-    (bank / "packet.json").write_text(json.dumps({"room": [{**stored, "out": str(view)}]}))
+    (bank / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": [{**stored, "out": str(view)}]}))
     view.write_text(json.dumps({}))
     assert cli.main(["contract", "--round", str(bank), "--section", "room",
                      *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK

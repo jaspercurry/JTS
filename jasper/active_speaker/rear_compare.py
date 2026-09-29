@@ -10,6 +10,7 @@ import threading
 from functools import cache
 from typing import Any
 
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.atomic_io import atomic_write_json, read_json_mapping
 from jasper.platform.log_event import log_event
 
@@ -45,8 +46,8 @@ def _valid_cached_level(level: Any) -> bool:
 
 def rear_compare_level(*, cached_only: bool = False) -> dict[str, Any]:
     """Read the per-tune fact; flips never compute or wait for a preview (ADR-0329)."""
-    level: dict[str, Any] = {"status": "unavailable", "trim_db": None, "louder": None,
-                             "reason": "level_error", "round_id": None, "banked_at": None}
+    level: dict[str, Any] = {**unavailable("level_error"), "trim_db": None, "louder": None,
+                             "round_id": None, "banked_at": None}
     try:
         from .baseline_profile import load_applied_baseline_profile_state  # lazy: numpy startup cost
 

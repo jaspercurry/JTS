@@ -395,6 +395,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.CAPTURE_PROGRAM_MISSING: "No banked program matches this recording's stimulus hash.",
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.CAPTURE_WAV_MISSING: "This recording's audio is missing from the ring.",
+        evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
         evidence_reasons.PROGRAM_MISSING: "No banked program matches the stimulus the round's recordings played.",
     },
     ("select_round", "Select the round these takes belong to"): {

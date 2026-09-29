@@ -434,7 +434,7 @@ def test_a_bass_section_is_admitted_and_discloses_its_evidence(
     assert (receipt["round_id"], receipt["status"], receipt.get("reason")) == (
         round_id, "unavailable" if reason else "available", reason)
     assert receipt["detail"] == {
-        "levels": bass_table_rows(bass_packet["bass_table"]) if change is None else [], **({"code": code} if code else {})}
+        "levels": bass_table_rows(bass_packet["bass_table"]) if change is None else [], **({"reason": code} if code else {})}
     assert receipt["unqualified_boost_bands_hz"] == ([] if reason is None else [
         [20.0, 30.0], [30.0, 40.0], [40.0, 50.0], [50.0, 63.0], [63.0, 80.0], [80.0, 100.0]])
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.platform.atomic_io import atomic_write_json
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from .crossover_v2.room_prescription import RoomPrescriptionRefused
 from .crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused, default_out, round_inputs
@@ -51,26 +51,23 @@ def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
                     incumbent: str | None = None) -> dict[str, Any]:
     row = ARTIFACT_BY_VIEW.get(view)
     if row is None or row.builder is None:
-        return {"view": view, "status": "unavailable",
-                "reason": "inputs_required" if row else "verb_not_registered"}
+        return {"view": view, **unavailable("inputs_required" if row else "verb_not_registered")}
     module, _, builder = row.builder.rpartition(".")
     try:
         inputs = round_inputs(target)
         path = default_out(inputs, target, row.artifact, set_id)
         payload, summary = getattr(import_module(f".{module}", __package__), builder)(inputs, target, set_id, incumbent)
     except (RoundSetRefused, EvidenceUnavailable, RoomPrescriptionRefused) as exc:
-        return {"view": view, "status": "unavailable", "reason": exc.reason, "detail": exc.detail,
-                "next_action": refusal_copy_for(exc.reason)[1]}
+        return {"view": view, **unavailable(exc.reason, exc.detail), "next_action": refusal_copy_for(exc.reason)[1]}
     except CrossoverV2Refused as exc:
         _, action = refusal_copy_for(exc.code)
-        return {"view": view, "status": "unavailable", "reason": exc.code, "code": exc.code,
-                "detail": str(exc), "next_action": action}
+        return {"view": view, **unavailable(exc.code, str(exc)), "code": exc.code, "next_action": action}
     except ROUND_INPUT_ERRORS as exc:
-        return {"view": view, "status": "unavailable", "reason": REASON_UNREADABLE, "detail": str(exc)}
+        return {"view": view, **unavailable(REASON_UNREADABLE, str(exc))}
     try:
         atomic_write_json(path, {**payload, "schema": row.schema})
         if view == "frequency":
             summary.update(frequency_image(payload, target / "frequency.png", low_end=True))
     except OSError as exc:
-        return {"view": view, "status": "unavailable", "reason": REASON_UNWRITABLE, "detail": str(exc)}
+        return {"view": view, **unavailable(REASON_UNWRITABLE, str(exc))}
     return {**summary, "view": view, "status": "written", "out": str(path), "bytes": path.stat().st_size}

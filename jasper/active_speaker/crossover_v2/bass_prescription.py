@@ -30,8 +30,8 @@ def bass_evidence_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
     bound = _bound(evidence)
     table = bound.get("bass_table") or {}
     levels = bass_table_rows(table)
-    code = table.get("reason", evidence.get("code"))
-    detail = {"levels": levels, **({"code": code} if code is not None else {})}
+    reason = table.get("reason", evidence.get("code"))
+    detail = {"levels": levels, **({"reason": reason} if reason is not None else {})}
     if bound.get("bass") or levels:
         return {"status": "available", "detail": detail}
     return unavailable(BASS_EVIDENCE_UNAVAILABLE, detail)

@@ -56,6 +56,7 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
 
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.platform.log_event import log_event
 from jasper.platform.paths import camilla_statefile
@@ -304,9 +305,6 @@ def _bookkeeping(
     sets = view_sets(document)
     multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
-    def unavailable(view: str, reason: str) -> dict[str, Any]:
-        return {"view": view, "status": "unavailable", "reason": reason}
-
     results = []
     for view, per_set, grades_against_base in views:
         targets = sets if per_set and len(sets) > 1 else [None]
@@ -322,12 +320,12 @@ def _bookkeeping(
 
                 incumbent, reason = incumbent_room(None, document, set_id=set_id)
                 if incumbent is None:
-                    results.append({**unavailable(view, reason), "set_id": set_id})
+                    results.append({"view": view, **unavailable(reason), "set_id": set_id})
                     continue
                 incumbent_id = incumbent["set_id"]
             result = view_runner(
                 view, target, set_id=set_id, incumbent=incumbent_id if multiple_bases else None,
-            ) if view_runner else unavailable(view, "view_runner_unavailable")
+            ) if view_runner else {"view": view, **unavailable("view_runner_unavailable")}
             if per_set and len(sets) == 1:
                 set_id = sets[0]["set_id"]
             if set_id is not None:
