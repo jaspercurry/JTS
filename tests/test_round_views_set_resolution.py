@@ -350,14 +350,15 @@ def test_inventory_reads_one_manifest_and_uses_optional_set_arguments(two_sets, 
     ([(0, 0), (0, 0)], [True, True], None, "round_take_selection_required"),
     ([(None, None), (None, None)], [True, True], None, "round_take_selection_required"),
     ([(0, 0), (15, 0), (30, 0)], [False, True, True], None, "round_take_selection_required"),
-    ([(0, 0), (15, 0)], [False, True], "take-0", "round_take_unknown"),
+    ([(0, 0), (15, 0)], [False, True], "take-0", "round_take_not_kept"),
     ([(0, 0), (15, 0)], [True, True], "missing", "round_take_unknown"),
 ])
 def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested, expected):
     root, manifest = two_sets
     group = manifest["sets"][0]
+    unkept = {"quality": {"status": "refused"}, "fault": "level_off_target", "next": "retake_louder"}
     group["takes"] = [{**group["takes"][0], "take_id": f"take-{i}", "selected": keep,
-                       "pose": {"kind": "bearing", "deg": deg, "elevation_deg": elevation}}
+                       "pose": {"kind": "bearing", "deg": deg, "elevation_deg": elevation}, **({} if keep else unkept)}
                       for i, ((deg, elevation), keep) in enumerate(zip(poses, selected))]
     resolved = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
     if expected.startswith("round_"):
@@ -365,6 +366,9 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
             resolved.take_id(requested)
         assert refused.value.reason == expected
         assert refused.value.detail["take_ids"] == tuple(f"take-{i}" for i, keep in enumerate(selected) if keep)
+        if expected == "round_take_not_kept":
+            assert {key: refused.value.detail[key] for key in ("status", "fault", "next")} == {
+                "status": "refused", "fault": "level_off_target", "next": "retake_louder"}
     else:
         assert resolved.take_id(requested) == expected
 

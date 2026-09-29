@@ -20,6 +20,7 @@ from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
 from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND, comparand
 from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.platform.json_fields import parse_utc_iso
 from jasper.active_speaker.crossover_v2.take_reading import (
@@ -283,3 +284,24 @@ def test_the_comparand_rule_reads_run_manifest_rows_only(tmp_path):
 
     assert found is not None and (found.source, found.round_dir, found.set_id, found.take_id) == (
         COMPARAND_EARLIER_ROUND, earlier, "base", "e0")
+
+
+@pytest.mark.parametrize("malformed", [
+    lambda manifest: manifest["sets"][0].pop("capture_basis"),
+    lambda manifest: manifest["sets"][0].pop("takes"),
+    lambda manifest: manifest["sets"][0]["takes"][0].pop("selected"),
+], ids=["set-without-basis", "set-without-takes", "take-without-selected"])
+def test_an_earlier_round_with_a_malformed_row_is_passed_over(tmp_path, malformed):
+    """A default is a convenience, never a refusal (ADR-0101)."""
+    store = tmp_path / "campaigns"
+    older = _banked(store, "o", "2026-09-19T12:00:00Z", {"base": [("o0", 0)]})
+    broken = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
+    this = _banked(store, "r", "2026-09-21T12:00:00Z", {"cand": [("c0", 0)]})
+    path, = broken.rglob(RUN_MANIFEST_FILENAME)
+    manifest = json.loads(path.read_text())
+    malformed(manifest)
+    path.write_text(json.dumps(manifest))
+
+    found = comparand(this, "cand", "c0", "summed")
+
+    assert found is not None and (found.round_dir, found.take_id) == (older, "o0")
