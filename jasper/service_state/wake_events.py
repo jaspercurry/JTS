@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from .atomic_io import atomic_write_bytes
-from .log_event import log_event
+from jasper.atomic_io import atomic_write_bytes
+from jasper.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.wake_events")
 
 
 # Mic capture emits 16 kHz mono int16. Five six-second legs retain 960 KB.

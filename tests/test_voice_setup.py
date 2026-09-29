@@ -259,7 +259,7 @@ def test_apply_clear_unknown_provider_errors():
 def _usage_db_with_cost(
     tmp_path: Path, cost_usd: float, *, name: str = "usage.db",
 ) -> Path:
-    from jasper.usage import UsageStore
+    from jasper.service_state.usage import UsageStore
 
     db = tmp_path / name
     UsageStore(str(db))
@@ -1011,7 +1011,7 @@ def test_apply_pricing_save_rejects_nonnumeric_and_negative():
 def test_pricing_round_trip_through_overrides_loader(tmp_path: Path):
     """A saved override file is read back by load_pricing_overrides and
     applied by pricing_for_model (the full daemon-facing contract)."""
-    from jasper import usage
+    from jasper.service_state import usage
     openai = catalog.provider_by_id("openai")
     out = voice_setup.apply_pricing_save(
         {"provider": "openai",
@@ -1089,7 +1089,7 @@ def test_pricing_import_rejects_garbage_and_empty():
 
 
 def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
-    from jasper import usage
+    from jasper.service_state import usage
     models, _as_of, err = voice_setup.apply_pricing_paste(
         '{"models": {"gpt-realtime-2": {"text_output_per_million_usd": 33}}}'
     )
@@ -1106,7 +1106,7 @@ def test_pricing_import_round_trips_to_pricing_for_model(tmp_path: Path):
 def test_catalog_entries_carry_pricing_metadata():
     """Per-provider pricing knowledge lives on the catalog entry (single
     source), not in voice_setup maps. Buckets must be real Pricing fields."""
-    from jasper.usage import _OVERRIDABLE_FIELDS
+    from jasper.service_state.usage import _OVERRIDABLE_FIELDS
     for p in catalog.PROVIDERS:
         assert p.pricing_url, f"{p.id} missing pricing_url"
         assert p.pricing_buckets, f"{p.id} missing pricing_buckets"

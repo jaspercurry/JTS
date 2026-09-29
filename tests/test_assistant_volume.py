@@ -22,7 +22,7 @@ from jasper.assistant_volume import (
 from jasper.playback_state.music_sources import Source
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
-from jasper.volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 
 
 @pytest.mark.parametrize(
@@ -84,7 +84,7 @@ def test_runtime_publisher_rereads_the_grouping_file_every_publish(
         sent.append((path, context, timeout))
 
     monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
-    from jasper import tts_routing
+    from jasper.service_state import tts_routing
 
     real_parse = tts_routing.parse_env_file
 

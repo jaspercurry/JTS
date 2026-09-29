@@ -16,7 +16,7 @@ from typing import Any, Iterator
 
 from ..chip_aec import record as commission_record
 from ..aec.bridge_telemetry import read_bridge_stats
-from ..aec_ready import read_aec_bridge_ready
+from jasper.service_state.aec_ready import read_aec_bridge_ready
 from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_ENV,
     AecIntent,
@@ -46,8 +46,9 @@ from ..chip_aec.policy import (
     combine_mic_availability,
     effective_chip_aec_dac_gate,
 )
-from ..wake_models import WAKE_MODEL_FILE, read_wake_threshold
-from .. import env_load, systemd_probe, wake_models
+from jasper.service_state.wake_models import WAKE_MODEL_FILE, read_wake_threshold
+from .. import env_load, systemd_probe
+from jasper.service_state import wake_models
 from ..mics import xvf3800
 from jasper.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
 

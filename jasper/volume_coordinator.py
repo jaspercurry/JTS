@@ -67,7 +67,7 @@ from .volume_curve import (
 from .volume_handoff import VolumeHandoff
 from .volume_reconcile import VolumeReconciler, converged
 from .volume_state import VolumeState, OutboundStamp
-from .volume_persistence import (
+from jasper.service_state.volume_persistence import (
     FIRST_BOOT_DEFAULT_PCT,
     REGRESS_AFTER_SEC,
     REGRESS_SAFE_HIGH_PCT,

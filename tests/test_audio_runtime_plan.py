@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_settings as audio_settings
+from jasper.service_state import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan as audio_plan
 from jasper import transport_coherence
 from jasper.audio_hardware.dac import (
@@ -19,7 +19,7 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X_STUDIO_ID,
     latency_floor_for,
 )
-from jasper.audio_runtime_settings import (
+from jasper.service_state.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
     OUTPUTD_DAC_BUFFER_KEY,

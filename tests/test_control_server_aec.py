@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper import wake_models
+from jasper.service_state import wake_models
 from jasper.control import aec_endpoints
 from jasper.control.handlers import aec as aec_routes
 

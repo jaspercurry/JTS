@@ -33,7 +33,7 @@ import urllib.request
 import httpx
 import pytest
 
-from jasper import home_assistant as ha_mod
+from jasper.service_state import home_assistant as ha_mod
 from jasper.web import home_assistant_setup as ha_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 
@@ -406,7 +406,7 @@ def test_save_full_round_trip_writes_env_and_restarts(wizard_server):
 
 
 def test_verify_ssl_env_var_constant_matches_module():
-    """The wizard re-exports ENV_* constants from jasper.home_assistant
+    """The wizard re-exports ENV_* constants from jasper.service_state.home_assistant
     rather than defining its own — that's the staff-review fix for
     env-var-string duplication. Confirm the re-export holds and the
     new VERIFY_SSL constant is in the chain."""

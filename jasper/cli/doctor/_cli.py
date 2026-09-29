@@ -23,10 +23,10 @@ import sys
 import time
 from types import SimpleNamespace
 
-from ...accounts import legacy_cache_path, registry_path
+from jasper.service_state.accounts import legacy_cache_path, registry_path
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
-from ...volume_persistence import configured_path as volume_state_path
+from jasper.service_state.volume_persistence import configured_path as volume_state_path
 from ...config import Config
 from ...env_load import (
     bounded_env_int,
@@ -40,8 +40,8 @@ from jasper.playback_state.install_profile import (
 from ...log_event import render_logfmt
 from ...secret_redaction import redact_secrets
 from ...identity.speaker_name import runtime_name as _speaker_runtime_name
-from ...spotify_oauth import resolved_spotify_redirect_uri
-from ...usage import DEFAULT_USAGE_DB
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.service_state.usage import DEFAULT_USAGE_DB
 
 from ._harness import run_async
 from ._registry import CORE_MODULES, MODULE_ROSTER

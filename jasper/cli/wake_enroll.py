@@ -69,11 +69,11 @@ import numpy as np
 
 from jasper.atomic_io import atomic_write_bytes
 from jasper.log_event import log_event
-from jasper.mic_mute_persistence import (
+from jasper.service_state.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
 )
-from jasper.wake_ports import (
+from jasper.service_state.wake_ports import (
     DEFAULT_AEC_DTLN_PORT,
     DEFAULT_AEC_OFF_PORT,
     DEFAULT_AEC_ON_PORT,
@@ -412,7 +412,7 @@ async def run_session(args: argparse.Namespace) -> int:
     # Lazy imports so the module is importable without the Pi-side deps
     # (openwakeword for the detector, UdpMicCapture for the audio I/O).
     from jasper.mic_capture import UdpMicCapture
-    from jasper.wake import WakeWordDetector
+    from jasper.service_state.wake import WakeWordDetector
 
     leg_dirs = all_quadrant_dirs(args.condition)
     output_root: Path = args.output / "enrollment_positives"

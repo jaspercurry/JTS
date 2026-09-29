@@ -99,7 +99,7 @@ def track_uri(path: str | None = None) -> str | None:
     """Current track URI (e.g. spotify:track:6IiSsjuKiOIbOCSv10SqPn),
     or None if no track. Sufficient for "is something playing" and
     track-change detection. Resolving to title/artist requires a
-    Spotify Web API call (see jasper.spotify_router)."""
+    Spotify Web API call (see jasper.service_state.spotify_router)."""
     state = read(path)
     uri = state.get("uri") or state.get("track_id") or state.get("new_track_id")
     return uri or None

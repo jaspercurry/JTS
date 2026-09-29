@@ -22,7 +22,7 @@ from ..log_event import log_event
 from ..tools import ToolRegistry
 
 if TYPE_CHECKING:
-    from ..usage import BillableActivityMeter
+    from jasper.service_state.usage import BillableActivityMeter
 
 
 class ConnectionState(Enum):

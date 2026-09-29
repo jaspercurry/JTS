@@ -36,12 +36,12 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from .bluetooth.avrcp import bluetooth_avrcp_call
+from jasper.bluetooth.avrcp import bluetooth_avrcp_call
 from jasper.playback_state.music_sources import SOURCE_TO_ACTIVE_KEY, Source
-from .platform import wire
-from .platform.uds import mux_socket_command
+from jasper.platform import wire
+from jasper.platform.uds import mux_socket_command
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.spotify_routing")
 
 
 @dataclass

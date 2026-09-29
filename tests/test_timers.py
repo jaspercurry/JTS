@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.timers.
+"""Unit tests for jasper.service_state.timers.
 
 Covers:
 - human_duration formatting across boundary cases
@@ -26,7 +26,7 @@ from contextlib import closing
 
 import pytest
 
-from jasper.timers import (
+from jasper.service_state.timers import (
     Timer,
     TimerScheduler,
     TimerStore,

@@ -29,7 +29,7 @@ from typing import NoReturn
 
 from jasper.log_event import log_event
 
-from ..usage import SpendCap, UsageStore
+from jasper.service_state.usage import SpendCap, UsageStore
 from ._tasks import (
     await_cleanup_owned, cancel_tracked_tasks, capture_cleanup_error, run_cleanup_phases,
 )

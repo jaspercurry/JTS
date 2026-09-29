@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jasper.wake_ports import parse_udp_device
+from jasper.service_state.wake_ports import parse_udp_device
 
 from tests._sounddevice_stub import stub_sounddevice
 import jasper.mic_capture as mic_capture

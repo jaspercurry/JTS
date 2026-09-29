@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.volume_persistence.
+"""Tests for jasper.service_state.volume_persistence.
 
 Covers:
 - atomic write + read round-trip
@@ -19,7 +19,7 @@ import pytest
 
 from jasper.volume_curve import db_to_percent, percent_to_db
 from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
-from jasper.volume_persistence import (
+from jasper.service_state.volume_persistence import (
     VolumePersistence,
     VolumeRecord,
     regress_listening_level_if_stale,

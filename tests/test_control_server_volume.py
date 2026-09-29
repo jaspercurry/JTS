@@ -729,10 +729,10 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     wiring."""
     from unittest.mock import patch, MagicMock
     from jasper.control.volume_ops import build_spotify_router_or_none
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
     )
-    from jasper.accounts import Account
+    from jasper.service_state.accounts import Account
 
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
     monkeypatch.setenv(
@@ -755,7 +755,7 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
             default_name="jasper",
         )
 
-    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+    with patch("jasper.service_state.spotify_router.build_clients", side_effect=fake_build_clients):
         router = build_spotify_router_or_none()
 
     assert isinstance(router, Router)
@@ -774,7 +774,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
     from unittest.mock import patch
     from jasper.control import volume_ops
     from jasper.control.volume_ops import build_spotify_router_or_none
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_REVOKED, AccountStatus, BuildResult,
     )
 
@@ -801,7 +801,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
             default_name="jasper",
         )
 
-    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+    with patch("jasper.service_state.spotify_router.build_clients", side_effect=fake_build_clients):
         assert build_spotify_router_or_none() is None
         assert build_spotify_router_or_none() is None
         cache_path.write_text("revoked-v2-but-file-changed")

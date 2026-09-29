@@ -17,14 +17,14 @@ from typing import TYPE_CHECKING
 
 from . import busctl
 from jasper.device_probe.bluealsa_probe import active_transport_path
-from .spotify_router import DEVICES_TIMEOUT_SEC
+from jasper.service_state.spotify_router import DEVICES_TIMEOUT_SEC
 from .volume_scales import (
     listening_level_to_bt_volume,
     listening_level_to_spotify_percent,
 )
 
 if TYPE_CHECKING:
-    from .spotify_router import Router
+    from jasper.service_state.spotify_router import Router
 
 logger = logging.getLogger(__name__)
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)

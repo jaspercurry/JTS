@@ -9,7 +9,7 @@ The weather tool has two location paths:
 * Bare weather questions use the wizard-owned default in
   /var/lib/jasper/weather.env.
 * Questions that name a city/place are resolved dynamically by
-  jasper.weather through Open-Meteo geocoding.
+  jasper.service_state.weather through Open-Meteo geocoding.
 
 This page owns only the bare-question default and units. It stores
 rounded coordinates (same privacy posture as /assistant/transit/) plus a display
@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from .. import location_state
+from jasper.service_state import location_state
 from ..atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
 from ..log_event import log_event

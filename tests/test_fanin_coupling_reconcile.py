@@ -18,7 +18,7 @@ SHIPPED_RING_CONF_D = (
 )
 
 from jasper import source_intent_units as units
-from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _write_env_actions,

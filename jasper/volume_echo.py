@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from jasper.playback_state.music_sources import Source
-from .volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 from .volume_state import OutboundStamp
 
 # Window during which an observed source-side change is treated as

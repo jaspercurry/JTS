@@ -39,16 +39,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .accounts import (
+from jasper.service_state.accounts import (
     Account, Registry, build_cache_handler, legacy_cache_path,
     maybe_migrate_legacy, registry_path,
 )
-from .busctl import run_busctl
-from .log_event import log_event
+from jasper.busctl import run_busctl
+from jasper.log_event import log_event
 from jasper.playback_state.source_state import GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE
-from .spotify_routing import normalise
+from jasper.service_state.spotify_routing import normalise
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.spotify_router")
 
 SPOTIFY_SCOPE = (
     "user-modify-playback-state user-read-playback-state "

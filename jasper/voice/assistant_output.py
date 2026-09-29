@@ -36,7 +36,7 @@ from ..cues.manager import (
     REASON_UNKNOWN_SLUG,
     wait_tts_drained_owned,
 )
-from ..tts_routing import resolve_tts_routing_snapshot
+from jasper.service_state.tts_routing import resolve_tts_routing_snapshot
 from ..volume_coordinator import VolumeCoordinator
 from ._tasks import await_cleanup_owned, capture_cleanup_error, run_cleanup_phases
 from .earcons import (

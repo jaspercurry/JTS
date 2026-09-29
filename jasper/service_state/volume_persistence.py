@@ -59,15 +59,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .atomic_io import (
+from jasper.atomic_io import (
     advisory_file_lock,
     advisory_file_lock_async,
     atomic_write_text,
 )
-from .volume_curve import db_to_percent, percent_to_db
-from .volume_floor import VOLUME_CEILING_DB, VOLUME_FLOOR_MIN_DB
+from jasper.volume_curve import db_to_percent, percent_to_db
+from jasper.volume_floor import VOLUME_CEILING_DB, VOLUME_FLOOR_MIN_DB
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_persistence")
 
 
 @dataclass(frozen=True)

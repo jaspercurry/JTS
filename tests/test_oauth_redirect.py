@@ -11,11 +11,11 @@ from typing import Callable, NamedTuple
 
 import pytest
 
-from jasper.google_oauth import (
+from jasper.service_state.google_oauth import (
     GOOGLE_OAUTH_CALLBACK_BASE,
     resolved_google_redirect_uri,
 )
-from jasper.spotify_oauth import (
+from jasper.service_state.spotify_oauth import (
     SPOTIFY_OAUTH_CALLBACK_BASE,
     resolved_spotify_redirect_uri,
 )
@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Provider(NamedTuple):
-    """One provider's half of jasper.oauth_redirect's contract.
+    """One provider's half of jasper.service_state.oauth_redirect's contract.
 
     ``base`` is spelled out rather than read from ``constant`` on purpose:
     both Spotify and Google match the registered redirect byte-for-byte, so
@@ -45,7 +45,7 @@ PROVIDERS = [
             base="https://jaspercurry.github.io/spotify-oauth-callback/",
             resolved_uri=resolved_spotify_redirect_uri,
             env_var="SPOTIFY_REDIRECT_URI",
-            owner="jasper/spotify_oauth.py",
+            owner="jasper/service_state/spotify_oauth.py",
         ),
         id="spotify",
     ),
@@ -55,7 +55,7 @@ PROVIDERS = [
             base="https://jaspercurry.github.io/google-oauth-callback/",
             resolved_uri=resolved_google_redirect_uri,
             env_var="GOOGLE_REDIRECT_URI",
-            owner="jasper/google_oauth.py",
+            owner="jasper/service_state/google_oauth.py",
         ),
         id="google",
     ),

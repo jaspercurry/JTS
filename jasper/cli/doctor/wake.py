@@ -15,7 +15,7 @@ from jasper.runtime_config.audio_profile_state import (
 )
 from ...config import Config, local_mic_present_from_env
 from ...json_fields import sha256_file
-from ...openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult
@@ -47,13 +47,13 @@ REASON_WAKE_RECENCY_UNKNOWN = "wake_recency_unknown"
 
 @doctor_check(label="openWakeWord models", needs_cfg=True)
 def check_openwakeword_model(cfg: Config) -> CheckResult:
-    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
-    # jasper-doctor never imports jasper.wake, so without this the check pays
+    # Must precede the openwakeword import; see jasper/service_state/openwakeword_guard.py.
+    # jasper-doctor never imports jasper.service_state.wake, so without this the check pays
     # the full scikit-learn cost on every run.
     ensure_openwakeword_import_safe()
     try:
         import openwakeword
-        from ...wake_models import (
+        from jasper.service_state.wake_models import (
             by_model,
             openwakeword_assets,
             required_openwakeword_assets,

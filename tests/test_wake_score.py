@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 
 from jasper.cli import wake_score
-from jasper import wake
+from jasper.service_state import wake
 
 
 @pytest.mark.parametrize("pending_samples", [0, 319])

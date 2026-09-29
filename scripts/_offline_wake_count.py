@@ -196,9 +196,9 @@ def main() -> int:
     # test_offline_counter_runs_standalone_with_staged_sibling only pops
     # PYTHONPATH, so it cannot see a module-top import on a box where the
     # project is in site-packages (which CI is).
-    from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+    from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
-    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    # Must precede the openwakeword import; see jasper/service_state/openwakeword_guard.py.
     ensure_openwakeword_import_safe()
     from openwakeword.model import Model
     model = Model(wakeword_models=[args.model])

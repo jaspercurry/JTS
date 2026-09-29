@@ -32,7 +32,7 @@ class NoRecordingError(StateError):
 class MicMutedError(StateError):
     """Raised when the household mic-mute privacy switch is on.
 
-    Mic mute is a privacy promise (see jasper/mic_mute_persistence.py)
+    Mic mute is a privacy promise (see jasper/service_state/mic_mute_persistence.py)
     and is normally enforced inside jasper-voice — but the corpus
     recorder records the bridge's UDP legs directly while jasper-voice
     is stopped, so it must honor the persisted flag itself. Subclasses

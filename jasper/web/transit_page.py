@@ -10,7 +10,9 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import google_routes, location_state, transit
+from .. import google_routes
+from jasper.service_state import location_state
+from .. import transit
 from ..transit import citibike
 from ..transit.bus import parse_bus_stops
 from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value, GOOGLE_ROUTES_ENV_PATH

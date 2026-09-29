@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from . import location_state
+from jasper.service_state import location_state
 from .identity.reader import DEFAULT_HOSTNAME, resolve_hostname
 from .log_event import log_event
 from .tools import fence_untrusted

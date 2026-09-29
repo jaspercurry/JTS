@@ -31,7 +31,7 @@ from jasper.runtime_config.assistant_loudness import (
 from .assistant_volume import EffectiveVolumeContext
 from .log_event import log_event
 from .platform import wire
-from .tts_routing import FANIN_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 
 logger = logging.getLogger(__name__)
 

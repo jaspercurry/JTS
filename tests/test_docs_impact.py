@@ -62,7 +62,7 @@ def test_vad_file_routes_to_voice_and_vad_docs():
     docs_impact = load_docs_impact()
     subsystems = docs_impact.load_map(ROOT / "docs" / "doc-map.toml")
 
-    report = docs_impact.impact_report(subsystems, ("jasper/vad.py",))
+    report = docs_impact.impact_report(subsystems, ("jasper/service_state/vad.py",))
 
     assert [item["id"] for item in report] == ["voice-runtime-and-providers"]
     assert "docs/extensibility.md" in report[0]["docs"]

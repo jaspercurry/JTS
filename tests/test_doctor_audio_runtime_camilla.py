@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import audio_runtime_settings as audio_settings
+from jasper.service_state import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan
 from jasper.camilla import CamillaUnavailable
 from jasper.cli.doctor import (

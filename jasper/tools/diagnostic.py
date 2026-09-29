@@ -29,7 +29,7 @@ from ..log_event import log_event
 from . import tool
 
 if TYPE_CHECKING:
-    from ..wake_events import WakeEventStore
+    from jasper.service_state.wake_events import WakeEventStore
 
 logger = logging.getLogger(__name__)
 

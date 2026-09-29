@@ -336,7 +336,7 @@ module = [
     "jasper.control.state_aggregate",
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
-    "jasper.home_assistant",
+    "jasper.service_state.home_assistant",
     "jasper.mic_capture",
     "jasper.multiroom.leader_config",
     "jasper.mux",
@@ -344,8 +344,8 @@ module = [
     "jasper.dsp_control.outputd_active_lane",
     "jasper.peering.daemon",
     "jasper.sound.flat_verifier",
-    "jasper.spotify_router",
-    "jasper.spotify_routing",
+    "jasper.service_state.spotify_router",
+    "jasper.service_state.spotify_routing",
     "jasper.transit.subway",
     "jasper.tools.catalog",
     "jasper.tools.packs",
@@ -354,13 +354,13 @@ module = [
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
     "jasper.tts_playout",
-    "jasper.usage",
+    "jasper.service_state.usage",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
     "jasper.voice_daemon",
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.weather",
+    "jasper.service_state.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",
     "jasper.web.sound_active_speaker",
@@ -410,8 +410,7 @@ layers = [
   "assistant_volume : renderer : volume_echo : volume_handoff : volume_measurement_gate : volume_push_sources : volume_reconcile",
   "volume_scales : volume_state : volume_carrier",
   "aec : runtime_config : config",
-  "google_oauth : home_assistant : spotify_oauth : tts_routing : volume_persistence : wake_ports : accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
-  "oauth_redirect : audio_runtime_settings",
+  "service_state",
   "dsp_control",
   "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
   "source_intent : volume_curve : output_topology_store",
@@ -461,4 +460,14 @@ layers = [
     "camilla_latency : dsp_apply",
     "camilla_config_contract",
     "fanin_coupling",
+]
+
+[[tool.importlinter.contracts]]
+name = "Service state layers"
+type = "layers"
+containers = ["jasper.service_state"]
+exhaustive = true
+layers = [
+  "google_oauth : home_assistant : spotify_oauth : tts_routing : volume_persistence : wake_ports : accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
+  "oauth_redirect : audio_runtime_settings",
 ]

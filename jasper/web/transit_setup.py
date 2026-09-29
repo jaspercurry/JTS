@@ -63,7 +63,9 @@ from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from .. import google_routes, location_state, transit
+from .. import google_routes
+from jasper.service_state import location_state
+from .. import transit
 from ..atomic_io import locked_transform_env_file, write_env_file
 from ..transit import geocode as geocode_mod
 from ..secret_redaction import redact_secrets

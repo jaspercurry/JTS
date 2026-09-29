@@ -125,7 +125,7 @@ Ownership is deliberately split:
   process-local, so sources first observed active in one snapshot fall back to
   `MUSIC_SOURCES` registry order. Manual mode persistently pins the
   user-selected source; `/sources/` disables sources entirely. Native producer
-  events are wake hints only — `jasper/source_events.py` translates librespot
+  events are wake hints only — `jasper/service_state/source_events.py` translates librespot
   inotify and AirPlay/Bluetooth D-Bus signals, fan-in sends USB frame-flow
   edges over mux's UDS — and every hint plus the fixed 1 Hz lost-alert patrol
   enters the same reconciler, which re-reads source state before applying
@@ -229,7 +229,7 @@ introduces no second mixer, second output device or new volume model.
    failed read is a bounded grace rather than a stop/start flap. This state
    feeds mux, volume, dashboards and voice tools — do not duplicate the probe
    per caller. If the renderer has a native event surface, add a wake adapter
-   in `jasper/source_events.py`; it marks the source dirty and must never
+   in `jasper/service_state/source_events.py`; it marks the source dirty and must never
    choose a winner or command fan-in.
 5. **Declare source metadata.** One `Source` enum member and one
    `MusicSourceSpec` in `jasper/playback_state/music_sources.py`: public ID, fan-in label,

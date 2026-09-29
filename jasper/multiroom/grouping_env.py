@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .. import tts_routing as _tts_routing
+from jasper.service_state import tts_routing as _tts_routing
 from ..env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV, OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 from ..log_event import log_event

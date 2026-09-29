@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import accounts, google_creds
+from jasper.service_state import accounts, google_creds
 from jasper.cli.doctor import _shared, privsep
 from jasper.cli.doctor import secret_compartments as sc
 from jasper.cli.doctor.secret_compartments import COMPARTMENTS

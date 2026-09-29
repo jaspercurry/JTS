@@ -43,7 +43,7 @@ from jasper.voice.model_discovery import (
     load_cache,
     refresh_provider_cache,
 )
-from jasper.usage import (
+from jasper.service_state.usage import (
     DEFAULT_PRICING_FILE,
     default_pricing_as_of,
     load_pricing_overrides,

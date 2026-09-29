@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from jasper.cli import google_auth, spotify_auth
-from jasper.google_creds import GOOGLE_TOKEN_URI
+from jasper.service_state.google_creds import GOOGLE_TOKEN_URI
 
 
 ROOT = Path(__file__).resolve().parents[1]

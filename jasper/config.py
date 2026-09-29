@@ -10,13 +10,13 @@ from dataclasses import dataclass, field
 from types import MappingProxyType, ModuleType
 from typing import Any
 
-from . import home_assistant as _ha_env
-from . import volume_persistence as _volume_persistence
-from .accounts import legacy_cache_path, registry_path
+from jasper.service_state import home_assistant as _ha_env
+from jasper.service_state import volume_persistence as _volume_persistence
+from jasper.service_state.accounts import legacy_cache_path, registry_path
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
-from .location_state import (
+from jasper.service_state.location_state import (
     WEATHER_DEFAULT_LOCATION_ENV,
     WEATHER_DISPLAY_NAME_ENV,
     WEATHER_LAT_ENV,
@@ -30,12 +30,12 @@ from jasper.runtime_config.assistant_loudness import (
     DEFAULT_PROFILE_PATH as DEFAULT_ASSISTANT_LOUDNESS_PROFILE_PATH,
 )
 from .identity.speaker_name import runtime_name as _speaker_runtime_name
-from .google_creds import registry_path as google_registry_path
-from .google_oauth import resolved_google_redirect_uri
+from jasper.service_state.google_creds import registry_path as google_registry_path
+from jasper.service_state.google_oauth import resolved_google_redirect_uri
 from .identity.reader import resolve_hostname
-from .spotify_oauth import resolved_spotify_redirect_uri
-from .tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
-from .usage import (
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+from jasper.service_state.usage import (
     DEFAULT_DAILY_SPEND_CAP_SAFETY_MULTIPLIER,
     DEFAULT_DAILY_SPEND_CAP_USD,
     DEFAULT_USAGE_DB,
@@ -50,8 +50,8 @@ from .voice.input_policy import (
     normalize_openai_noise_reduction,
     validate_openai_noise_reduction,
 )
-from .wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST
-from .wake_events import (
+from jasper.service_state.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST
+from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
 from jasper.paths import SOUNDS_DIR, WAKE_EVENTS_DIR
@@ -209,7 +209,7 @@ def _parse_provider_env(
 
 def _parse_wake_input_env() -> dict[str, Any]:
     return dict(
-        # See jasper/wake_models.py for the picker and install assets.
+        # See jasper/service_state/wake_models.py for the picker and install assets.
         # The fallback is a required hash-checked openWakeWord package asset.
         wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
         wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.3),
@@ -245,7 +245,7 @@ def _parse_wake_input_env() -> dict[str, Any]:
             "JASPER_WAKE_EVENTS_DIR",
             WAKE_EVENTS_DIR,
         ),
-        # See jasper/wake_events.py for retention-cap sizing.
+        # See jasper/service_state/wake_events.py for retention-cap sizing.
         wake_events_max_audio_bytes=_env_int(
             "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
             DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
@@ -353,12 +353,12 @@ def _parse_spotify_env(hostname: str) -> dict[str, Any]:
         spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
         # Manual mode uses http://127.0.0.1:8888/callback, Spotify's loopback exception.
         spotify_redirect_uri=resolved_spotify_redirect_uri(),
-        # See jasper.accounts.maybe_migrate_legacy for the one-shot migration.
+        # See jasper.service_state.accounts.maybe_migrate_legacy for the one-shot migration.
         spotify_cache_path=legacy_cache_path(),
         # The speaker wizard name also sets librespot's name; device matching
         # uses a case-insensitive substring of sp.devices()[].name.
         spotify_device_name=_speaker_runtime_name(),
-        # See jasper.accounts for the household-account registry shape.
+        # See jasper.service_state.accounts for the household-account registry shape.
         spotify_accounts_path=registry_path(),
         # Override for a reverse proxy with a different hostname or path.
         spotify_setup_url=_env(
@@ -717,7 +717,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        from . import mic_mute_persistence, timers  # lazy: keep config imports light
+        from jasper.service_state import mic_mute_persistence, timers  # lazy: keep config imports light
         from .peering import config as peering_config  # lazy: keep config imports light
 
         # No default — the user MUST pick a provider via the wizard at

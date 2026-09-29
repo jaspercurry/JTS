@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.tts_routing import FANIN_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 from tests._live_turn_fake import silent_frame
 from tests._wake_loop import wake_loop_for_tests
 from jasper.voice.daemon_main import _tts_ready_detail

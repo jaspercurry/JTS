@@ -19,7 +19,7 @@ import numpy as np
 from .audio_buffer import AudioBuffer, InputFrame
 from jasper.playback_state.dsp_numpy import resample_poly
 from .mic_presence import read_mic_presence
-from . import wake_ports
+from jasper.service_state import wake_ports
 
 # `sounddevice` (PortAudio bindings) is a Pi-side dep absent from the dev venv,
 # so the two places that open a stream import it lazily and this module stays

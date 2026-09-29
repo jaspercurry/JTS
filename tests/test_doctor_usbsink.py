@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper import audio_runtime_settings as audio_settings
+from jasper.service_state import audio_runtime_settings as audio_settings
 from jasper import audio_runtime_plan
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.cli.doctor import _evidence, _shared, usbsink

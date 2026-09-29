@@ -51,11 +51,11 @@ import scipy.io.wavfile as wav
 # wrapper production uses, not a re-implementation).
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from jasper.vad import SpeechVAD  # noqa: E402
+from jasper.service_state.vad import SpeechVAD  # noqa: E402
 
 FRAME_MS = 80
 FRAME_SAMPLES = 16000 * FRAME_MS // 1000  # 1280
-CAPTURE_PRE_SEC = 4.0  # match jasper.wake_events.CAPTURE_PRE_SEC
+CAPTURE_PRE_SEC = 4.0  # match jasper.service_state.wake_events.CAPTURE_PRE_SEC
 # Sweep these drain-done offsets to cover UDP/asyncio jitter in
 # real-time alignment. Live VAD's first frame can land anywhere in
 # this range depending on how queueing aligns with frame boundaries.

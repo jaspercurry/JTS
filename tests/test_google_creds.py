@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.google_creds.
+"""Unit tests for jasper.service_state.google_creds.
 
 Covers the registry CRUD + token-file persistence shape. The actual
 google-auth refresh path can't be exercised without a real OAuth
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import google_creds as gc
-from jasper.google_creds import (
+from jasper.service_state import google_creds as gc
+from jasper.service_state.google_creds import (
     GoogleAccount,
     GoogleClients,
     GoogleRegistry,

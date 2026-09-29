@@ -9,7 +9,7 @@ doesn't leak between cases (sys.modules is process-global). On a
 Pi 5, the savings these guards protect are:
 
 - openWakeWord guard → sklearn doesn't load (the measured RSS table lives in
-  jasper/openwakeword_guard.py, which owns that figure; don't restate it here)
+  jasper/service_state/openwakeword_guard.py, which owns that figure; don't restate it here)
 - gemini_session lazy → google.genai doesn't load unless provider=gemini (~49 MB)
 - openai_session lazy → openai SDK doesn't load unless provider=openai (~11 MB)
 - resident daemons lazy → dbus_next and the oneshot
@@ -367,7 +367,7 @@ def test_openwakeword_scanner_leaves_top_level_find_spec_legal(tmp_path: Path) -
     """`find_spec("openwakeword")` executes nothing, so it must not be flagged.
 
     This is the other half of the `find_spec` boundary and it is load-bearing,
-    not symmetry for its own sake: `jasper/wake_models.py` locates bundled
+    not symmetry for its own sake: `jasper/service_state/wake_models.py` locates bundled
     model assets this way specifically to keep openWakeWord out of the
     socket-activated `jasper-web` render path. If this form were policed, the
     honest fix would be to import openWakeWord there — the opposite of what
@@ -492,15 +492,15 @@ def test_every_openwakeword_import_site_is_guarded() -> None:
     """No openWakeWord import may run without the sklearn guard first.
 
     openWakeWord's __init__ imports custom_verifier_model, which imports
-    scikit-learn; jasper/openwakeword_guard.py owns the measured RSS table.
+    scikit-learn; jasper/service_state/openwakeword_guard.py owns the measured RSS table.
     jasper-voice, jasper-doctor, and the offline training tools are separate
     processes, so each openWakeWord entry point has to install the guard
-    itself — relying on "some other module imported jasper.wake first" is how
-    jasper-doctor and a standalone jasper.vad import silently paid the full
+    itself — relying on "some other module imported jasper.service_state.wake first" is how
+    jasper-doctor and a standalone jasper.service_state.vad import silently paid the full
     cost.
 
     Fix a failure by calling `ensure_openwakeword_import_safe()` (from
-    jasper/openwakeword_guard.py) as the statement before the import.
+    jasper/service_state/openwakeword_guard.py) as the statement before the import.
     """
     sites = _openwakeword_import_sites(ROOT)
 
@@ -511,9 +511,9 @@ def test_every_openwakeword_import_site_is_guarded() -> None:
 
     unguarded = [f"{path}:{line}" for path, line, guarded in sites if not guarded]
     assert not unguarded, (
-        "openwakeword is imported without jasper.openwakeword_guard."
+        "openwakeword is imported without jasper.service_state.openwakeword_guard."
         f"{_GUARD_FUNCTION}() running first at: {', '.join(unguarded)}. "
-        "That pulls scikit-learn into the process; jasper/openwakeword_guard.py "
+        "That pulls scikit-learn into the process; jasper/service_state/openwakeword_guard.py "
         "has the measured cost. Call the guard as the statement immediately "
         "before the import."
     )
@@ -547,22 +547,22 @@ def test_run_probe_runs_against_the_checkout_under_test(
 
 
 def test_importing_wake_has_no_openwakeword_side_effect() -> None:
-    """jasper.wake must not touch sys.modules just by being imported.
+    """jasper.service_state.wake must not touch sys.modules just by being imported.
 
     The guard is an explicit call at each import site, NOT a module-top
-    `sys.modules` write in jasper/wake.py — that shape would protect jasper.vad
-    only when jasper-voice happened to import jasper.wake first. So importing
-    jasper.wake should install nothing.
+    `sys.modules` write in jasper/service_state/wake.py — that shape would protect jasper.service_state.vad
+    only when jasper-voice happened to import jasper.service_state.wake first. So importing
+    jasper.service_state.wake should install nothing.
     """
     probe = (
         "import sys\n"
-        "import jasper.wake  # noqa: F401\n"
+        "import jasper.service_state.wake  # noqa: F401\n"
         "touched = any(m.split('.')[0] == 'openwakeword' for m in sys.modules)\n"
         "print(f'openwakeword_touched={str(touched).lower()}')\n"
     )
     result = _run_probe(probe)
     assert result.get("openwakeword_touched") is False, (
-        "importing jasper.wake wrote an openwakeword entry into sys.modules. "
+        "importing jasper.service_state.wake wrote an openwakeword entry into sys.modules. "
         "The guard belongs at each import site, not at a module top — a "
         "module-top side effect reads as dead code and silently protects "
         "unrelated modules by import order."
@@ -571,19 +571,19 @@ def test_importing_wake_has_no_openwakeword_side_effect() -> None:
 
 @_needs_openwakeword
 def test_vad_alone_does_not_load_sklearn() -> None:
-    """A process that imports ONLY jasper.vad must still dodge sklearn.
+    """A process that imports ONLY jasper.service_state.vad must still dodge sklearn.
 
     Before the shared guard, this probe loaded 169 sklearn modules
-    (+144,928 KiB RSS on jts3.local, 2026-08-06): jasper/vad.py imported
+    (+144,928 KiB RSS on jts3.local, 2026-08-06): jasper/service_state/vad.py imported
     openwakeword with no guard of its own and free-rode on jasper-voice
-    importing jasper.wake first. scripts/probe-wake-gate.py constructs
+    importing jasper.service_state.wake first. scripts/probe-wake-gate.py constructs
     SpeechVAD without that import order.
     """
     probe = (
         "import sys\n"
-        "import jasper.vad\n"
+        "import jasper.service_state.vad\n"
         "try:\n"
-        "    jasper.vad.SpeechVAD()\n"
+        "    jasper.service_state.vad.SpeechVAD()\n"
         "except BaseException:\n"
         "    pass  # missing Silero assets are fine; the import already ran\n"
         "assert 'openwakeword' in sys.modules, 'probe never reached openwakeword'\n"
@@ -591,15 +591,15 @@ def test_vad_alone_does_not_load_sklearn() -> None:
     )
     result = _run_probe(probe)
     assert result.get("sklearn_loaded") is False, (
-        "constructing jasper.vad.SpeechVAD pulled scikit-learn into the "
-        "process. jasper/vad.py must call ensure_openwakeword_import_safe() "
+        "constructing jasper.service_state.vad.SpeechVAD pulled scikit-learn into the "
+        "process. jasper/service_state/vad.py must call ensure_openwakeword_import_safe() "
         "before its openwakeword import."
     )
 
 
 @_needs_openwakeword
 def test_doctor_wake_check_does_not_load_sklearn() -> None:
-    """jasper-doctor is its own process and never imports jasper.wake.
+    """jasper-doctor is its own process and never imports jasper.service_state.wake.
 
     Measured before the shared guard: running check_openwakeword_model
     loaded 169 sklearn modules (+138,352 KiB RSS on jts3.local,

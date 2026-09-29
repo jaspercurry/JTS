@@ -26,7 +26,7 @@ from jasper.audio_resources.model_downloads import (
     active_wake_model,
     stage_model_assets,
 )
-from jasper.wake_models import (
+from jasper.service_state.wake_models import (
     openwakeword_stage_assets,
     seed_default_wake_model_env,
     wake_model_stage_assets,

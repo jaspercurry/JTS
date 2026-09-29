@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 
 from jasper.tools import ToolRegistry
-from jasper.usage import (
+from jasper.service_state.usage import (
     BillableActivityMeter,
     UsageStore,
     load_pricing_overrides,

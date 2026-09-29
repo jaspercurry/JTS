@@ -21,11 +21,11 @@ import pytest
 
 import jasper.playback_state.airplay_session as airplay_session
 import jasper.mux as mux_module
-from jasper.accounts import Account
+from jasper.service_state.accounts import Account
 from jasper.busctl import BusctlResult
 from jasper.playback_state.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
-from jasper.spotify_router import (
+from jasper.service_state.spotify_router import (
     ACCOUNT_OK,
     AccountClient,
     AccountStatus,
@@ -35,7 +35,7 @@ from jasper.spotify_router import (
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
 from jasper.volume_handoff import SourceHandoff
-from jasper.volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records
@@ -585,7 +585,7 @@ def test_spotify_router_carries_the_household_accounts(mux, tmp_path, monkeypatc
         account=Account(name="jasper", cache_path="/nope"), sp=MagicMock(),
     )
     monkeypatch.setattr(
-        "jasper.spotify_router.build_clients",
+        "jasper.service_state.spotify_router.build_clients",
         lambda _registry, **_: BuildResult(
             clients={"jasper": client},
             statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],

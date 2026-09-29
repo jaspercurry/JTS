@@ -5,7 +5,7 @@
 """Contract tests for the wake-leg registry (``jasper.playback_state.wake_legs``).
 
 PR 0.1 of the mic-fusion architecture. The registry is the single
-source of truth for leg identity + UDP ports; ``jasper.wake_ports``
+source of truth for leg identity + UDP ports; ``jasper.service_state.wake_ports``
 derives its ``DEFAULT_*_PORT`` constants from it. These tests lock the
 back-compat contract: the wire / on-disk tokens and ports must not
 drift, or the historical ``wake_events`` corpus and the analysis
@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.playback_state import wake_legs
-from jasper import wake_ports
+from jasper.service_state import wake_ports
 
 
 # The frozen wire contract: token -> udp_port. These values are baked

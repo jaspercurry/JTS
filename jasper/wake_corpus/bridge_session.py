@@ -50,7 +50,7 @@ from jasper.cli.wake_enroll import (
     SAMPLE_RATE_HZ,
     VOICE_UNIT,
 )
-from jasper.wake_ports import build_ports
+from jasper.service_state.wake_ports import build_ports
 from jasper.atomic_io import write_env_file
 from jasper.env_file import delete_env_file, read_env_file
 from . import runtime_probe

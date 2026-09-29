@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
 class WakeWordDetector:
     """Stateful wake-word scorer over 16 kHz int16 frames.

@@ -11,7 +11,7 @@
 # Output ONNX files go to $OUT_DIR (default: ./dtln-aec-onnx/).
 # These should then be either:
 #   (a) attached to a GitHub release on the JTS repo and downloaded
-#       by install.sh / a registry module (the pattern jasper/wake_models.py
+#       by install.sh / a registry module (the pattern jasper/service_state/wake_models.py
 #       uses for jarvis_v2.onnx), or
 #   (b) for spike testing: SCP'd directly to /var/lib/jasper/dtln/
 #       on the Pi.

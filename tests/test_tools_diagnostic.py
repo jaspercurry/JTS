@@ -6,7 +6,7 @@
 
 Covers the LLM-facing tool shape (factory gating, spoken-response
 strings, success/failure paths). The store-side semantics live in
-`jasper/wake_events.py::WakeEventStore.record_flag` and are covered
+`jasper/service_state/wake_events.py::WakeEventStore.record_flag` and are covered
 in `tests/test_wake_events.py`."""
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import sqlite3
 import pytest
 
 from jasper.tools.diagnostic import make_diagnostic_tools
-from jasper.wake_events import WakeEventStore
+from jasper.service_state.wake_events import WakeEventStore
 
 
 @pytest.fixture

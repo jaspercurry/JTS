@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jasper.json_fields import sha256_file as sha256
-from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
     import numpy as np
@@ -70,7 +70,7 @@ class OpenWakeWordFeatureExtractor:
         melspec_model_path: Path | None,
         embedding_model_path: Path | None,
     ) -> None:
-        # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+        # Must precede the openwakeword import; see jasper/service_state/openwakeword_guard.py.
         ensure_openwakeword_import_safe()
         try:
             from openwakeword.utils import AudioFeatures

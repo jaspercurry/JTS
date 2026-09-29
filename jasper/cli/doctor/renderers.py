@@ -604,7 +604,7 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
         )
     # Modern path: per-account registry at spotify_accounts_path.
     try:
-        from ...accounts import Registry
+        from jasper.service_state.accounts import Registry
         registry = Registry.load(cfg.spotify_accounts_path)
     except Exception:  # noqa: BLE001
         registry = None
@@ -682,8 +682,8 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
 
     # Build clients and probe each account's sp.devices() for a match.
     try:
-        from ...accounts import Registry
-        from ...spotify_router import build_clients
+        from jasper.service_state.accounts import Registry
+        from jasper.service_state.spotify_router import build_clients
         accounts = Registry.load(cfg.spotify_accounts_path)
         result = build_clients(
             accounts,

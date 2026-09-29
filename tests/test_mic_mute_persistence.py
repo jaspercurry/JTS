@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.mic_mute_persistence.
+"""Tests for jasper.service_state.mic_mute_persistence.
 
 Covers:
 - read of a missing file returns False (failure mode = unmuted)
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.mic_mute_persistence import (
+from jasper.service_state.mic_mute_persistence import (
     DEFAULT_PATH,
     read_mic_muted,
     write_mic_muted,
@@ -142,7 +142,7 @@ def test_write_failure_is_logged_not_raised(tmp_path, caplog, monkeypatch):
     # log a warning rather than propagate — the mute toggle must
     # not crash when /var/lib/jasper is unwritable for whatever
     # reason.
-    import jasper.mic_mute_persistence as mod
+    import jasper.service_state.mic_mute_persistence as mod
 
     def boom(*args, **kwargs):
         raise OSError("simulated permission denied")

@@ -39,7 +39,7 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 Wants=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-aec-init.service
 
 # jasper-aec-reconcile's published "the bridge may run" verdict; it is the
-# single writer and jasper/aec_ready.py owns the path literal. See ADR-0224 for
+# single writer and jasper/service_state/aec_ready.py owns the path literal. See ADR-0224 for
 # why this is a Condition and not the ExecCondition= probe it replaces.
 # Deliberately NO After=jasper-aec-reconcile.service: that reconciler
 # blocking-restarts this unit from inside its own ExecStart, so an ordering

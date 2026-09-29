@@ -86,7 +86,7 @@ def test_active_speaker_output_safety_snapshot_allows_setup_ready(
 async def test_state_publishes_wake_storage_and_turn_identity(monkeypatch, tmp_path):
     from jasper.control import state_aggregate as sa
     from tests._wake_loop import wake_loop_for_tests
-    from jasper.wake_events import WakeEventStore
+    from jasper.service_state.wake_events import WakeEventStore
 
     store = WakeEventStore(tmp_path / "wake-events")
     store.open()

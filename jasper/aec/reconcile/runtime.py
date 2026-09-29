@@ -17,7 +17,7 @@ from pathlib import Path
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_PORT
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.aec.reconcile.observe import card_id, observe
-from jasper.aec_ready import aec_bridge_ready_marker_path
+from jasper.service_state.aec_ready import aec_bridge_ready_marker_path
 from jasper.atomic_io import atomic_write_json, locked_upsert_env_file
 from jasper.runtime_config.audio_profile_state import (
     WAKE_LEG_DEFAULTS, infer_audio_input_profile, intent_from_env,

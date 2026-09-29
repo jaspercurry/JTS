@@ -33,7 +33,7 @@ from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
 from jasper.volume_observers import VolumeObserver
-from jasper.volume_persistence import VolumePersistence
+from jasper.service_state.volume_persistence import VolumePersistence
 
 
 @pytest.fixture(autouse=True)

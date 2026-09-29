@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Google hosted OAuth redirect. See :mod:`jasper.oauth_redirect`."""
+"""Google hosted OAuth redirect. See :mod:`jasper.service_state.oauth_redirect`."""
 from __future__ import annotations
 
-from .oauth_redirect import resolved_redirect_uri
+from jasper.service_state.oauth_redirect import resolved_redirect_uri
 
 GOOGLE_OAUTH_CALLBACK_BASE = (
     "https://jaspercurry.github.io/google-oauth-callback/"

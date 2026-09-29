@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import env_value
 from jasper.env_load import FANIN_ENV_PATH
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions

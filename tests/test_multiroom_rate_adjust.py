@@ -29,7 +29,7 @@ from jasper.multiroom.config import (
     is_active_member,
 )
 from jasper.multiroom.tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET_ENV,

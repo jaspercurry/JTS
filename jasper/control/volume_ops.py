@@ -13,12 +13,12 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from jasper.playback_state import librespot_state
-from ..accounts import legacy_cache_path, registry_path
+from jasper.service_state.accounts import legacy_cache_path, registry_path
 from ..camilla import CamillaController
 from ..renderer import RendererClient
-from ..spotify_oauth import resolved_spotify_redirect_uri
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
 from jasper.audio_resources.volume_owner import volume_owner
-from ..volume_persistence import (
+from jasper.service_state.volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
 )
@@ -77,7 +77,7 @@ def build_spotify_router_or_none():
     if not client_id:
         return None
     try:
-        from ..spotify_router import build_router, load_registry  # lazy: import cost, see module header
+        from jasper.service_state.spotify_router import build_router, load_registry  # lazy: import cost, see module header
 
         accounts_path = registry_path()
         cache_path = legacy_cache_path()

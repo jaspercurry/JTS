@@ -22,7 +22,7 @@ Output:
 
 The module is hardware-free at import time — `openwakeword` is lazy-
 imported inside `WakeWordDetector` (which we reuse from
-`jasper.wake`). Pure-function helpers (`walk_corpus`, `score_clip`,
+`jasper.service_state.wake`). Pure-function helpers (`walk_corpus`, `score_clip`,
 `format_summary`) are testable without any audio dependencies; the
 test suite exercises them with synthetic WAVs + fake detectors.
 
@@ -65,7 +65,7 @@ from ..logging_setup import configure_verbose_logging
 logger = logging.getLogger("jasper-wake-score")
 
 
-# Mirrors `jasper.wake_events.SAMPLE_RATE_HZ` and the rest of the
+# Mirrors `jasper.service_state.wake_events.SAMPLE_RATE_HZ` and the rest of the
 # audio pipeline. Anything else means the WAVs in the corpus don't
 # match what the wake-word model expects, and `read_pcm()` rejects
 # them loudly.
@@ -235,7 +235,7 @@ def score_clip(
 
     Returns `(peak_score, mean_score, frame_count, fired)`. `detector`
     must expose `score_frame(np.ndarray) -> float` — matches
-    `WakeWordDetector` from `jasper.wake` and the fake detectors used
+    `WakeWordDetector` from `jasper.service_state.wake` and the fake detectors used
     in tests.
 
     Partial trailing frames (less than FRAME_SAMPLES) are skipped —
@@ -266,7 +266,7 @@ def score_corpus(
     `detector` is keyword-only and overridable for testing; production
     callers pass `None` and get a real `WakeWordDetector` loaded from
     `model_path`. This is the only place this module imports
-    `openwakeword` (indirectly via `jasper.wake`), so test code never
+    `openwakeword` (indirectly via `jasper.service_state.wake`), so test code never
     touches it.
 
     Clips that fail to load (bad format, malformed WAV) are skipped
@@ -283,7 +283,7 @@ def score_corpus(
         return []
 
     if detector is None:
-        from jasper.wake import WakeWordDetector
+        from jasper.service_state.wake import WakeWordDetector
         detector = WakeWordDetector(model_path, threshold=threshold)
 
     scored: list[ScoredClip] = []

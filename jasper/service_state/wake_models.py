@@ -52,7 +52,7 @@ from jasper.log_event import log_event
 if TYPE_CHECKING:
     from jasper.audio_resources.model_downloads import StageAsset
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.wake_models")
 
 
 # The systemd unit for jasper-voice sources this AFTER /etc/jasper/jasper.env,
@@ -361,7 +361,7 @@ def default() -> WakeModelEntry:
     if entry is None:
         raise RuntimeError(
             f"DEFAULT_KEY {DEFAULT_KEY!r} not in REGISTRY — "
-            "update jasper/wake_models.py"
+            "update jasper/service_state/wake_models.py"
         )
     return entry
 

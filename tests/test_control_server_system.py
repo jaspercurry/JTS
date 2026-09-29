@@ -1464,7 +1464,7 @@ def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch)
 def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
     """Configured + reachable: /system/snapshot.home_assistant carries
     instance_name + version from the injected child-cache status provider."""
-    import jasper.home_assistant as ha_mod
+    import jasper.service_state.home_assistant as ha_mod
     base, _ = server_with_coordinator
 
     async def should_not_run():

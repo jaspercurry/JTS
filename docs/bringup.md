@@ -682,7 +682,7 @@ You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/assistant/wake/` from any LAN device, or run
 `sudo /opt/jasper/.venv/bin/jasper-settings wake --model <key>` on the speaker. The model registry (and how to add one) lives in
-[`jasper/wake_models.py`](../jasper/wake_models.py).
+[`jasper/service_state/wake_models.py`](../jasper/service_state/wake_models.py).
 
 If wake isn't firing:
 

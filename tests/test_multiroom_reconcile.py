@@ -27,7 +27,7 @@ import os
 
 import pytest
 
-from jasper.audio_runtime_settings import resolve_outputd_period_setting
+from jasper.service_state.audio_runtime_settings import resolve_outputd_period_setting
 from jasper.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
@@ -454,7 +454,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     round-trip lane marker is cleared; TTS also stays off outputd because active
     voice rides fan-in upstream of the crossover. A DUMB member still arms the
     lane."""
-    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV
+    from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET_ENV
 
     active = bonded_grouping_env(_follower(), active_endpoint=True)
     assert active[DAC_CONTENT_LANE_ENV] == ""  # cleared (no dac_content)
@@ -575,7 +575,7 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
         outputd_grouping_env,
         voice_grouping_env,
     )
-    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
+    from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(build_topology(), path=topology_path)

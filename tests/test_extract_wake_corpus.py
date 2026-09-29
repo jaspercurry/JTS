@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.wake_events import SAMPLE_RATE_HZ, WakeEventStore
+from jasper.service_state.wake_events import SAMPLE_RATE_HZ, WakeEventStore
 from jasper.cli.wake_score import LEGS as SCORE_LEGS
 
 # Import the script under test by absolute path since scripts/ isn't

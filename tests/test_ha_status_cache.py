@@ -8,7 +8,7 @@ import logging
 import subprocess
 import time
 
-from jasper import home_assistant
+from jasper.service_state import home_assistant
 from jasper.control import ha_status_cache
 from jasper.control.ha_status_cache import HomeAssistantStatusCache
 

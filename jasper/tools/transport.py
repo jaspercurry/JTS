@@ -17,7 +17,7 @@ from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
 from ..renderer import airplay_now_playing
 from . import tool
 from .spotify import ensure_clients, no_account_msg
-from ..spotify_router import airplay_client_name
+from jasper.service_state.spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
 

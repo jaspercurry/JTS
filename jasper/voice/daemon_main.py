@@ -46,22 +46,22 @@ from ..cues.registry import (
     VOICE_ASSETS_MISSING_CUE_SLUG,
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
-from ..google_creds import GoogleClients, build_google_clients
+from jasper.service_state.google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
-from ..home_assistant import HAClient, build_ha_client
+from jasper.service_state.home_assistant import HAClient, build_ha_client
 from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
 from ..renderer import RendererClient
-from ..spotify_router import Router, build_router
-from ..timers import Timer, TimerScheduler, announcement_text
+from jasper.service_state.spotify_router import Router, build_router
+from jasper.service_state.timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
 from ..tools.packs import ToolDeps, outcomes_to_state, register_packs
 from ..tools.tool_prompt_overrides import read_prompt_overrides
 from ..tools.tool_state import read_tool_state
 from ..tools.catalog import DEFAULT_CATALOG_PATH, write_catalog
-from ..usage import (
+from jasper.service_state.usage import (
     BillableActivityMeter,
     Pricing,
     SpendCap,
@@ -70,7 +70,7 @@ from ..usage import (
     pricing_for_model,
 )
 from jasper.runtime_config.usage_writer import VoiceUsageStore
-from ..vad import SpeechVAD, SpeechVADSetupError
+from jasper.service_state.vad import SpeechVAD, SpeechVADSetupError
 from ..voice import control_socket as control_socket_mod
 from ..voice.assistant_output import FanInDucker
 from ..voice.input_policy import (
@@ -82,11 +82,11 @@ from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
 from jasper.audio_resources.volume_owner import install_volume_owner
-from ..volume_persistence import VolumePersistence
-from ..wake import WakeWordDetector
-from ..wake_events import WakeEventStore
+from jasper.service_state.volume_persistence import VolumePersistence
+from jasper.service_state.wake import WakeWordDetector
+from jasper.service_state.wake_events import WakeEventStore
 from ..watchdog import Heartbeat
-from ..weather import WeatherClient
+from jasper.service_state.weather import WeatherClient
 from ..voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
     VOICE_PROVIDER_NOT_CONFIGURED_EXIT,

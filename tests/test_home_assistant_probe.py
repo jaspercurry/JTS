@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.home_assistant.probe_status and the doctor check.
+"""Tests for jasper.service_state.home_assistant.probe_status and the doctor check.
 
 probe_status is the one-shot reachability + version helper consumed by
 jasper-control's /state aggregator, the /system/ dashboard card, and
@@ -15,8 +15,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import jasper.home_assistant as ha_mod
-from jasper.home_assistant import HAClient, probe_status
+import jasper.service_state.home_assistant as ha_mod
+from jasper.service_state.home_assistant import HAClient, probe_status
 from tests._log_events import event_fields, event_records
 
 

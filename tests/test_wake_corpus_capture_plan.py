@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import aec_sweep, wake_ports
+from jasper import aec_sweep
+from jasper.service_state import wake_ports
 from jasper.chip_aec.policy import ChipAecGate
 from jasper.env_file import read_env_file
 from jasper.wake_corpus import (

@@ -97,7 +97,7 @@ def test_renderer_active_keys_are_consumed_from_source_registry():
 
     consumers = (
         "jasper/renderer.py",
-        "jasper/spotify_routing.py",
+        "jasper/service_state/spotify_routing.py",
         "jasper/volume_coordinator.py",
         "jasper/tools/spotify.py",
         "jasper/tools/transport.py",

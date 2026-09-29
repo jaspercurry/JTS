@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET_ENV,
     VOICE_TTS_SOCKET_ENV,

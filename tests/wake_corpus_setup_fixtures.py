@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper import wake_ports
+from jasper.service_state import wake_ports
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV
 from jasper.wake_corpus import (
     active_session,

@@ -14,7 +14,7 @@ import asyncio
 import json
 import sys
 
-from .. import home_assistant
+from jasper.service_state import home_assistant
 
 
 def main() -> int:

@@ -13,10 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .volume_persistence import FIRST_BOOT_DEFAULT_PCT
+from jasper.service_state.volume_persistence import FIRST_BOOT_DEFAULT_PCT
 
 if TYPE_CHECKING:
-    from .volume_persistence import VolumeRecord
+    from jasper.service_state.volume_persistence import VolumeRecord
 
 
 @dataclass

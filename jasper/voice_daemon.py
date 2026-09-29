@@ -19,14 +19,14 @@ from jasper.log_event import log_event
 from .audio_buffer import AudioBuffer
 from .mic_capture import InputDeviceUnavailable, MicCapture
 from .tts_playout import TtsPlayout
-from .wake_events import WakeEventStore
+from jasper.service_state.wake_events import WakeEventStore
 from .cues import AudioCueManager
-from .vad import SpeechVAD
+from jasper.service_state.vad import SpeechVAD
 from .config import Config
 from .conversation_history import ConversationStore
 from .watchdog import Heartbeat
-from .timers import Timer, announcement_text
-from .usage import (
+from jasper.service_state.timers import Timer, announcement_text
+from jasper.service_state.usage import (
     SpendCap,
     UsageStore,
 )
@@ -70,7 +70,7 @@ from .voice.assistant_output import (
 )
 from .voice.output_gate import AssistantOutputGate
 from .volume_coordinator import VolumeCoordinator
-from .mic_mute_persistence import read_mic_muted, write_mic_muted
+from jasper.service_state.mic_mute_persistence import read_mic_muted, write_mic_muted
 
 logger = logging.getLogger(__name__)
 EX_CONFIG_EXIT = 78
