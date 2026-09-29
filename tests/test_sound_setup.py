@@ -553,23 +553,12 @@ class _ReadTrackingBytesIO(io.BytesIO):
         return super().read(size)
 
 
-class _BrokenPipeBytesIO(io.BytesIO):
-    def __init__(self) -> None:
-        super().__init__()
-        self.write_calls = 0
-
-    def write(self, data: bytes) -> int:
-        self.write_calls += 1
-        raise BrokenPipeError("synthetic client disconnect")
-
-
 def _drive_raw_sound_post(
     tmp_path: Path,
     *,
     path: str,
     content_length: int,
     body: bytes = b"must-not-be-read",
-    response_sink: io.BytesIO | None = None,
     idle_hold=sound_setup.no_hold,
     camilla_factory=lambda: None,
 ) -> tuple[bytes, list[int]]:
@@ -590,7 +579,7 @@ def _drive_raw_sound_post(
         + body
     )
     rfile = _ReadTrackingBytesIO(raw)
-    wfile = response_sink if response_sink is not None else io.BytesIO()
+    wfile = io.BytesIO()
     handler = handler_cls.__new__(handler_cls)
     handler.rfile = rfile
     handler.wfile = wfile
@@ -603,34 +592,40 @@ def _drive_raw_sound_post(
     return wfile.getvalue(), rfile.read_calls
 
 
+def _get_json(tmp_path: Path, path: str) -> dict:
+    """GET ``path`` from the real sound Handler; its 200 JSON answer."""
+    handler_cls = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
+        camilla_factory=lambda: None,
+    )
+    handler = handler_cls.__new__(handler_cls)
+    handler.rfile = io.BytesIO(f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode())
+    handler.wfile = io.BytesIO()
+    handler.client_address, handler.server = ("127.0.0.1", 0), None
+    handler.raw_requestline = handler.rfile.readline()
+    assert handler.parse_request()
+    handler.do_GET()
+    head, body = handler.wfile.getvalue().split(b"\r\n\r\n", 1)
+    assert b" 200 " in head.split(b"\r\n", 1)[0]
+    assert b"Content-Type: application/json" in head
+    return json.loads(body)
+
+
 @pytest.mark.parametrize(
-    ("method", "route", "builder", "event", "extra_fields"),
+    ("route", "builder", "event"),
     [
+        ("/output-topology", "_output_topology_payload", "sound.output_topology"),
         (
-            "GET",
-            "/output-topology",
-            "_output_topology_payload",
-            "sound.output_topology",
-            {},
-        ),
-        (
-            "GET",
             "/active-speaker/tuning-handoff",
             "_active_speaker_tuning_handoff_payload",
             "sound.active_speaker_tuning_handoff",
-            {},
         ),
     ],
 )
 def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
-    tmp_path,
-    monkeypatch,
-    caplog,
-    method,
-    route,
-    builder,
-    event,
-    extra_fields,
+    tmp_path, monkeypatch, caplog, route, builder, event,
 ):
     """A failed route answers 502 and records its exception exactly once."""
     error = OSError("payload builder failed")
@@ -641,22 +636,16 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
     monkeypatch.setattr(sound_setup, builder, fail)
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
     with sound_server(tmp_path) as base:
-        if method == "GET":
-            try:
-                urllib.request.urlopen(f"{base}{route}")
-            except urllib.error.HTTPError as e:
-                response = e
-            else:
-                raise AssertionError(f"{route} did not fail the request")
-            assert response.code == 502
-        else:
-            response = json_post_with_csrf(base, route, {}, expect_status=502)
+        with pytest.raises(urllib.error.HTTPError) as failed:
+            urllib.request.urlopen(f"{base}{route}")
+        response = failed.value
+        assert response.code == 502
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
     record, fields = _event_record(caplog, event)
-    assert fields == {"result": "error", **extra_fields}
+    assert fields == {"result": "error"}
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
     assert record.exc_info[1] is error
@@ -689,7 +678,25 @@ def test_sound_post_rejects_invalid_body_length_before_read(
     assert read_calls == []
 
 
-def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch):
+@pytest.mark.parametrize("path", [
+    "/not-a-sound-route",
+    # Retired active-speaker POST routes stay unregistered.
+    "/active-speaker/crossover-preview",
+    "/active-speaker/stop",
+    "/active-speaker/channel-protection",
+    "/active-speaker/stage-config",
+    "/active-speaker/check-path-safety",
+    "/active-speaker/load-startup-config",
+    "/active-speaker/commission-load",
+    "/active-speaker/commission-ramp-step",
+    "/active-speaker/commission-ramp-ack",
+    "/active-speaker/driver-measurement",
+    "/active-speaker/summed-test",
+    "/active-speaker/summed-test/level",
+    "/active-speaker/summed-test/stop",
+    "/active-speaker/summed-validation",
+])
+def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch, path):
     def fail_if_guarded(_handler):
         raise AssertionError("unknown route must return before the CSRF guard")
 
@@ -697,7 +704,7 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
-        path="/not-a-sound-route",
+        path=path,
         content_length=-1,
     )
 
@@ -705,136 +712,56 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
     assert read_calls == []
 
 
-def test_dead_active_speaker_post_routes_are_unregistered(tmp_path):
-    handler = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-    )
-    dispatch = handler.do_POST
-    routes = dispatch.__closure__[
-        dispatch.__code__.co_freevars.index("_POST_ROUTES")
-    ].cell_contents
-    dead = {
-        "/active-speaker/crossover-preview",
-        "/active-speaker/stop",
-        "/active-speaker/channel-protection",
-        "/active-speaker/stage-config",
-        "/active-speaker/check-path-safety",
-        "/active-speaker/load-startup-config",
-        "/active-speaker/commission-load",
-        "/active-speaker/commission-ramp-step",
-        "/active-speaker/commission-ramp-ack",
-        "/active-speaker/driver-measurement",
-        "/active-speaker/summed-test",
-        "/active-speaker/summed-test/level",
-        "/active-speaker/summed-test/stop",
-        "/active-speaker/summed-validation",
-    }
-    assert dead.isdisjoint(routes)
-
-
-def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
-    """#2761: POST /active-speaker/seat-level/start reaches
-    _seat_level_start_payload only after the CSRF chokepoint
-    (guard_mutating_request, wired via dispatch_post(..., guard="header"))."""
+@pytest.mark.parametrize(
+    ("path", "builder", "stub", "body", "expected"),
+    [
+        (
+            "/active-speaker/seat-level/start",
+            "_seat_level_start_payload",
+            lambda body: {"route": "seat-level-start", "body": body},
+            b'{"target_db_spl": 78.0}',
+            {"route": "seat-level-start", "body": {"target_db_spl": 78.0}},
+        ),
+        (
+            "/active-speaker/seat-level/stop",
+            "_seat_level_stop_payload",
+            lambda: {"route": "seat-level-stop"},
+            b"{}",
+            {"route": "seat-level-stop"},
+        ),
+    ],
+)
+def test_seat_level_routes_dispatch_and_are_csrf_protected(
+    tmp_path, monkeypatch, path, builder, stub, body, expected,
+):
+    """#2761: each seat-level POST reaches its payload builder only after the
+    CSRF chokepoint (guard_mutating_request, wired via dispatch_post(...,
+    guard="header"))."""
     monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
     response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/start",
-        content_length=-1,
+        tmp_path, path=path, content_length=-1,
     )
     assert b" 403 " in response.split(b"\r\n", 1)[0]
     assert read_calls == []
 
     monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_seat_level_start_payload",
-        lambda body: {"route": "seat-level-start", "body": body},
-    )
-    body = b'{"target_db_spl": 78.0}'
+    monkeypatch.setattr(sound_setup, builder, stub)
     response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/start",
-        content_length=len(body),
-        body=body,
+        tmp_path, path=path, content_length=len(body), body=body,
     )
     assert b" 200 " in response.split(b"\r\n", 1)[0]
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-    assert payload == {
-        "route": "seat-level-start",
-        "body": {"target_db_spl": 78.0},
-    }
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == expected
     assert read_calls == [len(body)]
 
 
-@pytest.mark.parametrize("path,builder,expected", [
-    ("/active-speaker/seat-level/status", "_seat_level_status_payload", {
+def test_seat_level_status_route_serves_its_builder(tmp_path, monkeypatch):
+    expected = {
         "state": "idle", "target_db_spl": None,
         "mic": {"available": False}, "default_target_db_spl": 78.0,
-    }),
-])
-def test_seat_level_state_routes(tmp_path, monkeypatch, path, builder, expected):
-    monkeypatch.setattr(sound_setup, builder, lambda: expected)
-
-    handler_cls = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-        camilla_factory=lambda: None,
-    )
-    rfile = io.BytesIO(
-        f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode()
-    )
-    wfile = io.BytesIO()
-    handler = handler_cls.__new__(handler_cls)
-    handler.rfile = rfile
-    handler.wfile = wfile
-    handler.client_address = ("127.0.0.1", 0)
-    handler.server = None
-    handler.raw_requestline = rfile.readline()
-    assert handler.parse_request() is True
-    handler.protocol_version = "HTTP/1.1"
-    handler.do_GET()
-    response = wfile.getvalue()
-
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    headers, body = response.split(b"\r\n\r\n", 1)
-    assert b"Content-Type: application/json" in headers
-    payload = json.loads(body)
-    assert payload == expected
-
-
-def test_seat_level_stop_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
-    """#2761: POST /active-speaker/seat-level/stop reaches
-    _seat_level_stop_payload only after the same CSRF chokepoint."""
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/stop",
-        content_length=-1,
-    )
-    assert b" 403 " in response.split(b"\r\n", 1)[0]
-    assert read_calls == []
-
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_seat_level_stop_payload",
-        lambda: {"route": "seat-level-stop"},
-    )
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/stop",
-        content_length=2,
-        body=b"{}",
-    )
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
-        "route": "seat-level-stop",
     }
-    assert read_calls == [2]
+    monkeypatch.setattr(sound_setup, "_seat_level_status_payload", lambda: expected)
+
+    assert _get_json(tmp_path, "/active-speaker/seat-level/status") == expected
 
 
 def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
@@ -884,8 +811,11 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     """All three modes share the design system and each loads its own static
     module; only the EQ mode renders the Off/Saved/Draft chrome, and none
     inlines logic."""
-    html = sound_setup._index_html(page_mode=page_mode).decode()
+    html = sound_setup._index_html("csrf-token", page_mode=page_mode).decode()
 
+    # The token rides in the meta tag; the static module reads it and sends
+    # X-CSRF-Token on every mutating POST.
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
     assert "/assets/app.css" in html
     assert "/assets/sound-profile/sound.css?v=" in html  # linked, not inlined
     assert "<style>" not in html
@@ -977,97 +907,39 @@ def test_design_draft_save_carries_field_refusals(monkeypatch, tmp_path, manual,
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["code"] == code
 
 
-def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
+@pytest.mark.parametrize("page_mode", ["eq", "speaker", "output"])
+def test_a_bonded_follower_page_delegates_to_its_leader(monkeypatch, page_mode):
+    """Content EQ, room correction and volume shaping (the PROGRAM domain) are
+    the leader's while paired. Local crossover and driver-protection work stays
+    with the speaker that owns the DAC, so only /sound/speaker/ keeps its
+    module, and the other two pages link to it."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/eq/",
+        lambda path="/": leader_paths.append(path) or f"http://jts3.local{path}",
     )
+    local = page_mode == "speaker"
 
-    html = sound_setup._index_html("csrf-token", page_mode="eq").decode()
+    html = sound_setup._index_html(page_mode=page_mode).decode()
 
-    # The delegation card stays: content EQ / room correction / volume shaping
-    # are the leader's job while paired.
-    assert "Sound is controlled by the pair leader" in html
-    assert leader_paths == ["/sound/eq/"]
-    assert "http://jts3.local/sound/eq/" in html
-    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
-    # EQ is entirely leader-owned on a follower; no local commissioning module.
-    assert "/assets/sound-profile/js/main.js" not in html
-    assert 'id="sound-page-data"' in html
-    assert '"follower"' in html
-    assert 'id="view-body"' not in html
-    # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented tablist,
-    # and the now-playing EQ plot) stays delegated to the leader — none of it is
-    # rendered on the follower page.
-    assert 'id="tab-off"' not in html
-    assert 'id="tab-saved"' not in html
-    assert 'id="tab-draft"' not in html
-    assert 'id="plot"' not in html
-    assert 'class="now-playing"' not in html
-    assert 'role="tablist"' not in html
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
-
-
-def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    leader_paths = []
-    monkeypatch.setattr(
-        sound_setup,
-        "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path)
-        or "http://jts3.local/sound/speaker/",
+    assert leader_paths == [f"/sound/{page_mode}/"]
+    assert f"http://jts3.local/sound/{page_mode}/" in html
+    assert ('id="view-body"' in html) is local
+    assert ("/assets/sound-profile/js/speaker.js" in html) is local
+    assert not any(
+        f"/assets/sound-profile/js/{module}.js" in html for module in ("main", "output")
     )
-
-    html = sound_setup._index_html("csrf-token", page_mode="speaker").decode()
-
-    assert leader_paths == ["/sound/speaker/"]
-    assert "http://jts3.local/sound/speaker/" in html
-    assert 'id="view-body"' in html
-    assert "/assets/sound-profile/js/speaker.js" in html
-    assert '"mode": "speaker"' in html
-    assert '"follower": true' in html
-    assert 'id="tab-off"' not in html
-    assert 'id="plot"' not in html
-    # The local page owns the driver domain, so it offers no way back to it.
-    assert "Open local speaker setup" not in html
-
-
-def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
-    """Volume shaping is the leader's PROGRAM domain, so the follower's Output
-    page is delegation-only — with a path to the local page it does own."""
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    leader_paths = []
-    monkeypatch.setattr(
-        sound_setup,
-        "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/output/",
+    assert ('href="/sound/speaker/">Open local speaker setup</a>' in html) is not local
+    # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented
+    # tablist, the now-playing plot) is the leader's on every page.
+    assert not any(
+        marker in html
+        for marker in (*_EQ_ONLY_CHROME, 'class="now-playing"', 'role="tablist"')
     )
-
-    html = sound_setup._index_html("csrf-token", page_mode="output").decode()
-
-    assert leader_paths == ["/sound/output/"]
-    assert "http://jts3.local/sound/output/" in html
-    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
-    assert "/assets/sound-profile/js/output.js" not in html
-    assert 'id="view-body"' not in html
-    # The crossover row hangs under Speaker setup, not this page.
+    # No delegation page renders the crossover row.
     assert _crossover_child_row()[1] + "</a>" not in html
-
-
-def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(
-            base,
-            "/settings",
-            {},
-            expect_status=409,
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-        assert "controlled on the pair leader" in payload["error"]
 
 
 def test_follower_block_set_is_content_dsp_only():
@@ -1107,13 +979,6 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
             base, "/active-speaker/rear-calibration/validate", session,
         )
         assert active_status not in (404, 409), active_status
-
-
-def test_index_html_embeds_csrf_meta_for_json_posts():
-    html = sound_setup._index_html("csrf-token").decode()
-    # The token rides in the meta tag; the static module reads it and sends
-    # X-CSRF-Token on every mutating POST.
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
 def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path):
@@ -1179,8 +1044,6 @@ def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path)
 
 
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
-    from jasper.control import restart_broker
-
     calls = []
     monkeypatch.setattr(
         sound_active_speaker,
@@ -1198,7 +1061,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
         calls.append((unit, kwargs))
         return {"ok": True}
 
-    monkeypatch.setattr(restart_broker, "manage_units", manage)
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", manage)
 
     payload, result = sound_setup._save_i2s_hat_payload("innomaker_hifi_amp_pro")
 
@@ -1214,7 +1077,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     def fail_apply(*_args, **_kwargs):
         raise OSError("broker unavailable")
 
-    monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", fail_apply)
     refreshed, failed = sound_setup._save_i2s_hat_payload(None)
     assert refreshed["restart_required"] is True
     assert refreshed["warnings"] == ["collision"]
@@ -2193,8 +2056,6 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
 
 
 def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatch) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     payload = sound_setup._active_speaker_driver_research_request_payload({
@@ -2209,8 +2070,6 @@ def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatc
 
 @pytest.mark.parametrize("model", [None, "", " \t "])
 def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, model) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     with pytest.raises(ValueError):
@@ -2348,8 +2207,6 @@ def test_design_draft_save_payload_refuses_unknown_fields(field) -> None:
 
 
 def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_path: Path) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
@@ -2364,7 +2221,6 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
     tmp_path: Path,
 ) -> None:
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import (
         _manual_settings,
         _operator_inputs,
@@ -2418,7 +2274,6 @@ def _declared_candidate_box(
     ordinary wizard design-draft save must not fsync (#2292), so that half is
     checked at every call site rather than in one test.
     """
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     topology = mono_output_topology(card_id=None)
@@ -2462,8 +2317,6 @@ def _geometry(fc_hz: float, slope_db_per_octave: int):
 def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    from jasper.active_speaker.design_draft import load_design_draft
-
     _declared_candidate_box(
         monkeypatch, tmp_path, operator_inputs={"notes": "keep this"}
     )
@@ -3174,10 +3027,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     return prepared
 
 
-def test_rear_calibration_seed_route_returns_a_document_that_validates(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+def test_rear_calibration_seed_route_returns_a_document_that_validates(tmp_path: Path):
     with sound_server(tmp_path) as base:
         seed_resp = urllib.request.urlopen(f"{base}/active-speaker/rear-calibration/seed")
         seed_payload = json.loads(seed_resp.read().decode("utf-8"))
@@ -3196,10 +3046,7 @@ def test_rear_calibration_seed_route_returns_a_document_that_validates(
     }
 
 
-def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(tmp_path: Path):
     with sound_server(tmp_path) as base:
         bad_document = {**sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
                         "sample_rate_hz": 44100}
@@ -3266,7 +3113,6 @@ def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
     """Mirrors jasper-crossover-prescriber's ``--base saved`` block: a corrupt
     on-disk file fails closed as a typed refusal, not an unhandled 502."""
 
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
     monkeypatch.setattr(
         "jasper.audio_routes.output_topology_store.load_output_topology_strict",
         lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
@@ -3517,26 +3363,12 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
         card_id=None, identity_verified=True,
     ))
     _save_active_speaker_design_and_preview()
-    handler_cls = sound_setup._make_handler(
-        profile_path=tmp_path / "profile.json", library_path=tmp_path / "library.json",
-        config_dir=tmp_path / "configs",
-    )
     for frequency in (2500, 3200):
         draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
         draft = json.loads(draft_path.read_text())
         draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = frequency
         draft_path.write_text(json.dumps(draft))
-        handler = handler_cls.__new__(handler_cls)
-        handler.rfile = io.BytesIO(b"GET /active-speaker/crossover-preview HTTP/1.1\r\nHost: jts.local\r\n\r\n")
-        handler.wfile = io.BytesIO()
-        handler.client_address = ("127.0.0.1", 0)
-        handler.server = None
-        handler.raw_requestline = handler.rfile.readline()
-        handler.parse_request()
-        handler.do_GET()
-        response = handler.wfile.getvalue()
-        assert b" 200 " in response.split(b"\r\n", 1)[0]
-        payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+        payload = _get_json(tmp_path, "/active-speaker/crossover-preview")
         assert payload["status"] == "ready_for_protected_staging"
         assert payload["groups"][0]["crossovers"][0]["proposed_frequency_hz"] == frequency
         assert payload["safety"]["no_audio"] is True
@@ -5827,7 +5659,7 @@ def test_cardioid_compare_availability_contract(tmp_path, monkeypatch, reason):
     level = {"status": "matched", "trim_db": 1.2, "louder": "on", "reason": "",
              "round_id": "pair", "banked_at": "2026-09-20T12:00:00Z"}
     monkeypatch.setattr(sound_active_speaker, "rear_compare_level", lambda **kwargs: level)
-    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
+    payload = _get_json(tmp_path, "/cardioid-compare")
     assert payload == {
         "available": not reason, "reason": reason, "state": "normal",
         "tune": {"label": "Current tune", "layers": [] if applied is None else
@@ -5843,7 +5675,7 @@ def test_cardioid_compare_session_disclosure(tmp_path, monkeypatch, layer, state
     monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: {
         "layer": layer, "state": state, "expires_in_s": seconds,
     })
-    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
+    payload = _get_json(tmp_path, "/cardioid-compare")
     assert payload["state"] == (state or "normal")
     assert payload["expires_in_s"] == seconds
 
@@ -5979,26 +5811,11 @@ def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "cardioid_compare_unavailable"
 
 
-def _drive_compare_get(tmp_path, path):
-    handler_cls = sound_setup._make_handler(profile_path=tmp_path / "profile.json",
-        library_path=tmp_path / "library.json", config_dir=tmp_path, camilla_factory=lambda: None)
-    handler = handler_cls.__new__(handler_cls)
-    handler.rfile = io.BytesIO(f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode())
-    handler.wfile = io.BytesIO()
-    handler.client_address, handler.server = ("127.0.0.1", 0), None
-    handler.raw_requestline = handler.rfile.readline()
-    assert handler.parse_request()
-    handler.do_GET()
-    response = handler.wfile.getvalue()
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    return json.loads(response.split(b"\r\n\r\n", 1)[1])
-
-
 def test_cardioid_compare_absent_from_get_state(tmp_path, monkeypatch):
     block = Mock(side_effect=AssertionError())
     monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", block)
     monkeypatch.setattr(sound_setup, "_eq_carrier_block", lambda *a, **k: None)
-    assert "cardioid_compare" not in _drive_compare_get(tmp_path, "/state")
+    assert "cardioid_compare" not in _get_json(tmp_path, "/state")
     block.assert_not_called()
 
 
@@ -6037,9 +5854,10 @@ def test_compare_post_never_selects_or_previews(compare_evidence, tmp_path, monk
     preview.assert_not_called()
 
 
-def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
+def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    caplog.set_level(logging.INFO, logger=sound_setup.logger.name)
     responses = []
     for route in ("/cardioid-compare", "/live-draft"):
         response, reads = _drive_raw_sound_post(tmp_path, path=route, content_length=2, body=b"{}")
@@ -6048,6 +5866,9 @@ def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
         responses.append(json.loads(response.split(b"\r\n\r\n", 1)[1]))
     assert responses[0] == responses[1]
     assert set(responses[0]) == {"error"}
+    assert event_field_maps(caplog, "sound.follower_content_dsp_blocked") == [
+        {"path": "/cardioid-compare"}, {"path": "/live-draft"},
+    ]
 
 
 def test_sound_server_construction_starts_no_thread(tmp_path, monkeypatch):
@@ -6148,8 +5969,6 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
 ])
 def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, channels, cardioid, count):
     from jasper.active_speaker.layout import build_speaker_layout, layout_choices
-    from jasper.active_speaker.measurement_programs import programs_for_topology
-    from tests.active_speaker_fixtures import mono_output_topology
 
     choices = dict(layout=layout, crossover=crossover, channels=channels, cardioid=cardioid)
     topology = build_speaker_layout(mono_output_topology(), choices)
@@ -6164,9 +5983,8 @@ def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, c
 def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker.design_inputs import resolved_draft_inputs
-    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
+    from jasper.active_speaker.design_draft import save_design_draft
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
 
     topology = mono_output_topology()
@@ -6211,7 +6029,6 @@ def _stored_setup(tmp_path, monkeypatch, *, stereo):
     from jasper.active_speaker import baseline_profile
     from jasper.active_speaker.design_draft import save_design_draft
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import (
         _operator_inputs, _research_result, _stereo_operator_inputs, _stereo_topology,
     )
@@ -6322,7 +6139,6 @@ def test_setup_opens_a_high_pass_without_its_owner_in_its_driver_card(tmp_path, 
 def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
-    from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(mode='full_range_passive', with_subwoofer=True)
     monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(tmp_path / 'draft.json'))
@@ -6343,7 +6159,6 @@ def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch)
 def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch, style):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _operator_inputs
 
     topology = mono_output_topology()
@@ -6378,7 +6193,7 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
 
 
 def test_setup_apply_uses_declared_base_instead_of_the_incumbent(tmp_path, monkeypatch):
-    from jasper.web import sound_speaker_setup as setup, sound_active_speaker
+    from jasper.web import sound_speaker_setup as setup
     from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
     _seed_baseline_apply_environment(monkeypatch, tmp_path)
