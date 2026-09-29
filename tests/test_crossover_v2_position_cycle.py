@@ -166,32 +166,13 @@ def test_a_raised_pose_carries_its_elevation_into_the_index(
     assert take["position_deg"] == 22
 
 
-def test_a_take_banked_before_elevation_existed_indexes_as_mark_height(tmp_path):
-    """History reads, and reads HONESTLY: absent is 0, never ``None``.
+@pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
+def test_a_take_banked_without_its_elevation_or_candidate_is_refused(tmp_path, field):
+    """No reader defaults a field a take was banked without (#2902)."""
+    _bank(tmp_path, [{k: v for k, v in _record(1, 7).items() if k != field}])
 
-    Asserted against a record with the key REMOVED, not one written 0 — a walk
-    that could not state a rise did not take one, so the two are the same fact
-    and a reader must not have to tell a missing number from an unstated one.
-    Refusing the round instead would trade a whole banked walk for one number
-    it never had.
-    """
-    legacy = {k: v for k, v in _record(1, 7).items() if k != "vertical_deg"}
-    _bank(tmp_path, [legacy])
-
-    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
-
-    assert take["vertical_deg"] == 0
-
-
-def test_a_take_banked_before_candidates_existed_names_no_candidate(tmp_path):
-    """``""`` is the honest reading of a walk that cycled nothing — never
-    ``None``, which would put a null in front of every packet reader."""
-    legacy = {k: v for k, v in _record(1, 7).items() if k != "candidate_id"}
-    _bank(tmp_path, [legacy])
-
-    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
-
-    assert take["candidate_id"] == ""
+    with pytest.raises(PositionCycleError):
+        position_cycle_document(tmp_path, derived_at=STAMP)
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):
@@ -536,21 +517,14 @@ def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
 
 
 @pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
-def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document, field):
-    """The strict reader's exemptions, at the MISSING end only.
-
-    Strictness exists so a NEWER document is never read as an older one, and
-    the test above keeps that: an unknown key still refuses. What this exempts
-    is the opposite direction — a document written before a defaulted field
-    existed, which a newer reader understands completely. Refusing it would
-    throw away a banked round to gain one number the round never had.
-    """
+def test_a_take_missing_its_elevation_or_candidate_is_refused(tmp_path, document, field):
     document["takes"] = [
         {k: v for k, v in take.items() if k != field}
         for take in document["takes"]
     ]
 
-    assert read_position_cycle(_written(tmp_path, document)) == document
+    with pytest.raises(PositionCycleError):
+        read_position_cycle(_written(tmp_path, document))
 
 
 def test_an_unreadable_file_is_this_modules_error_not_an_oserror(tmp_path):

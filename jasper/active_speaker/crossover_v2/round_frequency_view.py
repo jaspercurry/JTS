@@ -23,9 +23,7 @@ def _whole_degrees(value: Any) -> int | None:
 
 def position_label(row: Mapping[str, Any]) -> str:
     degrees = _whole_degrees(row.get("position_deg"))
-    # Absent on a row banked before the field existed, and 0 on every seat
-    # taken at mark height — neither draws a raise on the legend.
-    elevation = _whole_degrees(row.get("vertical_deg")) or 0
+    elevation = _whole_degrees(row.get("vertical_deg"))
     raw_role = str(row.get("role") or "")
     role = {"onax": "On axis", "offax": "Off axis"}.get(
         raw_role, raw_role.replace("_", " ").title(),

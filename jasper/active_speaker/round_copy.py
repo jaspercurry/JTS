@@ -37,7 +37,7 @@ def pose_name(pose: Mapping[str, Any]) -> str:
         return placement
     from .crossover_v2.round_frequency_view import position_label  # lazy: only bearing poses need angle words; keeps the CLI parser numpy-free
 
-    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
+    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg")})
     return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
 

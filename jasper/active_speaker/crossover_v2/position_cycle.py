@@ -43,23 +43,12 @@ _BANKED_POSITIONS_GLOB = (
     f"{_BANKED_BUNDLE_GLOB}/{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"
 )
 
-#: What each take contributes to the index — the identity, the pose, and the
-#: verifier; the banked record stays the place to go for the rest
-#: (``offset_cm``, ``at_mark``, ``prompt``, ``lateral_consumer``), which is why
-#: the document names its ``sources``. No current product path writes a take
-#: in this shape — the engine's own banked record
-#: (``session.TuningSession._record``) carries no ``phase``/``role`` key — so
-#: this reader only accepts takes banked before that engine shipped.
+#: What each take contributes to the index: the identity, the pose, the
+#: verifier and the candidate. The banked record holds the rest, which is why
+#: the document names its ``sources``. ``candidate_id`` tells apart the takes a
+#: cycled pose measures at ONE bearing.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
-                "regime", "wav_sha256")
-
-#: What :func:`read_lateral_take` DEFAULTS rather than projects, and what
-#: :func:`read_position_cycle` therefore exempts at the MISSING end: a document
-#: written before one of these existed reads, while a key neither reader knows
-#: still refuses. ``candidate_id`` rides here because a cycled pose measures
-#: several candidates at ONE bearing — without it those rows are
-#: indistinguishable — and ``""`` is a take that named no candidate.
-_DEFAULTED_TAKE_FIELDS = ("vertical_deg", "candidate_id")
+                "regime", "wav_sha256", "vertical_deg", "candidate_id")
 
 #: The keys :func:`read_position_cycle` accepts. Strict in both directions: a
 #: key this module does not know is either a newer schema or a hand edit, and
@@ -130,11 +119,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` plus
-    :data:`_DEFAULTED_TAKE_FIELDS` — the identity, the candidate, the pose, and
-    the verifier. The banked record stays the place to go for the rest. A take
-    banked before one of the defaulted fields existed reads back as 0 or ``""``,
-    which is what a walk that could not state a rise or a candidate took.
+    Returns the record narrowed to :data:`_TAKE_FIELDS`, as banked.
     """
     try:
         raw = json.loads(path.read_text())
@@ -146,10 +131,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     if raw.get("phase") != PHASE_LATERAL:
         return None
-    take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
-    take["vertical_deg"] = raw.get("vertical_deg") or 0
-    take["candidate_id"] = raw.get("candidate_id") or ""
-    return take
+    return {field: raw.get(field) for field in _TAKE_FIELDS}
 
 
 def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
@@ -356,6 +338,10 @@ def position_cycle_document(
             f"under {_BANKED_POSITIONS_GLOB} — this round's walk was refused at "
             f"take time, or its poses were never accepted"
         )
+    for field, kind in (("vertical_deg", int), ("candidate_id", str)):
+        lacking = sorted(str(take["take_id"]) for take in records if type(take[field]) is not kind)
+        if lacking:
+            raise PositionCycleError(f"{root}: takes {lacking} carry no {field}")
     try:
         takes = sorted(
             records,
@@ -440,15 +426,9 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        if not isinstance(take, Mapping) or not (
-            set(_TAKE_FIELDS)
-            <= set(take)
-            <= set(_TAKE_FIELDS) | set(_DEFAULTED_TAKE_FIELDS)
-        ):
+        if not isinstance(take, Mapping) or set(take) != set(_TAKE_FIELDS):
             raise PositionCycleError(
-                f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}, optionally with "
-                f"{sorted(_DEFAULTED_TAKE_FIELDS)}"
+                f"{path}: take {offset} must carry exactly {sorted(_TAKE_FIELDS)}"
             )
     return dict(raw)
 
@@ -461,7 +441,6 @@ def takes_by_position(
     The key is the POSE PAIR, not the bearing alone: a walk that raises the
     microphone measures a different pose at the same bearing, and folding the
     two together would put curves from two poses in one comparison.
-    ``vertical_deg`` reads 0 when the take predates it.
 
     The split a comparison reads: every take measured at one pose, in walk
     order, so per-take curves at that pose can be put beside each other. What
@@ -474,6 +453,6 @@ def takes_by_position(
     """
     grouped: dict[tuple[int, int], list[str]] = {}
     for take in document["takes"]:
-        pose = (int(take["position_deg"]), int(take.get("vertical_deg") or 0))
+        pose = (int(take["position_deg"]), int(take["vertical_deg"]))
         grouped.setdefault(pose, []).append(str(take["take_id"]))
     return {pose: tuple(ids) for pose, ids in sorted(grouped.items())}
