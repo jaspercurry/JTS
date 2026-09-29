@@ -64,7 +64,7 @@ def _answer(args: argparse.Namespace, row: str, round_dir: str | None,
         inputs = round_inputs(Path(round_dir)) if round_dir else None
     except (CrossoverEvidencePacketError, OSError):  # status reports an unreadable round and names none
         inputs = None
-    take = getattr(args, "preview", False) and args.take
+    take = getattr(args, "preview", False) and args.take  # only a preview reads --take
     return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} {row}"],
                   subject=subject(inputs, set_id=getattr(args, "set", None), take_ids=[take] if take else None),
                   parameters=parameters or {}, **fields)

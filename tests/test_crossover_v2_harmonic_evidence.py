@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir, RESONANCE_HZ
 from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
-from jasper.cli.round_views import main
+from jasper.cli.round_views import ARTIFACT_BY_VIEW, main
 from jasper.active_speaker.candidate_parts import COMPOSITION_KIND
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
@@ -163,7 +163,7 @@ def _artifact(n_roles: int = 1) -> dict[str, Any]:
         )
     return {
         "artifact_kind": "jts_crossover_v2_harmonic_distortion",
-        "artifact_schema_version": he.HARMONICS_SCHEMA_VERSION,
+        "schema": ARTIFACT_BY_VIEW["distortion"].schema,
         "round_dir": "cap_TESTONLY",
         "orders": list(ORDERS),
         "program": {
@@ -198,6 +198,7 @@ def test_a_banked_reading_carries_the_rows(tmp_path):
     block = _harmonics(_bundle(tmp_path, harmonics=_artifact()))
 
     assert block["available"] is True
+    assert block["schema"] == ARTIFACT_BY_VIEW["distortion"].schema
     assert block["orders"] == [2, 3]
     assert block["n_roles"] == 1
 
@@ -946,8 +947,6 @@ def test_a_null_reading_never_reaches_json_as_a_number():
 
 def test_the_artifact_name_has_one_owner():
     """The writer, the reader and the CLI resolve one spelling."""
-    from jasper.cli.round_views import ARTIFACT_BY_VIEW
-
     assert he.HARMONICS_ARTIFACT == HARMONICS_ARTIFACT == "harmonic_distortion.json"
     assert ARTIFACT_BY_VIEW["distortion"].artifact is HARMONICS_ARTIFACT
 

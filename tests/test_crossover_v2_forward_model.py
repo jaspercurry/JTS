@@ -617,7 +617,7 @@ def test_judge_previews_the_composed_emitted_graph(emitted_preview, capsys, sect
     Path(args.document).write_text(json.dumps(doc))
     assert crossover_prescriber.main(argv) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "preview", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "preview", "adopted", "banked"}
     assert answer["section"] == "emitted_graph" and answer["sections"] == sorted(sections)
     assert "status" not in answer and answer["adopted"] is False and answer["banked"] is False
     assert answer["preview"]["kind"] == "jts_capture_prediction"
@@ -683,7 +683,8 @@ def test_a_preview_written_to_a_file_is_one_side_of_compare(emitted_preview, tmp
     out = tmp_path / "preview.json"
     assert crossover_prescriber.main([*argv, "--out", str(out)]) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "out", "bytes", "summary", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "out", "bytes", "summary",
+                             "adopted", "banked"}
     assert (answer["out"], answer["bytes"]) == (str(out), out.stat().st_size)
 
     assert cli_main(["compare", "--a-preview", str(out), args.round, "--b-set", "old", "--b-take", "old",

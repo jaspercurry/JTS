@@ -150,7 +150,8 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     assert answer["section"] == "room" and len(answer["variants"]) == 2
     assert answer["variants"][0]["preview"] == single["preview"]
     assert all("positions" not in row for row in answer["variants"])
-    assert json.loads((out_dir / "variant-01.preview.json").read_text()) == single
+    assert json.loads((out_dir / "variant-01.preview.json").read_text()) == {
+        key: value for key, value in single.items() if key not in ("view", "schema", "subject", "parameters")}
 
 
 @pytest.fixture

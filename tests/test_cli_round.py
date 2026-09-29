@@ -1457,7 +1457,8 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "status", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "result", "sets", "applied_identity"}
+_ENVELOPE = {"view", "schema", "subject", "parameters"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [
@@ -1484,9 +1485,9 @@ def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch,
         assert (answer["status"], answer["reason"]) == (STATUS_BY_CODE[code], reason)
         assert printed.err.startswith(f"{answer['status']} ({reason}): ")
     elif argv[0] == "list":
-        assert (set(answer), answer["truncated"]) == ({"verb", "rounds", "truncated"}, True)
+        assert (set(answer), answer["truncated"]) == ({*_ENVELOPE, "rounds", "truncated"}, True)
         assert [set(row) for row in answer["rounds"]] == [_CATALOG_ROW]
     else:
         selected = resolve_set(round_inputs(tmp_path / "campaigns" / "r1"))
-        assert set(answer) == {"verb", *_CATALOG_ROW}
+        assert set(answer) == {*_ENVELOPE, *_CATALOG_ROW}
         assert [take["take_id"] for group in answer["sets"] for take in group["takes"]] == list(selected.selected_ids)

@@ -32,14 +32,16 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from jasper.active_speaker import bundles
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
 from jasper.active_speaker.crossover_v2 import prescription_document, room_selection
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
+from jasper.active_speaker.round_view_artifacts import ANSWER_SCHEMAS
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.cli import _refusal, round_views
+from jasper.cli import _refusal, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_seat_round,
@@ -55,6 +57,8 @@ from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_ru
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
 from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
+from tests.test_crossover_v2_room_prescription import _document as room_document
+from tests.test_prescription_document import bank, base, bass_packet, document as prescription, evidence  # noqa: F401
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -354,8 +358,8 @@ def _nearfield_argv(request: pytest.FixtureRequest, root: Path, kept: bool = Tru
 
 
 def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate") -> list[str]:
-    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank("baseline", scope=scope))
+    bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank_take("baseline", scope=scope))
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
     write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -569,6 +573,50 @@ def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _
     assert "status" not in view_answer.artifact
 
 
+def _prescription_argv(verb: str, *extra: str, room: bool = False) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    def argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+        banked, read = request.getfixturevalue("base"), request.getfixturevalue("evidence")
+        request.getfixturevalue("monkeypatch").setattr(crossover_prescriber, "_document_evidence", lambda *args: read)
+        sections = {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])} if room else None
+        path = root / "prescription.json"
+        path.write_text(json.dumps(prescription(banked.fingerprint, sections)))
+        return [*verb.split(), str(path), "--root", str(request.getfixturevalue("bank")), *extra]
+    return argv
+
+
+#: The tools whose answers are not views, and one success per answer each
+#: gives, by its ``ANSWER_SCHEMAS`` row.
+_OTHER_TOOLS = {"jasper-round": round_cli, "jasper-crossover-prescriber": crossover_prescriber}
+_OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = {
+    "jasper-round list": lambda request, root: ["list"],
+    "jasper-round show": lambda request, root: ["show", str(bank_measure_round(root))],
+    "jasper-crossover-prescriber contract": lambda request, root: ["contract"],
+    "jasper-crossover-prescriber status": lambda request, root: ["status"],
+    "jasper-crossover-prescriber judge": _prescription_argv("judge"),
+    "jasper-crossover-prescriber compose": _prescription_argv("compose"),
+    "jasper-crossover-prescriber judge --preview": _prescription_argv("judge --preview", room=True),
+    "jasper-crossover-prescriber judge --preview --vary": _prescription_argv(
+        "judge --preview", "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", "grid", room=True),
+}
+
+
+@pytest.mark.parametrize("row", sorted(row for row in ANSWER_SCHEMAS if row.split()[0] in _OTHER_TOOLS))
+def test_every_other_tuning_answer_carries_the_view_envelope(
+    row: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``jasper-round``'s reads and the prescriber answer as a view does (ADR-0344)."""
+
+    prog, verb = row.split()[:2]
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.chdir(tmp_path)
+    assert _OTHER_TOOLS[prog].main(_OTHER_ANSWERS[row](request, tmp_path)) == _refusal.EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["view"], answer["schema"]) == (verb, ANSWER_SCHEMAS[row])
+    assert isinstance(answer["subject"], dict) and isinstance(answer["parameters"], dict)
+    assert "status" not in answer
+
+
 def _unanalysed_room_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     request.getfixturevalue("monkeypatch").setattr(room_selection, "analyzed_measurements", Mock(
         side_effect=EvidenceUnavailable("take_curves_not_banked", {})))
@@ -582,8 +630,8 @@ def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list
 
 
 def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
-    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
+    bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank_take("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
     if fault == "record":
         record = bundle / EVIDENCE_ROOT / "artifacts" / path
         record.write_text(f"{record.read_text()} ")
