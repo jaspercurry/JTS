@@ -12,9 +12,8 @@ cannot support.  So these pin the ABSENCES, not the presences.
 
 The presences are covered elsewhere and better: the dual-run in this PR compares
 every field of all six phases against the pre-extraction conductor, and the
-suites that consume the priors (``test_crossover_v2_entry_baseline.py``,
-``test_crossover_v2_lateral_evidence.py``) grade what the analyzer does with
-them.
+suite that consumes the priors (``test_crossover_v2_lateral_evidence.py``)
+grades what the analyzer does with them.
 """
 
 from __future__ import annotations

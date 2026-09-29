@@ -22,7 +22,6 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     SCHEMA_VERSION,
     PositionCycleError,
     position_cycle_document,
-    read_entry_baseline_take,
     read_position_cycle,
     select_pose_curve_pair,
     takes_by_position,
@@ -39,7 +38,6 @@ from tests.crossover_v2_banked_round import (
     LATERAL_POSE_REGIME,
     LateralPose,
     TakeClaim,
-    entry_baseline_record,
     lateral_pose_record,
 )
 from tests.run_manifest_fixture import write_manifest
@@ -168,32 +166,13 @@ def test_a_raised_pose_carries_its_elevation_into_the_index(
     assert take["position_deg"] == 22
 
 
-def test_a_take_banked_before_elevation_existed_indexes_as_mark_height(tmp_path):
-    """History reads, and reads HONESTLY: absent is 0, never ``None``.
+@pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
+def test_a_take_banked_without_its_elevation_or_candidate_is_refused(tmp_path, field):
+    """No reader defaults a field a take was banked without (#2902)."""
+    _bank(tmp_path, [{k: v for k, v in _record(1, 7).items() if k != field}])
 
-    Asserted against a record with the key REMOVED, not one written 0 — a walk
-    that could not state a rise did not take one, so the two are the same fact
-    and a reader must not have to tell a missing number from an unstated one.
-    Refusing the round instead would trade a whole banked walk for one number
-    it never had.
-    """
-    legacy = {k: v for k, v in _record(1, 7).items() if k != "vertical_deg"}
-    _bank(tmp_path, [legacy])
-
-    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
-
-    assert take["vertical_deg"] == 0
-
-
-def test_a_take_banked_before_candidates_existed_names_no_candidate(tmp_path):
-    """``""`` is the honest reading of a walk that cycled nothing — never
-    ``None``, which would put a null in front of every packet reader."""
-    legacy = {k: v for k, v in _record(1, 7).items() if k != "candidate_id"}
-    _bank(tmp_path, [legacy])
-
-    take, = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
-
-    assert take["candidate_id"] == ""
+    with pytest.raises(PositionCycleError):
+        position_cycle_document(tmp_path, derived_at=STAMP)
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):
@@ -298,101 +277,6 @@ def test_takes_from_two_capture_sessions_name_both_sources(tmp_path):
         f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-1/positions",
         f"bundle/sess-1/{_BANKED_ARTIFACTS}/capture-2/positions",
     ]
-
-
-# --------------------------------------------------------------------------- #
-# the round's "before" — the same directory, the other reader
-# --------------------------------------------------------------------------- #
-
-
-def _entry_take(tmp_path: Path, **overrides) -> Path:
-    """One banked entry-baseline sidecar, from the shared take-record builder."""
-    fields = {
-        "index": 9, "attempt": 1, "run_id": "sess-1",
-        "stimulus_id": "prog-entry", "reference_mark": "design_axis",
-        "graph_fingerprint": "fp-entry", "captured_at": "2026-08-11T00:00:00Z",
-        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
-        "excluded": (True, False),
-        "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
-        "summed_ripple_db": 1.0, "glitch_detected": False,
-        "wav_sha256": "entry-sha",
-    }
-    record = entry_baseline_record(**{**fields, **overrides})
-    path = tmp_path / f"{record['take_id']}.json"
-    path.write_text(json.dumps({
-        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **record,
-    }))
-    return path
-
-
-def test_the_before_reads_back_in_the_shape_its_record_type_rehydrates_from(
-    tmp_path,
-):
-    """The field names are ``EntryBaseline.from_dict``'s, so one reader covers both.
-
-    A reader that returned its own spelling would make every caller translate,
-    and the translation is where a dropped exclusion mask hides.
-    """
-    take = read_entry_baseline_take(_entry_take(tmp_path))
-
-    assert take == {
-        "stimulus_id": "prog-entry",
-        "reference_mark": "design_axis",
-        "graph_fingerprint": "fp-entry",
-        "captured_at": "2026-08-11T00:00:00Z",
-        "freqs_hz": [200.0, 400.0],
-        "magnitude_db": [-1.5, 0.5],
-        "excluded": [True, False],
-        "artifact_ref": "entry_baseline_09_a01",
-    }
-
-
-def test_a_lateral_pose_is_never_read_as_the_round_s_before(tmp_path):
-    """Two record shapes in one directory, and each reader takes one.
-
-    ``BankedRecordStore.bank`` routes the lateral walk, the cloud group and the
-    entry baseline into one directory. Reading a per-driver pose as the summed
-    "before" would put the wrong capture on one side of a benefit comparison.
-    """
-    path = tmp_path / "pose.json"
-    path.write_text(json.dumps({
-        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **_record(1, 0),
-    }))
-
-    assert read_entry_baseline_take(path) is None
-
-
-@pytest.mark.parametrize(
-    "missing", ["freqs_hz", "magnitude_db", "excluded"],
-)
-def test_a_take_banked_before_the_curve_rode_here_is_not_a_before(
-    tmp_path, missing,
-):
-    """A baseline-shaped record with no bins cannot answer what it is asked.
-
-    Rounds banked before the curve moved into the take carry the identity
-    fields and none of the arrays. Returning one half-filled would hand a
-    comparison a "before" with nothing to compare, which is worse than the
-    honest absence the caller already knows how to report.
-    """
-    path = _entry_take(tmp_path)
-    raw = json.loads(path.read_text())
-    del raw[missing]
-    path.write_text(json.dumps(raw))
-
-    assert read_entry_baseline_take(path) is None
-
-
-@pytest.mark.parametrize(
-    "written", ["{ truncated", json.dumps([1, 2, 3])],
-    ids=["truncated", "not-an-object"],
-)
-def test_an_unreadable_before_is_an_absence_rather_than_a_raise(tmp_path, written):
-    """One corrupt sidecar must not cost a reader the round it is looking at."""
-    path = tmp_path / "entry_baseline_09_a01.json"
-    path.write_text(written)
-
-    assert read_entry_baseline_take(path) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -633,21 +517,14 @@ def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
 
 
 @pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
-def test_a_take_missing_a_DEFAULTED_field_still_reads(tmp_path, document, field):
-    """The strict reader's exemptions, at the MISSING end only.
-
-    Strictness exists so a NEWER document is never read as an older one, and
-    the test above keeps that: an unknown key still refuses. What this exempts
-    is the opposite direction — a document written before a defaulted field
-    existed, which a newer reader understands completely. Refusing it would
-    throw away a banked round to gain one number the round never had.
-    """
+def test_a_take_missing_its_elevation_or_candidate_is_refused(tmp_path, document, field):
     document["takes"] = [
         {k: v for k, v in take.items() if k != field}
         for take in document["takes"]
     ]
 
-    assert read_position_cycle(_written(tmp_path, document)) == document
+    with pytest.raises(PositionCycleError):
+        read_position_cycle(_written(tmp_path, document))
 
 
 def test_an_unreadable_file_is_this_modules_error_not_an_oserror(tmp_path):

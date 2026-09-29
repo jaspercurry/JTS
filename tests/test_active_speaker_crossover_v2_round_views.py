@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import shlex
 from pathlib import Path
@@ -23,20 +22,16 @@ from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_views import (
-    ENTRY_STATE_UNREADABLE,
     RoundViewsError,
-    entry_state_grade,
     load_banked_round,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import REFUSE_SINGLE_POSE
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, REFUSE_NO_CAPTURES
-from jasper.active_speaker import flat_spec
 from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from jasper.active_speaker.flat_spec import evaluate_flat_spec
 
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import bank_capture_round
@@ -50,27 +45,13 @@ from tests.test_crossover_v2_gate_sweep import _pose_ir
 #: box running pytest.
 pytestmark = pytest.mark.usefixtures("no_real_pi_paths")
 
-#: A log-spaced curve grid spanning all three SPEC_BANDS rows
-#: (250-2000 / 2000-8000 / 8000-16000 Hz) with plenty of bins in each.
 GRID = np.geomspace(280.0, 16000.0, 90)
-REFERENCE_DB = -20.0
 
 
-def _flat_curve(*, ripple_db: float = 0.0) -> np.ndarray:
-    """A curve at ``REFERENCE_DB``, with optional deterministic ripple (a
-    single +ripple_db bump at bin 10, -ripple_db at bin 40) so a test can tell
-    a perfectly-flat golden case apart from a rippled one."""
-    curve = np.full(GRID.shape, REFERENCE_DB, dtype=float)
-    if ripple_db:
-        curve[10] += ripple_db
-        curve[40] -= ripple_db
-    return curve
-
-
-def _make_round_dir(tmp_path: Path, name: str, *, baseline: bool = False) -> Path:
+def _make_round_dir(tmp_path: Path, name: str, *, take: bool = False) -> Path:
     """One banked round directory, in the tree ``bank-crossover-round.sh``
     produces: ``<round-dir>/bundle/<session>/evidence/v1/artifacts/crossover_v2/<capture>/``.
-    ``baseline`` banks an entry-baseline take, the one curve its packet carries."""
+    ``take`` banks one design-axis take with its summed curve."""
     round_dir = tmp_path / name
     session_dir = round_dir / "bundle" / "sess1"
     capture_dir = session_dir / "evidence/v1/artifacts/crossover_v2" / "cap1"
@@ -91,8 +72,13 @@ def _make_round_dir(tmp_path: Path, name: str, *, baseline: bool = False) -> Pat
     (capture_dir / "round_receipt.json").write_text(json.dumps({
         "kind": "jts_crossover_v2_round_receipt", "schema_version": 2, "round_id": "r1",
     }))
-    if baseline:
-        _bank_entry_baseline_take(round_dir, magnitude_db=_flat_curve())
+    if take:
+        (capture_dir / "positions").mkdir()
+        (capture_dir / "positions" / "take_0001.json").write_text(json.dumps({
+            "kind": POSITION_EVIDENCE_KIND, "phase": "measure", "take_id": "take_0001",
+            "measurement_purpose": PURPOSE_SPEAKER, "position_deg": 0,
+            "curves": [_summed_curve(GRID, np.full(GRID.shape, -20.0))],
+        }))
     write_manifest(round_dir)
     store_banked_evidence(round_dir)
     return round_dir
@@ -191,20 +177,15 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
 def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
-    assert cli.main(["entry", str(round_dir)]) == 0
+    round_dir = _make_round_dir(tmp_path, "r1", take=True)
 
-    assert cli.main(["inventory", str(round_dir)]) == 0
-    payload = json.loads((round_dir / "inventory.json").read_text())
-    rows = {row["artifact"]: row for row in payload["artifacts"]}
+    def inventory():
+        assert cli.main(["inventory", str(round_dir)]) == 0
+        payload = json.loads((round_dir / "inventory.json").read_text())
+        assert payload["bytes_total"] == sum(row["bytes"] or 0 for row in payload["artifacts"])
+        return {row["artifact"]: row for row in payload["artifacts"]}
 
-    present = rows["entry_state_grade.json"]
-    assert present["present"] is True
-    assert present["bytes"] == (round_dir / "entry_state_grade.json").stat().st_size
-    assert payload["bytes_total"] == sum(
-        row["bytes"] or 0 for row in payload["artifacts"]
-    )
-
+    rows = inventory()
     # Every path this round can fill is filled: the row is a line to run.
     missing = rows[FREQUENCY_VIEW_FILENAME]
     assert missing["present"] is False
@@ -214,7 +195,9 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
     assert missing["path"] == str(round_dir / FREQUENCY_VIEW_FILENAME)
     # The producer it named writes the artifact it named as missing.
     assert cli.main(shlex.split(missing["produced_by"])[1:]) == 0
-    assert Path(missing["path"]).is_file()
+    present = inventory()[FREQUENCY_VIEW_FILENAME]
+    assert present["present"] is True
+    assert present["bytes"] == Path(missing["path"]).stat().st_size
 
     # A view whose subcommand takes MORE than this round says so, and places
     # this round in its own slot. What is left in brackets is what no
@@ -253,13 +236,13 @@ def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
 
-    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
+    round_dir = _make_round_dir(tmp_path, "r1", take=True)
     rc = main(["frequency", str(round_dir)])
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
     assert payload["schema"] == "jts_frequency_view/2"
-    assert payload["runs"][0]["series"][0]["kind"] == "entry_baseline"
+    assert payload["runs"][0]["series"][0]["kind"] == "measurement"
 
 
 def test_cli_frequency_accepts_a_standalone_analysis_document(tmp_path):
@@ -294,7 +277,7 @@ def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
 def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli import round_views as cli
 
-    rc = cli.main(["entry", str(tmp_path / "nope")])
+    rc = cli.main(["inventory", str(tmp_path / "nope")])
     assert rc == cli.EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
@@ -308,7 +291,7 @@ def test_cli_reports_the_write_exit_when_the_view_cannot_be_written(tmp_path, ca
     round_dir = _make_round_dir(tmp_path, "r1")
 
     rc = cli.main([
-        "entry", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
+        "inventory", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
     ])
 
     assert rc == cli.EXIT_WRITE_FAILED
@@ -334,40 +317,10 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
 
     monkeypatch.setattr(cli._common, "write_report", _strict)
 
-    rc = cli.main(["entry", str(round_dir)])
+    rc = cli.main(["inventory", str(round_dir)])
 
     assert rc == cli.EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["status"] == "refused"
-
-
-def test_an_entry_grade_over_a_packet_missing_its_block_reads_as_unreadable(
-    tmp_path, capsys, monkeypatch
-):
-    """A packet with no ``entry_baseline`` key is corrupt, not a view declining.
-
-    The builder always emits the block — ``available: False`` is how it reports
-    a round that banked no take — so a bare ``KeyError`` there can only mean a
-    packet nothing built, which is the unreadable arm by the grade's own
-    docstring. Hand-built because no fixture can produce it.
-    """
-    from jasper.cli import round_views as cli
-
-    round_dir = _make_round_dir(tmp_path, "r1")
-    read = cli._common.load_banked_round
-
-    def _without_the_block(path):
-        banked = read(path)
-        return dataclasses.replace(
-            banked,
-            packet={k: v for k, v in banked.packet.items() if k != "entry_baseline"},
-        )
-
-    monkeypatch.setattr(cli._common, "load_banked_round", _without_the_block)
-
-    rc = cli.main(["entry", str(round_dir)])
-
-    assert rc == cli.EXIT_UNREADABLE
-    assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
 
 def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
@@ -396,394 +349,19 @@ def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
     here.mkdir()
     monkeypatch.chdir(here)
 
-    assert main(["entry", str(banked_bundle)]) == 0
-    assert main(["entry", str(live)]) == 0
-
-    assert (round_dir / "entry_state_grade.json").is_file()
-    assert not (banked_bundle / "entry_state_grade.json").exists()
-    assert (here / "live-1-entry_state_grade.json").is_file()
-    assert not (live / "entry_state_grade.json").exists()
-
-
-# --------------------------------------------------------------------------- #
-# View 0 — entry_state_grade
-# --------------------------------------------------------------------------- #
-
-
-ENTRY_TAKE_ID = "entry_baseline_01_01"
-
-
-def _bank_entry_baseline_take(
-    round_dir: Path,
-    *,
-    magnitude_db: np.ndarray,
-    excluded: np.ndarray | None = None,
-    graph_fingerprint: str = "entrygraph0001",
-    freqs_hz: np.ndarray | None = None,
-) -> None:
-    """One write-once entry-baseline take, in the tree the store banks to.
-
-    ``crossover_v2/<capture>/positions/<take_id>.json`` — the path
-    ``contracts.BANKED_TAKE_GLOB`` selects and
-    ``position_cycle.read_entry_baseline_take`` opens. Written as the real
-    record is shaped rather than as the reader's narrowed view, so a change to
-    either the index columns or the accept rule fails these tests.
-    """
-    grid = GRID if freqs_hz is None else freqs_hz
-    mask = np.zeros(grid.shape, dtype=bool) if excluded is None else excluded
-    positions = (
-        round_dir / "bundle" / "sess1" / "evidence/v1/artifacts"
-        / "crossover_v2" / "cap1" / "positions"
-    )
-    positions.mkdir(parents=True, exist_ok=True)
-    (positions / f"{ENTRY_TAKE_ID}.json").write_text(json.dumps({
-        "kind": "jts_crossover_v2_position_evidence",
-        "schema_version": 1,
-        "run_id": "cap1",
-        "measure_kind": "baseline",
-        "phase": "entry_baseline",
-        "take_id": ENTRY_TAKE_ID,
-        "position_id": ENTRY_TAKE_ID,
-        "index": 1,
-        "attempt": 1,
-        "position_deg": 0,
-        "role": "onax",
-        "stimulus_id": "prog-entry",
-        "reference_mark": "design_axis",
-        "graph_fingerprint": graph_fingerprint,
-        "captured_at": "2026-08-30T00:00:00Z",
-        "freqs_hz": grid.tolist(),
-        "magnitude_db": magnitude_db.tolist(),
-        "excluded": [bool(flag) for flag in mask],
-    }))
-
-
-def _round_with_entry_baseline(tmp_path: Path, **kwargs: Any) -> Path:
-    round_dir = _make_round_dir(tmp_path, "r1")
-    _bank_entry_baseline_take(round_dir, **kwargs)
-    write_manifest(round_dir)
-    store_banked_evidence(round_dir)
-    return round_dir
-
-
-def test_entry_grades_the_only_round_shape_that_banks_an_entry_baseline(tmp_path):
-    """Issue #3478: the entry view accepts a STAGE-1 round.
-
-    An entry baseline exists in exactly one round shape — the measure stage —
-    and that stage banks no cloud group, so it has neither cloud positions nor
-    a graded ``spec`` block. The loader used to refuse it on both counts,
-    which made the one view whose description names what stage 1 banks
-    unreachable on every rig.
-
-    The grade a round with no post-apply spec gets is stated in NO frame, and
-    the report says so on its face: there is no span in this round for a
-    before to be made comparable with.
-    """
-    round_dir = bank_measure_round(tmp_path)
-    store_banked_evidence(round_dir)
-
-    grade = entry_state_grade(load_banked_round(round_dir))
-
-    assert grade.available is True
-    assert grade.reason == ""
-    assert grade.report is not None
-    assert len(grade.report.bands) == len(flat_spec.SPEC_BANDS)
-    assert grade.report.trusted_floor_hz is None
-    assert grade.report.trusted_ceiling_hz is None
-    assert grade.stimulus_id == "prog-entry"
-
-
-def test_the_cli_entry_and_frequency_verbs_read_a_stage_one_round(tmp_path, capsys):
-    """Both verbs the campaign hit, through ``main`` and the real argv: the
-    frequency view draws the round's entry baseline beside its measured takes."""
-    from jasper.cli import round_views as cli
-
-    round_dir = bank_measure_round(tmp_path)
-    store_banked_evidence(round_dir)
-
-    assert cli.main(["entry", str(round_dir)]) == 0
-    grade = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
-    assert grade["available"] is True
-    assert grade["round_ordinal"] == 1
-
-    assert cli.main(["frequency", str(round_dir)]) == 0
-    view = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
-    kinds = [s["kind"] for s in view["runs"][0]["series"]]
-    assert kinds[0] == "entry_baseline" and set(kinds[1:]) == {"measurement"}
-
-
-def test_the_entry_state_is_graded_by_the_shipped_evaluator(tmp_path):
-    """The door's whole contract: it CONSUMES the grading, never repeats it.
-
-    Asserted against an independent ``evaluate_flat_spec`` call on the same
-    inputs — the take's own curve and mask, in no frame — so the door cannot
-    pass by returning plausible numbers of its own. Field-for-field on the
-    report, not a spot check.
-    """
-    curve = _flat_curve(ripple_db=3.0)
-    banked = load_banked_round(_round_with_entry_baseline(tmp_path, magnitude_db=curve))
-
-    grade = entry_state_grade(banked)
-
-    assert grade.available is True
-    assert grade.reason == ""
-    expected = evaluate_flat_spec(GRID, curve, np.zeros(GRID.shape, dtype=bool), smoothing_fraction=0)
-    assert grade.report is not None
-    assert grade.report.to_dict() == expected.to_dict()
-
-
-def test_the_entry_grade_carries_a_per_band_table(tmp_path):
-    """The same per-band rows a round's own ``spec`` block carries.
-
-    Structural, not a spot value: every ``SPEC_BANDS`` row is answered for, and
-    each row states its own tolerance and verdict. That is what makes this
-    table readable beside a round's without a translation step.
-    """
-    banked = load_banked_round(
-        _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
-    )
-
-    report = entry_state_grade(banked).report
-
-    assert report is not None
-    assert len(report.bands) == len(flat_spec.SPEC_BANDS)
-    assert [b.tolerance_db for b in report.bands] == [
-        row[2] for row in flat_spec.SPEC_BANDS
-    ]
-    assert all(band.evaluable for band in report.bands)
-    assert report.overall_within_target is True
-
-
-def test_a_tilted_entry_state_fails_the_band_it_is_tilted_in(tmp_path):
-    """Discriminating: the grade tracks the curve, not the fixture.
-
-    A treble shelf far outside the top band's tolerance must fail THAT band and
-    leave the others passing — a door returning a canned "within_target" report, or
-    grading somebody else's curve, cannot produce this shape.
-    """
-    curve = _flat_curve()
-    curve[GRID >= 8000.0] += 6.0
-    banked = load_banked_round(_round_with_entry_baseline(tmp_path, magnitude_db=curve))
-
-    report = entry_state_grade(banked).report
-
-    assert report is not None
-    assert report.overall_within_target is False
-    by_edge = {band.f_lo_hz: band for band in report.bands}
-    assert by_edge[8000.0].within_target is False
-    assert all(
-        band.within_target is True for lo, band in by_edge.items() if lo != 8000.0
-    )
-
-
-def test_the_entry_grade_reads_the_takes_OWN_exclusion_mask(tmp_path):
-    """The mask belongs to this capture, not to the round's other one.
-
-    A bin the entry-baseline screen flagged must not be graded. Pinned with a
-    curve whose ONLY spec violation sits under the mask: unmasked it fails,
-    masked it passes, so a door that dropped the mask (or reached for the
-    round's post-apply exclusions instead) is a different answer, not a
-    rounding difference.
-    """
-    curve = _flat_curve()
-    spike = GRID >= 8000.0
-    curve[spike] += 6.0
-
-    unmasked = load_banked_round(
-        _round_with_entry_baseline(tmp_path / "a", magnitude_db=curve)
-    )
-    masked = load_banked_round(
-        _round_with_entry_baseline(tmp_path / "b", magnitude_db=curve, excluded=spike)
-    )
-
-    assert entry_state_grade(unmasked).report.overall_within_target is False
-    masked_report = entry_state_grade(masked).report
-    assert masked_report is not None
-    # The masked band has no evidence left, so it is UNEVALUABLE — never a
-    # silent pass. That is `BandResult`'s own contract and this door inherits
-    # it rather than restating it.
-    by_edge = {band.f_lo_hz: band for band in masked_report.bands}
-    assert by_edge[8000.0].evaluable is False
-    assert by_edge[8000.0].within_target is None
-    assert by_edge[250.0].within_target is True
-
-
-def test_the_entry_grade_names_WHICH_entry_state_it_graded(tmp_path):
-    """An unattributed table is not a disclosure.
-
-    The first round's entry graph is the declarations-derived config a fresh
-    box wears; a later round's is whatever the previous round left playing.
-    The fingerprint is what tells them apart, so it rides on the result.
-    """
-    banked = load_banked_round(
-        _round_with_entry_baseline(
-            tmp_path, magnitude_db=_flat_curve(), graph_fingerprint="fresh0000beef",
-        )
-    )
-
-    grade = entry_state_grade(banked)
-
-    assert grade.graph_fingerprint == "fresh0000beef"
-    assert grade.stimulus_id == "prog-entry"
-    assert grade.reference_mark == "design_axis"
-    assert grade.artifact_ref == ENTRY_TAKE_ID
-    assert grade.to_dict()["graph_fingerprint"] == "fresh0000beef"
-
-
-def test_a_round_that_banked_no_entry_baseline_says_so_with_a_reason(tmp_path):
-    """The honest door for the case it cannot answer.
-
-    Retention is fail-soft and never costs the household a retake, so "no take"
-    is a fact to report rather than a failure to raise. It must arrive as a
-    NAMED reason with no report beside it — never an empty table that reads as
-    a clean bill of health.
-    """
-    round_dir = _make_round_dir(tmp_path, "r1")
-
-    grade = entry_state_grade(load_banked_round(round_dir))
-
-    assert grade.available is False
-    assert grade.report is None
-    assert grade.reason  # named, never a bare False
-    assert grade.to_dict()["report"] is None
-
-
-def test_a_banked_take_whose_curve_does_not_rehydrate_is_not_graded(tmp_path):
-    """A mask shorter than its curve is unreadable, not gradeable.
-
-    ``EntryBaseline.from_dict`` owns that rule; this pins that the door takes
-    its ``None`` as a refusal to grade rather than pushing a length-disagreeing
-    pair into the evaluator.
-    """
-    round_dir = _round_with_entry_baseline(
-        tmp_path, magnitude_db=_flat_curve(),
-        excluded=np.zeros(GRID.shape[0] - 3, dtype=bool),
-    )
-
-    grade = entry_state_grade(load_banked_round(round_dir))
-
-    assert grade.available is False
-    assert grade.report is None
-    assert grade.reason == ENTRY_STATE_UNREADABLE
-
-
-def test_the_cli_entry_verb_writes_the_grade_beside_the_evidence(tmp_path, capsys):
-    """The DOOR, not just the view — through ``main`` and the real argv.
-
-    A product view nothing can reach is not a door: before this verb the entry
-    state could only be graded by an operator calling ``evaluate_flat_spec`` by
-    hand. Drives the console script end to end and asserts the artifact it
-    leaves behind.
-    """
-    from jasper.cli import round_views as cli
-
-    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
-
-    assert cli.main(["entry", str(round_dir)]) == 0
-
-    written = json.loads((round_dir / "entry_state_grade.json").read_text())
-    assert written["available"] is True
-    assert written["graph_fingerprint"] == "entrygraph0001"
-    assert len(written["report"]["bands"]) == len(flat_spec.SPEC_BANDS)
-
-
-def test_the_cli_entry_verb_exits_0_when_there_is_nothing_to_grade(tmp_path):
-    """"No gradeable take" is an ANSWER, not an unreadable round.
-
-    A caller can tell "I looked, and this round banked none" from "I could not
-    look" by the exit code alone.
-    """
-    from jasper.cli import round_views as cli
-
-    round_dir = _make_round_dir(tmp_path, "r1")
-
-    assert cli.main(["entry", str(round_dir)]) == 0
-
-    written = json.loads((round_dir / "entry_state_grade.json").read_text())
-    assert written["available"] is False
-    assert written["report"] is None
-    assert written["reason"]
-
-
-def _write_state(round_dir: Path, payload: dict[str, Any]) -> None:
-    bundle = round_inputs_mod.round_inputs(round_dir).session_dir
-    capture, _ = round_inputs_mod.round_artifact_dir(bundle)
-    assert capture is not None
-    (round_dir / "state.json").write_text(json.dumps({"session_id": capture.name, **payload}))
-
-
-def test_the_entry_grade_attributes_the_round_and_its_ordinal_epoch(tmp_path):
-    """An unattributed table is not a disclosure.
-
-    "The entry state was this flat" means one thing at round 1 of a fresh box
-    and another at round 1 after a republish reset the count — so the ordinal
-    and the epoch it counts in ride on the result and its payload.
-    """
-    round_dir = _round_with_entry_baseline(tmp_path, magnitude_db=_flat_curve())
-    _write_state(round_dir, {
-        "round_receipt": {"round_ordinal": 2}, "round_ordinal_epoch": 3,
-    })
-
-    grade = entry_state_grade(load_banked_round(round_dir))
-
-    assert grade.round_ordinal == 2
-    assert grade.round_ordinal_epoch == 3
-    payload = grade.to_dict()
-    assert payload["round_ordinal"] == 2
-    assert payload["round_ordinal_epoch"] == 3
-
-
-def test_an_unrecorded_ordinal_reads_as_not_recorded_never_zero(tmp_path):
-    """``None`` and ``0`` are different facts, and the epoch's whole meaning
-    turns on the difference: ``0`` is "never reset", which a round that simply
-    banked no state file has said nothing about.
-
-    ``bool`` is rejected too — a hand-edited ``true`` must not publish as
-    epoch 1.
-    """
-    no_state = _round_with_entry_baseline(tmp_path / "a", magnitude_db=_flat_curve())
-    grade = entry_state_grade(load_banked_round(no_state))
-    assert grade.round_ordinal is None
-    assert grade.round_ordinal_epoch is None
-
-    booly = _round_with_entry_baseline(tmp_path / "b", magnitude_db=_flat_curve())
-    _write_state(booly, {
-        "round_receipt": {"round_ordinal": True}, "round_ordinal_epoch": True,
-    })
-    boolean = entry_state_grade(load_banked_round(booly))
-    assert boolean.round_ordinal is None
-    assert boolean.round_ordinal_epoch is None
-
-
-def test_the_cli_counts_an_unevaluable_band_apart_from_a_failing_one(tmp_path, capsys):
-    """An UNEVALUABLE band is not a failing band.
-
-    A band whose every bin the take's own gate clamped away has no evidence —
-    ``passed is None``, never ``False`` — and an answer that counted it as
-    failing would report a band nobody could measure as one that measured
-    badly. Driven through the console script, on the same masked fixture the
-    product-level mask test uses.
-    """
-    from jasper.cli import round_views as cli
-
-    curve = _flat_curve()
-    spike = GRID >= 8000.0
-    curve[spike] += 6.0
-    round_dir = _round_with_entry_baseline(
-        tmp_path, magnitude_db=curve, excluded=spike,
-    )
-
-    assert cli.main(["entry", str(round_dir)]) == 0
-
-    answer = json.loads(capsys.readouterr().out)
-    assert answer["unevaluable"] == 1
-    assert answer["outside_target"] == 0
+    assert main(["inventory", str(banked_bundle)]) == 0
+    assert main(["inventory", str(live)]) == 0
+
+    assert (round_dir / "inventory.json").is_file()
+    assert not (banked_bundle / "inventory.json").exists()
+    assert (here / "live-1-inventory.json").is_file()
+    assert not (live / "inventory.json").exists()
 
 
 #: The views one round directory answers, as the operator's own argv. One
 #: fixture drives them all, so the ANSWER's shape is pinned once here rather
 #: than re-asserted verb by verb.
-_SINGLE_ROUND_VIEWS = ("entry", "frequency", "inventory")
+_SINGLE_ROUND_VIEWS = ("frequency", "inventory")
 
 
 def _longest_numeric_list(node: Any) -> int:
@@ -808,7 +386,7 @@ def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
 ):
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(tmp_path, "r1", baseline=True)
+    round_dir = _make_round_dir(tmp_path, "r1", take=True)
 
     assert cli.main([*shlex.split(view), str(round_dir)]) == cli.EXIT_OK
 
@@ -1050,7 +628,7 @@ def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
 def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
     from jasper.cli.round_views import main, build_parser
 
-    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", baseline=True)
+    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", take=True)
     assert main(["inventory", str(round_dir)]) == 0
     rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
     command = shlex.split(rows[FREQUENCY_VIEW_FILENAME]["next_command"])

@@ -1572,7 +1572,7 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
 
 @pytest.mark.parametrize("stops", [1, 24, 33, 99, 110, 111, 120, 121, 128, 129, 140])
 def test_the_capacity_gate_applies_the_stage1_attempt_budget(stops):
-    base_entries = capture_plan.stage1_base_entries()
+    base_entries = 3
     attempts = capture_plan.stage1_plan_max_attempts(base_entries + stops)
     request = ac.per_driver_at([0] * stops)
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:

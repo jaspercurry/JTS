@@ -17,7 +17,6 @@ from jasper.active_speaker import commission_wiring
 from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
-from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
 from jasper.active_speaker.playback_route import ACTIVE_PLAYBACK_DEVICE_ENV
@@ -399,10 +398,6 @@ def _fixture_applied_profile(
 
 
 _ENTRY_BASELINE_SCALE = 1.5
-
-_ENTRY_BASELINE_RESIDUAL_DB = 6.877
-
-_POST_APPLY_RESIDUAL_DB = 4.331
 
 
 def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
@@ -1018,37 +1013,6 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
 
 _PILOT_AT = 1_760_000_000.0
 
-_ENTRY_BASELINE_STIMULUS_ID = "prog-entry-baseline-stage-1"
-
-_ENTRY_BASELINE_GRAPH = "fp-entry-graph"
-
-_ENTRY_BASELINE_CAPTURED_AT = "2026-08-10T12:34:56Z"
-
-_ENTRY_BASELINE_FREQS_HZ = [200.0, 400.0, 800.0, 1600.0, 3200.0]
-
-_ENTRY_BASELINE_DB = [-2.5, -1.25, 0.0, 1.25, 2.5]
-
-_ENTRY_BASELINE_EXCLUDED = [True, False, False, False, False]
-
-
-def _entry_baseline_record() -> dict[str, Any]:
-    from jasper.active_speaker.crossover_v2.round_evidence import (
-        ENTRY_BASELINE_KIND,
-    )
-
-    return {
-        "kind": ENTRY_BASELINE_KIND,
-        "stimulus_id": _ENTRY_BASELINE_STIMULUS_ID,
-        "reference_mark": contracts.REFERENCE_MARK_DESIGN_AXIS,
-        "freqs_hz": list(_ENTRY_BASELINE_FREQS_HZ),
-        "magnitude_db": list(_ENTRY_BASELINE_DB),
-        "excluded": list(_ENTRY_BASELINE_EXCLUDED),
-        "graph_fingerprint": _ENTRY_BASELINE_GRAPH,
-        "captured_at": _ENTRY_BASELINE_CAPTURED_AT,
-        "artifact_ref": "entry_baseline_09_a01",
-    }
-
-
 def _seed_applied_stage_1_state() -> dict[str, Any]:
     state = {
         "session_id": "cap_stage1_session",
@@ -1062,7 +1026,6 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
                 "freqs_hz": [500.0, 1000.0, 2000.0, 4000.0],
                 "magnitude_db": [-1.0, -0.5, 0.5, 1.0],
             },
-            "entry_baseline": _entry_baseline_record(),
             "pilot_transfer_reference": {
                 "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
             },

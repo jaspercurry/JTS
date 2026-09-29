@@ -2,14 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One summed capture reduced for comparison, and the entry baseline a round
-records (#2291 Phase 3c).
-
-These tests pin two things:
-
-1. the reduction is the SHIPPED owners' arithmetic, not a second copy;
-2. an entry baseline rehydrates only from a record this build wrote.
-"""
+"""One summed capture reduced: the reduction is the SHIPPED owners'
+arithmetic, not a second copy."""
 
 from __future__ import annotations
 
@@ -21,7 +15,6 @@ import pytest
 from jasper.active_speaker.crossover_v2 import round_evidence
 from jasper.active_speaker.crossover_v2.round_evidence import (
     BENEFIT_CURVE_MAX_BINS,
-    EntryBaseline,
     measured_response_from_analysis,
 )
 
@@ -233,102 +226,3 @@ def test_a_floor_that_is_not_a_finite_number_screens_nothing(floor):
 
     assert reduced is not None
     assert not any(reduced.excluded)
-
-
-# --------------------------------------------------------------------------- #
-# 4. the persisted entry baseline
-# --------------------------------------------------------------------------- #
-
-
-def _complete_record(**overrides) -> dict:
-    """A record that rehydrates, so a rejection test can vary ONE thing.
-
-    Every negative case below starts from a record that would otherwise
-    SUCCEED. Without that, a case meant to pin the mask-length check passes
-    for the wrong reason — because it also happened to be missing
-    ``stimulus_id`` — and the check it names is not covered at all. (Measured:
-    an earlier form of this test survived deleting the length check outright.)
-    """
-    record = {
-        "freqs_hz": [100.0, 200.0],
-        "magnitude_db": [0.0, 1.0],
-        "excluded": [False, True],
-        "stimulus_id": "p",
-        "reference_mark": "m",
-        "graph_fingerprint": "g",
-        "captured_at": "t",
-    }
-    record.update(overrides)
-    return record
-
-
-def test_the_complete_record_control_rehydrates():
-    """The control the rejection cases below are one field away from.
-
-    Without it, every "returns None" assertion could be passing because the
-    fixture never rehydrated at all.
-    """
-    assert EntryBaseline.from_dict(_complete_record()) is not None
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        None,
-        {},
-        "not a mapping",
-        _complete_record(excluded=[False]),
-        _complete_record(excluded=[False, True, False]),
-        _complete_record(excluded=None),
-        _complete_record(freqs_hz=None),
-        _complete_record(magnitude_db=None),
-        _complete_record(magnitude_db=[0.0, float("nan")]),
-        _complete_record(stimulus_id=""),
-        _complete_record(graph_fingerprint=""),
-    ],
-    ids=[
-        "none",
-        "empty",
-        "not_a_mapping",
-        "mask_too_short",
-        "mask_too_long",
-        "no_mask",
-        "no_freqs",
-        "no_levels",
-        "non_finite_level",
-        "empty_stimulus_id",
-        "empty_graph_fingerprint",
-    ],
-)
-def test_anything_this_build_did_not_write_rehydrates_as_no_baseline(record):
-    """``None``, never a partially-trusted record and never a raise.
-
-    A state file from before this key shipped, a truncated write, and a
-    hand-edited file all mean one thing to the round — there is no comparable
-    baseline — and that already has an honest verdict.
-    """
-    assert EntryBaseline.from_dict(record) is None
-
-
-def test_the_entry_baseline_round_trips_through_the_durable_shape():
-    """It crosses the stage bridge as JSON; nothing may be lost on the way.
-
-    Every field, exhaustively — a partial round-trip is how a curve arrives in
-    stage 2 with its mask silently reset to all-false, which would grade the
-    two captures over different bins while looking comparable.
-    """
-    reduced = measured_response_from_analysis(
-        _analysis(validity_floor_hz=300.0), reference_mark=_MARK
-    )
-    assert reduced is not None
-    original = EntryBaseline.from_measurement(
-        reduced,
-        graph_fingerprint="graph-fp",
-        captured_at="2026-08-11T00:00:00Z",
-        artifact_ref="entry_baseline_a01",
-    )
-
-    rehydrated = EntryBaseline.from_dict(original.to_dict())
-
-    assert rehydrated == original
-    assert rehydrated is not None

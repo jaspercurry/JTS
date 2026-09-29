@@ -53,8 +53,6 @@ from .contracts import (
 )
 from .journey import (
     PHASE_CHECK,
-    PHASE_ENTRY_BASELINE,
-    PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
@@ -717,30 +715,6 @@ def resolve_plan_shape(
     return V2PlanShape(cloud_measure_positions=n, cloud_verify_positions=m)
 
 
-def _shape_from_kwargs(
-    plan_shape: V2PlanShape | None,
-    *,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> V2PlanShape:
-    """One resolved shape from either a pre-resolved value or loose kwargs.
-
-    Passing both is refused rather than silently preferring one.
-    """
-    loose = (cloud_measure_positions, cloud_verify_positions)
-    if plan_shape is not None:
-        if any(value is not None for value in loose):
-            raise CrossoverV2FlowError(
-                "pass either plan_shape or explicit tier/position counts, "
-                "never both"
-            )
-        return plan_shape
-    return resolve_plan_shape(
-        cloud_measure_positions=cloud_measure_positions,
-        cloud_verify_positions=cloud_verify_positions,
-    )
-
-
 def stage1_plan_max_attempts(capture_target: int) -> int:
     """The admission budget a stage-1 plan of ``capture_target`` entries emits.
 
@@ -777,30 +751,6 @@ def _validated_cloud_counts(
     return n, m
 
 
-# #2291: stage 1 takes ONE summed sweep at the mark immediately before the
-# household applies, so the round has a "before" to grade its "after" against.
-# Without it every round's benefit verdict is ``entry_baseline_unavailable``.
-STAGE1_INCLUDES_ENTRY_BASELINE = True
-
-
-# The lateral walk is NOT a stage-1 group: only its stage-1 arming is gone, so
-# the builders below still take ``include_lateral`` from whatever a caller asks
-# for. An operator's staged angle walk still runs the poses as evidence for the
-# forward model.
-def stage1_base_entries(plan_shape: V2PlanShape | None = None) -> int:
-    """Stage 1's REAL capture count, not the cloud-inclusive shape target.
-
-    Also the ``base_entries`` a session hands a staged angle walk — the captures
-    it takes that are NOT the walk (``include_lateral=False``). ``None``
-    resolves the default shape.
-    """
-    return len(build_v2_cloud_index_phase_map(
-        plan_shape=plan_shape,
-        include_lateral=False,
-        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
-    ))
-
-
 # Capture-plan index → phase, the fallback for a session constructed with no
 # explicit ``index_phase_map``. APPLYING is a control-page phase with no
 # capture, so it has no index. Frozen because a shared module-level default an
@@ -810,62 +760,12 @@ DEFAULT_INDEX_PHASE_MAP: Mapping[int, str] = MappingProxyType(
 )
 
 
-def build_v2_cloud_index_phase_map(
-    *,
-    plan_shape: V2PlanShape | None = None,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-    include_lateral: bool = False,
-    include_entry_baseline: bool = False,
-    lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
-) -> dict[int, str]:
-    """Capture-plan index → session phase for a STAGE-1 (measure) session.
-
-    The wired driver walks 1-based indexes where ``index == accepted_count +
-    1``, so this map is also the running order::
-
-        1                    CHECK
-        2                    MEASURE            (design-axis anchor)
-        3 .. L+2             LATERAL            (L prompted poses)
-        (last)               ENTRY_BASELINE     (#2291's "before", at the mark)
-
-    The lateral walk replays the anchor program as its robustness sample. The entry baseline runs LAST
-    because #2291 asks for the summed capture *immediately before apply*; it
-    prompts the household back to the mark, so it is one held-still capture.
-
-    There is deliberately no VERIFY entry (#1806): stage 1 applies nothing, so
-    nothing post-apply can be measured by it. VERIFY's absence here is what
-    ``crossover_envelope_v2.crossover_v2_phase`` reads to resolve a
-    measure-only session to the review interlude.
-
-    ``lateral_prompts`` is the walk's own table (L is its length); ``None`` is
-    the ratified one.
-    """
-    _shape_from_kwargs(
-        plan_shape,
-        cloud_measure_positions=cloud_measure_positions,
-        cloud_verify_positions=cloud_verify_positions,
-    )
-    lateral_table = LATERAL_POSE_PROMPTS if lateral_prompts is None else lateral_prompts
-    mapping = {1: PHASE_CHECK, 2: PHASE_MEASURE}
-    nxt = 3
-    if include_lateral:
-        for offset in range(len(lateral_table)):
-            mapping[nxt + offset] = PHASE_LATERAL
-        nxt += len(lateral_table)
-    if include_entry_baseline:
-        mapping[nxt] = PHASE_ENTRY_BASELINE
-    return mapping
-
-
 def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]:
     """The 1-based captures of this plan that play the courtesy prelude.
 
     The prelude announces a SESSION rather than a capture
-    (:func:`~.programs.courtesy_prelude_for_phase`), so stage 1 announces its
-    first (CHECK) and its last (the entry baseline) and stage 2's walk announces
-    its first alone. Derived from the same ``index -> phase`` map the plan's
-    entries are built from.
+    (:func:`~.programs.courtesy_prelude_for_phase`). Derived from the same
+    ``index -> phase`` map the plan's entries are built from.
     """
     return tuple(
         index for index, phase in sorted(index_phase.items())

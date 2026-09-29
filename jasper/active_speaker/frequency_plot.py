@@ -114,7 +114,7 @@ def render_frequency_view(
             for run, curve, display in curves:
                 untrusted.extend(display["untrusted_intervals_hz"])
                 candidate = str(curve.get("candidate_id") or "")
-                base = curve.get("base", curve.get("configuration_kind") == "baseline" or curve.get("id") == "entry_baseline" or candidate == "base")
+                base = curve.get("base", curve.get("configuration_kind") == "baseline" or candidate == "base")
                 label = "applied" if base else prefixes.get(candidate, curve["label"])
                 identity = candidate or f"{run['slot']}:{curve['id']}"
                 if run["measurement_family"] == "window_diagnostic":

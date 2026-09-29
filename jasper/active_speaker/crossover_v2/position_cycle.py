@@ -20,7 +20,7 @@ from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER
 from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
-from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .journey import PHASE_LATERAL
 from .record_index import Measurement, bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
@@ -43,38 +43,12 @@ _BANKED_POSITIONS_GLOB = (
     f"{_BANKED_BUNDLE_GLOB}/{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"
 )
 
-#: What each take contributes to the index — the identity, the pose, and the
-#: verifier; the banked record stays the place to go for the rest
-#: (``offset_cm``, ``at_mark``, ``prompt``, ``lateral_consumer``), which is why
-#: the document names its ``sources``. No current product path writes a take
-#: in this shape — the engine's own banked record
-#: (``session.TuningSession._record``) carries no ``phase``/``role`` key — so
-#: this reader only accepts takes banked before that engine shipped.
+#: What each take contributes to the index: the identity, the pose, the
+#: verifier and the candidate. The banked record holds the rest, which is why
+#: the document names its ``sources``. ``candidate_id`` tells apart the takes a
+#: cycled pose measures at ONE bearing.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
-                "regime", "wav_sha256")
-
-#: What :func:`read_lateral_take` DEFAULTS rather than projects, and what
-#: :func:`read_position_cycle` therefore exempts at the MISSING end: a document
-#: written before one of these existed reads, while a key neither reader knows
-#: still refuses. ``candidate_id`` rides here because a cycled pose measures
-#: several candidates at ONE bearing — without it those rows are
-#: indistinguishable — and ``""`` is a take that named no candidate.
-_DEFAULTED_TAKE_FIELDS = ("vertical_deg", "candidate_id")
-
-#: The three arrays that make a retained entry-baseline take the durable copy.
-#: A take without all three predates the curve riding here and is not readable
-#: as a baseline.
-_ENTRY_CURVE_FIELDS = ("freqs_hz", "magnitude_db", "excluded")
-
-#: What :func:`read_entry_baseline_take` returns — deliberately the field names
-#: ``round_evidence.EntryBaseline.from_dict`` reads, so a caller rehydrates by
-#: handing the result straight to it rather than re-spelling the mapping. The
-#: take's own id is returned as ``artifact_ref``, which is the name that record
-#: gives the artifact it came from.
-_ENTRY_BASELINE_FIELDS = (
-    "stimulus_id", "reference_mark", "graph_fingerprint", "captured_at",
-    *_ENTRY_CURVE_FIELDS,
-)
+                "regime", "wav_sha256", "vertical_deg", "candidate_id")
 
 #: The keys :func:`read_position_cycle` accepts. Strict in both directions: a
 #: key this module does not know is either a newer schema or a hand edit, and
@@ -145,11 +119,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     ``lateral_poses`` block. A second reader with its own idea of what a
     lateral take is would disagree with this one silently.
 
-    Returns the record narrowed to :data:`_TAKE_FIELDS` plus
-    :data:`_DEFAULTED_TAKE_FIELDS` — the identity, the candidate, the pose, and
-    the verifier. The banked record stays the place to go for the rest. A take
-    banked before one of the defaulted fields existed reads back as 0 or ``""``,
-    which is what a walk that could not state a rise or a candidate took.
+    Returns the record narrowed to :data:`_TAKE_FIELDS`, as banked.
     """
     try:
         raw = json.loads(path.read_text())
@@ -161,10 +131,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
         return None
     if raw.get("phase") != PHASE_LATERAL:
         return None
-    take: dict[str, Any] = {field: raw.get(field) for field in _TAKE_FIELDS}
-    take["vertical_deg"] = raw.get("vertical_deg") or 0
-    take["candidate_id"] = raw.get("candidate_id") or ""
-    return take
+    return {field: raw.get(field) for field in _TAKE_FIELDS}
 
 
 def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
@@ -321,48 +288,6 @@ def parse_curve_complex(
     return freqs, tf, swept
 
 
-def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
-    """One banked ``positions/{take_id}.json`` as the round's "before", or ``None``.
-
-    :func:`read_lateral_take`'s sibling, on the phase that is not a group
-    member. Same directory, same accept rule shape, same reason for existing:
-    the record is banked and nothing surfaced it. Filtering on
-    :data:`~.journey.PHASE_ENTRY_BASELINE` says what this take IS, exactly as
-    that reader's own note argues.
-
-    **This is the DURABLE full copy of the entry baseline.** The flow state
-    file carries the same arrays for the duration of one round and is
-    rewritten on the next persist; this take is write-once, so a banked round
-    can still be re-graded (ruling S3, ADR-0228).
-
-    ``None`` for everything that is not one — unreadable, not a JSON object,
-    not a position-evidence record, a different phase, or a record from before
-    the curve rode here. That last case is why the three curve arrays are
-    required rather than defaulted: a take with no curve cannot answer the
-    question this reader is asked, and returning it half-filled would put a
-    baseline-shaped record with no bins in front of a comparison.
-
-    Returns the record narrowed to :data:`_ENTRY_BASELINE_FIELDS`, which are the
-    field names ``round_evidence.EntryBaseline.from_dict`` reads — so a caller
-    rehydrates by handing this straight to it.
-    """
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, Mapping):
-        return None
-    if raw.get("kind") != POSITION_EVIDENCE_KIND:
-        return None
-    if raw.get("phase") != PHASE_ENTRY_BASELINE:
-        return None
-    if not all(isinstance(raw.get(field), list) for field in _ENTRY_CURVE_FIELDS):
-        return None
-    take = {field: raw.get(field) for field in _ENTRY_BASELINE_FIELDS}
-    take["artifact_ref"] = raw.get("take_id")
-    return take
-
-
 def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
     """Every lateral take the bundle banked, with the directories they came from.
 
@@ -413,6 +338,10 @@ def position_cycle_document(
             f"under {_BANKED_POSITIONS_GLOB} — this round's walk was refused at "
             f"take time, or its poses were never accepted"
         )
+    for field, kind in (("vertical_deg", int), ("candidate_id", str)):
+        lacking = sorted(str(take["take_id"]) for take in records if type(take[field]) is not kind)
+        if lacking:
+            raise PositionCycleError(f"{root}: takes {lacking} carry no {field}")
     try:
         takes = sorted(
             records,
@@ -497,15 +426,9 @@ def read_position_cycle(path: str | Path) -> dict[str, Any]:
     if not isinstance(takes, list) or not takes:
         raise PositionCycleError(f"{path}: takes must be a non-empty list")
     for offset, take in enumerate(takes, start=1):
-        if not isinstance(take, Mapping) or not (
-            set(_TAKE_FIELDS)
-            <= set(take)
-            <= set(_TAKE_FIELDS) | set(_DEFAULTED_TAKE_FIELDS)
-        ):
+        if not isinstance(take, Mapping) or set(take) != set(_TAKE_FIELDS):
             raise PositionCycleError(
-                f"{path}: take {offset} must carry exactly "
-                f"{sorted(_TAKE_FIELDS)}, optionally with "
-                f"{sorted(_DEFAULTED_TAKE_FIELDS)}"
+                f"{path}: take {offset} must carry exactly {sorted(_TAKE_FIELDS)}"
             )
     return dict(raw)
 
@@ -518,7 +441,6 @@ def takes_by_position(
     The key is the POSE PAIR, not the bearing alone: a walk that raises the
     microphone measures a different pose at the same bearing, and folding the
     two together would put curves from two poses in one comparison.
-    ``vertical_deg`` reads 0 when the take predates it.
 
     The split a comparison reads: every take measured at one pose, in walk
     order, so per-take curves at that pose can be put beside each other. What
@@ -531,6 +453,6 @@ def takes_by_position(
     """
     grouped: dict[tuple[int, int], list[str]] = {}
     for take in document["takes"]:
-        pose = (int(take["position_deg"]), int(take.get("vertical_deg") or 0))
+        pose = (int(take["position_deg"]), int(take["vertical_deg"]))
         grouped.setdefault(pose, []).append(str(take["take_id"]))
     return {pose: tuple(ids) for pose, ids in sorted(grouped.items())}

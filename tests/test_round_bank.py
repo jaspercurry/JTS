@@ -33,7 +33,7 @@ from jasper.active_speaker.measurement_analysis import analyze_measurement_bundl
 from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
 from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY, EVIDENCE_NOT_BANKED
 from jasper.cli import crossover_prescriber
-from jasper.cli.round_views import EXIT_UNREADABLE, main as round_views_main
+from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
@@ -286,7 +286,6 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state_path)
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
-    assert packet["entry_baseline"]["available"] is True
     assert ("state.json" in banked.provenance["missing"]) is not snapshot
 
     def banked_calibration():
@@ -550,7 +549,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         if view == "room-grade":
             assert run_bookkeeping("room", target)["status"] == "written"
     else:
-        target = _make_round_dir(tmp_path, "run", baseline=True)
+        target = _make_round_dir(tmp_path, "run", take=True)
         write_manifest(target, program=purpose)
     answer = run_bookkeeping(view, target)
     assert answer["status"] == "written", answer
@@ -642,7 +641,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
 def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
     """A round banked beside it later moves what a rebuild would read, so
     nothing rebuilds a banked round's packet (ADR-0371): one whose packet.json
-    holds no evidence refuses by that key (ADR-0383), in the round views too."""
+    holds no evidence refuses by that key (ADR-0383)."""
     session, state = _live_session(tmp_path)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state)
     path = banked.path / "packet.json"
@@ -653,8 +652,6 @@ def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, 
         with pytest.raises(RoundViewsError) as refused:
             evidence_packet.round_evidence(round_inputs(banked.path))
         assert refused.value.code == EVIDENCE_NOT_BANKED
-        assert round_views_main(["entry", str(banked.path)]) == EXIT_UNREADABLE
-        assert json.loads(capsys.readouterr().out)["code"] == EVIDENCE_NOT_BANKED
         return
     later = bank_measure_round(tmp_path / "campaigns", name="r2-later")
     artifacts, _ = round_artifact_dir(round_inputs(later).session_dir)

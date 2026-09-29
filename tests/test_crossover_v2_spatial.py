@@ -140,8 +140,6 @@ def _entry_record(**overrides):
         "index": 9, "attempt": 1, "run_id": "sess", "stimulus_id": "prog",
         "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
-        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
-        "excluded": (True, False),
         "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
         "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
     }
@@ -664,42 +662,6 @@ def test_a_take_states_which_phase_composition_its_curves_carry(
     assert ("phase_composition" in record) is (stamped is not None)
 
 
-def test_a_record_banked_before_curves_existed_still_reads_clean(tmp_path):
-    """Additive at the reader: the field's ABSENCE changes nothing it sees.
-
-    A take banked before ``curves`` existed carries no such key. The reader
-    narrows to its own field list, so a legacy record and a carrying one read
-    identically — the whole claim behind widening the schema instead of
-    versioning it.
-
-    Asserted against a record with the key REMOVED, not one built empty: an
-    empty list is what a new take with nothing to bank writes, and it is a
-    different shape from the one already on disk.
-
-    The entry baseline is the subject because it is the one kind that BOTH
-    gained the carry and has a shipped reader; ``read_lateral_take`` narrows
-    through the same comprehension and the pose record is unchanged here. A
-    cloud seat and an unprompted-phase take are rejected on ``phase`` by both
-    readers, so asserting over them would be two ``None``s agreeing.
-    """
-    import json
-
-    from jasper.active_speaker.crossover_v2 import position_cycle
-
-    carrying = {
-        **_entry_record(curves=[_A_BANKED_CURVE]), "kind": POSITION_EVIDENCE_KIND,
-    }
-    legacy = {k: v for k, v in carrying.items() if k != "curves"}
-    old, new = tmp_path / "old.json", tmp_path / "new.json"
-    old.write_text(json.dumps(legacy))
-    new.write_text(json.dumps(carrying))
-
-    assert position_cycle.read_entry_baseline_take(new) is not None
-    assert position_cycle.read_entry_baseline_take(
-        old
-    ) == position_cycle.read_entry_baseline_take(new)
-
-
 def test_the_storage_seam_names_the_take_the_record_names():
     """One index convention, minted ONCE — by the builder, read by the seam.
 
@@ -751,37 +713,6 @@ def test_an_entry_baseline_take_id_carries_index_and_attempt():
 
     assert record["take_id"] == "entry_baseline_09_a02"
     assert record["position_id"] == record["take_id"]
-
-
-def test_the_three_comparability_facts_ride_the_entry_record():
-    """WHAT was played, WHERE from, and THROUGH WHICH graph.
-
-    A before→after claim is only as good as those three matching on both sides,
-    and they are the whole reason this is a separate builder rather than a
-    keyword on the position one.
-    """
-    record = _entry_record(stimulus_id="prog-42", graph_fingerprint="fp-entry")
-
-    assert record["stimulus_id"] == "prog-42"
-    assert record["reference_mark"] == REFERENCE_MARK_DESIGN_AXIS
-    assert record["graph_fingerprint"] == "fp-entry"
-
-
-def test_the_entry_records_curve_is_the_durable_copy_of_the_before():
-    """The arrays ride the write-once take, not only the rewritten state file.
-
-    Fragment ``02``'s duplication #2: the flow state file's ``verify_priors``
-    is rebuilt from the conductor on every persist, so before this the round's
-    "before" stopped existing the moment the next round persisted. The names
-    are ``EntryBaseline.from_dict``'s so one reader covers both.
-    """
-    record = _entry_record(
-        freqs_hz=(200.0, 400.0), magnitude_db=(-1.5, 0.5), excluded=(True, False),
-    )
-
-    assert record["freqs_hz"] == [200.0, 400.0]
-    assert record["magnitude_db"] == [-1.5, 0.5]
-    assert record["excluded"] == [True, False]
 
 
 # the module's own boundary

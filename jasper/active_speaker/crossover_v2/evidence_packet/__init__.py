@@ -30,9 +30,7 @@ from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.json_fields import as_mapping
 
 from ...installation import installation_evidence
-from .. import position_cycle
 from ..driver_prescription import driver_passbands_from_safety_profile
-from ..journey import PHASE_ENTRY_BASELINE
 from ..operator_notes import OPERATOR_NOTES_KIND, build_operator_notes
 from ..prescription_contract import (
     CONTRACT_COMMAND,
@@ -75,7 +73,6 @@ from .offline_reads import (
 from .positions import (
     POSITIONS_SUBDIR,
     _lateral_poses_block,
-    banked_takes,
 )
 from .readers import (
     DERIVED_VIEWS,
@@ -112,7 +109,6 @@ __all__ = [
     "build_round_evidence",
     "contract_currency",
     "fingerprinted",
-    "entry_evidence",
     "round_evidence",
     "packet_driver_passbands_hz",
     "packet_feature_classifications",
@@ -234,54 +230,6 @@ def _candidates_block(rows: Sequence[Measurement]) -> dict[str, Any]:
             "two candidates measured at different poses are not comparable on "
             "these takes alone; the candidate cycle holds one pose and swaps "
             "the graph under it"
-        ),
-    }
-
-
-def _entry_baseline_block(
-    session_dir: Path, rows: Sequence[Measurement],
-) -> dict[str, Any]:
-    """The round's measured "before", read from the take that banked it.
-
-    This block is the durable copy — the flow state file's arrays are
-    rewritten by the next persist. With it, a before/after comparison can be
-    re-run over a banked round by an analysis that did not exist when it was
-    captured.
-
-    A round with no readable take is an ordinary reported absence: retention is
-    fail-soft and never costs the household a retake.
-    """
-    takes = banked_takes(
-        session_dir, rows, PHASE_ENTRY_BASELINE,
-        position_cycle.read_entry_baseline_take,
-    )
-    if not takes:
-        return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
-                f"this round banked no {PHASE_ENTRY_BASELINE} take record under "
-                f"{POSITIONS_SUBDIR}/ — it ran no entry baseline, its capture "
-                "was refused, or evidence retention failed at take time"
-            ),
-        }
-    # The last accepted take is the "before": a retake supersedes the attempt
-    # it followed. Sorting by take_id orders by index then attempt, because the
-    # id is built from both in that order.
-    take = max(takes, key=lambda t: str(t.get("artifact_ref") or ""))
-    return {
-        "available": True,
-        **take,
-        "n_bins": len(take["freqs_hz"]),
-        "n_excluded": sum(1 for flag in take["excluded"] if flag),
-        "source": f"{POSITIONS_SUBDIR}/<take_id>.json",
-        "note": (
-            "the summed capture taken at the design-axis mark immediately "
-            "before this round's apply. It is the durable copy: the flow state "
-            "file holds the same arrays only until the next persist rewrites "
-            "them. Comparable to a post-apply capture only when stimulus_id, "
-            "reference_mark and graph_fingerprint match on both sides; an equal "
-            "stimulus_id means the same stimulus, not the same level (#5012)"
         ),
     }
 
@@ -436,8 +384,8 @@ def build_crossover_evidence_packet(
     * ``driver_draft_path`` — the design draft used to compute driver limits;
       without it the per-driver prescription class has no bound to check
       against and refuses by name.
-    * ``repeat_floor_path`` — the banked repeat floor; without it the floor is
-      unmeasured and the two codified assumptions are used, named.
+    * ``repeat_floor_path`` — the banked repeat floor; without it the floor
+      reads ``unmeasured`` and publishes no thresholds.
     * ``declared_geometry_path`` — the household's declared rig geometry, the
       only viable source for the room's entanglement floor.
     * ``statefile_path`` — a CamillaDSP durable statefile banked alongside
@@ -482,7 +430,6 @@ def build_crossover_evidence_packet(
     take_rows = bundle_measurements(session_dir)
     lateral_poses = _lateral_poses_block(session_dir, take_rows)
     candidates = _candidates_block(take_rows)
-    entry_baseline = _entry_baseline_block(session_dir, take_rows)
 
     capture_snr = _capture_snr_block(session_dir, take_rows)
 
@@ -530,7 +477,6 @@ def build_crossover_evidence_packet(
         ),
         "lateral_poses": lateral_poses,
         "candidates": candidates,
-        "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
         "accuracy_budget": _accuracy_budget_block(
             round_dir=round_dir,
@@ -620,18 +566,6 @@ def _bundle_session(info_raw: Mapping[str, Any]) -> dict[str, Any]:
         "bundle_session_id": info_raw.get("session_id"),
         "state": info_raw.get("state"),
         "started_at": info_raw.get("started_at"),
-    }
-
-
-def entry_evidence(session_dir: Path, rows: Sequence[Measurement]) -> dict[str, Any]:
-    """The packet's ``entry_baseline`` block and the ``session`` and ``identity``
-    fields a frequency view reads, from a bundle and its take ``rows``."""
-    info_raw = _bundle_info(session_dir)
-    identity, _ = copy_allowed(as_mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS)
-    return {
-        "session": _bundle_session(info_raw),
-        "identity": identity,
-        "entry_baseline": _entry_baseline_block(session_dir, rows),
     }
 
 

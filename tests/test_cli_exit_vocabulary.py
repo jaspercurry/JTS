@@ -205,7 +205,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.round": lambda tmp, mp: [
         "run", "--poses", "not-a-layout",
     ],
-    "jasper.cli.round_views": lambda tmp, mp: ["entry", str(tmp / "absent-round")],
+    "jasper.cli.round_views": lambda tmp, mp: ["inventory", str(tmp / "absent-round")],
     "jasper.cli.audition": _audition_argv,
 }
 
@@ -406,10 +406,6 @@ _ROUND_SET_TAKES = frozenset({"round_id", "set_id", "take_ids"})
 #: How each view is run to an answer -- or, for a view no fixture here can
 #: feed, why not.
 _VIEW_RUN: dict[str, str | _ViewRun] = {
-    "entry": _ViewRun(
-        _on_fixture_round(lambda r: ["entry", str(r.measured)]),
-        frozenset({"smoothing_fraction", "band_hz", "reference_band_hz"}),
-        recorded=lambda p, a: p["smoothing_fraction"] == a["report"]["smoothing_fraction"]),
     "repeat": _ViewRun(_on_fixture_round(_repeat_argv)),
     "candidates": _ViewRun(_on_fixture_round(lambda r: ["candidates", str(r.measured)])),
     "directivity": _ViewRun(

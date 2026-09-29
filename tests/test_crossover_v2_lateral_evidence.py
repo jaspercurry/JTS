@@ -28,9 +28,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_ONAX,
     POSITION_ROLE_XOVR,
 )
-from jasper.active_speaker.crossover_v2.capture_plan import (
-    build_v2_cloud_index_phase_map,
-)
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.audio_measurement import gating
@@ -53,15 +50,14 @@ FIRST_LATERAL_INDEX = 3
 LAST_LATERAL_INDEX = FIRST_LATERAL_INDEX + LATERAL_COUNT - 1
 
 
+def _lateral_map(poses: int) -> dict[int, str]:
+    """CHECK, MEASURE, then ``poses`` lateral poses."""
+    return {1: PHASE_CHECK, 2: PHASE_MEASURE, **{3 + offset: PHASE_LATERAL for offset in range(poses)}}
+
+
 def _lateral_conductor(fakes: FakeSeams, **kwargs):
     """A conductor whose stage 1 is CHECK + MEASURE + the lateral walk."""
-    return _conductor(
-        fakes,
-        index_phase_map=build_v2_cloud_index_phase_map(
-            include_lateral=True,
-        ),
-        **kwargs,
-    )
+    return _conductor(fakes, index_phase_map=_lateral_map(LATERAL_COUNT), **kwargs)
 
 
 def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
@@ -249,7 +245,7 @@ def test_each_pose_is_analyzed_under_its_own_gate_exemption():
         ac.AngleStop(20, ac.REGIME_SUMMED, purpose="speaker"),
     ))
     prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
-    index_phase_map = build_v2_cloud_index_phase_map(include_lateral=True, lateral_prompts=prompts)
+    index_phase_map = _lateral_map(len(prompts))
     c = _conductor(FakeSeams(), index_phase_map=index_phase_map, lateral_prompts=prompts,
                    lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL)
 

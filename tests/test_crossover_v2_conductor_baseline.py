@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: fixture premise, live-attempts loop, happy path, predicted-ripple disclosure (G1)."""
+"""Conductor W5a: live-attempts loop, happy path, predicted-ripple disclosure (G1)."""
 
 from __future__ import annotations
 
@@ -11,11 +11,6 @@ import numpy as np
 import pytest
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import durable_state
-from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
-from jasper.active_speaker.crossover_v2.round_evidence import (
-    MEASURED_BENEFIT_MARGIN_DB,
-    measured_response_from_analysis,
-)
 from jasper.active_speaker.crossover_v2.durable_state import (
     PROVENANCE_REALIZED, AttemptIntegrity, AttemptRecord,
 )
@@ -24,75 +19,20 @@ from jasper.active_speaker.crossover_v2.alignment_prescription import alignment_
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
-    PHASE_VERIFY,
 )
 from jasper.active_speaker.branch_chain import crossover_response_complex
 from jasper.active_speaker.crossover_section import CrossoverSection, sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
-from jasper.active_speaker.flat_spec import (
-    evaluate_flat_spec,
-    spec_convergence_residual,
-)
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.crossover_v2_fixtures import (
     CAPS,
     FakeSeams,
-    _ENTRY_BASELINE_RESIDUAL_DB,
-    _POST_APPLY_RESIDUAL_DB,
     _capture,
     _conductor,
     _preset,
     _run_phase,
-    _verify_analysis,
 )
-
-
-def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one():
-    """``_fixture_entry_baseline``'s whole reason to exist, made falsifiable.
-
-    Every conductor this file builds grades its #2291 round against that
-    baseline, and the grading is only honest if the "before" really is the worse
-    measurement — by more than the claim margin. Nothing else in the file would
-    notice if it stopped being true: ``_in_room_summed_db`` changing, the
-    reducer's grid changing, or the sign of ``spec_convergence_residual``
-    flipping would all turn every round into a measured REGRESSION, which the
-    adoption table restores on, and the failures would surface far from here as
-    refusals about rollback anchors.
-
-    It also pins the two decimals the fixture's comment quotes, so those are
-    checked numbers rather than remembered ones.
-    """
-    fakes = FakeSeams()
-    conductor = _conductor(fakes)
-    baseline = conductor.measure_entry_baseline
-    assert baseline is not None
-
-    post = measured_response_from_analysis(
-        _verify_analysis(conductor.program_for_phase(PHASE_VERIFY)),
-        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-    )
-    # Comparable by construction, or the benefit verdict is about the fixture
-    # rather than about the speaker.
-    assert baseline.stimulus_id == post.stimulus_id
-    assert baseline.reference_mark == post.reference_mark
-    assert baseline.curve.hz == post.curve.hz
-
-    def residual_db(hz, db, excluded) -> float:
-        report = evaluate_flat_spec(
-            np.asarray(hz, dtype=np.float64),
-            np.asarray(db, dtype=np.float64),
-            np.asarray(excluded, dtype=bool),
-        )
-        convergence = spec_convergence_residual(report)
-        assert convergence.evaluable and convergence.rms_db is not None
-        return float(convergence.rms_db)
-
-    before_db = residual_db(baseline.curve.hz, baseline.curve.db, baseline.excluded)
-    after_db = residual_db(post.curve.hz, post.curve.db, post.excluded)
-    assert before_db == pytest.approx(_ENTRY_BASELINE_RESIDUAL_DB, abs=0.001)
-    assert after_db == pytest.approx(_POST_APPLY_RESIDUAL_DB, abs=0.001)
-    assert (before_db - after_db) > MEASURED_BENEFIT_MARGIN_DB
 
 
 def test_the_banked_sitting_survives_the_durable_state_round_trip():

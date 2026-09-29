@@ -39,10 +39,11 @@ from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecordin
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.round_frequency_view import FrequencyViewError, frequency_run
 from jasper.active_speaker.measurement_archive import ArchivedMeasurement
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
-from jasper.active_speaker.frequency_view import FrequencyRun, frequency_series, build_frequency_view as neutral_view
+from jasper.active_speaker.frequency_view import (
+    FrequencyRun, FrequencyViewError, frequency_series, build_frequency_view as neutral_view,
+)
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker import frequency_plot
 from jasper.active_speaker.round_bank import bank_round
@@ -54,54 +55,13 @@ from jasper.cli.round_views import build_parser, main as round_views_main, run_b
 from jasper.web import correction_measurements
 
 
-def _packet(run_id: str, *, offset: float = 0.0) -> dict:
-    return {
-        "session": {
-            "bundle_session_id": run_id,
-            "started_at": 1000.0 + offset,
-            "state": "applied",
-        },
-        "identity": {
-            "topology_id": "speaker",
-            "graph_fingerprint": "graph",
-            "mic": {"calibration_id": "mic-a"},
-        },
-        "entry_baseline": {
-            "available": True,
-            "captured_at": "2026-08-29T12:00:00Z",
-            "stimulus_id": "summed_sweep",
-            "reference_mark": "design_axis",
-            "graph_fingerprint": "before",
-            "freqs_hz": [100.0, 1000.0, 10000.0],
-            "magnitude_db": [-25.0 + offset, -25.0 + offset, -27.0 + offset],
-            "excluded": [False, False, True],
-        },
-    }
-
-
-def test_frequency_view_exposes_the_stored_entry_baseline():
-    view = neutral_view(frequency_run(_packet("aaa")))
-
-    assert view["schema"] == "jts_frequency_view/2"
-    run = view["runs"][0]
-    assert (run["slot"], run["id"], run["measurement_family"]) == (
-        "a", "aaa", "entry_baseline",
+def _run(run_id: str, *, offset: float = 0.0) -> FrequencyRun:
+    """One saved run carrying one take's curve."""
+    series = frequency_series(
+        series_id="take", label="Take", kind="measurement", freqs_hz=[100.0, 1000.0, 10000.0],
+        magnitude_db=[-25.0 + offset, -25.0 + offset, -27.0 + offset], reference_db=-25.0 + offset,
     )
-    baseline, = run["series"]
-    assert baseline["id"] == "entry_baseline"
-    assert baseline["smoothing_fractional_octave"] == 3
-    assert baseline["excluded_intervals_hz"] == [[10000.0, 10000.0]]
-    assert run["metadata"]["mic_calibration_id"] == "mic-a"
-
-
-def test_frequency_view_gives_the_baseline_its_own_reference_frame():
-    packet = _packet("aaa")
-    packet["entry_baseline"]["magnitude_db"] = [-35.0, -34.0, -36.0]
-
-    baseline, = neutral_view(frequency_run(packet))["runs"][0]["series"]
-
-    assert baseline["reference_db"] == -34.0
-    assert baseline["display"]["deviation_db"] == [-1.0, 0.0, -2.0]
+    return FrequencyRun(run_id, "speaker_response", (series,), started_at=1000.0 + offset, state="applied")
 
 
 @pytest.mark.parametrize("reference", [-24, None])
@@ -228,7 +188,7 @@ def test_image_groups_configurations_by_pose(tmp_path, monkeypatch, candidates, 
 @pytest.mark.parametrize("with_image", [False, True])
 def test_frequency_without_matplotlib_writes_json(tmp_path, monkeypatch, capsys, with_image):
     source = tmp_path / "source.json"
-    source.write_text(json.dumps(neutral_view(frequency_run(_packet("test")))))
+    source.write_text(json.dumps(neutral_view(_run("test"))))
     output, png = tmp_path / "view.json", tmp_path / "view.png"
     monkeypatch.setitem(sys.modules, "matplotlib.figure", None)
     flags = ["--image", str(png), "--low-end"] if with_image else []
@@ -241,7 +201,7 @@ def test_frequency_without_matplotlib_writes_json(tmp_path, monkeypatch, capsys,
 
 
 def test_frequency_view_adds_optional_run_b_without_changing_run_a():
-    view = neutral_view(frequency_run(_packet("aaa")), frequency_run(_packet("bbb", offset=1.0)))
+    view = neutral_view(_run("aaa"), _run("bbb", offset=1.0))
 
     assert [(run["slot"], run["id"]) for run in view["runs"]] == [
         ("a", "aaa"), ("b", "bbb"),
@@ -249,11 +209,6 @@ def test_frequency_view_adds_optional_run_b_without_changing_run_a():
     assert view["runs"][0]["series"][0]["magnitude_db"] == [
         -25.0, -25.0, -27.0,
     ]
-
-
-def test_frequency_view_requires_the_packet_bundle_identity():
-    with pytest.raises(FrequencyViewError, match="bundle session id"):
-        frequency_run({})
 
 
 def test_measurement_page_uses_the_canonical_shell_and_static_module():
@@ -278,7 +233,7 @@ def test_web_data_uses_the_same_frequency_view_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(
         correction_measurements,
         "load_measurement",
-        lambda entry: frequency_run(_packet(entry.id)),
+        lambda entry: _run(entry.id),
     )
 
     data = correction_measurements.build_data(
@@ -596,10 +551,10 @@ def test_the_archive_lists_a_bundle_only_when_it_banked_a_take(tmp_path, banked,
 def _archive_serves(monkeypatch, *documents: dict) -> None:
     monkeypatch.setattr(measurement_archive, "measurement_documents",
                         lambda _bundle: [(None, document) for document in documents])
-    monkeypatch.setattr(measurement_archive, "entry_evidence", lambda _bundle, _rows: _packet("saved"))
 
 
-def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypatch):
+def test_an_archive_run_carries_its_bundles_identity(tmp_path, monkeypatch):
+    (tmp_path / "info.json").write_text(json.dumps({"fingerprints": {"mic": {"calibration_id": "mic-a"}}}))
     _archive_serves(monkeypatch, {
         "take_id": "axis",
         "position_deg": 0,
@@ -611,36 +566,16 @@ def test_archive_combines_stored_summary_with_direct_records(tmp_path, monkeypat
         }],
     })
 
-    run = measurement_archive.load_measurement(
-        ArchivedMeasurement("saved", tmp_path / "saved", 1.0, "applied"),
-    )
+    run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path, 1.0, "applied"))
 
-    assert [series.id for series in run.series] == ["entry_baseline", "axis:woofer"]
-    assert [series.visible_by_default for series in run.series] == [True, False]
-
-
-def test_archive_serves_the_packets_entry_baseline_over_a_direct_one(tmp_path, monkeypatch):
-    _archive_serves(monkeypatch, {
-        "take_id": "baseline",
-        "phase": "entry_baseline",
-        "freqs_hz": [100.0, 1000.0],
-        "magnitude_db": [-25.0, -24.0],
-    })
-
-    run = measurement_archive.load_measurement(
-        ArchivedMeasurement("saved", tmp_path / "saved"),
-    )
-
-    baseline, = run.series
-    assert list(baseline.magnitude_db) == _packet("saved")["entry_baseline"]["magnitude_db"]
+    assert [series.id for series in run.series] == ["axis:woofer"]
+    assert run.metadata["mic_calibration_id"] == "mic-a"
 
 
 @pytest.mark.parametrize("curves", [[], [{"role": "summed", "freqs_hz": [100.0, 1000.0], "magnitude_db": [-20.0, -21.0]}]])
 def test_an_archive_run_whose_takes_banked_no_curves_says_so(tmp_path, monkeypatch, curves):
     monkeypatch.setattr(measurement_archive, "measurement_documents",
                         lambda _bundle: [(None, {"take_id": "t", "position_deg": 0, "curves": curves})])
-    monkeypatch.setattr(measurement_archive, "entry_evidence",
-                        lambda _bundle, _rows: {**_packet("saved"), "entry_baseline": {"available": False}})
 
     run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path))
 

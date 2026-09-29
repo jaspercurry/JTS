@@ -40,10 +40,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 
 # A stage-1-shaped map: the anchor pair, a two-pose lateral group, a two-
-# position cloud group, and the baseline last. Deliberately NOT built by
-# ``build_v2_cloud_index_phase_map`` — this suite pins what the journey does
-# with a map, and borrowing the flow's builder would make a change there able
-# to move these expectations with it.
+# position cloud group, and the timing take last.
 STAGE1_MAP = {
     1: PHASE_CHECK,
     2: PHASE_MEASURE,
