@@ -144,12 +144,14 @@ def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _base_charge(candidate: Mapping[str, Any]) -> tuple[float | None, str | None]:
     """The program charge of the candidate the round banked, or the code that says why there
-    is none. Read from the round alone, so a packet is built from banked inputs (ADR-0371).
+    is none; a banked candidate that does not reopen refuses the contract by its own code.
+    Read from the round alone, so a packet is built from banked inputs (ADR-0371).
     """
     if not candidate:
         return None, BASE_NOT_BANKED
+    base = MeasuredCrossoverCandidate.from_mapping(candidate)
     try:
-        return program_charge_db(MeasuredCrossoverCandidate.from_mapping(candidate)), None
+        return program_charge_db(base), None
     except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
         return None, getattr(exc, "code", COMPOSITION_INVALID)
 

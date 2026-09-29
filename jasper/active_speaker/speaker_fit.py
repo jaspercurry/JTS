@@ -134,19 +134,15 @@ def _fit_vocabularies(
     candidate: Mapping[str, Any], budgets: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, FitVocabulary]:
     try:
-        base: MeasuredCrossoverCandidate | None = MeasuredCrossoverCandidate.from_mapping(candidate)
-    except MeasuredCrossoverCandidateError:
-        base = None
+        base = MeasuredCrossoverCandidate.from_mapping(candidate)
+        # The charge without each role's own chain (#5909).
+        spent = {role: program_charge_db(replace(base, linearization={
+            name: fit for name, fit in base.linearization.items() if name != role})) for role in budgets}
+    except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
+        raise SpeakerFitUnreadable(str(exc), code=getattr(exc, "code", COMPOSITION_INVALID)) from exc
     vocabularies = {}
     for role, budget in budgets.items():
-        # The charge without this role's chain (#5909). An unreadable base leaves
-        # only the ceiling, which composition enforces.
-        try:
-            spent = None if base is None else program_charge_db(replace(base, linearization={
-                name: fit for name, fit in base.linearization.items() if name != role}))
-        except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
-            raise SpeakerFitUnreadable(str(exc), code=getattr(exc, "code", COMPOSITION_INVALID)) from exc
-        remaining = MAX_PROGRAM_HEADROOM_DB if spent is None else max(0.0, MAX_PROGRAM_HEADROOM_DB - spent)
+        remaining = max(0.0, MAX_PROGRAM_HEADROOM_DB - spent[role])
         vocabularies[role] = FitVocabulary(
             allow_boost=True, per_filter_boost_cap_db=remaining, composed_boost_cap_db=remaining,
         ).with_budget(budget)

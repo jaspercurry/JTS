@@ -64,15 +64,15 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "f9b99931d43e9d70decd9beaa42d42616267a114899fea02d6af6968c0d5a212"),
-    ("mono", True, "937084f3e5326b811bfc43f52c0b765fe28b56b5a5f979fbb06b89a1554c08cf"),
-    ("stereo", False, "b0484de916c33c226eb240ba2b67ada10ac61a3d37bafd960d96c2b58e9d8b41"),
-    ("stereo", True, "066dadd4b32dd383743be7db1ff2a07c911e85972b339ff105171275ce92f0e0"),
+    ("mono", False, "abb5696cca7f71bf2c21fcbda4ffdf3a701e59b2f6921328c4eb4258c15f3394"),
+    ("mono", True, "6ba74e229997d8567b9e3d926a5a5a62a6719bfb80ea00441c8010e796ed6798"),
+    ("stereo", False, "003d4edbbd0e8e3c0a1aae688f282a3c57c04f9c419130c906360c310aea7712"),
+    ("stereo", True, "30677ecd9b06e7c51627c4858e9a0cb32c99a189720db5ef58c149528d592e2a"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
     box = _rear_pair(layout)[1] if rear else _active_topology(layout, "active_2_way")
-    candidate = {"source_preset": preset}
+    candidate = _candidate(preset=ActiveSpeakerPreset.from_mapping(preset)).to_dict()
     programs = programs_for_topology(box)
     for sources in ({"draft": {"topology": box.to_dict()}}, {"candidate": candidate},
                     {"applied_profile": applied_profile(preset=preset)}):
@@ -126,7 +126,7 @@ def round_bank(tmp_path, request):
         rear_preset, box = _rear_pair("mono")
         preset = rear_preset.to_dict()
         draft["topology"] = box.to_dict()
-    (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))
+    (artifact / "candidate.json").write_text(json.dumps(_candidate(preset=ActiveSpeakerPreset.from_mapping(preset)).to_dict()))
     draft["manual_settings"]["drivers"][1].update(
         recommended_highpass_hz=1000.0, recommended_highpass_slope_db_per_octave=12.0,
     )
@@ -213,8 +213,6 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
     assert set(bounds["boost_headroom"]) == set(expected)
-    # The round banked a bare preset, not a candidate: nothing compiles, so nothing is charged.
-    assert all(row["program_headroom_spent_db"] is None for row in bounds["boost_headroom"].values())
     assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
     assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())

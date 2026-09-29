@@ -224,15 +224,15 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     limits = {}
     rooms = room_sets(manifest)
     for group in view_sets(manifest):
+        section = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and group in rooms else purpose
         try:
             section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None)
-            contracts = prescription_contracts(programs=contract_programs(section_sources), **section_sources)
-            section = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and group in rooms else purpose
-            if section in contracts:
-                limits[group["set_id"]] = {key: value for key, value in contracts[section].items()
-                                           if key != "evidence_declarations"}
+            if section in contract_programs(section_sources):
+                contract = prescription_contracts(programs=(section,), **section_sources)[section]
+                limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
-            limits[group["set_id"]] = {"status": "unavailable", "reason": getattr(exc, "reason", "evidence_unreadable")}
+            limits[group["set_id"]] = {"status": "unavailable",
+                                       "reason": getattr(exc, "reason", None) or getattr(exc, "code", None) or "evidence_unreadable"}
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
