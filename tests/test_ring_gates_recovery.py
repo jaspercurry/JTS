@@ -40,7 +40,7 @@ from tests.test_fanin_coupling_reconcile import (
 
 # Captured at import, BEFORE any fixture can stub the module attribute — see
 # :func:`_real_caps_record_compare`.
-from jasper.ring_assets import ring_ioplug_wire_supported as _REAL_WIRE_SUPPORTED
+from jasper.audio_control.ring_assets import ring_ioplug_wire_supported as _REAL_WIRE_SUPPORTED
 from jasper.ring_header import (
     RING_SAMPLE_FORMAT_NAMES,
     RING_SAMPLE_FORMAT_S16LE,
@@ -90,7 +90,7 @@ def _real_caps_record_compare(monkeypatch):
     test whose SUBJECT is that refusal has to put the real predicate back, or it
     would assert against its own stub.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "ring_ioplug_wire_supported", _REAL_WIRE_SUPPORTED)
 
@@ -131,7 +131,7 @@ def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
     chain exactly as a real undeclared box resolves it, so this fails if the
     resolver's default is ever moved back without moving this pin.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     _real_caps_record_compare(monkeypatch)
     monkeypatch.setattr(ra, "RING_IOPLUG_PROVENANCE", str(tmp_path / "absent"))
@@ -143,7 +143,7 @@ def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
 
 
 def test_caps_gate_refuses_a_wide_wire_with_no_record(monkeypatch, tmp_path):
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     _real_caps_record_compare(monkeypatch)
     _wide_wire(monkeypatch)
@@ -174,7 +174,7 @@ def _ring_file(path, *, sample_format, n_slots=2, period=128, channels=2):
 
 def _point_ring_files_at(monkeypatch, tmp_path):
     """Repoint both ring files into the tmpdir. Returns (ring_a, ring_b)."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     ring_a = tmp_path / "program.ring"
     ring_b = tmp_path / "content.ring"
@@ -222,7 +222,7 @@ def test_wire_gate_names_the_end_that_disagrees(
     monkeypatch, outputd_text, expected_substrings
 ):
     """A mismatched or unparseable outputd channel count names that end."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(
@@ -249,7 +249,7 @@ def test_wire_gate_compares_outputd_only_once_armed(monkeypatch):
     what proves the verdict is decided by whether the reconciler has written
     outputd.env and not by the token.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     stale_format = "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE\n"
@@ -282,7 +282,7 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
     The positive control below is what keeps this a test of the COMPARISON
     rather than of "absence always refuses".
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     reconciled = f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={COUPLING_SHM_RING}\n"
@@ -304,7 +304,7 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
 def test_wire_gate_defers_an_absent_conf_d_to_the_asset_gate(monkeypatch, tmp_path):
     """One missing file, one reason. ``ring_assets_ready`` owns the absent
     conf.d; a second refusal here would bury the one that names the fix."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(tmp_path / "nope.conf"))
     monkeypatch.setattr(
@@ -318,7 +318,7 @@ def test_wire_gate_refuses_a_conf_d_that_is_present_but_unreadable(
     monkeypatch, tmp_path
 ):
     """A torn conf.d is nobody else's refusal to own, so it stays this gate's."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(tmp_path / "torn.conf"))
     monkeypatch.setattr(
@@ -341,7 +341,7 @@ def test_wire_gate_refuses_an_indeterminate_channel_count_like_an_indeterminate_
     nothing had actually agreed. Note the format here is single and CORRECT, so
     the refusal can only be coming from the channels axis.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     torn = tmp_path / "torn.conf"
     torn.write_text(
@@ -373,7 +373,7 @@ def test_wire_gate_does_not_invent_a_channels_refusal_for_ends_that_state_none(
     either axis while the asset gate owns that refusal. Neither may be reported
     as indeterminate, or the shipped fleet fails a gate it has always passed.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(outputd_text="")
@@ -383,7 +383,7 @@ def test_wire_gate_does_not_invent_a_channels_refusal_for_ends_that_state_none(
 def test_wire_gate_passes_on_the_shipped_wire(monkeypatch):
     """The dormancy bar for the wire gate: a fleet box declares one wire at every
     end, so nothing about this rung changes what it does."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(outputd_text="")
@@ -453,7 +453,7 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     EMITTED. So this is no longer only archaeology: it is the refusal a
     not-yet-re-emitted box meets, and it must name the file to fix.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
@@ -514,7 +514,7 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     axis is the only thing that disagrees — a graph that also sheared on format
     would be refused either way and prove nothing about this axis.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
@@ -584,7 +584,7 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
     the CORRECT graph (3 outputs) must be accepted, and a graph declaring Ring
     B's 2 must be REFUSED.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
@@ -640,7 +640,7 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
     box that has not run step 1 yet — the PR-1 defect shape, re-introduced from
     the other side.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
@@ -670,7 +670,7 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     unattended pass on every new speaker. What must not happen is the gate
     reporting agreement it never checked — which is defect B in one sentence.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(

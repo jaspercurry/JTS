@@ -42,7 +42,7 @@ from .. import flight_recorder
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
-    from ..volume_state import VolumeState
+    from jasper.audio_control.volume_state import VolumeState
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..env_load import bounded_env_int
@@ -69,7 +69,7 @@ from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
 from ..volume_curve import percent_to_db
-from ..volume_process import install_env_canonical_target_provider
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from ..watchdog import Heartbeat
 from .audio_incidents import IncidentStore
 from .ha_status_cache import HomeAssistantStatusCache

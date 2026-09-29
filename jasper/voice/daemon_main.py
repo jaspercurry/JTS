@@ -27,8 +27,8 @@ from .. import flight_recorder, transit
 from ..mic_capture import InputDeviceUnavailable, make_mic_capture
 from ..tts_playout import TtsPlayout
 from jasper.runtime_config.assistant_loudness import active_voice_identity, ensure_seed_profile
-from ..assistant_volume import volume_context_publisher_for_runtime
-from ..camilla import (
+from jasper.audio_control.assistant_volume import volume_context_publisher_for_runtime
+from jasper.audio_control.camilla import (
     CamillaController,
     set_canonical_target_db_provider,
 )
@@ -53,7 +53,7 @@ from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
-from ..renderer import RendererClient
+from jasper.audio_control.renderer import RendererClient
 from jasper.service_state.spotify_router import Router, build_router
 from jasper.service_state.timers import Timer, TimerScheduler, announcement_text
 from ..tools import ToolRegistry, UntrustedContentMonitor
@@ -79,8 +79,8 @@ from ..voice.input_policy import (
 )
 from ..voice.prompt import build_system_instruction
 from ..voice.session import LiveConnection
-from ..volume_coordinator import VolumeCoordinator
-from ..volume_observers import VolumeObserver
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_observers import VolumeObserver
 from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.service_state.volume_persistence import VolumePersistence
 from jasper.service_state.wake import WakeWordDetector

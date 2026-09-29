@@ -44,11 +44,11 @@ from jasper.playback_state.install_profile import (
     install_profile_has_capability,
     read_install_profile,
 )
-from jasper import volume_process
+from jasper.audio_control import volume_process
 from jasper.service_state import wake_ports
 from jasper.log_event import log_event
 from jasper.active_speaker.audition import recover_web_audition
-from jasper.camilla import primary_controller
+from jasper.audio_control.camilla import primary_controller
 
 from jasper.service_state.accounts import registry_path as spotify_registry_path
 from ..env_load import SPEAKER_NAME_ENV_PATH, VOICE_PROVIDER_ENV_PATH

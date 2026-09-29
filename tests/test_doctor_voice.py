@@ -18,7 +18,7 @@ from jasper.cli.doctor import renderers
 from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._evidence import evidence
 from jasper.config import Config
-from jasper.mic_presence import MicPresence
+from jasper.audio_control.mic_presence import MicPresence
 from jasper.service_state.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
 from jasper.tools.packs import TOOL_PACKS
 from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manifest_text

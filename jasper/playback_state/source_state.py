@@ -10,7 +10,7 @@ matching `<source>_playing_observed()` probes, whose third ``None`` state means
 "the probe failed, do not reinterpret that as the source stopping." This keeps
 a transient D-Bus/CLI/status failure from creating a false stop/start edge.
 
-Both `jasper.renderer.RendererClient.active_renderers` (consumed
+Both `jasper.audio_control.renderer.RendererClient.active_renderers` (consumed
 by voice tools, transport, volume coordinator) and `jasper.mux`'s
 source-arbiter tick loop call into here.
 """

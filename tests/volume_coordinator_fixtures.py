@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared test doubles for jasper.volume_coordinator's tests.
+"""Shared test doubles for jasper.audio_control.volume_coordinator's tests.
 
 Every double sits at a public boundary, so a test reads the same when the
 coordinator's internals move: a CamillaDSP fake whose settings stand in for
@@ -19,10 +19,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import volume_push_sources as vps_mod
-from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.audio_control import volume_push_sources as vps_mod
+from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.playback_state.music_sources import Source
-from jasper.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.service_state.volume_persistence import VolumePersistence
 
 _REAL_PUSHES = (vps_mod.push_spotify_volume, vps_mod.push_bluetooth_volume)

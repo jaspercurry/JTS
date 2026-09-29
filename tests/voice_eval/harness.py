@@ -26,12 +26,12 @@ from typing import Literal
 
 from jasper import transit
 from jasper.mic_capture import MicCapture
-from jasper.camilla import CamillaController
+from jasper.audio_control.camilla import CamillaController
 from jasper.config import Config
 from jasper.service_state.google_creds import build_google_clients
 from jasper.google_routes import build_google_routes_client
 from jasper.service_state.home_assistant import build_ha_client
-from jasper.renderer import RendererClient
+from jasper.audio_control.renderer import RendererClient
 from jasper.service_state.timers import TimerScheduler, TimerStore
 from jasper.tools import ToolRegistry, UntrustedContentMonitor
 from jasper.tools.packs import ToolDeps, register_packs
@@ -44,7 +44,7 @@ from jasper.voice.daemon_main import (
 from jasper.voice.prompt import build_system_instruction
 from jasper.voice.session import LiveTurn, TurnCapture, TurnUsage
 from jasper.voice.turn_playback import play_responses
-from jasper.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.service_state.volume_persistence import VolumePersistence
 from jasper.service_state.wake_events import WakeEventStore
 from jasper.service_state.weather import WeatherClient

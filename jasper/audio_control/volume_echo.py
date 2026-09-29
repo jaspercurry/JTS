@@ -4,7 +4,7 @@
 
 """Cross-process echo detection for VolumeCoordinator's outbound writes.
 
-Split out of ``jasper.volume_coordinator``: each function takes the
+Split out of ``jasper.audio_control.volume_coordinator``: each function takes the
 coordinator state it reads explicitly, so it carries no coordinator
 reference of its own.
 """
@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from jasper.playback_state.music_sources import Source
 from jasper.service_state.volume_persistence import VolumePersistence
-from .volume_state import OutboundStamp
+from jasper.audio_control.volume_state import OutboundStamp
 
 # Window during which an observed source-side change is treated as
 # the echo of our own write and ignored. Long enough that DBus

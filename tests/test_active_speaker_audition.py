@@ -938,7 +938,7 @@ def test_web_holder_ends_and_releases_idle_hold(compare_box, monkeypatch, cause)
 @pytest.mark.parametrize("failure,code", [("no_anchor", "audition_no_durable_anchor"), ("load", "audition_load_refused"), ("transport", "audition_load_refused"), ("restore", "audition_restore_failed")])
 def test_compare_failure_codes_and_restore_record(compare_box, monkeypatch, failure, code):
     from jasper.active_speaker import audition
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
 
     cam, _, _, path = compare_box
     if failure == "restore":

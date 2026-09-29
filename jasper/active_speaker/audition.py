@@ -30,7 +30,7 @@ from typing import Any, Callable
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.restore_wait import attempt_graph_restore, resilient_restore
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.sound.settings import saved_sound_layers
 from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for

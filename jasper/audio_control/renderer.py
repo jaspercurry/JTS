@@ -28,10 +28,10 @@ import re
 from typing import Any
 
 from jasper.playback_state import librespot_state
-from .busctl import system_busctl
+from jasper.busctl import system_busctl
 from jasper.playback_state.music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
-from .platform import wire
-from .platform.uds import mux_socket_command
+from jasper.platform import wire
+from jasper.platform.uds import mux_socket_command
 from jasper.playback_state.source_state import (
     MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
     airplay_playing,
@@ -40,7 +40,7 @@ from jasper.playback_state.source_state import (
     usbsink_streaming,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.renderer")
 
 
 async def airplay_now_playing() -> dict[str, str]:

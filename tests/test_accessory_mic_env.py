@@ -7,7 +7,7 @@
 ``jasper.accessories.mic_env`` renders the file that
 ``jasper-accessory-reconcile`` writes and parses it for the two readers that
 appeared with issue #2205: the voice-input gate (via
-``deploy/bin/jasper-aec-reconcile``) and ``jasper.mic_presence``.
+``deploy/bin/jasper-aec-reconcile``) and ``jasper.audio_control.mic_presence``.
 
 The load-bearing property is that its parser agrees with
 ``jasper.config._env_mapping`` about which files are USABLE. They are different

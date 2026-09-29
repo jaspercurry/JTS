@@ -31,10 +31,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Mapping
 
 from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
-from .env_load import VOICE_GROUPING_ENV_FILE
-from .log_event import log_event
+from jasper.env_load import VOICE_GROUPING_ENV_FILE
+from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
-from .platform import wire
+from jasper.platform import wire
 from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
@@ -42,13 +42,13 @@ from jasper.service_state.tts_routing import (
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
 )
-from .volume_curve import canonical_target_db, percent_to_db
-from .volume_state import VolumeState
+from jasper.volume_curve import canonical_target_db, percent_to_db
+from jasper.audio_control.volume_state import VolumeState
 
 if TYPE_CHECKING:
     from jasper.service_state.volume_persistence import VolumeRecord
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.assistant_volume")
 
 
 @dataclass(frozen=True)

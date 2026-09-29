@@ -458,7 +458,7 @@ def test_the_camilla_rung_answers_a_down_daemon_the_same_way_it_used_to(
     and only the wording differs.
     """
 
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
     from jasper.fanin import coupling_reconcile as cr
     from jasper.sound import runtime
 
@@ -797,7 +797,7 @@ def force_ring_gates_pass(monkeypatch):
     ``ring_wire_caps_ready`` itself, so the gate still resolves the box's wire
     and still refuses an illegal declaration inside these tests.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     import jasper.fanin.coupling_reconcile as cr
 
     monkeypatch.setattr(
@@ -833,7 +833,7 @@ def _stub_ring_ioplug_wire_supported(monkeypatch) -> None:
     are actually isolating. Vouching for whatever wire is asked keeps that gate
     out of their way, same as it is for the spine tests above.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra,
@@ -1036,7 +1036,7 @@ def test_convergence_preserves_slot_settings(tmp_path, monkeypatch, _ring_assets
 
 
 def test_convergence_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
@@ -1071,7 +1071,7 @@ def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, mon
     # file is left untouched.
     import struct
 
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
@@ -1158,7 +1158,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
     # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
     # healthy box keeps the cheap confirm rather than always running _converge_ring.
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)

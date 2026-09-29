@@ -24,7 +24,7 @@ from typing import Any, Mapping
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
 from jasper.runtime_config.audio_profile_state import probe_xvf_mic
-from ..audio_validation_hardware_checks import (
+from jasper.audio_control.audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
 )
@@ -36,7 +36,7 @@ from ..audio_validation import (
     build_chip_aec_readiness_artifact,
     build_outputd_stability_hardware_validation_artifact,
 )
-from ..audio_validation_probes import (
+from jasper.audio_control.audio_validation_probes import (
     outputd_socket_path,
     query_outputd_status,
     read_mode_env,
@@ -44,7 +44,7 @@ from ..audio_validation_probes import (
     read_voice_wake_legs,
     service_state,
 )
-from ..audio_validation_readiness import profile_runtime_ready
+from jasper.audio_control.audio_validation_readiness import profile_runtime_ready
 from ..aec.bridge_telemetry import read_bridge_stats
 from ..log_event import log_event
 from ..logging_setup import configure_logging

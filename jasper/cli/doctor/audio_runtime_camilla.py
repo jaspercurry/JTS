@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ...camilla import CamillaController, CamillaUnavailable, primary_controller
+from jasper.audio_control.camilla import CamillaController, CamillaUnavailable, primary_controller
 from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     VolumeLimitViolation,
@@ -522,7 +522,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
 def check_audio_runtime_plan() -> CheckResult:
     """Explainable SSOT check for audio latency/coupling knobs."""
 
-    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+    from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = build_audio_runtime_plan_from_system()
     # Policy vs observation: see AudioRuntimePlan.camilla_emitted. Reported, not

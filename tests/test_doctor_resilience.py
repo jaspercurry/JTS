@@ -19,7 +19,7 @@ import pytest
 
 from jasper import service_units
 from jasper.cli.doctor import _evidence, _shared, resilience, web
-from jasper.mic_presence import MicPresence
+from jasper.audio_control.mic_presence import MicPresence
 from jasper.voice.provider_state import ActiveProviderState
 from jasper.cli.doctor.resilience import (
     _REBOOT_STATE_FUTURE_SKEW_SEC,

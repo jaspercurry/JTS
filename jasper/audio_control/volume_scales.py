@@ -4,7 +4,7 @@
 
 """Native-units <-> canonical listening_level maps for each push source.
 
-`jasper.volume_coordinator` owns which attenuator carries the canonical
+`jasper.audio_control.volume_coordinator` owns which attenuator carries the canonical
 0-100 `listening_level`; observers and push writers share these conversions.
 """
 from __future__ import annotations

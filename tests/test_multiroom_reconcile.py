@@ -28,7 +28,7 @@ import os
 import pytest
 
 from jasper.service_state.audio_runtime_settings import resolve_outputd_period_setting
-from jasper.ring_assets import (
+from jasper.audio_control.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
     ring_writer_lock_path,
@@ -3036,7 +3036,7 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
     follow the daemon, or it arms a box that bails EX_CONFIG (Case A) or refuses
     one that plays (Case B).
     """
-    from jasper.audio_runtime_plan import outputd_period_frames_as_loaded
+    from jasper.audio_control.audio_runtime_plan import outputd_period_frames_as_loaded
     from jasper.multiroom.dac_content_ring import dac_content_ring_servable
 
     base = tmp_path / "jasper.env"

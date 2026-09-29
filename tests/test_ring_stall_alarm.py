@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from jasper import ring_assets
+from jasper.audio_control import ring_assets
 from jasper.cli.doctor import audio_runtime_ring
 from tests.test_ring_header import _ring_file
 

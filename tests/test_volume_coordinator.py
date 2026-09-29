@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.volume_coordinator.
+"""Unit tests for jasper.audio_control.volume_coordinator.
 
 The coordinator is the product's only writer in front of
 ``CamillaController.set_volume_db``, so the mute, unmute-ordering, guard and
@@ -34,18 +34,18 @@ from tests.volume_coordinator_fixtures import (
 )
 
 from jasper.device_probe import bluealsa_probe
-from jasper import camilla, renderer, volume_process
+from jasper.audio_control import camilla, renderer, volume_process
 from jasper.service_state import spotify_router as spotify_router_mod
-from jasper import volume_push_sources as vps_mod
+from jasper.audio_control import volume_push_sources as vps_mod
 from jasper.service_state.accounts import Account
 from jasper.control.volume_ops import with_coordinator
 from jasper.service_state.spotify_router import AccountClient, Router
 from jasper.playback_state.music_sources import Source
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
-from jasper.volume_coordinator import VolumeCoordinator
-from jasper.volume_echo import ECHO_WINDOW_SEC
-from jasper.volume_scales import (
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_echo import ECHO_WINDOW_SEC
+from jasper.audio_control.volume_scales import (
     BT_VOLUME_MAX,
     bt_volume_to_listening_level,
     listening_level_to_bt_volume,
@@ -60,7 +60,7 @@ from jasper.audio_resources.volume_owner import (
 )
 from jasper.service_state.volume_persistence import FIRST_BOOT_DEFAULT_PCT, VolumePersistence
 from jasper.volume_curve import percent_to_db
-from jasper.volume_state import VolumeState
+from jasper.audio_control.volume_state import VolumeState
 from jasper.web import sound_profile_apply
 
 
@@ -1064,7 +1064,7 @@ async def test_short_lived_coordinators_take_the_registered_owner(
         built.append(VolumeCoordinator(**kwargs))
         return built[-1]
 
-    monkeypatch.setattr("jasper.volume_coordinator.VolumeCoordinator", recording)
+    monkeypatch.setattr("jasper.audio_control.volume_coordinator.VolumeCoordinator", recording)
 
     async def no_op(_coord) -> None:
         return None

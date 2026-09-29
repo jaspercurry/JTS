@@ -1172,7 +1172,7 @@ class FakeCamillaMetrics:
 def test_state_audio_metrics_sanitize_non_finite_values(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
-    import jasper.camilla as camilla_mod
+    import jasper.audio_control.camilla as camilla_mod
 
     base, _ = server_with_coordinator
     state_path = tmp_path / "speaker_volume.json"
@@ -1213,7 +1213,7 @@ def test_state_audio_metrics_publish_every_playback_channel(
     woofers at the audible floor, 1/3 the two tweeters at digital silence.
     Publishing only the front pair hides an entire speaker.
     """
-    import jasper.camilla as camilla_mod
+    import jasper.audio_control.camilla as camilla_mod
 
     base, _ = server_with_coordinator
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "speaker_volume.json"))
@@ -1367,7 +1367,7 @@ def test_state_camilla_probe_times_out_fail_soft(
     stalled) must not hang /state: the camilla probe self-bounds and its
     section reports null, while the rest of the aggregate still resolves
     — the same fail-soft contract its sibling probes already honor."""
-    import jasper.camilla as camilla_mod
+    import jasper.audio_control.camilla as camilla_mod
     import jasper.control.state_aggregate as sa
 
     class HangingCamilla:
@@ -1411,7 +1411,7 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     budget converts the hang into a logged failure (the handler turns it
     into a 502) rather than parking a bounded worker forever — so an
     overload can't manufacture a T5.2 reboot via a wedged /state."""
-    import jasper.camilla as camilla_mod
+    import jasper.audio_control.camilla as camilla_mod
     import jasper.control.state_aggregate as sa
 
     class HangingCamilla:

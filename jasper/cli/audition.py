@@ -54,7 +54,7 @@ from jasper.active_speaker.audition import (
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
-from jasper.volume_process import install_env_canonical_target_provider
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ NOT_RESTORED = "audition_not_restored"
 def _camilla_controller() -> Any:
     """A CamillaController on the live websocket — the same graph the daemons see."""
 
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 

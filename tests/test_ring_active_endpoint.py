@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import ring_assets
+from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
 from jasper import ring_header
 from jasper.env_file import read_env_file
@@ -651,7 +651,7 @@ def test_the_active_shape_is_selected_by_the_marker_not_by_the_observed_device()
     disagree with.
     """
     from jasper.dsp_control.fanin_coupling import COUPLING_SHM_RING, TRANSPORT_SHM_RING_ACTIVE
-    from jasper.transport_coherence import transport_topology_for_coupling
+    from jasper.audio_control.transport_coherence import transport_topology_for_coupling
 
     stereo = transport_topology_for_coupling(outputd_env={})
     assert stereo.name == COUPLING_SHM_RING
@@ -680,7 +680,7 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
     cannot exist.
     """
     from jasper.dsp_control.fanin_coupling import TRANSPORT_SHAPES
-    from jasper.transport_coherence import transport_topology_for_coupling
+    from jasper.audio_control.transport_coherence import transport_topology_for_coupling
 
     from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 
@@ -715,7 +715,7 @@ def test_a_crossed_ring_path_is_the_first_arm_waypoint_not_a_refusal():
 
     ``errors`` must be CLEAN here, or the reconciler still exits 78.
     """
-    from jasper.transport_coherence import transport_coherence_report
+    from jasper.audio_control.transport_coherence import transport_coherence_report
 
     crossed = {
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
@@ -746,7 +746,7 @@ def test_a_ring_device_under_an_off_ring_plan_is_reported_not_ignored():
       reporting it as an error deadlocked the ladder on jts3 (2026-08-11,
       exit 78).
     """
-    from jasper.transport_coherence import transport_coherence_report
+    from jasper.audio_control.transport_coherence import transport_coherence_report
 
     stereo = transport_coherence_report(
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
@@ -790,7 +790,7 @@ def test_the_active_ring_is_a_recognized_output_endpoint():
     That is the D5 permanent-red-line shape: a healthy box looking unverifiable
     forever rather than failing loudly once.
     """
-    from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
+    from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
 
     def _statefile(tmp, config_path):
         tmp.write_text(f"config_path: {config_path}\n", encoding="utf-8")
@@ -912,7 +912,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     does NOT stub the roleful gate, the topology gate, or the endpoint proof —
     the three this test is actually about — so the chain stays non-vacuous.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     from tests.test_composite_ring_arm_enabling import _composite_active_2way
     from tests.test_fanin_coupling_reconcile import force_ring_gates_pass
     from tests.test_ring_anchor_arm_acceptance import _graph_yaml, _stage_box
@@ -1178,7 +1178,7 @@ def test_the_roleful_gate_does_not_ask_the_divergence_question(monkeypatch, tmp_
 
 def _point_all_ring_files_at(monkeypatch, tmp_path):
     """Repoint all THREE ring files into a tmpdir, against the shipped conf.d."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     paths = {
         "a": tmp_path / "program.ring",
@@ -1284,7 +1284,7 @@ def test_a_fourth_ring_block_must_render_or_fail_loud(monkeypatch, tmp_path):
     outcome is acceptable, so the loop is driven by the constant and an entry
     with no declared width raises.
     """
-    from jasper import ring_assets as ra
+    from jasper.audio_control import ring_assets as ra
     from jasper.dsp_control.fanin_coupling import RingWire
 
     conf = tmp_path / "60-jts-ring.conf"
@@ -2262,7 +2262,7 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
 
 
 def _coherence_errors(*, capture, playback, outputd_env=None):
-    from jasper.transport_coherence import transport_coherence_report
+    from jasper.audio_control.transport_coherence import transport_coherence_report
 
     env = {
         "JASPER_OUTPUTD_ACTIVE_LANE": "1",
@@ -2395,7 +2395,7 @@ def _run_validate_outputd_env(
     ``_outputd_actions`` and the marker derivation directly — which is why all
     four of them passed while the real ladder deadlocked at step 2 on jts3.
     """
-    from jasper.audio_runtime_plan import validate_outputd_env
+    from jasper.audio_control.audio_runtime_plan import validate_outputd_env
 
     graph = tmp_path / "graph.yml"
     graph.write_text(graph_yaml, encoding="utf-8")
@@ -2513,7 +2513,7 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # hands it the same roleful topology the emit used — otherwise the box under
     # test has no active-ring width and the gate would be answering about a
     # different speaker.
-    import jasper.ring_assets as ring_assets_module
+    import jasper.audio_control.ring_assets as ring_assets_module
 
     monkeypatch.setattr(
         "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
@@ -2962,7 +2962,7 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     the PR's own Python-side coherence twin rather than by re-stating the rule.
     """
     from jasper.dsp_control.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
-    from jasper.transport_coherence import (
+    from jasper.audio_control.transport_coherence import (
         transport_coherence_report,
         transport_topology_for_coupling,
     )

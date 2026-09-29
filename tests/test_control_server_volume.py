@@ -813,7 +813,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
     import jasper.control.handlers.volume as volume_mod
     import jasper.control.volume_ops as volume_ops_mod
-    import jasper.renderer as renderer_mod
+    import jasper.audio_control.renderer as renderer_mod
     import jasper.tools.transport as transport_mod
 
     router = object()

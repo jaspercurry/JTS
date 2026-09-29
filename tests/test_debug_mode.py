@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.debug_mode — the runtime debug-logging SSOT.
+"""Unit tests for jasper.audio_control.debug_mode — the runtime debug-logging SSOT.
 
 Covers the pure resolver, the auto-expiry semantics, the pure
 env-update computation the /debug endpoint uses, and the best-effort
@@ -15,7 +15,7 @@ import logging
 
 import pytest
 
-from jasper import debug_mode as dm
+from jasper.audio_control import debug_mode as dm
 
 NOW = 1_000_000.0
 

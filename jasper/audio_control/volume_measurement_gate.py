@@ -13,11 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .log_event import log_event
-from .voice import measurement_hold as voice_measurement
+from jasper.log_event import log_event
+from jasper.voice import measurement_hold as voice_measurement
 from jasper.audio_resources.volume_owner import VolumeClaimRefused
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_measurement_gate")
 
 
 class MeasurementGate:

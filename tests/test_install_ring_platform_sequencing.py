@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
-from jasper.ring_assets import (
+from jasper.audio_control.ring_assets import (
     RING_A_PROGRAM_FILE,
     RING_ACTIVE_CONTENT_FILE,
     RING_B_CONTENT_FILE,

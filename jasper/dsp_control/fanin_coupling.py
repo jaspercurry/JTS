@@ -214,7 +214,7 @@ OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR = "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
 # ``shm_ring_active`` is selected on the PERSISTED COUPLING plus the reconciler's
 # endpoint MARKER, deliberately NOT on the observed ``camilla_playback_device``:
 # selecting on the observed device would make
-# :func:`jasper.transport_coherence.transport_coherence_report`'s playback
+# :func:`jasper.audio_control.transport_coherence.transport_coherence_report`'s playback
 # comparison vacuous.
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
 # One END of the box is off the one transport (ADR-0100): a coupling or bridge

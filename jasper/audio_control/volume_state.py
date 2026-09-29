@@ -4,7 +4,7 @@
 
 """Value objects for canonical volume intent.
 
-`jasper.volume_coordinator` is the sole mutator of these; this module holds
+`jasper.audio_control.volume_coordinator` is the sole mutator of these; this module holds
 the frozen shapes so `jasper.control`, `jasper.mux`, and their tests can
 read the same contract without importing the coordinator class itself.
 """

@@ -55,7 +55,7 @@ from jasper.active_speaker.graph_selector import (
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.biquad import PeqFilter
-from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import (
     DspApplyState,
@@ -90,7 +90,7 @@ from jasper.sound.settings import (
     SoundSettings,
     load_sound_settings,
 )
-from jasper.volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.volume_curve import percent_to_db
 from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner
 from jasper.platform.control_client import ControlError
@@ -512,7 +512,7 @@ def _household_fader(
     where `read_measurement_hold` asks for it."""
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setattr(
-        "jasper.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
+        "jasper.audio_control.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
     )
     hold = measurement_hold.MeasurementHold()
     monkeypatch.setattr(
@@ -1965,7 +1965,7 @@ def test_topology_resave_converges_without_parking(monkeypatch, tmp_path, caplog
     controller.set_config_file_path.return_value = applied
     manage_units = Mock()
     monkeypatch.setattr("jasper.control.restart_broker.manage_units", manage_units)
-    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: controller)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: controller)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit_topology,
@@ -3655,7 +3655,7 @@ def test_state_reports_whether_the_loaded_graph_can_host_eq(
 ):
     """/sound/eq/ opens on the refusal instead of discovering it at save time,
     so /state says whether the LOADED graph can carry preference EQ."""
-    import jasper.camilla
+    import jasper.audio_control.camilla
 
     if layout:
         _configure_passive_layout_for_eq(monkeypatch, tmp_path)
@@ -3670,7 +3670,7 @@ def test_state_reports_whether_the_loaded_graph_can_host_eq(
         "devices: {}\n" if config_name == "foreign.yml" else _room_config()
     )
     monkeypatch.setattr(
-        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
+        jasper.audio_control.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
     )
 
     with sound_server(tmp_path) as base:
@@ -3690,7 +3690,7 @@ def test_state_falls_open_when_camilla_cannot_be_read(
 ):
     """The POST refusal is the fail-closed gate; an unreachable CamillaDSP must
     not blank the editor."""
-    import jasper.camilla
+    import jasper.audio_control.camilla
 
     class _Unreachable:
         async def get_config_file_path(self, *, best_effort: bool = False):
@@ -3698,7 +3698,7 @@ def test_state_falls_open_when_camilla_cannot_be_read(
                 raise RuntimeError("CamillaDSP websocket is not answering")
             return None
 
-    monkeypatch.setattr(jasper.camilla, "primary_controller", _Unreachable)
+    monkeypatch.setattr(jasper.audio_control.camilla, "primary_controller", _Unreachable)
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(f"{base}/state") as resp:
@@ -3714,7 +3714,7 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
 ):
     """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
     renders the editor, so no other page pays for it."""
-    import jasper.camilla
+    import jasper.audio_control.camilla
     import jasper.sound.graph_carrier as graph_carrier
 
     # A reachable controller with a real loaded config, so nothing but the page
@@ -3725,7 +3725,7 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
     current = config_dir / "sound_current.yml"
     current.write_text(_room_config())
     monkeypatch.setattr(
-        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
+        jasper.audio_control.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
     )
 
     def _must_not_probe(*_args, **_kwargs):
@@ -6443,7 +6443,7 @@ def test_web_startup_recovers_after_installing_idle_hold(monkeypatch):
     monkeypatch.setattr(web_main, "primary_controller", lambda: object())
     monkeypatch.setattr(web_main, "_specs_for_role", lambda role: (spec,))
     monkeypatch.setattr(web_main, "_active_install_role", lambda: "speaker")
-    monkeypatch.setattr("jasper.volume_process.install_env_canonical_target_provider", lambda: None)
+    monkeypatch.setattr("jasper.audio_control.volume_process.install_env_canonical_target_provider", lambda: None)
     monkeypatch.setattr(web_main._systemd, "IdleShutdownTracker", lambda: tracker)
     monkeypatch.setattr(web_main._systemd, "adopt_systemd_sockets", lambda: [])
     monkeypatch.setattr(web_main._systemd, "install_request_idle_bump", lambda *args: None)
@@ -6474,7 +6474,7 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
     async def anchor(**kwargs):
         return str(current)
     monkeypatch.setattr(cam, "get_config_file_path", anchor)
-    monkeypatch.setattr("jasper.camilla.MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr("jasper.audio_control.camilla.MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     payload = await sound_setup._live_draft_profile(
         SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0)),
         expected_dsp_write_epoch=dsp_write_epoch(), config_dir=tmp_path,

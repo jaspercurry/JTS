@@ -43,14 +43,14 @@ import re
 from functools import partial
 from typing import Optional
 
-from . import busctl
+from jasper import busctl
 from jasper.playback_state import librespot_state
 from jasper.device_probe.bluealsa_probe import active_transport_path
-from .log_event import log_event
+from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source
-from .volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_observers")
 _bluez_alsa_active_transport_path = partial(active_transport_path, logger)
 
 

@@ -27,7 +27,7 @@ def _plan_for(outputd_env: dict[str, str] | None = None):
     """
     from types import SimpleNamespace
 
-    from jasper.transport_coherence import transport_topology_for_coupling
+    from jasper.audio_control.transport_coherence import transport_topology_for_coupling
 
     return SimpleNamespace(
         transport_topology=transport_topology_for_coupling(
@@ -78,7 +78,7 @@ def _armed_active_camilla_devices() -> dict[str, str]:
 
 def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **env_overrides):
     """Run ``_read_transport_state`` against the armed-ACTIVE-ring premise."""
-    from jasper import audio_runtime_plan
+    from jasper.audio_control import audio_runtime_plan
 
     outputd_env = _armed_active_outputd_env(**env_overrides)
     devices = _armed_active_camilla_devices()
@@ -93,7 +93,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **e
     # `grouping-outputd.env`); the grouping layer is absent on this box.
     monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(env_file))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices=devices
         ),
@@ -209,7 +209,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     deliberately, permanently silent — trading one false "Audio is ready" for
     another.
     """
-    from jasper import audio_runtime_plan
+    from jasper.audio_control import audio_runtime_plan
     from jasper.active_speaker.graph_selector import build_parked_muted_graph
 
     register_passive_only_dac(monkeypatch)
@@ -327,10 +327,10 @@ def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> Non
     list, so a single append by any consumer would make every later degraded
     read report the box as parked for the lifetime of jasper-control.
     """
-    from jasper import audio_runtime_plan
+    from jasper.audio_control import audio_runtime_plan
 
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
     )
     plan = _plan_for()

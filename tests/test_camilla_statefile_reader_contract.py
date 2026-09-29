@@ -10,7 +10,7 @@ override over the shipped default statefile path, and
 readers each held their own copy of all three facts —
 ``jasper.cli.doctor.correction``'s
 ``_parse_camilla_statefile_config_path`` / ``active_camilla_config_path``,
-``jasper.audio_runtime_plan``'s ``_active_camilla_config_path_from_statefile``,
+``jasper.audio_control.audio_runtime_plan``'s ``_active_camilla_config_path_from_statefile``,
 and ``jasper.multiroom.leader_config``'s ``active_leader_pipe_path`` — so a box
 could be told three different things about which graph is loaded.
 
@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_plan as audio_plan
+from jasper.audio_control import audio_runtime_plan as audio_plan
 from jasper.active_speaker import environment as env_mod
 from jasper.cli.doctor import correction as doctor_correction
 from jasper.multiroom import leader_config

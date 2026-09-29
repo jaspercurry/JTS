@@ -26,7 +26,7 @@ from ..fanin.status import (
     fanin_usbsink_input,
 )
 from ..output_hardware import load_state as load_output_hardware_state
-from ..renderer import PROBE_ORDER
+from jasper.audio_control.renderer import PROBE_ORDER
 from jasper.playback_state.source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..log_event import log_event
@@ -41,7 +41,7 @@ from ..platform.status_socket import (
 )
 from ..volume_diagnostics import build_volume_policy_snapshot
 from jasper.service_state.volume_persistence import VolumePersistence, configured_path as volume_state_path
-from ..volume_state import VolumeState
+from jasper.audio_control.volume_state import VolumeState
 from . import (
     debug_control,
     grouping_supervisor,
@@ -359,9 +359,9 @@ def _active_source(
     A voice session leads. Then the audio-health sampler's verdict, so it and
     ``audio_health.overall.active_source`` cannot name different sources in
     one response; it models music lanes only and answers None for "cannot
-    confirm". Then :func:`jasper.renderer.audible_source`'s rule: mux's
+    confirm". Then :func:`jasper.audio_control.renderer.audible_source`'s rule: mux's
     answer when it names a source or idle, else the first source in
-    :data:`jasper.renderer.PROBE_ORDER` that ``playing`` reports.
+    :data:`jasper.audio_control.renderer.PROBE_ORDER` that ``playing`` reports.
     """
     overall = as_mapping(as_mapping(audio_health).get("overall"))
     # The sampler keeps the last lane verbatim once its own sample goes stale
@@ -411,7 +411,7 @@ def _round_levels(levels: Sequence[float] | None) -> list[float | None] | None:
 
 
 async def _camilla_status(*, host: str, port: int) -> dict[str, Any]:
-    from ..camilla import CamillaController  # lazy: test patch boundary (tests/test_control_server_system.py)
+    from jasper.audio_control.camilla import CamillaController  # lazy: test patch boundary (tests/test_control_server_system.py)
 
     status: dict[str, Any] = {
         "main_volume_db": None,
@@ -612,7 +612,7 @@ async def get_state(
         mux_status=mux,
     )
 
-    from ..mic_presence import read_mic_presence  # lazy: import cost, jasper.voice.* stays off control startup
+    from jasper.audio_control.mic_presence import read_mic_presence  # lazy: import cost, jasper.voice.* stays off control startup
 
     mic_presence = read_mic_presence()
     return {
@@ -644,7 +644,7 @@ async def get_state(
             "reachable": voice is not None,
             # Disambiguates reachable:false: true means the AEC reconciler
             # parked voice for a missing microphone ("intentionally idle, no
-            # mic", NOT "crashed"). jasper.mic_presence owns the rich record;
+            # mic", NOT "crashed"). jasper.audio_control.mic_presence owns the rich record;
             # a consumer that wants it reads that module (ADR-0270).
             "parked_no_mic": mic_presence.parked,
         },

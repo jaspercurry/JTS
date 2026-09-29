@@ -21,7 +21,7 @@ level a caller derives arrives as an argument to
 *"do these two fader dB values agree?"* test. This module consumes it.
 
 **The 0 dB ceiling is NOT this module's.** ``devices.volume_limit`` stays
-``0.0`` and ``jasper.camilla._coerce_main_volume_db`` clamps every positive
+``0.0`` and ``jasper.audio_control.camilla._coerce_main_volume_db`` clamps every positive
 write; the owner sits BEHIND that door as its only caller, never as its
 exception. It refuses only *non-finite* numbers, which is arithmetic integrity,
 not a safety clamp.
@@ -165,7 +165,7 @@ class VolumeOwner:
     bound with ``best_effort=True``, so every write passes
     ``_coerce_main_volume_db``'s clamp and no transport error escapes into the
     arbitration. Injection rather than a controller import keeps
-    ``jasper.camilla`` out of this module's imports, so camilla can import it
+    ``jasper.audio_control.camilla`` out of this module's imports, so camilla can import it
     without a cycle.
 
     There is no tolerance knob: ``READBACK_TOLERANCE_DB`` is the repo's one
@@ -361,7 +361,7 @@ class VolumeOwner:
         raise from the injected door. That last one this owner cannot prevent:
         ``CamillaUnavailable`` is not in
         :data:`~jasper.volume_latch.FADER_IO_ERRORS`, and naming
-        it would mean importing ``jasper.camilla``, which imports this module.
+        it would mean importing ``jasper.audio_control.camilla``, which imports this module.
         The pop is synchronous and cannot fail, so the ledger is correct before
         anything is awaited.
 
@@ -569,7 +569,7 @@ def install_volume_owner(owner: VolumeOwner | None) -> None:
     from — the ``/sound/`` floor-tone audition, the crossover level lease and
     the measurement volume guard run inside socket-activated wizards whose
     request handlers are reached from a router. This is the same split
-    ``jasper.camilla.set_canonical_target_db_provider`` draws, for the same
+    ``jasper.audio_control.camilla.set_canonical_target_db_provider`` draws, for the same
     processes.
 
     ``tests/conftest.py``'s ``_isolate_process_volume_owner`` puts a

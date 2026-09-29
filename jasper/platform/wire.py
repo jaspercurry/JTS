@@ -24,7 +24,7 @@ from typing import Protocol, Sequence
 
 class _EffectiveVolumeContext(Protocol):
     """The five fields ``_volume_context_tokens`` reads — a structural stand-in
-    for ``jasper.assistant_volume.EffectiveVolumeContext`` so this bottom-layer
+    for ``jasper.audio_control.assistant_volume.EffectiveVolumeContext`` so this bottom-layer
     module carries no upward import; callers pass the real dataclass."""
 
     @property

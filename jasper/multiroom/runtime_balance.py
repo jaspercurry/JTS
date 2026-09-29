@@ -97,11 +97,11 @@ def camilla_patch_for_trim(trim_db: float) -> dict[str, Any]:
 
 def _active_endpoint_camilla(cfg: GroupingConfig):
     if cfg.role == "leader":
-        from jasper.camilla import crossover_controller
+        from jasper.audio_control.camilla import crossover_controller
 
         return crossover_controller()
 
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 

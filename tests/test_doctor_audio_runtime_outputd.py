@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_plan
+from jasper.audio_control import audio_runtime_plan
 from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
 from jasper.control import audio_signal_path
@@ -153,7 +153,7 @@ def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices={
                 "playback_device": "outputd_active_content_playback",
@@ -865,7 +865,7 @@ def _case_transport_evidence_unavailable(monkeypatch, tmp_path):
     _seed_units()
     _patch_status_reader(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices=None,
             errors=("statefile unavailable",),

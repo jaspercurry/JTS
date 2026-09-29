@@ -318,10 +318,10 @@ module = [
     # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
-    "jasper.audio_validation_readiness",
-    "jasper.audio_validation_hardware_checks",
+    "jasper.audio_control.audio_validation_readiness",
+    "jasper.audio_control.audio_validation_hardware_checks",
     "jasper.bluetooth.scan",
-    "jasper.camilla",
+    "jasper.audio_control.camilla",
     "jasper.transit.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
@@ -404,11 +404,7 @@ broken_contract_guidance = "A lower layer must not import a higher one, directly
 layers = [
   "mux : voice_daemon : cli : turntable : web",
   "audio_input_view : audio_validation : conversation_history : flight_recorder : google_routes : measurement_window : mic_capture : outputd_failure_reconcile_state : tts_playout : output_topology_runtime",
-  "audio_buffer : audio_runtime_plan : audio_validation_hardware_checks : debug_mode : mic_presence : volume_observers",
-  "audio_validation_readiness : transport_coherence : volume_process",
-  "audio_validation_probes : camilla : ring_assets : volume_coordinator",
-  "assistant_volume : renderer : volume_echo : volume_handoff : volume_measurement_gate : volume_push_sources : volume_reconcile",
-  "volume_scales : volume_state : volume_carrier",
+  "audio_control",
   "aec : runtime_config : config",
   "service_state",
   "dsp_control",
@@ -470,4 +466,17 @@ exhaustive = true
 layers = [
   "google_oauth : home_assistant : spotify_oauth : tts_routing : volume_persistence : wake_ports : accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
   "oauth_redirect : audio_runtime_settings",
+]
+
+[[tool.importlinter.contracts]]
+name = "Audio control layers"
+type = "layers"
+containers = ["jasper.audio_control"]
+exhaustive = true
+layers = [
+  "audio_buffer : audio_runtime_plan : audio_validation_hardware_checks : debug_mode : mic_presence : volume_observers",
+  "audio_validation_readiness : transport_coherence : volume_process",
+  "audio_validation_probes : camilla : ring_assets : volume_coordinator",
+  "assistant_volume : renderer : volume_echo : volume_handoff : volume_measurement_gate : volume_push_sources : volume_reconcile",
+  "volume_scales : volume_state : volume_carrier",
 ]

@@ -6,7 +6,7 @@
 which renderer is currently producing audio.
 
 The probes wrap I/O (a librespot state file, busctl, the BlueZ system
-bus); mock at that boundary. Both jasper.renderer.RendererClient.active_renderers
+bus); mock at that boundary. Both jasper.audio_control.renderer.RendererClient.active_renderers
 and jasper.mux's tick loop depend on these returning False on transport
 error rather than raising — every test here exercises that contract too.
 """

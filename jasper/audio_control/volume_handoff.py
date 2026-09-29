@@ -16,12 +16,12 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Protocol
 
-from .log_event import log_event
+from jasper.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
-from .volume_curve import guard_in_effect, main_mute_for_level, percent_to_db
-from .volume_floor import RECONCILE_DRIFT_DB
+from jasper.volume_curve import guard_in_effect, main_mute_for_level, percent_to_db
+from jasper.volume_floor import RECONCILE_DRIFT_DB
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_handoff")
 
 
 @dataclass(frozen=True)

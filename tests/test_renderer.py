@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.renderer.RendererClient.
+"""Tests for jasper.audio_control.renderer.RendererClient.
 
 Mocks at the I/O boundary: tmp_path-backed librespot state file
 (which the --onevent hook would write), asyncio.create_subprocess_exec for
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jasper.renderer import (
+from jasper.audio_control.renderer import (
     RendererClient,
     _parse_mpris_metadata,
 )
@@ -33,7 +33,7 @@ def renderer(tmp_path, monkeypatch):
     # (or leave it absent) to control what source_state.spotify_playing
     # observes via active_renderers.
     monkeypatch.setattr(
-        "jasper.renderer.usbsink_streaming",
+        "jasper.audio_control.renderer.usbsink_streaming",
         AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
@@ -77,7 +77,7 @@ async def test_active_renderers_all_inactive(renderer):
 async def test_active_renderers_reports_fanin_usb_activity(renderer):
     with (
         patch("asyncio.create_subprocess_exec", new=_mock_subprocess(stdout=b"")),
-        patch("jasper.renderer.usbsink_streaming", new=AsyncMock(return_value=True)),
+        patch("jasper.audio_control.renderer.usbsink_streaming", new=AsyncMock(return_value=True)),
     ):
         result = await renderer.active_renderers()
 
@@ -241,7 +241,7 @@ async def test_currentsong_follows_the_audible_source(
         side_effect=mux_answer if isinstance(mux_answer, Exception) else None,
     )
     with (
-        patch("jasper.renderer.mux_socket_command", new=mux),
+        patch("jasper.audio_control.renderer.mux_socket_command", new=mux),
         patch("asyncio.create_subprocess_exec", side_effect=_shairport_playing),
     ):
         assert await renderer.get_currentsong() == expected

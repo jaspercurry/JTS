@@ -34,7 +34,7 @@ import pytest
 import yaml
 
 from jasper.dsp_control.fanin_coupling import resolve_ring_wire
-from jasper.ring_assets import ring_conf_wire_report
+from jasper.audio_control.ring_assets import ring_conf_wire_report
 from jasper.dsp_control.ring_conf import (
     RING_ACTIVE_CONF_PCM,
     render_ring_conf_wire,

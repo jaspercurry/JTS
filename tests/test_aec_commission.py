@@ -1131,7 +1131,7 @@ def _commissioning_io(monkeypatch) -> aec_commission.SystemIO:
     """The real `SystemIO` with only the volume-ramp sleep stubbed; the fader
     path itself stays production. The owner install is the shape `main()`
     registers through `install_env_canonical_target_provider`."""
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
     from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner
 
     fader = primary_controller()
@@ -1173,7 +1173,7 @@ def test_a_commissioning_volume_above_the_ceiling_lands_clamped_and_refuses(
     """One hardware door: the write reaches `_coerce_main_volume_db`, so a
     request above 0 dB lands AT 0 dB and the readback confirm then refuses,
     rather than the caller believing a level the speaker never played."""
-    from jasper.camilla import CamillaVolumeError
+    from jasper.audio_control.camilla import CamillaVolumeError
 
     state = _stateful_camilladsp(monkeypatch, level_db=-18.0)
     io = _commissioning_io(monkeypatch)
@@ -1192,7 +1192,7 @@ def test_a_non_finite_commissioning_fader_value_is_refused(monkeypatch) -> None:
     non-finite, and the READBACK that stays non-finite after a write. Each
     raises rather than letting a run proceed at an unknown level.
     """
-    from jasper.camilla import (
+    from jasper.audio_control.camilla import (
         CamillaVolumeError,
         declare_main_volume_db,
         read_main_volume_db,

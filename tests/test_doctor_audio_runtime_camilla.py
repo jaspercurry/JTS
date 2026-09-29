@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.service_state import audio_runtime_settings as audio_settings
-from jasper import audio_runtime_plan
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control import audio_runtime_plan
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.cli.doctor import (
     _shared,
     audio_runtime_camilla,

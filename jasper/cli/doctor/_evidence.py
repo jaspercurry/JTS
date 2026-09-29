@@ -400,7 +400,7 @@ class Evidence:
         return self.get("output_topology_strict", load_output_topology_strict)
 
     def mic_presence(self) -> Any:
-        from ...mic_presence import read_mic_presence
+        from jasper.audio_control.mic_presence import read_mic_presence
 
         return self.get("mic_presence", read_mic_presence)
 

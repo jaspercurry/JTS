@@ -36,7 +36,7 @@ from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_P
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
 from jasper.env_load import parse_bool_value, parse_env_file
-from jasper.mic_presence import (
+from jasper.audio_control.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
     MIC_ABSENT_CHIP_AEC_VALIDATING,

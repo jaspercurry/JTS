@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from jasper.log_event import log_event
 
-from .audio_buffer import AudioBuffer
+from jasper.audio_control.audio_buffer import AudioBuffer
 from .mic_capture import InputDeviceUnavailable, MicCapture
 from .tts_playout import TtsPlayout
 from jasper.service_state.wake_events import WakeEventStore
@@ -69,7 +69,7 @@ from .voice.assistant_output import (
     FanInDucker,
 )
 from .voice.output_gate import AssistantOutputGate
-from .volume_coordinator import VolumeCoordinator
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.service_state.mic_mute_persistence import read_mic_muted, write_mic_muted
 
 logger = logging.getLogger(__name__)

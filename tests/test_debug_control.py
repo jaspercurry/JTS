@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import debug_mode
+from jasper.audio_control import debug_mode
 from jasper.control import debug_control
 from jasper.env_file import read_env_file
 

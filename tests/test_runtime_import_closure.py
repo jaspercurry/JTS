@@ -30,7 +30,7 @@ FORBIDDEN = (
     "jasper.control",
     "jasper.voice_daemon",
     "jasper.mux",
-    "jasper.camilla",
+    "jasper.audio_control.camilla",
 )
 
 #: The active-speaker truth layer (ADR-0228 entries 1 and 8). ``startup_load`` is deliberately

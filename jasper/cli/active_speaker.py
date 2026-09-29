@@ -19,7 +19,7 @@ from jasper.active_speaker.graph_types import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
 )
-from jasper import camilla, volume_process
+from jasper.audio_control import camilla, volume_process
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal

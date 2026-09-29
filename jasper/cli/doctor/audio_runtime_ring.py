@@ -17,7 +17,7 @@ import subprocess
 import time
 from typing import Any
 
-from ... import ring_assets
+from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
 from ... import ring_header
 from ...audio_hardware.dac import latency_floor_for
@@ -283,7 +283,7 @@ def check_content_transport_coherence() -> CheckResult:
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
     window from a wedge by the reconcile entry lock.
     """
-    from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
+    from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.paths import crossover_statefile
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.dsp_control.fanin_coupling import (
@@ -786,7 +786,7 @@ def check_ring_reader_stall() -> CheckResult:
         reader resumes, and the household's remedy is the same either way.
     """
     from jasper.multiroom.grouping_ring import GROUPING_RING_FILE
-    from jasper.ring_assets import (
+    from jasper.audio_control.ring_assets import (
         RING_A_PROGRAM_FILE,
         RING_ACTIVE_CONTENT_FILE,
         RING_B_CONTENT_FILE,

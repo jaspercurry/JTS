@@ -305,7 +305,7 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
 
 
 async def test_fanin_prepare_carries_absolute_volume_context() -> None:
-    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 
     tts = FakeTts()
 
@@ -332,7 +332,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
     # member attaches the SAME absolute context to PREPARE_ASSISTANT — the
     # post-DSP consumer owns the downstream-is-zero fact; Python does not mutate
     # downstream_db to 0.
-    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 
     tts = FakeTts()
 

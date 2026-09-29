@@ -574,7 +574,7 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     -trip the emitted program YAML through CamillaDSP's OWN validator.
 
     The task asked for a round-trip through "the camilladsp python lib's
-    validate_config". That pip package (jasper.camilla lazily imports it as
+    validate_config". That pip package (jasper.audio_control.camilla lazily imports it as
     `camilladsp`) only exposes RPC-style config validation
     (Config.validate/validate_yaml/validate_json) that proxies a live
     websocket connection to an already-running CamillaDSP daemon -- there is

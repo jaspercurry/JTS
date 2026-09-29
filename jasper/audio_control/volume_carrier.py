@@ -12,14 +12,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .log_event import log_event
-from .volume_curve import main_mute_for_db
+from jasper.log_event import log_event
+from jasper.volume_curve import main_mute_for_db
 from jasper.audio_resources.volume_owner import VolumeOwner
 
 if TYPE_CHECKING:
-    from .camilla import CamillaController
+    from jasper.audio_control.camilla import CamillaController
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.volume_carrier")
 
 
 async def write_main_mute(

@@ -20,7 +20,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from jasper import audio_validation_probes
+from jasper.audio_control import audio_validation_probes
 from jasper.cli import system_soak
 from jasper.control import audio_health_sampler
 from jasper.fanin.status import read_fanin_status

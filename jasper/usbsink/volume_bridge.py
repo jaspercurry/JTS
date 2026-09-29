@@ -57,7 +57,7 @@ POST_RETRY_CEILING_SEC = 5.0
 # Equals jasper.active_speaker.session_volume_plan.MAX_WALL_CLOCK_CEILING_S
 # (not imported here — a test pin ties the two): the hard ceiling of any
 # guided measurement, so a slider move during one is still re-presented once
-# the hold lifts. The OTHER decline producer — jasper.volume_coordinator's
+# the hold lifts. The OTHER decline producer — jasper.audio_control.volume_coordinator's
 # inactive-source gate — has no ceiling of its own; this cap is what bounds
 # it too. Remove when the coordinator answers a decline with a reason code
 # the bridge can act on.

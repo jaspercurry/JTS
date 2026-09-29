@@ -107,7 +107,7 @@ def _log_reconcile_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def default_camilla_factory():
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 
@@ -372,7 +372,7 @@ async def reconcile_current_dsp(
     ordinary skip result names why it could not.
     """
 
-    from jasper.camilla import CamillaConfigRejected, CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaConfigRejected, CamillaUnavailable
     from jasper.sound.camilla_yaml import sound_audition_config_path, sound_config_path
     from jasper.sound.graph_carrier import CarrierCannotHostEq
 
