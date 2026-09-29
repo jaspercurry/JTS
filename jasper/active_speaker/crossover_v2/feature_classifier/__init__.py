@@ -330,7 +330,7 @@ def classify_round(
             pooled_db[key],
             measured_q[key],
             controls_ok=controls_ok,
-            timing_available=bool(timing["available"]),
+            timing_available=timing["status"] == "available",
         )
         row["gate_rungs"] = gate_call["gate_rungs"]
         row["gate_sensitivity"] = gate_call["gate_sensitivity"]

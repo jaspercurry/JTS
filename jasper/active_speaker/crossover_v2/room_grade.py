@@ -18,6 +18,7 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.series_stats import curve_difference
 from .record_index import bundle_measurements
@@ -165,8 +166,6 @@ def _comparison_arrays(
     common = (lo, hi) if lo < hi else None
     comparison: dict[str, Any] = {
         **basis,
-        "available": False,
-        "unavailable_reason": None,
         "candidate_support_hz": list(now_support),
         "incumbent_support_hz": list(was_support),
         "common_support_hz": None if common is None else list(common),
@@ -176,11 +175,9 @@ def _comparison_arrays(
         "level_alignment_db": None,
     }
     if basis["incompatible_fields"]:
-        comparison["unavailable_reason"] = "incompatible_measurement_basis"
-        return comparison, None
+        return {**comparison, **unavailable("incompatible_measurement_basis")}, None
     if common is None:
-        comparison["unavailable_reason"] = "no_common_frequency_support"
-        return comparison, None
+        return {**comparison, **unavailable("no_common_frequency_support")}, None
 
     grid = np.unique(np.concatenate((
         np.asarray([lo, hi]),
@@ -199,7 +196,7 @@ def _comparison_arrays(
     aligned = curve_difference(grid, now_raw, grid, was_raw, band_hz=common)
     assert aligned is not None  # the grid spans the common support by construction
     comparison.update({
-        "available": True,
+        "status": "available",
         "level_reference_db": reference,
         "level_alignment_db": -aligned.level_offset_db,
     })

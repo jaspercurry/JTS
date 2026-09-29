@@ -182,7 +182,7 @@ def _print_environment_summary(payload: dict[str, Any]) -> None:
     print(
         "ALSA playback devices: "
         f"{len(alsa.get('devices', []))} "
-        f"({'available' if alsa.get('available') else 'unavailable'})"
+        f"({alsa['status']})"
     )
     print(
         "Path safety: "

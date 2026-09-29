@@ -69,7 +69,7 @@ def _cmd(args: argparse.Namespace) -> int:
     try:
         if args.command == "bass-compare":
             payload, destination, read = _compare(args)
-            summary: dict[str, Any] = {key: payload[key] for key in ("available", "context", "ladder", "bands")}
+            summary: dict[str, Any] = {key: payload[key] for key in ("comparison", "context", "ladder", "bands")}
             parameters: dict[str, Any] = {"change": args.change}
         else:
             root = args.round_dir if args.command == "bass" else args.round_dir[-1]

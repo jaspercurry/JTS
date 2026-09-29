@@ -12,6 +12,7 @@ import pytest
 
 from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
 from jasper.active_speaker.crossover_v2 import room_views
+from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
@@ -245,7 +246,7 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
                   "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30 + number + i] * 5,
                   "fundamental_qualified": [True] * 5, "harmonics": {}}
                  for i, (row, record) in enumerate(rows[number * 2:number * 2 + 2])]
-        view = {"schema": "jts_bass_view/2", "takes": takes}
+        view = {"schema": BASS_VIEW_SCHEMA, "takes": takes}
         path = default_out(inputs, root, "bass_view.json", group["set_id"])
         path.write_text(json.dumps(view))
         views.append(view)

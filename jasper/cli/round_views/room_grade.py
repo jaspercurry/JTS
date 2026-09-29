@@ -67,8 +67,8 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]
     comparison_result = (
-        f"comparison unavailable: {comparison['unavailable_reason']}"
-        if comparison is not None and not comparison["available"]
+        f"comparison unavailable: {comparison['reason']}"
+        if comparison is not None and comparison["status"] != "available"
         else (
             ", ".join(f"{low:g} Hz" for low in regressed) if regressed
             else "none" if artifact["incumbent"] else "incumbent set unavailable"

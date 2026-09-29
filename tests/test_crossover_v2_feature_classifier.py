@@ -26,7 +26,13 @@ import pytest
 
 from jasper.audio_measurement import excess_phase as ep
 from jasper.audio_measurement.deconv import magnitude_response
-from jasper.audio_measurement.evidence_reasons import NO_KEPT_TAKES, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import (
+    NO_KEPT_TAKES,
+    REASON_NO_REPEATS,
+    REASON_TOO_FEW_POSITIONS,
+    TAKE_CURVES_NOT_BANKED,
+    EvidenceUnavailable,
+)
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_verify_program, render_program_pcm
 from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, analyze_program_capture
@@ -857,7 +863,7 @@ def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path
     result = fx.classify_round(captures, at=[RESONANCE_HZ])
     assert result["rows"]
     assert all("egd_verdict" in row and "gate_verdict" in row for row in result["rows"])
-    assert result["timing_scatter"]["available"] is repeated
+    assert result["timing_scatter"]["status"] == ("available" if repeated else "unavailable")
     assert result["timing_scatter"]["n_pairs"] == int(repeated)
 
 
@@ -1104,8 +1110,7 @@ def test_the_operator_summary_is_one_line_per_row_under_any_disclosure(
 def test_timing_scatter_reports_that_it_did_not_run(peak_artifact):
     """No repeated pose means no pair, and an unmeasured dimension says so."""
     timing = peak_artifact["timing_scatter"]
-    assert timing["available"] is False
-    assert timing["n_pairs"] == 0
+    assert (timing["status"], timing["reason"], timing["n_pairs"]) == ("unavailable", REASON_NO_REPEATS, 0)
     assert "subsample_residual_us" not in timing
     assert all(row["timing_corroborated"] is False for row in peak_artifact["rows"])
     assert all(row["confidence"] != "high" for row in peak_artifact["rows"])
@@ -1165,7 +1170,7 @@ def test_off_axis_persistence_reads_present_and_not_resolved(tmp_path):
     artifact = fx.classify_round(
         captures, at=[RESONANCE_HZ], pose_curves=[*present, vanished]
     )
-    assert artifact["pose_bank"] == {"available": True, "n_poses": 3}
+    assert artifact["pose_bank"] == {"status": "available", "n_poses": 3}
     persistence = artifact["rows"][0]["pose_persistence"]
     assert persistence["n_poses"] == 3
     assert persistence["n_resolved"] == 2
@@ -1196,8 +1201,8 @@ def test_no_lateral_poses_reads_as_not_run(peak_artifact):
     persistence block is empty -- and its spread ``None``, not 0.0 -- rather
     than absent.
     """
-    assert peak_artifact["pose_bank"]["available"] is False
-    assert peak_artifact["pose_bank"]["n_poses"] == 0
+    bank = peak_artifact["pose_bank"]
+    assert (bank["status"], bank["reason"], bank["n_poses"]) == ("unavailable", REASON_TOO_FEW_POSITIONS, 0)
     assert all(
         row["pose_persistence"]
         == {"n_poses": 0, "n_resolved": 0, "sigma_pooled_db": None, "poses": []}
@@ -1247,7 +1252,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
     )
     assert code == cli.EXIT_OK
     banked = _filed(capsys.readouterr().out)
-    assert banked["pose_bank"] == {"available": True, "n_poses": 1}
+    assert banked["pose_bank"] == {"status": "available", "n_poses": 1}
     persistence = banked["rows"][0]["pose_persistence"]
     assert persistence["n_poses"] == 1
     # One resolved pose is no spread: a fabricated 0.0 would read as a walk

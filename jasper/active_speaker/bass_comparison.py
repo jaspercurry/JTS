@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, unavailable
 from jasper.audio_measurement.series_stats import band_change_db
 from jasper.platform.json_fields import finite_float
 
@@ -68,7 +69,7 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
     result: dict[str, Any] = {"schema": ARTIFACT_BY_VIEW["bass-compare"].schema, "change": change, "context": context,
         "before": before["record_path"], "after": after["record_path"], "ladder": "bass", "bands": []}
     if context["incompatible_fields"] and change != "diagnostic":
-        return {**result, "available": False, "reason": "capture_context_changed"}
+        return {**result, "comparison": unavailable("capture_context_changed")}
     f, a, b = common_bass_bins(before, after, "fundamental_db", "fundamental_qualified")
     records = (before["record"], after["record"])
     stimulus = [finite_float(record.get("stimulus_dbfs")) for record in records]
@@ -93,7 +94,8 @@ def compare_bass_takes(before: Mapping[str, Any], after: Mapping[str, Any], *, c
                 "after_relative_db": float(np.median(hb[hm])) if hm.any() else None,
                 "change_db": band_change_db(hf, hb, ha, (lo, hi))}
         result["bands"].append(row)
-    return {**result, "available": bool(f.size), "freqs_hz": f.tolist(), "transfer_change_db": delta.tolist(),
+    return {**result, "comparison": {"status": "available"} if f.size else unavailable(REASON_COVERAGE_SHORT),
+            "freqs_hz": f.tolist(), "transfer_change_db": delta.tolist(),
             "requested_input_change_db": input_delta,
             "interpretation": "Combined compression includes intended DSP action; it is not an isolated driver limit. Diagnostic differences do not isolate room transfer."}
 
