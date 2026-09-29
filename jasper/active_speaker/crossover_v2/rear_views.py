@@ -39,11 +39,14 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_NO_COMPARISON,
     REASON_NO_EARLIER_REFERENCE,
     REASON_NO_REFERENCE_TAKE,
+    REASON_REFERENCE_NOT_IN_SET,
     REASON_SEGMENT_MISSING,
     REFUSE_NO_BRANCH_DIAGNOSTIC,
     REFUSE_NO_INCUMBENT,
     REFUSE_NO_REAR_TAKES,
+    TAKE_CURVES_NOT_BANKED,
     EvidenceUnavailable,
+    unavailable,
 )
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
@@ -217,42 +220,70 @@ def _declared_references(packet: Mapping[str, Any]) -> set[str]:
             if (set_id := ((entry.get("comparison") or {}).get("reference") or {}).get("set_id"))}
 
 
+def _rear_takes(round_dir: Path) -> dict[str, tuple[str, Mapping[str, Any], SeatTake]] | EvidenceUnavailable:
+    """A banked round's analysed rear takes by id, each with its candidate and
+    record, or the refusal of a round whose takes this build cannot read: a
+    disclosure carries it rather than refusing (ADR-0101)."""
+    try:
+        return {take.take_id: (_candidate_key(record.get("candidate_id")), record, take)
+                for _, record, take in analyzed_purpose_takes(round_inputs(round_dir).session_dir, purpose=PURPOSE_REAR)
+                if take is not None}
+    except EvidenceUnavailable as refusal:
+        return refusal
+
+
+def _level_changes(now: Sequence[SeatTake], was: Sequence[SeatTake]) -> list[dict[str, Any]]:
+    """Every ``rear_level`` band of ``now``'s mean against ``was``'s, over the band both swept."""
+    grid, now_db = _mean_curve_db(now)
+    _, was_db = _mean_curve_db(was, grid)
+    edges = [take.band_hz for take in (*now, *was)]
+    measured = {tuple(row["band_hz"]): row for row in band_level_changes(
+        grid, now_db, reference_db=was_db, bands_hz=LEVEL_BANDS_HZ,
+        coverage_hz=[max(lo for lo, _ in edges), min(hi for _, hi in edges)])}
+    return [{"status": "available", **measured[band]} if band in measured
+            else {**unavailable(REASON_COVERAGE_SHORT), "band_hz": list(band)} for band in LEVEL_BANDS_HZ]
+
+
 def _previous_reference(
-    inputs: RoundInputs, reference: Mapping[str, Any], groups: Mapping[str, Sequence[SeatTake]],
-    basis_of: Mapping[str, Mapping[str, Any]],
+    inputs: RoundInputs, manifest: Mapping[str, Any], candidate: str,
+    groups: Mapping[str, Sequence[SeatTake]], basis_of: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Each scored position's reference against the newest earlier banked
     round's reference there, by ADR-0391's rule (#5404 09-20 item 7): a
-    disclosure on the ``rear_level`` ladder, never a refusal (ADR-0101)."""
-    keys = sorted(groups)
-    role = SetTakes.from_row(reference).role
-    found = comparands(inputs.session_dir, [(reference["set_id"], groups[key][0].take_id, role) for key in keys],
-                       sets_of=_declared_references)
-    wanted: dict[Path, set[str]] = {}
-    for match in found:
-        if match is not None:
-            wanted.setdefault(match.round_dir, set()).update(match.take_ids)
-    earlier = {(directory, take.take_id): (record, take) for directory, take_ids in wanted.items()
-               for _, record, take in analyzed_purpose_takes(
-                   round_inputs(directory).session_dir, purpose=PURPOSE_REAR, take_ids=tuple(take_ids))
-               if take is not None}
+    disclosure, never a refusal (ADR-0101). Each side is its round's reference
+    as the rear view reads it: every analysed rear take of the reference
+    candidate at the place, a deselected retake included."""
+    listed = {take["take_id"]: group for row in view_sets(manifest)
+              if _candidate_key(row["capture_basis"].get("candidate_id")) == candidate
+              for group in [SetTakes.from_row(row)] for take in group.takes}
+    asked = {key: take_id for key, takes in sorted(groups.items())
+             if (take_id := next((take.take_id for take in takes if take.take_id in listed), None))}
+    found = dict(zip(asked, comparands(inputs.session_dir, [
+        (listed[take_id].set_id, take_id, listed[take_id].role) for take_id in asked.values()],
+        sets_of=_declared_references)))
+    reads = {directory: _rear_takes(directory) for directory in {match.round_dir for match in found.values() if match}}
     previous: dict[str, Any] = {}
-    for key, match in zip(keys, found):
-        read = [earlier[match.round_dir, take_id] for take_id in match.take_ids
-                if (match.round_dir, take_id) in earlier] if match else []
-        if match is None or not read:
-            previous[key] = {"reason": REASON_NO_EARLIER_REFERENCE}
+    for key in sorted(groups):
+        take_id, match = asked.get(key), found.get(key)
+        if take_id is None or match is None:
+            previous[key] = unavailable(REASON_REFERENCE_NOT_IN_SET if take_id is None else REASON_NO_EARLIER_REFERENCE)
             continue
-        takes = [take for _, take in read]
-        grid, now_db = _mean_curve_db(groups[key])
-        _, was_db = _mean_curve_db(takes, grid)
-        edges = [take.band_hz for take in (*groups[key], *takes)]
+        named = {"round_id": match.round_dir.name, "set_id": match.set_id}
+        read = reads[match.round_dir]
+        if isinstance(read, EvidenceUnavailable):
+            previous[key] = {**unavailable(read.reason, read.detail), **named}
+            continue
+        home = next((read[one] for one in match.take_ids if one in read), None)
+        if home is None:
+            previous[key] = {**unavailable(TAKE_CURVES_NOT_BANKED, {"take_ids": list(match.take_ids)}), **named}
+            continue
+        owner, record, matched = home
+        was = sorted((take for who, _, take in read.values() if (who, take.pose_key) == (owner, matched.pose_key)),
+                     key=lambda take: take.take_id)
         previous[key] = {
-            "round_id": match.round_dir.name, "set_id": match.set_id, "take_ids": [take.take_id for take in takes],
-            "basis": compare_capture_basis(basis_of[groups[key][0].take_id], capture_basis(read[0][0])),
-            "ladder": "rear_level",
-            "bands": band_level_changes(grid, now_db, reference_db=was_db, bands_hz=LEVEL_BANDS_HZ,
-                                        coverage_hz=[max(lo for lo, _ in edges), min(hi for _, hi in edges)]),
+            "status": "available", **named, "take_ids": [take.take_id for take in was],
+            "basis": compare_capture_basis(basis_of[take_id], capture_basis(record)),
+            "ladder": "rear_level", "bands": _level_changes(groups[key], was),
         }
     return previous
 
@@ -402,7 +433,7 @@ def rear_document(
                           "kind": ROLE_REAR_MUTED if reference_id in muted else ROLE_INCUMBENT,
                           "set_id": (sets.get(reference_id) or {}).get("set_id")},
             "previous_reference": _previous_reference(
-                inputs, sets[reference_id], {key: batch[reference_id][key] for key in positions}, basis_of),
+                inputs, manifest, reference_id, {key: batch[reference_id][key] for key in positions}, basis_of),
             "positions": positions, "positions_unscored": unscored,
             "level": _level_facts(manifest, observed),
             "repeat_spread": spread,
