@@ -546,9 +546,10 @@ def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: i
     """The one comparand rule (#5737 P6): the round's base take at the take's
     place, preferring the take's own run; else the newest selected take banked
     before the round at the same place, drivers (the response ``role`` reads)
-    and graph scope, within the ``limit`` latest banked rounds. The same-round
-    A/B is the decision evidence and an earlier take is context: a comparison
-    over the pair discloses :func:`~.measurement_context.compare_capture_basis`."""
+    and graph scope, among :func:`banked_rounds`' ``limit`` latest. The
+    same-round A/B is the decision evidence and an earlier take is context: a
+    comparison over the pair discloses
+    :func:`~.measurement_context.compare_capture_basis`."""
     inputs = round_inputs(round_dir)
     sets = view_sets(read_run_manifest(inputs))
     row = next(row for row in sets if row["set_id"] == set_id)
