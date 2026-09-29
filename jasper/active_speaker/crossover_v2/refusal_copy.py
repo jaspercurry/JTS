@@ -379,6 +379,10 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
                                                "spread for it.",
         evidence_reasons.REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
     },
+    ("measure_rear", "Measure another rear round"): {
+        evidence_reasons.REASON_NO_EARLIER_REFERENCE: "No earlier rear round banked a reference at this position "
+                                                      "to compare this round's reference with.",
+    },
     ("measure_rear_pair", "Measure a rear pair round"): {
         evidence_reasons.REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
         evidence_reasons.REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",

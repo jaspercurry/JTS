@@ -40,6 +40,7 @@ from jasper.active_speaker.round_bank import _bookkeeping, bank_round
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.round_packet import write_round_packet
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
@@ -47,7 +48,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
-    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS,
+    REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
 from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
@@ -193,15 +194,17 @@ def _poses(repeats: int) -> list[tuple[int, int]]:
 
 def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                repeats: int = 2, missing: Mapping[str, Sequence[int]] = {},
-               on_axis_kind: str = "bearing") -> Path:
-    """One banked ``rear`` round: every candidate at every pose, on-axis repeated.
+               on_axis_kind: str = "bearing", name: str = "r3-seat",
+               curves: Mapping[str, list[float]] = _CURVES) -> Path:
+    """One banked ``rear`` round, ``name`` in the one rear store: every
+    candidate at every pose, on-axis repeated, each playing its ``curves``.
 
     ``missing`` drops a candidate's take at named bearings, which is how a
     reference take goes missing where other candidates measured. ``on_axis_kind``
     banks every azimuth-0 take as a non-bearing pose, for the on-axis-reference
     guard (review, PR #5362).
     """
-    root = bank_seat_round(tmp_path / "rear")
+    root = bank_seat_round(tmp_path / "rear", name=name)
     source, store = _round_source(root)
     groups = []
     for candidate in candidates:
@@ -218,7 +221,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                             "candidate_id": candidate, "level_db": -30.0,
                             "seat_offset_m": [0.0, 0.0, 0.0] if on_axis_kind == "seat" and degrees == 0 else None,
                             "curves": [{**source["curves"][0],
-                                        "magnitude_db": _CURVES[candidate],
+                                        "magnitude_db": curves[candidate],
                                         "late_energy": {
                                             "t0_ms": 5.0, "energy_db": -20.0,
                                             "early_late_db": 1.0 if candidate == _MUTED else 4.0,
@@ -634,6 +637,49 @@ def test_a_position_the_reference_missed_is_disclosed_rather_than_dropped(
         key: "no_row" for key in off_axis}
     assert set(by_candidate[BASE_CANDIDATE]["positions"]) == set(comparison["positions"])
     assert by_candidate[BASE_CANDIDATE]["across_positions"]["positions_unavailable"] == {}
+
+
+#: A later muted reference 3 dB below the earlier one, with a 20 dB notch at
+#: 143 Hz: the one bad reference take #5404 09-20 item 7 names. The ladder's
+#: band power mean reads the notch as about 0.3 dB more in (90, 350) Hz only.
+_LATER_MUTED = (np.asarray(_CURVES[_MUTED]) - 3.0
+                - 20.0 * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / 143.0) / 0.12) ** 2)).tolist()
+
+
+@pytest.mark.parametrize("earlier", ["banked", "absent", "manifest_unreadable"])
+def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
+    tmp_path, banked_candidates, earlier,
+):
+    """ADR-0391: at each position, the reference against the newest earlier
+    banked round's reference there, on the ``rear_level`` ladder. A position
+    without one names its reason, and the rear view writes either way."""
+    if earlier != "absent":
+        before = rear_round(tmp_path, name="earlier", missing={_MUTED: (20,)})
+        (before / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-20T12:00:00Z"}))
+        earlier_entry, = packet_of(before)[0]["rear"]
+        if earlier == "manifest_unreadable":
+            manifest, = round_inputs(before).session_dir.rglob(RUN_MANIFEST_FILENAME)
+            manifest.write_text("{")
+    root = rear_round(tmp_path, name="later", curves={**_CURVES, _MUTED: _LATER_MUTED})
+    (root / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
+
+    entry, = packet_of(root)[0]["rear"]
+    positions, previous = entry["comparison"]["positions"], entry["comparison"]["previous_reference"]
+
+    missed = set(positions) - set(earlier_entry["comparison"]["positions"] if earlier == "banked" else ())
+    assert {key for key, row in previous.items() if row == {"reason": REASON_NO_EARLIER_REFERENCE}} == missed
+    repeats = next((candidate["repeats"] for candidate in earlier_entry["candidates"]
+                    if candidate["candidate_id"] == _MUTED), {}) if earlier == "banked" else {}
+    for key in set(positions) - missed:
+        row = previous[key]
+        changes = {tuple(band["band_hz"]): band["change_db"] for band in row["bands"]}
+        assert (row["round_id"], row["set_id"], row["ladder"]) == ("earlier", _MUTED, "rear_level")
+        assert len(row["take_ids"]) == repeats[key]
+        assert set(changes) == set(LEVEL_BANDS_HZ)
+        assert changes.pop((90.0, 350.0)) < -3.25
+        assert list(changes.values()) == pytest.approx([-3.0] * len(changes), abs=0.01)
+        assert set(row["basis"]) == {"basis_status", "intervention_fields", "incompatible_fields",
+                                     "mismatched_fields", "unknown_fields"}
 
 
 def test_the_repeat_spread_comes_from_the_repeated_pose(tmp_path, banked_candidates):

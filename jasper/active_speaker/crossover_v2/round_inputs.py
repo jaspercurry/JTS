@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED
@@ -56,7 +56,7 @@ __all__ = [
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
     'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
-    'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand',
+    'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand', 'comparands',
 ]
 
 STATE_FILENAME = "state.json"
@@ -541,8 +541,12 @@ class Comparand(NamedTuple):
     source: str
     round_dir: Path
     set_id: str
-    take_id: str
+    take_ids: tuple[str, ...]  # the set's selected takes at the key, newest first
     role: str
+
+    @property
+    def take_id(self) -> str:
+        return self.take_ids[0]
 
 
 def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = None) -> tuple[Any, ...]:
@@ -553,45 +557,72 @@ def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = 
     return json.dumps(pose, sort_keys=True), basis.get("side"), role or group.role, basis.get("graph_scope")
 
 
-def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
-    """The one comparand rule (ADR-0391): the round's base take at the take's
+def _newest(rows: Iterable[Mapping[str, Any]], key: tuple[Any, ...],
+            order: Callable[[Mapping[str, Any]], tuple[Any, ...]]) -> tuple[str, tuple[str, ...]] | None:
+    """The set holding the newest selected take at ``key``, and its selected takes there, newest first."""
+    matches = sorted(((order(other), other["take_id"], group.set_id) for group in map(SetTakes.from_row, rows)
+                      for other in group.takes if other["selected"] and _comparand_key(group, other) == key),
+                     reverse=True)
+    if not matches:
+        return None
+    return matches[0][2], tuple(take_id for _, take_id, set_id in matches if set_id == matches[0][2])
+
+
+def comparands(
+    round_dir: Path, wanted: Sequence[tuple[str, str, str]], *,
+    sets_of: Callable[[Mapping[str, Any]], Collection[str]] | None = None, limit: int = 32,
+) -> list[Comparand | None]:
+    """The one comparand rule (ADR-0391) for each ``(set_id, take_id, role)`` of
+    one round, in one walk of the banks: the round's base take at the take's
     place, preferring the take's own run; else the newest selected take banked
     before the round at the same place, drivers and graph scope, among the
     banked rounds in :func:`banked_rounds`' window of ``limit`` directories. A
     live bundle dates by its bank copy when the window holds one, else by when
-    it started. The same-round A/B is the decision evidence and an earlier take
-    is context: a comparison over the pair discloses
-    :func:`~.measurement_context.compare_capture_basis`."""
+    it started. ``sets_of`` names, from an earlier round's packet, the only sets
+    of it that count, for a role a round holds once (a rear round's reference):
+    such a take's comparand is never in its own round. The same-round A/B is the
+    decision evidence and an earlier take is context: a comparison over the pair
+    discloses :func:`~.measurement_context.compare_capture_basis`."""
     inputs = round_inputs(round_dir)
     sets = view_sets(read_run_manifest(inputs))
-    row = next(row for row in sets if row["set_id"] == set_id)
-    take = next(take for take in SetTakes.from_row(row).takes if take["take_id"] == take_id)
-    key = _comparand_key(SetTakes.from_row(row), take, role)
-
-    def newest(rows: Iterable[Mapping[str, Any]], order: Callable[[Mapping[str, Any]], tuple[Any, ...]]) -> Any:
-        return max(((order(other), other["take_id"], group.set_id) for group in map(SetTakes.from_row, rows)
-                    for other in group.takes if other["selected"] and _comparand_key(group, other) == key),
-                   default=None)
-
-    if not row.get("base") and (found := newest(
-            [group for group in sets if group.get("base")],
-            lambda other: (other.get("run_id") == take.get("run_id"), *take_order(other)))):
-        return Comparand(COMPARAND_SAME_ROUND, round_dir, found[2], found[1], role)
-    rounds = sorted(((banked_at, str(path)) for path, _, banked_at in banked_rounds(inputs.session_dir, limit=limit)),
-                    reverse=True)
+    rows = {row["set_id"]: row for row in sets}
+    keys: list[tuple[Any, ...]] = []
+    found: list[Comparand | None] = []
+    for set_id, take_id, role in wanted:
+        group = SetTakes.from_row(rows[set_id])
+        take = next(take for take in group.takes if take["take_id"] == take_id)
+        keys.append(_comparand_key(group, take, role))
+        hit = None if sets_of is not None or rows[set_id].get("base") else _newest(
+            [row for row in sets if row.get("base")], keys[-1],
+            lambda other: (other.get("run_id") == take.get("run_id"), *take_order(other)))
+        found.append(Comparand(COMPARAND_SAME_ROUND, round_dir, hit[0], hit[1], role) if hit else None)
+    if all(found):
+        return found
+    rounds = sorted(((banked_at, str(path), None if sets_of is None else frozenset(sets_of(packet)))
+                     for path, packet, banked_at in banked_rounds(inputs.session_dir, limit=limit)),
+                    key=lambda entry: entry[:2], reverse=True)
     # round_bank copies a live bundle under the bundle's own name.
-    own = bank_of(inputs) or next((Path(path) for _, path in rounds
+    own = bank_of(inputs) or next((Path(path) for _, path, _ in rounds
                                    if (Path(path) / "bundle" / inputs.session_dir.name).is_dir()), None)
     dated = read_banked_round(own, own.stat().st_mtime) if own else None
     before = dated[1] if dated else finite_float(
         (_read_json_mapping(inputs.session_dir / "info.json") or {}).get("started_at")) or 0.0
-    for banked_at, directory in rounds:
-        if banked_at >= before:
+    for banked_at, directory, named in rounds:
+        if banked_at >= before or named == frozenset():
             continue
         try:
-            found = newest(view_sets(read_run_manifest(round_inputs(Path(directory)))), take_order)
+            earlier = [row for row in view_sets(read_run_manifest(round_inputs(Path(directory))))
+                       if named is None or row["set_id"] in named]
         except ROUND_INPUT_ERRORS:
             continue
-        if found:
-            return Comparand(COMPARAND_EARLIER_ROUND, Path(directory), found[2], found[1], role)
-    return None
+        for index, key in enumerate(keys):
+            if found[index] is None and (hit := _newest(earlier, key, take_order)):
+                found[index] = Comparand(COMPARAND_EARLIER_ROUND, Path(directory), hit[0], hit[1], wanted[index][2])
+        if all(found):
+            break
+    return found
+
+
+def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
+    """:func:`comparands` for one take."""
+    return comparands(round_dir, [(set_id, take_id, role)], limit=limit)[0]

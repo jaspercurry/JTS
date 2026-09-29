@@ -25,6 +25,7 @@ filled-in figure, and nothing here reads which mover placed the microphone.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
@@ -36,6 +37,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT,
     REASON_NON_BEARING,
     REASON_NO_COMPARISON,
+    REASON_NO_EARLIER_REFERENCE,
     REASON_NO_REFERENCE_TAKE,
     REASON_SEGMENT_MISSING,
     REFUSE_NO_BRANCH_DIAGNOSTIC,
@@ -62,12 +64,12 @@ from jasper.platform.json_fields import finite_float
 
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
-from .measurement_context import capture_basis
+from .measurement_context import capture_basis, compare_capture_basis
 from .position_cycle import curves_for_take, parse_curve_complex
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
 from .round_captures import doc_pose_key
-from .round_inputs import RoundInputs, banked_round_of
+from .round_inputs import RoundInputs, SetTakes, banked_round_of, comparands, round_inputs
 
 
 ROLE_INCUMBENT = "incumbent"
@@ -209,6 +211,52 @@ def _position_rows(
     return rows
 
 
+def _declared_references(packet: Mapping[str, Any]) -> set[str]:
+    """The reference set each rear comparison in a banked packet declared."""
+    return {str(set_id) for entry in packet.get("rear") or ()
+            if (set_id := ((entry.get("comparison") or {}).get("reference") or {}).get("set_id"))}
+
+
+def _previous_reference(
+    inputs: RoundInputs, reference: Mapping[str, Any], groups: Mapping[str, Sequence[SeatTake]],
+    basis_of: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Each scored position's reference against the newest earlier banked
+    round's reference there, by ADR-0391's rule (#5404 09-20 item 7): a
+    disclosure on the ``rear_level`` ladder, never a refusal (ADR-0101)."""
+    keys = sorted(groups)
+    role = SetTakes.from_row(reference).role
+    found = comparands(inputs.session_dir, [(reference["set_id"], groups[key][0].take_id, role) for key in keys],
+                       sets_of=_declared_references)
+    wanted: dict[Path, set[str]] = {}
+    for match in found:
+        if match is not None:
+            wanted.setdefault(match.round_dir, set()).update(match.take_ids)
+    earlier = {(directory, take.take_id): (record, take) for directory, take_ids in wanted.items()
+               for _, record, take in analyzed_purpose_takes(
+                   round_inputs(directory).session_dir, purpose=PURPOSE_REAR, take_ids=tuple(take_ids))
+               if take is not None}
+    previous: dict[str, Any] = {}
+    for key, match in zip(keys, found):
+        read = [earlier[match.round_dir, take_id] for take_id in match.take_ids
+                if (match.round_dir, take_id) in earlier] if match else []
+        if match is None or not read:
+            previous[key] = {"reason": REASON_NO_EARLIER_REFERENCE}
+            continue
+        takes = [take for _, take in read]
+        grid, now_db = _mean_curve_db(groups[key])
+        _, was_db = _mean_curve_db(takes, grid)
+        edges = [take.band_hz for take in (*groups[key], *takes)]
+        previous[key] = {
+            "round_id": match.round_dir.name, "set_id": match.set_id, "take_ids": [take.take_id for take in takes],
+            "basis": compare_capture_basis(basis_of[groups[key][0].take_id], capture_basis(read[0][0])),
+            "ladder": "rear_level",
+            "bands": band_level_changes(grid, now_db, reference_db=was_db, bands_hz=LEVEL_BANDS_HZ,
+                                        coverage_hz=[max(lo for lo, _ in edges), min(hi for _, hi in edges)]),
+        }
+    return previous
+
+
 def rear_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -230,6 +278,7 @@ def rear_document(
         return _pair_document(inputs, manifest=manifest, pair_set=pair_set)
     batch: dict[str, dict[str, list[SeatTake]]] = {}
     bases: dict[str, list[Mapping[str, Any]]] = {}
+    basis_of: dict[str, Mapping[str, Any]] = {}
     on_axis: set[str] = set()
     bearing: set[str] = set()
     for row, record, take in analyzed_purpose_takes(inputs.session_dir, purpose=PURPOSE_REAR):
@@ -237,7 +286,8 @@ def rear_document(
             continue
         candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
-        bases.setdefault(candidate, []).append(capture_basis(record))
+        basis_of[take.take_id] = capture_basis(record)
+        bases.setdefault(candidate, []).append(basis_of[take.take_id])
         if (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING:
             bearing.add(take.pose_key)
         # An on-axis reference must be a bearing pose: a non-bearing pose at
@@ -351,6 +401,8 @@ def rear_document(
             "reference": {"candidate_id": reference_id,
                           "kind": ROLE_REAR_MUTED if reference_id in muted else ROLE_INCUMBENT,
                           "set_id": (sets.get(reference_id) or {}).get("set_id")},
+            "previous_reference": _previous_reference(
+                inputs, sets[reference_id], {key: batch[reference_id][key] for key in positions}, basis_of),
             "positions": positions, "positions_unscored": unscored,
             "level": _level_facts(manifest, observed),
             "repeat_spread": spread,
