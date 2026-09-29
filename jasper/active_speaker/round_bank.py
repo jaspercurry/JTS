@@ -56,7 +56,7 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
 
-from jasper.audio_measurement.evidence_reasons import unavailable
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
 from jasper.platform.log_event import log_event
 from jasper.platform.paths import camilla_statefile
@@ -476,7 +476,7 @@ def finish_round(bundle: Path) -> tuple[BankedRound | None, Exception | None]:
             if manifest and Path(manifest).is_file():
                 finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
             return banked, None
-    except (OSError, ValueError, RoundBankError) as exc:
+    except (OSError, ValueError, RoundBankError, EvidenceUnavailable) as exc:
         detail = exception_detail(exc)
         log_event(logging.getLogger(__name__), "active_speaker.round_packet_save_failed", level=logging.ERROR, detail=detail)
         with suppress(OSError, ValueError):

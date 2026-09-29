@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.platform.atomic_io import atomic_write_json
@@ -137,7 +138,12 @@ def _refusal_code(exc: Exception, fallback: str) -> str:
 
 
 def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str, Any],
-          clouds: Mapping[str, CloudFitTerms]) -> list[dict[str, Any]]:
+          clouds: Mapping[str, CloudFitTerms],
+          refused: Mapping[str, EvidenceUnavailable] = MappingProxyType({})) -> list[dict[str, Any]]:
+    """Each selected driver take's fit; a take in a set whose design cloud
+    ``refused`` names fits nothing, in any of its sets, and carries that code."""
+    unclouded = {take["take_id"]: refused[group["set_id"]] for group in manifest.get("sets", ())
+                 if group["set_id"] in refused for take in group["takes"]}
     computed: dict[str, Any] = {}
     fits = []
     for group in manifest.get("sets", ()):
@@ -148,7 +154,9 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
             if not take["selected"]:
                 continue
             take_id = take["take_id"]
-            if take_id not in computed or set_role not in computed[take_id]:
+            if take_id in unclouded:
+                computed[take_id] = {set_role: {"fit": unavailable_fit(set_role, unclouded[take_id].reason)}}
+            elif take_id not in computed or set_role not in computed[take_id]:
                 try:
                     result = speaker_fit(inputs, manifest, group["set_id"], take_id,
                                          clouds_by_set=clouds, sources=sources)
@@ -246,7 +254,10 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
-    clouds = design_clouds(manifest)
+    refused: dict[str, EvidenceUnavailable] = {}
+    clouds = design_clouds(manifest, refused=refused)
+    errors += [{"artifact": "design_clouds", "set_id": set_id, "reason": refusal.reason, "detail": refusal.detail}
+               for set_id, refusal in sorted(refused.items())]
     alignments, alignment_verdict = round_alignment(
         {**manifest, "round_id": target.name}, sources,
     ) if purpose == PURPOSE_SPEAKER else ([], None)
@@ -261,7 +272,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                         "takes": _packet_takes(g)} for g in manifest.get("sets", ())], "series": series,
               # A fit is gated speaker evidence; a rear take is measured ungated
               # below the gate's trusted floor and proposes no driver filters.
-              "fits": [] if purpose == PURPOSE_REAR else _fits(inputs, manifest, sources, clouds),
+              "fits": [] if purpose == PURPOSE_REAR else _fits(inputs, manifest, sources, clouds, refused),
               **analysis,
               "alignment": alignments, "alignment_verdict": alignment_verdict,
               "next_action": timing_next_action(alignment_verdict or {},
