@@ -5,6 +5,7 @@
 """Deploy artifact, unit and socket contracts."""
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from . import nginx_site
 from ._shell_corpus import shell_files
 from .install_surface import installer_shell_paths
 from .test_install_core_audio_graph_loop import staged_file_copies
-from .systemd_unit_helpers import value_for, values_for
+from .systemd_unit_helpers import seconds_for, value_for, values_for
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -350,6 +351,37 @@ def test_recoverable_always_on_services_restart_with_generous_limit():
         assert "RestartSec=5" in text, path
         assert "StartLimitIntervalSec=600" in text, path
         assert "StartLimitBurst=20" in text, path
+
+
+def test_librespot_backs_off_below_its_start_limit():
+    """A start Spotify refuses (librespot-org/librespot#1771) keeps retrying.
+
+    systemd's ``service_restart_usec_next`` grows the delay from ``RestartSec``
+    to ``RestartMaxDelaySec`` over ``RestartSteps`` auto-restarts, so failing
+    starts never reach ``StartLimitBurst`` inside ``StartLimitIntervalSec``,
+    which would park the renderer until someone restarts it.
+    """
+    text = (_DEPLOY / "systemd" / "librespot.service").read_text(encoding="utf-8")
+    interval = seconds_for(text, "StartLimitIntervalSec", default=10.0)
+    if math.isinf(interval):
+        return  # StartLimitIntervalSec=0: no start limit, nothing to park at
+    burst = int(value_for(text, "StartLimitBurst") or 5)
+    # RestartSec=0 means "at once", not the "no timeout" seconds_for reads it as.
+    first = seconds_for(text, "RestartSec", default=0.1)
+    first = 0.0 if math.isinf(first) else first
+    ceiling = seconds_for(text, "RestartMaxDelaySec", default=math.inf)
+    steps = int(value_for(text, "RestartSteps") or 0)
+
+    def delay(n: int) -> float:
+        if n <= 1 or not steps or not first or math.isinf(ceiling) or first >= ceiling:
+            return first
+        return ceiling if n > steps else first * (ceiling / first) ** ((n - 1) / steps)
+
+    starts = [0.0]
+    for n in range(1, 3 * burst):
+        starts.append(starts[-1] + delay(n))
+    busiest = max(sum(1 for t in starts if s <= t < s + interval) for s in starts)
+    assert busiest < burst
 
 
 def test_socket_web_services_have_generous_start_limit():

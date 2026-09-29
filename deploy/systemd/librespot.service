@@ -80,6 +80,11 @@ ExecStart=/usr/bin/librespot \
     --onevent /usr/local/bin/jasper-librespot-event
 Restart=always
 RestartSec=5
+# A refused start (Spotify's login5 answering 503, librespot-org/librespot#1771)
+# backs off from 5 s to 10 min instead of parking at the start limit, so the
+# endpoint returns by itself once Spotify answers. Needs systemd >= 254.
+RestartSteps=5
+RestartMaxDelaySec=600
 MemoryHigh=150M
 MemoryMax=200M
 Nice=-5
