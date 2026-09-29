@@ -8,16 +8,15 @@ import shlex
 from pathlib import Path
 from typing import Any
 from .measurement_programs import run_purposes
-from .round_view_artifacts import bookkeeping_views
 from .run_manifest import room_sets
 from .crossover_v2.round_inputs import (RoundInputs, read_run_manifest, resolve_set, set_artifact_name,
                                         round_artifact_dir, default_out)
-from .round_view_artifacts import PROG, ARTIFACT_BY_VIEW, TAKES_THIS_ROUND, TAKES_THIS_BUNDLE, ViewArtifact, context_artifacts
+from .round_view_artifacts import PROG, ARTIFACT_BY_VIEW, TAKES_THIS_ROUND, TAKES_THIS_BUNDLE, CatalogRow, bookkeeping_views, context_artifacts
 
 
 def _runnable(
     view: str,
-    spec: ViewArtifact,
+    spec: CatalogRow,
     round_dir: Path,
     inputs: RoundInputs,
     set_id: str | None = None,
@@ -28,7 +27,7 @@ def _runnable(
         "<set-id>": set_id,
     }
     takes: list[str] = []
-    source = iter(spec.takes)
+    source = iter(spec.argv)
     for token in source:
         if token == "--set" or token.endswith("-set"):
             value = next(source)
@@ -56,11 +55,11 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
     order = dict.fromkeys((
         *(name for name, _, _ in bookkeeping_views(purposes, has_room=bool(room_sets(manifest)))),
         *(name for name, spec in ARTIFACT_BY_VIEW.items()
-          if not spec.per_take and (not spec.purposes or set(purposes).intersection(spec.purposes))),
+          if not spec.per_take and (not spec.programs or set(purposes).intersection(spec.programs))),
     ))
     for view in order:
         spec = ARTIFACT_BY_VIEW[view]
-        scoped = "<set-id>" in spec.takes
+        scoped = spec.per_set
         for selected in sets if scoped else [None]:
             set_id = selected.set_id if selected else None
             named = set_id if requested_set or len(sets) > 1 else None

@@ -34,11 +34,11 @@ from ._common import (
     REASON_UNWRITABLE,
     _REASON_BY_CODE,
     _ROUND_TOOL_ERRORS,
-    VIEW_PURPOSES,
     add_rungs_ms_argument,
     default_out,
     refused_by_name,
     round_ref,
+    view_rows,
 )
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping as run_bookkeeping
 
@@ -59,10 +59,9 @@ __all__ = [
     "main",
 ]
 
-#: The view families, in the order their subcommands are offered; the runbook's
-#: generated tool menu renders that order (ADR-0204).
+#: The view families, in the order their subcommands are offered.
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
-    "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
+    "catalog", "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
     "frequency", "distortion", "dsp_replay", "classify_features",
     "delay", "room", "room_grade", "bass", "inventory", "speaker_fit", "nearfield",
 ))
@@ -78,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "EXAMPLES\n"
+            "  jasper-round-views catalog --program rear\n"
             "  jasper-round-views frequency captures/.../session-1/round-3\n"
             "  jasper-round-views directivity captures/.../round-3 --set <set-id>\n"
             "  jasper-round-views repeat captures/.../round-2 captures/.../round-3\n"
@@ -116,8 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
         family.add_parser(sub)
 
     for choice in sub._choices_actions:
-        purposes = VIEW_PURPOSES[choice.dest]
-        choice.help = f"[{'/'.join(purposes) if purposes else 'all'}] {choice.help}"
+        if rows := view_rows(choice.dest):
+            every = any(not row.programs for row in rows)
+            programs = "all" if every else "/".join(dict.fromkeys(p for row in rows for p in row.programs))
+            choice.help = f"[{programs}] {choice.help}"
 
     for child in sub.choices.values():
         child.allow_abbrev = False

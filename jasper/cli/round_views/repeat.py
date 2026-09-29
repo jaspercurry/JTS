@@ -21,7 +21,7 @@ from jasper.audio_measurement.evidence_reasons import REASON_NO_SHARED_MARK_TAKE
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
-    ANSWER_SCHEMAS, ARTIFACT_BY_VIEW,
+    ARTIFACT_BY_VIEW, CATALOG, PROG,
     _ROUND_DIR_HELP,
     _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS, _write,
     answer, calibration_id, read_run_manifest, resolve_set, round_inputs, RoundSetRefused, RoundViewsError,
@@ -66,10 +66,10 @@ def _cmd_repeat_set(args: argparse.Namespace) -> int:
                "take": {metric: summaries[metric] for metric in take_values},
                "roles": {role: {"trim_db": summaries[f"{role}_trim_db"]} for role in trims},
                "floor": floor, "mark_pairs": marks}
-    schema = ANSWER_SCHEMAS["repeat --set"]
-    written = _write(payload, args.out, default_out(inputs, Path(args.round_dirs[0]), "repeat.json", selected.set_id),
-                     schema=schema)
-    return answer(args.command, schema=schema, subject=subject(inputs, selected, take_ids=payload["take_ids"]),
+    spec = CATALOG[f"{PROG} repeat --set"]
+    written = _write(payload, args.out, default_out(inputs, Path(args.round_dirs[0]), spec.artifact, selected.set_id),
+                     schema=spec.schema)
+    return answer(args.command, schema=spec.schema, subject=subject(inputs, selected, take_ids=payload["take_ids"]),
                   parameters={"band_hz": band, "calibration_id": calibration_id(selected.capture_basis.get("capture_calibration"))}, out=written,
                   line=f"repeat: {len(takes)} takes; mark spread {_db(marks)}", **payload)
 

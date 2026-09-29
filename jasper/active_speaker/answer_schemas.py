@@ -11,6 +11,7 @@ Pi Zero's rounds without loading the view stack (ADR-0226).
 #: an artifact answers under that artifact's row instead (ADR-0344 §4).
 #: ``trial`` answers under ``run``'s rows, and ``run|trial --wait`` under ``wait``'s (ADR-0389).
 ANSWER_SCHEMAS = {
+    "catalog": "jts_tool_catalog/1",
     "speaker-fit": "jts_speaker_fit/1",
     "repeat --set": "jts_repeat/1",
     "jasper-crossover-prescriber judge": "jts_prescription_judgement/1",

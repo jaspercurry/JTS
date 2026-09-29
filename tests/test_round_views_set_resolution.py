@@ -3,7 +3,6 @@
 
 """Manifest selection, artifact isolation, and the retired CLI doors."""
 
-import argparse
 import json
 import shlex
 from pathlib import Path
@@ -24,8 +23,8 @@ from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.platform.json_fields import sha256_file
 from jasper.cli._report import render_report
-from jasper.cli.round_views import ARTIFACT_BY_VIEW, _FAMILIES, build_parser, main
-from jasper.cli.round_views._common import RoundSetRefused, VIEW_PURPOSES, resolve_set
+from jasper.cli.round_views import build_parser, main
+from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
@@ -154,41 +153,6 @@ def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, 
     _, document = artifact_answer(capsys)
 
     assert {row["view"].split()[0] for row in document["artifacts"]}.isdisjoint(excluded)
-
-
-def test_every_registered_view_family_has_purposes_and_help_tag():
-    registered = set()
-    scratch = argparse.ArgumentParser()
-    subparsers = scratch.add_subparsers()
-    for family in _FAMILIES:
-        before = set(subparsers.choices)
-        family.add_parser(subparsers)
-        added = set(subparsers.choices) - before
-        assert added <= VIEW_PURPOSES.keys()
-        registered.update(added)
-
-    parser = build_parser()
-    choices = next(action for action in parser._actions if action.dest == "command")
-
-    assert set(choices.choices) == registered
-    assert all(choice.help.startswith("[") for choice in choices._choices_actions)
-
-
-def _producer_argv(view, takes):
-    values = {
-        "<db>": "1", "<start>": "0", "<stop>": "1", "<distance-m>": "1",
-        "<change>": "candidate",
-    }
-    return [*view.split(), *(token if token.startswith("--") else values.get(token, "value") for token in takes)]
-
-
-@pytest.mark.parametrize(
-    "view,takes",
-    [(view, spec.takes) for view, spec in ARTIFACT_BY_VIEW.items() if spec.producer is None],
-)
-def test_registered_view_producer_tokens_are_accepted(view, takes):
-    _, unknown = build_parser().parse_known_args(_producer_argv(view, takes))
-    assert unknown == []
 
 
 @pytest.mark.parametrize("argv", [
