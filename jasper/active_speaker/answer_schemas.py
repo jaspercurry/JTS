@@ -19,7 +19,7 @@ ANSWER_SCHEMAS = {
     "jasper-crossover-prescriber judge --preview --vary": "jts_prescription_preview_grid/1",
     "jasper-crossover-prescriber compose": "jts_prescription_candidate/1",
     "jasper-crossover-prescriber contract": "jts_prescription_contract/2",
-    "jasper-crossover-prescriber status": "jts_prescriber_status/2",
+    "jasper-crossover-prescriber status": "jts_prescriber_status/3",
     "jasper-round run": "jts_round_run/1",
     "jasper-round run --dry-run": "jts_round_preflight/1",
     "jasper-round placed": "jts_round_placement/1",
