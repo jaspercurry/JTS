@@ -131,7 +131,7 @@ def test_open_wired_capture_mints_identity_and_validates_the_spec():
 def test_open_wired_capture_refuses_an_invalid_spec():
     import dataclasses
 
-    from jasper.capture_protocol import CaptureSpecError
+    from jasper.playback_state.capture_protocol import CaptureSpecError
 
     bad = dataclasses.replace(_inline_spec(), sample_rate_hz=44_100)
     with pytest.raises(CaptureSpecError):

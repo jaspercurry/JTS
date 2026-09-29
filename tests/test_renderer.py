@@ -37,7 +37,7 @@ def renderer(tmp_path, monkeypatch):
         AsyncMock(return_value=False),
     )
     monkeypatch.setattr(
-        "jasper.source_state.a2dp_sink_playing",
+        "jasper.playback_state.source_state.a2dp_sink_playing",
         AsyncMock(return_value=False),
     )
     return RendererClient(
@@ -158,7 +158,7 @@ async def test_active_renderers_spotify_playing(renderer):
 
 async def test_active_renderers_bluetooth_playing(renderer, monkeypatch):
     monkeypatch.setattr(
-        "jasper.source_state.a2dp_sink_playing",
+        "jasper.playback_state.source_state.a2dp_sink_playing",
         AsyncMock(return_value=True),
     )
     with patch(

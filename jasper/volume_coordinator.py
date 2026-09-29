@@ -47,7 +47,7 @@ from .assistant_volume import (
 )
 from .identity.speaker_name import runtime_name as speaker_runtime_name
 from .log_event import log_event
-from .music_sources import Source, VolumeMode, volume_mode
+from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from . import volume_push_sources
 from .renderer import RendererClient, audible_source
 from .volume_echo import (

@@ -19,11 +19,11 @@ from unittest.mock import ANY, DEFAULT, AsyncMock, MagicMock, call
 
 import pytest
 
-import jasper.airplay_session as airplay_session
+import jasper.playback_state.airplay_session as airplay_session
 import jasper.mux as mux_module
 from jasper.accounts import Account
 from jasper.busctl import BusctlResult
-from jasper.music_sources import MUSIC_SOURCES, VolumeMode
+from jasper.playback_state.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 from jasper.spotify_router import (
     ACCOUNT_OK,

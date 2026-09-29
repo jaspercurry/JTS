@@ -16,7 +16,7 @@ def test_leg_db_covers_all_wake_input_legs():
     also guards this at construction; this gives a targeted, discoverable
     failure if it drifts.)"""
     from jasper.voice.wake_telemetry import LEG_DB
-    from jasper.wake_legs import wake_input_legs
+    from jasper.playback_state.wake_legs import wake_input_legs
 
     missing = {leg.token for leg in wake_input_legs()} - set(LEG_DB)
     assert not missing, f"wake legs missing LEG_DB mapping: {sorted(missing)}"
@@ -157,7 +157,7 @@ def test_leg_device_attr_covers_all_wake_input_legs():
     """Every wake-input leg must have a _LEG_DEVICE_ATTR entry, or
     configured_wake_legs would KeyError at daemon startup."""
     from jasper.voice.wake_detect import _LEG_DEVICE_ATTR
-    from jasper.wake_legs import wake_input_legs
+    from jasper.playback_state.wake_legs import wake_input_legs
     missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DEVICE_ATTR)
     assert not missing, (
         f"wake legs missing _LEG_DEVICE_ATTR: {sorted(missing)}"

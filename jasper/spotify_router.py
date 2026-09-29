@@ -45,7 +45,7 @@ from .accounts import (
 )
 from .busctl import run_busctl
 from .log_event import log_event
-from .source_state import GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE
+from jasper.playback_state.source_state import GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE
 from .spotify_routing import normalise
 
 logger = logging.getLogger(__name__)

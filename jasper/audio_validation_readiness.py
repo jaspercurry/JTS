@@ -24,7 +24,7 @@ from .service_units import (
     OUTPUTD_SERVICE,
     JASPER_VOICE_SERVICE,
 )
-from .install_profile import BUILD_MANIFEST_FILE
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 from .audio_validation_probes import _env_path
 
 

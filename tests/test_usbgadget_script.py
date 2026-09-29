@@ -31,7 +31,7 @@ from pathlib import Path
 import pytest
 
 from jasper.local_sources.markers import marker_path
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 
 ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"

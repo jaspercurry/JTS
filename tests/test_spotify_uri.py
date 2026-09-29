@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.spotify_uri import parse_playlist_uri, playlist_id_from_uri
+from jasper.playback_state.spotify_uri import parse_playlist_uri, playlist_id_from_uri
 
 
 _DW_ID = "37i9dQZEVXcAAAAAAAAAAA"   # 22-char base62, Discover-Weekly-shape

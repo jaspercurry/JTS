@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Contract tests for the wake-leg registry (``jasper.wake_legs``).
+"""Contract tests for the wake-leg registry (``jasper.playback_state.wake_legs``).
 
 PR 0.1 of the mic-fusion architecture. The registry is the single
 source of truth for leg identity + UDP ports; ``jasper.wake_ports``
@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from jasper import wake_legs, wake_ports
+from jasper.playback_state import wake_legs
+from jasper import wake_ports
 
 
 # The frozen wire contract: token -> udp_port. These values are baked

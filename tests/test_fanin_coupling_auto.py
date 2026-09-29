@@ -71,7 +71,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
     from jasper import source_intent
     from jasper.local_sources import markers
-    from jasper.music_sources import Source
+    from jasper.playback_state.music_sources import Source
 
     seen = []
     monkeypatch.setattr(

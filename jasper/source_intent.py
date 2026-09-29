@@ -32,7 +32,7 @@ from jasper.env_load import SOURCE_INTENT_ENV
 from jasper.json_fields import sha256_text
 from jasper.local_sources import local_source_lifecycle, local_source_lifecycles
 from jasper.log_event import log_event
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.source_intent_units import RECONCILE_BROKER_TIMEOUT_SECONDS, RECONCILE_UNIT
 
 logger = logging.getLogger(__name__)

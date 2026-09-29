@@ -38,7 +38,7 @@ from jasper.local_sources.markers import (
 )
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
 from jasper.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 from jasper.source_intent import (

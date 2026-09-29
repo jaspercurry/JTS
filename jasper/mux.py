@@ -89,13 +89,13 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from jasper.log_event import log_event
 
-from . import librespot_state, mux_mode_persistence
-from .airplay_session import AirplaySessionCleanup
+from jasper.playback_state import librespot_state, mux_mode_persistence
+from jasper.playback_state.airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
 from .camilla import primary_controller
 from .control import restart_broker
 from .identity.speaker_name import runtime_name as speaker_runtime_name
-from .music_sources import (
+from jasper.playback_state.music_sources import (
     MUSIC_SOURCE_VALUES,
     MUSIC_SOURCES,
     SOURCE_TO_FANIN_LABEL,
@@ -110,7 +110,7 @@ from .platform.uds import fanin_command, local_status_json
 from .renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
 from .source_events import start_source_event_tasks
-from .source_state import (
+from jasper.playback_state.source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
     spotify_playing_observed as spotify_playing,

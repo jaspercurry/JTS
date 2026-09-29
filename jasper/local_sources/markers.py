@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 
 from ..log_event import log_event
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..multiroom.config import load_config
 from ..multiroom.effective_role import (
     effective_local_sources_park_reason,

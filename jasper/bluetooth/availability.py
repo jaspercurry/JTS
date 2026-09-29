@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..local_sources import local_source_lifecycle
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from .rfkill import BluetoothRfkillState, read_bluetooth_rfkill_state
 
 BLUETOOTH_ADAPTER_PATH = "/sys/class/bluetooth/hci0"

@@ -5,8 +5,8 @@
 """End-to-end pin for the librespot --onevent hook.
 
 The hook is POSIX sh, so the only honest test runs it for real and reads
-the result back through its consumers, ``jasper.librespot_state`` and
-``jasper.source_state``.
+the result back through its consumers, ``jasper.playback_state.librespot_state`` and
+``jasper.playback_state.source_state``.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import librespot_state, source_state
+from jasper.playback_state import librespot_state, source_state
 
 SCRIPT = (
     Path(__file__).resolve().parent.parent

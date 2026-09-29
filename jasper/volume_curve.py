@@ -20,7 +20,7 @@ import logging
 import threading
 from typing import TypeGuard
 
-from .music_sources import VolumeMode
+from jasper.playback_state.music_sources import VolumeMode
 from .sound import settings as sound_settings
 from .volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,

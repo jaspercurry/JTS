@@ -14,7 +14,7 @@ import pytest
 
 from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
-from jasper.music_sources import MUSIC_SOURCES
+from jasper.playback_state.music_sources import MUSIC_SOURCES
 
 from .doctor_test_support import _fresh_cfg, _grouping_cfg, _make_unit_states_fake
 

@@ -15,7 +15,7 @@ from . import volume_persistence as _volume_persistence
 from .accounts import legacy_cache_path, registry_path
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
-from .librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from .location_state import (
     WEATHER_DEFAULT_LOCATION_ENV,
     WEATHER_DISPLAY_NAME_ENV,

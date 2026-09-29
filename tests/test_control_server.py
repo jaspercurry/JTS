@@ -41,7 +41,7 @@ from jasper.control.server import (
     _control_route_allowed_for_install_profile,
     _make_handler,
 )
-from jasper.install_profile import install_profile_has_capability
+from jasper.playback_state.install_profile import install_profile_has_capability
 from jasper.platform.control_client import PEER_RESPONSE_MAX_BYTES, ControlError
 
 from tests._async_wait import wait_until_sync

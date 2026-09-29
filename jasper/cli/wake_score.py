@@ -58,7 +58,7 @@ from typing import Iterable, Iterator
 
 import numpy as np
 
-from jasper.wake_conditions import CORPUS_DIR_CONDITIONS
+from jasper.playback_state.wake_conditions import CORPUS_DIR_CONDITIONS
 
 from ..logging_setup import configure_verbose_logging
 
@@ -83,7 +83,7 @@ DEFAULT_THRESHOLD = 0.5
 
 # Quadrant naming. Base legs match `extract_wake_corpus.QUADRANTS` and
 # `wake_enroll.all_quadrant_dirs()`; directory-condition tokens come from the
-# writer/reader contract in `jasper.wake_conditions` so browser-recorder
+# writer/reader contract in `jasper.playback_state.wake_conditions` so browser-recorder
 # `ambient` clips cannot silently disappear from scoring.
 LEGS = ("on", "off", "dtln")
 SPLITS = ("train", "eval")

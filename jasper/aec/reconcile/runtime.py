@@ -35,7 +35,7 @@ from jasper.env_load import (
 from jasper.mics import xvf3800
 from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.voice.input_presence import voice_input_absent_marker_path
-from jasper.install_profile import BUILD_MANIFEST_FILE
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 from jasper.voice.catalog import PROVIDER_IDS_MANIFEST_FILE
 
 

@@ -24,7 +24,7 @@ import copy
 from collections.abc import Mapping
 from typing import Any
 
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..service_units import (
     CAMILLA_SERVICE,
     FANIN_SERVICE,

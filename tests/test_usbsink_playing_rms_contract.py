@@ -7,7 +7,7 @@
 History: this threshold used to gate mux's source arbitration ("a Mac streaming
 digital silence must not seize the speaker"). The 2026-07-17 liveness rework
 removed that gate: USB liveness is now purely frames-based (see
-`jasper.source_state.usbsink_direct_streaming`). Removing the gate fixed dropped
+`jasper.playback_state.source_state.usbsink_direct_streaming`). Removing the gate fixed dropped
 faint audio and level-driven quiet-passage dropouts on browser video. Since
 2026-07-22, the
 frame-flow edge enters the same latest-start-wins policy as every other source;
@@ -15,7 +15,7 @@ pinning a source or disabling USB are the explicit opt-outs. fan-in publishes
 that edge at 20 Hz and wakes mux directly, while the 1 Hz patrol is only a
 lost-alert fallback.
 
-`jasper.source_state.USBSINK_PLAYING_RMS_DBFS` survives only as the level shown
+`jasper.playback_state.source_state.USBSINK_PLAYING_RMS_DBFS` survives only as the level shown
 on the `/state` dashboard (via `usbsink_direct_audible`, read by
 `jasper.control.state_aggregate`). This test pins that it is (a) still a single
 shared definition and (b) NO LONGER referenced by the arbiter `jasper.mux`, so a
@@ -23,7 +23,8 @@ future edit can't silently re-gate arbitration on audio level. See AGENTS.md.
 """
 from __future__ import annotations
 
-from jasper import mux, source_state
+from jasper import mux
+from jasper.playback_state import source_state
 from jasper.control import state_aggregate
 
 

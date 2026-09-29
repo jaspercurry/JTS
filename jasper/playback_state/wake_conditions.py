@@ -20,7 +20,7 @@ three consumers that would otherwise drift:
 One definition means the corpus's "settings" axis and telemetry labels are
 the *same set by construction*.
 
-Stability contract — mirrors :mod:`jasper.wake_legs`' frozen-token rule, so
+Stability contract — mirrors :mod:`jasper.playback_state.wake_legs`' frozen-token rule, so
 evolving the taxonomy later (e.g. as the corpus tool changes) can never
 corrupt already-collected data:
 

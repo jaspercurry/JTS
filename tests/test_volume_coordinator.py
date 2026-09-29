@@ -40,7 +40,7 @@ from jasper import volume_push_sources as vps_mod
 from jasper.accounts import Account
 from jasper.control.volume_ops import with_coordinator
 from jasper.spotify_router import AccountClient, Router
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.volume_coordinator import VolumeCoordinator

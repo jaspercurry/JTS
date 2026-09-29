@@ -13,7 +13,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper import source_events
 from jasper.source_events import classify_source_signal, inotify_changed_names
 

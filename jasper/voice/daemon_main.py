@@ -49,7 +49,7 @@ from ..cues.registry import (
 from ..google_creds import GoogleClients, build_google_clients
 from ..google_routes import build_google_routes_client
 from ..home_assistant import HAClient, build_ha_client
-from ..install_profile import (
+from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )

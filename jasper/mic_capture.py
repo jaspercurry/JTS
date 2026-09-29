@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .audio_buffer import AudioBuffer, InputFrame
-from .dsp_numpy import resample_poly
+from jasper.playback_state.dsp_numpy import resample_poly
 from .mic_presence import read_mic_presence
 from . import wake_ports
 

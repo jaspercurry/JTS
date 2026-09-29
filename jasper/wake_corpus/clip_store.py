@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.cli.wake_enroll import write_wav
-from jasper.wake_conditions import CORPUS_DIR_BY_CONDITION
+from jasper.playback_state.wake_conditions import CORPUS_DIR_BY_CONDITION
 
 from .session_store import ClipMetadata, unlink_wavs
 

@@ -27,7 +27,7 @@ from .atomic_io import (
 from .json_fields import as_float, as_mapping as _mapping
 from .env_file import read_value
 from .env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
-from .music_sources import Source
+from jasper.playback_state.music_sources import Source
 from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
 from .source_intent import source_intent_enabled
 from .service_units import USBGADGET_SERVICE

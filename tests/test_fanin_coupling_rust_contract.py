@@ -26,7 +26,7 @@ from jasper.dsp_control.fanin_coupling import (
     RING_SLOTS_MIN,
     resolve_ring_slots,
 )
-from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
 from jasper.dsp_control.ring_conf import RING_CONF_DEFAULT_CHANNELS
 from tests.ring_abi import ring_abi
 

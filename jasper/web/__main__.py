@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
-from jasper.install_profile import (
+from jasper.playback_state.install_profile import (
     VALID_INSTALL_PROFILES,
     Capability,
     install_profile_has_capability,

@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from .log_event import log_event
-from .music_sources import Source
-from .source_state import MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
+from jasper.playback_state.music_sources import Source
+from jasper.playback_state.source_state import MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE
 
 logger = logging.getLogger(__name__)
 

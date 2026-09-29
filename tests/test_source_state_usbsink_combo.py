@@ -10,7 +10,7 @@ liveness from fan-in's direct-lane telemetry.
 """
 from __future__ import annotations
 
-from jasper.source_state import (
+from jasper.playback_state.source_state import (
     USBSINK_PLAYING_RMS_DBFS,
     usbsink_direct_audible,
     usbsink_direct_rms_dbfs,

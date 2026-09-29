@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 from jasper import audio_validation_probes
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,

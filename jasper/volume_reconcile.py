@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .control.measurement_hold import read_measurement_hold
 from .log_event import log_event
-from .music_sources import Source, VolumeMode, volume_mode
+from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from .volume_curve import main_mute_for_level, percent_to_db
 from .volume_floor import RECONCILE_DRIFT_DB
 

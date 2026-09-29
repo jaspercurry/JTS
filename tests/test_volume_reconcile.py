@@ -26,7 +26,7 @@ from jasper.atomic_io import advisory_file_lock
 from jasper.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import camilla_graph_mutation
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC

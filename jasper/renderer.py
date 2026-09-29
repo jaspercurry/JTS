@@ -27,12 +27,12 @@ import logging
 import re
 from typing import Any
 
-from . import librespot_state
+from jasper.playback_state import librespot_state
 from .busctl import system_busctl
-from .music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
+from jasper.playback_state.music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
 from .platform import wire
 from .platform.uds import mux_socket_command
-from .source_state import (
+from jasper.playback_state.source_state import (
     MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
     airplay_playing,
     bluetooth_playing,

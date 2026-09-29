@@ -23,7 +23,7 @@ from ..aec_sweep import (
     NS_LEVEL_ENV,
     knob_default,
 )
-from ..wake_condition_context import ConditionContext
+from jasper.playback_state.wake_condition_context import ConditionContext
 from ..wake_events import (
     CAPTURE_POST_SEC,
     CAPTURE_PRE_SEC,

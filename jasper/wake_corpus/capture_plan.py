@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,

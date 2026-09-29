@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from .music_sources import Source
+from jasper.playback_state.music_sources import Source
 
 # AirPlay's native map lives in shairport's volume hook,
 # deploy/bin/jasper-airplay-volume (ADR-0206), not here.

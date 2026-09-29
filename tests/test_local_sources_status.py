@@ -16,7 +16,7 @@ import pytest
 
 from jasper.bluetooth.availability import BluetoothAvailability
 from jasper.local_sources import local_source_lifecycle, status
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 
 AIRPLAY_UNIT = local_source_lifecycle(Source.AIRPLAY).intent_unit
 SPOTIFY_UNIT = local_source_lifecycle(Source.SPOTIFY).intent_unit

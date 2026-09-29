@@ -36,7 +36,7 @@ from jasper.cli.usb_mic import (
     _split_writer_periods,
     _source_age_percentiles,
 )
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.source_intent import intent_env_key
 from jasper.usb_mic import (
     USB_MIC_LEG_KEY,

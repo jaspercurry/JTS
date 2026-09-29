@@ -71,7 +71,7 @@ from jasper.output_hardware import (
     state_path,
 )
 from jasper.shell_env import render_shell_assignments
-from jasper.install_profile import INSTALL_PROFILE_FILE
+from jasper.playback_state.install_profile import INSTALL_PROFILE_FILE
 
 logger = logging.getLogger(__name__)
 

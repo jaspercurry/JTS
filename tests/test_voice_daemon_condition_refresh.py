@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from jasper.wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
+from jasper.playback_state.wake_condition_context import AMBIENT_FLOOR_DBFS, classify_condition
 from tests._wake_loop import wake_loop_for_tests
 
 

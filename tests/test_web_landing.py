@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.install_profile import system_capabilities_for_profile
+from jasper.playback_state.install_profile import system_capabilities_for_profile
 from jasper.web.chrome import CANONICAL_ICON_SPRITE
 from jasper.web.landing import render_landing, substitutions, write_hub_pages
 from jasper.web.nav import children, entry, hub_paths, render_hub

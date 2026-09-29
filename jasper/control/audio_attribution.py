@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ._health_fields import detail_row, finite_number, mapping
 
 ATTRIBUTION_NETWORK_RATIO = 0.35

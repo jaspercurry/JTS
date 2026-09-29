@@ -22,17 +22,17 @@ import re
 from pathlib import Path
 from typing import Any
 
-from . import librespot_state
-from .bluetooth.avrcp import a2dp_sink_playing
-from .busctl import name_is_absent, run_busctl
-from .fanin.status import (
+from jasper.playback_state import librespot_state
+from jasper.bluetooth.avrcp import a2dp_sink_playing
+from jasper.busctl import name_is_absent, run_busctl
+from jasper.fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
     read_fanin_status,
 )
-from .json_fields import finite_float
+from jasper.json_fields import finite_float
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.source_state")
 
 
 MPRIS_DEST = "org.mpris.MediaPlayer2.ShairportSync"

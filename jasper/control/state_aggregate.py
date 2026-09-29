@@ -15,19 +15,19 @@ from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence, TypeVar
 
-from .. import librespot_state
+from jasper.playback_state import librespot_state
 from ..accessories import status as accessory_status
 from ..active_speaker.audition import audition_summary
 from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 from ..json_fields import as_mapping
-from ..music_sources import MUSIC_SOURCE_VALUES, Source
+from jasper.playback_state.music_sources import MUSIC_SOURCE_VALUES, Source
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
 )
 from ..output_hardware import load_state as load_output_hardware_state
 from ..renderer import PROBE_ORDER
-from ..source_state import usbsink_direct_audible
+from jasper.playback_state.source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
 from ..log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
@@ -138,7 +138,7 @@ _VOICE_STATUS_WITHHELD_KEYS = frozenset({
 
 def _usbsink_renderer_playing(fanin_status: dict[str, Any] | None) -> bool:
     """Whether the USB-sink DIRECT lane is audible: the level predicate, not
-    mux's streaming edge (see :func:`jasper.source_state.usbsink_streaming`).
+    mux's streaming edge (see :func:`jasper.playback_state.source_state.usbsink_streaming`).
     False when fan-in exposes no DIRECT lane.
     """
 

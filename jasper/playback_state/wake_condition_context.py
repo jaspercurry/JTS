@@ -5,7 +5,7 @@
 """Runtime acoustic-condition estimator for wake telemetry.
 
 Turns the two cheap runtime signals the daemon already has at a wake fire
-into one :data:`jasper.wake_conditions.CONDITIONS` label:
+into one :data:`jasper.playback_state.wake_conditions.CONDITIONS` label:
 
   * **music** — from cheap playback-chain loudness telemetry refreshed by
     the daemon before the wake turn. Music is the dominant false-fire
@@ -46,7 +46,7 @@ class ConditionContext:
     """The acoustic situation at a wake fire.
 
     Recorded as ``wake_events.condition_class``. ``condition`` is always one of
-    :data:`jasper.wake_conditions.CONDITIONS`.
+    :data:`jasper.playback_state.wake_conditions.CONDITIONS`.
     """
 
     condition: str

@@ -10,7 +10,7 @@ from jasper import source_intent_units as units
 from jasper.control import restart_broker
 from jasper.local_sources import local_source_lifecycles, reconcile
 from jasper.multiroom.effective_role import FOLLOWER_STATUS_FILE
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from tests import nginx_site
 from tests.install_surface import installer_text
 from tests.systemd_unit_helpers import (

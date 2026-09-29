@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 from ...accounts import legacy_cache_path, registry_path
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ...librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
+from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from ...volume_persistence import configured_path as volume_state_path
 from ...config import Config
 from ...env_load import (
@@ -33,7 +33,7 @@ from ...env_load import (
     load_env_files as _load_env_files,
 )
 from ...identity.reader import resolve_hostname
-from ...install_profile import (
+from jasper.playback_state.install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
