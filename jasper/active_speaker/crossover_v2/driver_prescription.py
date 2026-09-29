@@ -327,7 +327,7 @@ class DriverPrescription:
     subaudible_filters: int | None = None
     #: How many characters of the submitted rationale were dropped to fit
     #: :data:`RATIONALE_MAX_CHARS`.
-    rationale_dropped_chars: int | None = None
+    rationale_dropped_chars: int = 0
     #: How many boosting filters sit inside a crossover overlap — see
     #: :func:`_boosts_in_crossover_overlap`.
     boosts_in_crossover_overlap: int | None = None
