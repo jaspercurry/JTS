@@ -588,6 +588,8 @@ def test_a_base_that_does_not_reopen_refuses_by_its_code_and_the_packet_still_bu
     assert crossover_prescriber.main(["contract", "--round", str(root)]) == crossover_prescriber.EXIT_UNREADABLE
     contract = json.loads(capsys.readouterr().out)
     assert (fit["status"], fit["code"], contract["status"], contract["reason"]) == ("unreadable", code) * 2
+    assert crossover_prescriber.main(["contract", "--round", str(root), "--section", "room"]) == crossover_prescriber.EXIT_OK
+    assert "schema" in json.loads(capsys.readouterr().out)["sections"]["room"]
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     digests = packet[EVIDENCE_KEY]["contracts"]
     assert ([entry["reason_summary"] for entry in packet["fits"]], packet["limits"]["speaker-set"], digests.pop("speaker")) == (
