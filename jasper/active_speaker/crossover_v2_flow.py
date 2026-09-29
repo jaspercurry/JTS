@@ -421,7 +421,7 @@ class CrossoverV2Session:
 
     @property
     def measure_entry_baseline(self) -> "EntryBaseline | None":
-        """#2291's pre-apply side of this round, or ``None``."""
+        """The session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
         return self._measure_entry_baseline
 
     @property
