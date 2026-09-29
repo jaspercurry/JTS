@@ -458,7 +458,7 @@ def report_lines(
         f" {'meets' if met else 'MISSES'} the {SUPPRESSION_FLOOR_DB:g} dB floor",
         f"- common_delay_ms {document['common_delay_ms']:g} ms;"
         f" front chain gain {document['front']['gain_db']:+.2f} dB",
-        f"- headroom charge as written / unmuted: {rear_branch_sum_headroom_db(document):.3f}"
+        f"- rear stage's own peak as written / unmuted: {rear_branch_sum_headroom_db(document):.3f}"
         f" / {rear_branch_sum_headroom_db(unmuted):.3f} dB",
     ]
     return lines, met
