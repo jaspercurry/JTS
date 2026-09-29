@@ -416,9 +416,9 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_COVERAGE_SHORT: "The captured takes do not cover the band this figure is read over.",
     },
     ("name_comparand", "Name the take or forecast to compare with"): {
-        "compare_no_common_band": "The two sides share no band that both cover above the window's trusted floor.",
-        "compare_no_comparand": "No base take in this round and no earlier banked take matches this take's place, "
-                                "drivers and graph scope.",
+        "compare_no_common_band": "The two sides share no band above the window's trusted floor.",
+        "compare_no_comparand": "This round has no base take at this take's place, and no earlier banked take "
+                                "matches its place, drivers and graph scope.",
         "compare_preview_unreadable": "The forecast named as side A is not a readable judge preview.",
         "compare_sample_rates_differ": "The two sides were recorded at different sample rates.",
     },
@@ -426,7 +426,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "take_band_too_narrow": "The take's band above this window's trusted floor is too narrow to read.",
     },
     ("choose_window", "Choose a window inside the render"): {
-        "dsp_replay_window_unavailable": "The requested window runs past the end of the render or is too short to read.",
+        "dsp_replay_window_unavailable": "The requested window falls outside the render or is too short to read.",
     },
     ("render_again", "Render the graph again with dsp-replay"): {
         "bass_replay_manifest_predates_adr_0359": "This render's delivered output includes the retired volume taper, "

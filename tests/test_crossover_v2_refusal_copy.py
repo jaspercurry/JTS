@@ -114,6 +114,7 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
         assert refusal_copy.refusal_copy_for(code)[1]["id"] == spec.next_action["id"]
 
 
+# The readers own most of these codes outside evidence_reasons, so the module scan below cannot see them.
 @pytest.mark.parametrize("code, action", [
     (take_reading.REFUSE_TAKE_BAND_TOO_NARROW, "choose_window"),
     (take_reading.REFUSE_COMPARE_NO_COMMON_BAND, "name_comparand"),
