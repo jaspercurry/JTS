@@ -25,6 +25,7 @@ import importlib
 import importlib.util
 import json
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
@@ -33,7 +34,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from jasper.active_speaker import baseline_profile, bundles, candidate_bank, round_bank
+from jasper.active_speaker import baseline_profile, bundles, candidate_bank, round_bank, round_view_builders
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
@@ -156,6 +157,7 @@ def test_the_failing_codes_are_exactly_one_two_three() -> None:
 
     assert _refusal.EXIT_OK == 0
     assert sorted(_refusal.STATUS_BY_CODE) == [1, 2, 3]
+    assert sorted(_refusal.EXIT_MEANINGS) == [0, 1, 2, 3]
 
 
 def _basic_profile_argv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -362,9 +364,9 @@ def _nearfield_argv(request: pytest.FixtureRequest, root: Path, kept: bool = Tru
     return ["nearfield", str(bundle)]
 
 
-def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate") -> list[str]:
+def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate", **fields: Any) -> list[str]:
     bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank_take("baseline", scope=scope))
+    path = asyncio.run(bank_take("baseline", scope=scope, **fields))
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
     write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -714,14 +716,44 @@ def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> li
     return ["distortion", str(root / "bundle")]
 
 
-#: One case per view family whose evidence can fail to grade: a round the view
-#: reads, and the reason it names for not grading it.
+def _ghost_bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    bundle = request.getfixturevalue("summed_capture_bundle")[0]
+    write_manifest(bundle, program="bass", groups=[manifest_set([("ghost.json", {"take_id": "ghost"})], set_id="bass")])
+    return ["bass", str(bundle), "--set", "bass"]
+
+
+def _disjoint_seats_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    select, bands = round_view_builders.select_seat_takes, ((20.0, 100.0), (1000.0, 20000.0))
+
+    def disjoint(*args: Any, **kwargs: Any) -> Any:
+        selection = select(*args, **kwargs)
+        return replace(selection, takes=tuple(replace(take, band_hz=bands[index % 2])
+                                              for index, take in enumerate(selection.takes)))
+
+    request.getfixturevalue("monkeypatch").setattr(round_view_builders, "select_seat_takes", disjoint)
+    return ["room", str(bank_seat_round(root))]
+
+
+def _pre_adr_0359_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    argv = _dsp_levels_argv(request, root)
+    manifest = Path(argv[1])
+    manifest.write_text(json.dumps({**json.loads(manifest.read_text()),
+                                    "bass_attribution": {"stages": {"volume_taper": {}}}}))
+    return argv
+
+
+#: Evidence a view reads and cannot grade, and the reason it names for not grading it.
 _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str]] = {
     "bass": (lambda request, root: _bass_argv(request, root, scope="drivers"), "measurement_analysis_program_unsupported"),
+    "bass (no captured take)": (lambda request, root: _bass_argv(request, root, measurement_status="incomplete"),
+                                "measurement_captures_missing"),
     "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
     "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
                           "classification_no_features_detected"),
     "distortion": (_stateless_distortion_argv, "state_unreadable"),
+    "dsp-levels (past the render)": (lambda request, root: [*_dsp_levels_argv(request, root)[:-2], "1", "2"],
+                                     "dsp_replay_window_unavailable"),
+    "dsp-levels (pre-ADR-0359 bass)": (_pre_adr_0359_levels_argv, "bass_replay_manifest_predates_adr_0359"),
     "frequency": (_unbanked_frequency_argv, "take_curves_not_banked"),
     "frequency --analyze-wavs": (lambda request, root: _analyzed_frequency_argv(request, root, "wav_hash"),
                                  "measurement_capture_identity_mismatch"),
@@ -729,6 +761,7 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
                 "round_role_not_recorded"),
     "nearfield": (lambda request, root: _nearfield_argv(request, root, kept=False), "nearfield_no_kept_takes"),
     "room": (_unanalysed_room_argv, "take_curves_not_banked"),
+    "room (no shared bin)": (_disjoint_seats_argv, "coverage_short"),
     "sweep": (lambda request, root: _sweep_argv(request, root, poses=1), "gate_sweep_single_pose"),
 }
 
@@ -745,13 +778,24 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
     assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
 
 
-@pytest.mark.parametrize("fault, code", [("record", "commissioning_evidence_integrity_mismatch"), ("reference", None)])
+#: Input a view cannot read, and the code its refusal carries: a record the
+#: evidence store cannot read, a reference level no analysis can use, and a set
+#: that names a take with no record.
+_UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
+    "bass (a take with no record)": (_ghost_bass_argv, None),
+    "frequency (record)": (lambda request, root: _analyzed_frequency_argv(request, root, "record"),
+                           "commissioning_evidence_integrity_mismatch"),
+    "frequency (reference)": (lambda request, root: _analyzed_frequency_argv(request, root, "reference"), None),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_UNREADABLE))
 def test_what_a_view_cannot_read_is_unreadable_not_refused(
-    fault: str, code: str | None, request: pytest.FixtureRequest, tmp_path: Path,
+    case: str, request: pytest.FixtureRequest, tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A record the evidence store cannot read, or a reference level no analysis can use."""
+    argv, code = _UNREADABLE[case]
     monkeypatch.chdir(tmp_path)
-    assert round_views.main(_analyzed_frequency_argv(request, tmp_path, fault)) == _refusal.EXIT_UNREADABLE
+    assert round_views.main(argv(request, tmp_path)) == _refusal.EXIT_UNREADABLE
     record = json.loads(capsys.readouterr().out)
     assert (record["reason"], record.get("code")) == (round_views.REASON_UNREADABLE, code)

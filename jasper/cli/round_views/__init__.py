@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+import textwrap
 from functools import partial
 from importlib import import_module
-from typing import Sequence
+from typing import Mapping, Sequence
 
+from jasper.active_speaker.round_view_artifacts import CatalogRow
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli._report import output_path
 from jasper.cli._refusal import (
@@ -20,6 +22,7 @@ from jasper.cli._refusal import (
     EXIT_UNREADABLE,
     EXIT_WRITE_FAILED,
     StageFailed,
+    exit_codes_help,
     failed,
 )
 
@@ -66,21 +69,40 @@ _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
     "delay", "room", "room_grade", "bass", "inventory", "speaker_fit", "nearfield",
 ))
 
+#: argparse wraps its own help at 78 columns on an 80-column terminal; a view's rendered text matches it.
+_HELP_WIDTH = 78
+
+
+def _view_help(parser: argparse.ArgumentParser, rows: Mapping[str, CatalogRow]) -> None:
+    """A view's ``--help`` from its rows: each mode's question and when not to use it, its example, its exit codes."""
+    modes = []
+    for command, row in rows.items():
+        mode = " ".join(command.split()[2:])
+        modes.append(textwrap.fill(f"{mode}: {row.question}" if mode else row.question, _HELP_WIDTH) + "\n"
+                     + textwrap.fill(f"Not for {row.avoid}.", _HELP_WIDTH, initial_indent="  ", subsequent_indent="  "))
+    examples = [f"  {' '.join((command, *row.argv))}" for command, row in rows.items()]
+    writes = any(row.artifact for row in rows.values())
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    parser.description = "\n\n".join(modes)
+    parser.epilog = "\n\n".join((
+        "\n".join(("EXAMPLES" if len(examples) > 1 else "EXAMPLE", *examples)),
+        exit_codes_help((EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, *((EXIT_WRITE_FAILED,) if writes else ()))),
+    ))
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
-            "Read measured round evidence, including off-axis directivity and mark-take "
-            "repeat spread within and between rounds. Answers use stdout; detailed reports use files."
+            "Read measured round evidence. `catalog` lists every tuning tool with the\n"
+            "question it answers, and each view's --help adds when not to use it, an\n"
+            "example and its exit codes. Answers use stdout; detailed reports use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "EXAMPLES\n"
             "  jasper-round-views catalog --program rear\n"
-            "  jasper-round-views frequency captures/.../session-1/round-3\n"
-            "  jasper-round-views directivity captures/.../round-3 --set <set-id>\n"
-            "  jasper-round-views repeat captures/.../round-2 captures/.../round-3\n"
+            "  jasper-round-views directivity --help\n"
             "\n"
             "OPTIONAL MODEL-ERROR FLOOR (Python)\n"
             "  jasper.active_speaker.model_error_store.adopt_floor(floor, path=...)\n"
@@ -96,18 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  A take is named by its id: --take, or --<side>-take where a view\n"
             "  reads two (jasper-round show lists them).\n"
             "\n"
-            "EXIT CODES\n"
-            "  0  EXIT_OK -- the answer\n"
-            "  1  EXIT_REFUSED -- the round read, and the view cannot grade\n"
-            "     its evidence; the reason names why (a set with no 0°/0°\n"
-            "     take, rounds that share no driver's mark takes, takes\n"
-            "     that banked no curves)\n"
-            "  2  EXIT_UNREADABLE -- the round or source could not be read\n"
-            "     at all\n"
-            "  3  EXIT_WRITE_FAILED -- graded, but the destination could\n"
-            "     not be written\n"
-            "  1-3 print \"<status> (<reason>): <detail>\" on stderr and the\n"
-            "     same record as JSON on stdout."
+            f"{exit_codes_help()}"
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -117,9 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     for choice in sub._choices_actions:
         if rows := view_rows(choice.dest):
-            every = any(not row.programs for row in rows)
-            programs = "all" if every else "/".join(dict.fromkeys(p for row in rows for p in row.programs))
+            every = any(not row.programs for row in rows.values())
+            programs = "all" if every else "/".join(dict.fromkeys(p for row in rows.values() for p in row.programs))
             choice.help = f"[{programs}] {choice.help}"
+            _view_help(sub.choices[choice.dest], rows)
 
     for child in sub.choices.values():
         child.allow_abbrev = False

@@ -39,18 +39,19 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("dsp-replay", help="render a graph and PCM16 WAV through the installed native DSP; no audio devices")
-    parser.add_argument("graph", type=Path)
-    parser.add_argument("stimulus", type=Path)
-    parser.add_argument("--main-db", type=float, required=True)
+    parser.add_argument("graph", type=Path, metavar="<graph.yml>", help="the CamillaDSP graph to render")
+    parser.add_argument("stimulus", type=Path, metavar="<stimulus.wav>", help="the PCM16 WAV it plays")
+    parser.add_argument("--main-db", type=float, required=True, metavar="DB", help="the Main volume, in dB")
     parser.add_argument("--out", type=Path, required=True, help="render directory; use pi-run-diagnostic.sh on the Pi")
     parser.add_argument("--bass-descriptor", type=Path, help="also render bass off and full boost from this descriptor (graphs with the ADR-0359 block)")
     parser.add_argument("--bass-channels", type=int, nargs="+", default=[], help="bass output indices; validated against the graph and descriptor")
     parser.add_argument("--preset", type=Path, help="active-speaker preset JSON for shared cardioid bass detection")
     parser.set_defaults(func=_cmd_replay)
     levels = sub.add_parser("dsp-levels", help="read digital bass-band levels from an exact native render (laptop)")
-    levels.add_argument("manifest", type=Path)
+    levels.add_argument("manifest", type=Path, metavar="<dsp_replay.json>", help="the manifest dsp-replay wrote beside its render")
     levels.add_argument("--raw", type=Path, required=True, help="copied output.f64le")
-    levels.add_argument("--window-s", type=float, nargs=2, required=True, metavar=("START", "STOP"))
+    levels.add_argument("--window-s", type=float, nargs=2, required=True, metavar=("START", "STOP"),
+                        help="the window to read, in seconds of the render")
     levels.add_argument("--out", type=output_path, help="artifact path; stdout (-) is retired (ADR-0356)")
     levels.set_defaults(func=_cmd_levels)
 

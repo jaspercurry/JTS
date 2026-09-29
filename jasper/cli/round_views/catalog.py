@@ -11,6 +11,7 @@ import shlex
 
 from jasper.active_speaker.measurement_programs import PURPOSES, available_presets, preset
 from jasper.active_speaker.round_view_artifacts import read_purposes
+from jasper.cli._refusal import EXIT_OK, exit_codes_help
 
 from ._common import ANSWER_SCHEMAS, CATALOG, answer
 
@@ -54,8 +55,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "In argv, <this-round> is a banked round id or directory; jasper-round show\n"
             "lists the <set-id> and <take-id> values.\n"
             "\n"
-            "EXIT CODES\n"
-            "  0  the answer; an unknown --program is a usage error (2)"
+            f"{exit_codes_help((EXIT_OK,))}; an unknown --program is a usage error (2)"
         ),
     )
     parser.add_argument("--program", choices=PURPOSES, help="only the tools this program's rounds can use")

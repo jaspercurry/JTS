@@ -98,7 +98,8 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("sweep", help="read the window ladder over a round or take")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    parser.add_argument("--scope", required=True, choices=("round", "take"))
+    parser.add_argument("--scope", required=True, choices=("round", "take"),
+                        help="round: each band's spread across poses, gate by gate; take: one take through each gate")
     add_set_argument(parser)
     parser.add_argument("--take", help="selected take ID within the set; required for take scope")
     parser.add_argument("--role", help=("take scope: the recorded response to read, summed or a target "
