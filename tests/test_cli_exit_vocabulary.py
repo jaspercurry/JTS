@@ -581,6 +581,15 @@ def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list
     return ["frequency", str(root / "bundle")]
 
 
+def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
+    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
+    if fault == "record":
+        record = bundle / EVIDENCE_ROOT / "artifacts" / path
+        record.write_text(f"{record.read_text()} ")
+    return ["frequency", str(bundle), "--analyze-wavs", *(["--reference-db=nan"] if fault == "reference" else [])]
+
+
 def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     (root / "bundle" / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
     (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "s-1"}))
@@ -597,6 +606,8 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
                           "classification_no_features_detected"),
     "distortion": (_stateless_distortion_argv, "state_unreadable"),
     "frequency": (_unbanked_frequency_argv, "take_curves_not_banked"),
+    "frequency --analyze-wavs": (lambda request, root: _analyzed_frequency_argv(request, root, "wav_hash"),
+                                 "measurement_capture_identity_mismatch"),
     "impulse": (lambda request, root: [*_kept_take_argv("impulse")(request, root), "--role", "woofer"],
                 "round_role_not_recorded"),
     "nearfield": (lambda request, root: _nearfield_argv(request, root, kept=False), "nearfield_no_kept_takes"),
@@ -613,4 +624,17 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
     argv, reason = _CANNOT_GRADE[view]
     monkeypatch.chdir(tmp_path)
     assert round_views.main(argv(request, tmp_path)) == _refusal.EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["reason"] == reason
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
+
+
+@pytest.mark.parametrize("fault, code", [("record", "commissioning_evidence_integrity_mismatch"), ("reference", None)])
+def test_what_a_view_cannot_read_is_unreadable_not_refused(
+    fault: str, code: str | None, request: pytest.FixtureRequest, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A record the evidence store cannot read, or a reference level no analysis can use."""
+    monkeypatch.chdir(tmp_path)
+    assert round_views.main(_analyzed_frequency_argv(request, tmp_path, fault)) == _refusal.EXIT_UNREADABLE
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("code")) == (round_views.REASON_UNREADABLE, code)

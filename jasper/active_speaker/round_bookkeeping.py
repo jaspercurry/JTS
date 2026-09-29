@@ -59,7 +59,8 @@ def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
         path = default_out(inputs, target, row.artifact, set_id)
         payload, summary = getattr(import_module(f".{module}", __package__), builder)(inputs, target, set_id, incumbent)
     except (RoundSetRefused, EvidenceUnavailable, RoomPrescriptionRefused) as exc:
-        return {"view": view, "status": "unavailable", "reason": exc.reason, "detail": exc.detail}
+        return {"view": view, "status": "unavailable", "reason": exc.reason, "detail": exc.detail,
+                "next_action": refusal_copy_for(exc.reason)[1]}
     except CrossoverV2Refused as exc:
         _, action = refusal_copy_for(exc.code)
         return {"view": view, "status": "unavailable", "reason": exc.code, "code": exc.code,

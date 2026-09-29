@@ -23,7 +23,7 @@ from .crossover_v2.rear_views import rear_document
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
-from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, round_inputs, read_run_manifest, resolve_set, default_out
+from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, RoundViewsError, round_inputs, read_run_manifest, resolve_set, default_out
 from .round_view_artifacts import ARTIFACT_BY_VIEW
 from .round_packet_report import gate_fields
 
@@ -72,7 +72,7 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                                            if key not in {"freqs_hz", "magnitude_db", "smoothing_fractional_octave"}}}))
         return replace(run, series=tuple(series))
     except CommissioningEvidenceStoreError as exc:
-        raise EvidenceUnavailable(exc.code.value, {"detail": str(exc)}) from exc
+        raise RoundViewsError(f"{exc.code.value}: {exc}", code=exc.code.value) from exc
 
 
 

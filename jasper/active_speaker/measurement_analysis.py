@@ -129,7 +129,7 @@ def analyzed_measurements(bundle_dir: Path, *, paths: Iterable[str] | None = Non
 
 def analyze_measurement_bundle(bundle_dir: Path, *, run_reference_db: float | None = None) -> FrequencyRun:
     if run_reference_db is not None and finite_float(run_reference_db) is None:
-        raise EvidenceUnavailable("measurement_reference_invalid", {"reference_db": run_reference_db})
+        raise ValueError(f"measurement_reference_invalid: {run_reference_db}")
     info = json.loads((bundle_dir / "info.json").read_text())
     documents = [take.document() for take in analyzed_measurements(bundle_dir)]
     if not documents:

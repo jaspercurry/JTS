@@ -36,6 +36,7 @@ from jasper.active_speaker.crossover_v2.feature_classifier import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli._refusal import (
     EXIT_UNREADABLE,
     StageFailed,
@@ -105,7 +106,15 @@ def _cmd_classify_features(args: argparse.Namespace) -> int:
     args.bundle_dir = inputs.session_dir
     round_dir = _round_dir(args.bundle_dir)
     programs_dir = round_program_dir(args.bundle_dir, round_dir, ADMISSIBLE_PHASES)
-    artifact = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir)
+    try:
+        artifact = stage(
+            EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _classify, args, programs_dir
+        )
+    except EvidenceUnavailable as refusal:
+        # The instrument's own reason, and the directory actually read: a
+        # refusal that named neither starts a wrong-directory hunt.
+        refusal.detail["programs_dir"] = str(programs_dir)
+        raise
 
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(artifact, args.out, resolved_out(args.bundle_dir, spec.artifact), schema=spec.schema)
