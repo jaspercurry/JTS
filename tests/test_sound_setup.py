@@ -58,9 +58,11 @@ from jasper.biquad import PeqFilter
 from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import (
+    DspApplyError,
     DspApplyState,
     camilla_graph_mutation,
     dsp_write_epoch,
+    last_dsp_apply_state,
     record_dsp_apply_state,
 )
 from jasper.audio_routes.output_hardware import (
@@ -139,7 +141,7 @@ from .volume_coordinator_fixtures import (
     _MinimalCamillaClient,
     _real_controller,
 )
-from .test_active_speaker_runtime_contract import _active_baseline_yaml
+from .test_active_speaker_runtime_contract import _active_baseline_yaml, _program_bake_yaml
 
 
 class _RuntimeStep:
@@ -336,6 +338,32 @@ def _record_dsp_epoch(path: Path, op_id: str) -> None:
         ),
         state_path=path,
     )
+
+
+_ROOM_PEQ = (PeqFilter(freq=80.0, q=4.0, gain=-3.0),)
+
+
+def _eq_box(
+    monkeypatch, tmp_path: Path, name: str = "sound_current.yml", *,
+    peqs: tuple[PeqFilter, ...] = _ROOM_PEQ, layout: bool = True,
+    epoch: str | None = None, fail_set: bool = False,
+) -> tuple[Path, FakeCamilla]:
+    """CamillaDSP running ``configs/<name>``, a room config carrying ``peqs``,
+    with DSP-apply and sound-settings state under ``tmp_path``.
+
+    ``layout`` saves the passive speaker EQ composes over; ``epoch`` records a
+    finished DSP apply under that op id.
+    """
+    if layout:
+        _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    if epoch is not None:
+        _record_dsp_epoch(tmp_path / "dsp.json", epoch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / name).write_text(_room_config(list(peqs)))
+    return config_dir, FakeCamilla(str(config_dir / name), fail_set=fail_set)
 
 
 class FakeCamillaWithoutLiveRaw:
@@ -543,6 +571,7 @@ def _drive_raw_sound_post(
     body: bytes = b"must-not-be-read",
     response_sink: io.BytesIO | None = None,
     idle_hold=sound_setup.no_hold,
+    camilla_factory=lambda: None,
 ) -> tuple[bytes, list[int]]:
     """Drive the real sound Handler with an otherwise-valid raw POST."""
 
@@ -550,7 +579,7 @@ def _drive_raw_sound_post(
         profile_path=tmp_path / "sound_profile.json",
         library_path=tmp_path / "sound_profiles.json",
         config_dir=tmp_path / "configs",
-        camilla_factory=lambda: None,
+        camilla_factory=camilla_factory,
         idle_hold=idle_hold,
     )
     raw = (
@@ -3614,23 +3643,12 @@ def test_state_reports_whether_the_loaded_graph_can_host_eq(
 ):
     """/sound/eq/ opens on the refusal instead of discovering it at save time,
     so /state says whether the LOADED graph can carry preference EQ."""
-    import jasper.audio_control.camilla
-
-    if layout:
-        _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    else:
-        monkeypatch.setenv(
-            "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "no_topology.json"),
-        )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / config_name
-    current.write_text(
-        "devices: {}\n" if config_name == "foreign.yml" else _room_config()
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, config_name, peqs=(), layout=layout,
     )
-    monkeypatch.setattr(
-        jasper.audio_control.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
-    )
+    if config_name == "foreign.yml":
+        (config_dir / config_name).write_text("devices: {}\n")
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: fake)
 
     with sound_server(tmp_path) as base:
         payload = json.loads(
@@ -3649,7 +3667,6 @@ def test_state_falls_open_when_camilla_cannot_be_read(
 ):
     """The POST refusal is the fail-closed gate; an unreachable CamillaDSP must
     not blank the editor."""
-    import jasper.audio_control.camilla
 
     class _Unreachable:
         async def get_config_file_path(self, *, best_effort: bool = False):
@@ -3657,7 +3674,7 @@ def test_state_falls_open_when_camilla_cannot_be_read(
                 raise RuntimeError("CamillaDSP websocket is not answering")
             return None
 
-    monkeypatch.setattr(jasper.audio_control.camilla, "primary_controller", _Unreachable)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", _Unreachable)
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(f"{base}/state") as resp:
@@ -3673,24 +3690,17 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
 ):
     """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
     renders the editor, so no other page pays for it."""
-    import jasper.audio_control.camilla
-    import jasper.sound.graph_carrier as graph_carrier
-
     # A reachable controller with a real loaded config, so nothing but the page
     # mode can be what stops the probe.
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    monkeypatch.setattr(
-        jasper.audio_control.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
-    )
+    _, fake = _eq_box(monkeypatch, tmp_path, peqs=())
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: fake)
 
     def _must_not_probe(*_args, **_kwargs):
         raise AssertionError("a hardware page must not probe the loaded graph")
 
-    monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _must_not_probe)
+    monkeypatch.setattr(
+        "jasper.sound.graph_carrier.eq_block_for_loaded_config", _must_not_probe,
+    )
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(
@@ -3705,16 +3715,7 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
 
 
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
-    )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml")
     profile_path = tmp_path / "sound_profile.json"
 
     payload = await sound_setup._apply_profile(
@@ -3737,14 +3738,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
 async def test_reconcile_current_dsp_reemits_saved_profile_without_restamping(
     tmp_path: Path, monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
     profile_path = tmp_path / "sound_profile.json"
     save_profile(
         SoundProfile(
@@ -3799,13 +3793,8 @@ async def test_reconcile_current_dsp_skips_unknown_config(
 async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
     tmp_path: Path, monkeypatch,
 ):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "sound_audition.yml", layout=False)
     audition = config_dir / "sound_audition.yml"
-    audition.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(audition))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=6.0)), profile_path)
 
@@ -3829,7 +3818,6 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
 async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     # Realistic apply-then-redeploy: the wizard save stamps sound_current.yml
     # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id, and a
     # redeploy's dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID —
@@ -3837,14 +3825,9 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     # must still read as unchanged. The timestamp id below is load-bearing: a
     # pre-stamped reconcile id would make the raw byte comparison match by
     # accident, and the production no-op path never sees that id.
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, peqs=())
     profile = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
     current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(profile, profile_path)
     await reconcile_current_dsp(
@@ -3922,16 +3905,8 @@ async def test_apply_profile_trims_the_output_only_when_match_loudness_is_on(
     """By default boosts boost. The preamp filter is DEFINED either way — its
     presence must never depend on a value — and inert at 0 dB until
     match-loudness asks for a trim."""
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text(json.dumps({"match_loudness": match_loudness}))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml", peqs=())
+    (tmp_path / "settings.json").write_text(json.dumps({"match_loudness": match_loudness}))
 
     payload = await sound_setup._apply_profile(
         SoundProfile(simple_eq=SimpleEq(bass_db=6.0)),
@@ -3950,15 +3925,8 @@ async def test_apply_profile_trims_the_output_only_when_match_loudness_is_on(
 async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     tmp_path: Path, monkeypatch
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml", peqs=())
+    settings_path = tmp_path / "settings.json"
     profile_path = tmp_path / "sound_profile.json"
     # An applied profile with a boost, stamped at a fixed time.
     save_profile(
@@ -3989,8 +3957,10 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
 async def test_apply_settings_merges_only_recognized_posted_fields(
     tmp_path: Path, monkeypatch,
 ):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", peqs=(), layout=False,
+    )
+    settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps({
             "headroom_trim_db": 4.0,
@@ -3998,12 +3968,6 @@ async def test_apply_settings_merges_only_recognized_posted_fields(
             "volume_floor_db": -36.0,
         })
     )
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
 
     payload = await sound_setup._apply_settings(
         {"match_loudness": True, "not_a_sound_setting": "discard me"},
@@ -4822,15 +4786,10 @@ async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
 ):
     # Without a saved layout the re-apply refuses before it ever reaches the
     # failing reload, and a refusal is a typed body, not this warning.
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current), fail_set=True)  # reload fails
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", fail_set=True,
+    )
+    settings_path = tmp_path / "settings.json"
 
     payload = await sound_setup._apply_settings(
         SoundSettings(headroom_trim_db=6.0),
@@ -4882,21 +4841,10 @@ async def test_audition_profile_loads_draft_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
-    )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml")
     profile_path = tmp_path / "sound_profile.json"
     # match-loudness on -> the audition gets a loudness-weighted output trim.
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text('{"match_loudness": true}')
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    (tmp_path / "settings.json").write_text('{"match_loudness": true}')
     draft = SoundProfile(
         curve_id="harman",
         parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=3.0, q=1.0),),
@@ -4925,15 +4873,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
     profile_path = tmp_path / "sound_profile.json"
     draft = SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0))
 
@@ -4967,63 +4907,19 @@ async def _live(fake, draft, config_dir):
     )
 
 
-def _eq_box(monkeypatch, tmp_path):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    return config_dir, FakeCamilla(str(current))
-
-
-@pytest.mark.parametrize(
-    "moved",
-    [
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=5.0, q=1.0),
-            )),
-            id="gain",
-        ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=120.0, gain_db=2.0, q=1.0),
-            )),
-            id="frequency",
-        ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=4.5),
-            )),
-            id="q",
-        ),
-    ],
-)
-async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
-    tmp_path: Path, monkeypatch, moved,
-):
-    """The whole point: a drag must not reach the ducked swap path."""
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    start = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+def _one_band(**band) -> SoundProfile:
+    """One parametric band: 1 kHz, +2 dB, Q 1, with ``band``'s fields moved."""
+    return SoundProfile(parametric_bands=(
+        ParametricBand(**{"freq_hz": 1000.0, "gain_db": 2.0, "q": 1.0, **band}),
     ))
-    await _live(fake, start, config_dir)
-    swaps_after_install = len(fake.active_raw_values)
-    assert fake.ducks[0] is True
-
-    payload = await _live(fake, moved, config_dir)
-
-    assert payload["live_status"] == "live"
-    assert fake.ducks[-1] is False
-    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 @pytest.mark.parametrize(
-    "changed",
+    "edited",
     [
+        pytest.param(_one_band(gain_db=5.0), id="gain"),
+        pytest.param(_one_band(freq_hz=120.0), id="frequency"),
+        pytest.param(_one_band(q=4.5), id="q"),
         pytest.param(
             SoundProfile(parametric_bands=(
                 ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
@@ -5031,42 +4927,33 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
             )),
             id="band_added",
         ),
+        pytest.param(SoundProfile(parametric_bands=()), id="band_removed"),
+        pytest.param(_one_band(gain_db=0.0), id="gain_dragged_to_exactly_flat"),
         pytest.param(
-            SoundProfile(parametric_bands=()),
-            id="band_removed",
+            replace(_one_band(), curve_id="harman"), id="curve_preset_changed",
         ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
-            )),
-            id="gain_dragged_to_exactly_flat",
-        ),
-        pytest.param(
-            SoundProfile(curve_id="harman", parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-            )),
-            id="curve_preset_changed",
-        ),
+        # A biquad's type lives in its parameters; CamillaDSP recomputes
+        # coefficients in place.
+        pytest.param(_one_band(biquad_type="Highshelf"), id="retyped"),
     ],
 )
-async def test_the_live_graphs_slots_keep_the_pipeline_still(
-    tmp_path: Path, monkeypatch, changed,
+async def test_a_live_edit_writes_parameters_and_never_swaps_the_pipeline(
+    tmp_path: Path, monkeypatch, edited,
 ):
-    """Adding, removing or flattening a band, or switching the curve preset,
-    writes numbers, not a pipeline.
+    """The whole point: a drag must not reach the ducked swap path.
 
-    The live draft carries a slot per band and one fixed pair of curve shelves,
-    so none of these changes which filters exist — which is what would
-    otherwise rebuild CamillaDSP's filter group and reset every filter's state.
+    Moving, adding, removing, flattening or retyping a band, or switching the
+    curve preset, writes numbers, not a pipeline. The live draft carries a slot
+    per band and one fixed pair of curve shelves, so none of these changes
+    which filters exist — which is what would otherwise rebuild CamillaDSP's
+    filter group and reset every filter's state.
     """
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    one = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-    await _live(fake, one, config_dir)
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    await _live(fake, _one_band(), config_dir)
     swaps_after_install = len(fake.active_raw_values)
+    assert fake.ducks[0] is True
 
-    payload = await _live(fake, changed, config_dir)
+    payload = await _live(fake, edited, config_dir)
 
     assert payload["live_status"] == "live"
     assert fake.ducks[-1] is False
@@ -5084,10 +4971,8 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     level step. Derived from the SAVED profile it is one number for the whole
     session.
     """
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    settings_path = tmp_path / "settings.json"
-    settings_path.write_text('{"match_loudness": true}')
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    (tmp_path / "settings.json").write_text('{"match_loudness": true}')
     # Saved intent is flat, so the frozen trim is whatever flat earns...
     profile_path = tmp_path / "sound_profile.json"
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
@@ -5124,34 +5009,11 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     assert len(fake.active_raw_values) == 2
 
 
-async def test_retyping_a_band_writes_parameters_without_ducking(
-    tmp_path: Path, monkeypatch,
-):
-    """A biquad's type lives in its parameters; CamillaDSP recomputes coefficients in place."""
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    one = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-    await _live(fake, one, config_dir)
-    swaps_after_install = len(fake.active_raw_values)
-    retyped = SoundProfile(parametric_bands=(
-        ParametricBand(biquad_type="Highshelf", freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-
-    payload = await _live(fake, retyped, config_dir)
-
-    assert payload["live_status"] == "live"
-    assert fake.ducks[-1] is False
-    assert len(fake.active_raw_values) == swaps_after_install + 1
-
-
 async def test_a_redraw_that_changed_nothing_writes_nothing(
     tmp_path: Path, monkeypatch,
 ):
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    draft = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    draft = _one_band()
     await _live(fake, draft, config_dir)
 
     payload = await _live(fake, draft, config_dir)
@@ -5164,17 +5026,9 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     tmp_path: Path,
     monkeypatch,
 ):
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(state_path),
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, peqs=(), layout=False, epoch="newer-apply",
     )
-    _record_dsp_epoch(state_path, "newer-apply")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
     payload = await sound_setup._live_draft_profile(
@@ -5194,14 +5048,10 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     tmp_path: Path,
     monkeypatch,
 ):
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamillaWithoutLiveRaw(str(current))
+    config_dir, live = _eq_box(
+        monkeypatch, tmp_path, peqs=(), layout=False, epoch="epoch-1",
+    )
+    fake = FakeCamillaWithoutLiveRaw(live.current_path)
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
     payload = await sound_setup._live_draft_profile(
@@ -5236,15 +5086,7 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
 
 
 def _active_baseline_config() -> str:
-    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
-
     return _active_baseline_yaml("mono", 2)
-
-
-def _program_bake_config() -> str:
-    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
-
-    return _program_bake_yaml()
 
 
 def _program_bake_member_kwargs(monkeypatch) -> None:
@@ -5266,7 +5108,7 @@ def _program_bake_member_kwargs(monkeypatch) -> None:
         ),
         pytest.param(
             "grouping_active_leader_bake.yml",
-            _program_bake_config,
+            _program_bake_yaml,
             "program_bake_pipe_unavailable",
             _program_bake_member_kwargs,
             id="grouping_program_bake",
@@ -5288,8 +5130,6 @@ async def test_apply_profile_blocks_a_carrier_that_cannot_host_eq(
     dry-runs the active carrier), so jasper-doctor's check_dsp_apply_state
     stays clean on an active speaker.
     """
-    from jasper.dsp_control.dsp_apply import last_dsp_apply_state
-
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -5342,10 +5182,6 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     # vocabulary — never a 502 toast or a silent no-op. A regression that
     # dropped the handler's `return` (falling through to the 502 branch) would
     # pass every other test but fail this one.
-    import io
-
-    from jasper.dsp_control.dsp_apply import last_dsp_apply_state
-
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
@@ -5355,32 +5191,12 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     active = config_dir / "active_speaker_baseline.yml"
     active.write_text(_active_baseline_config())
     fake = FakeCamilla(str(active))
+    body = json.dumps(SoundProfile().to_dict()).encode()
 
-    Handler = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=config_dir,
+    resp, _ = _drive_raw_sound_post(
+        tmp_path, path="/apply", content_length=len(body), body=body,
         camilla_factory=lambda: fake,
     )
-    body = json.dumps(SoundProfile().to_dict()).encode()
-    raw = (
-        b"POST /apply HTTP/1.1\r\nHost: jts.local\r\n"
-        + f"Content-Length: {len(body)}\r\n".encode()
-        + b"\r\n"
-        + body
-    )
-    rfile = io.BytesIO(raw)
-    wfile = io.BytesIO()
-    handler = Handler.__new__(Handler)
-    handler.rfile = rfile
-    handler.wfile = wfile
-    handler.client_address = ("127.0.0.1", 0)
-    handler.server = None
-    handler.raw_requestline = rfile.readline()
-    handler.parse_request()
-    handler.protocol_version = "HTTP/1.1"
-    handler.do_POST()
-    resp = wfile.getvalue()
 
     status_line = resp.split(b"\r\n", 1)[0]
     assert b"200" in status_line, status_line
@@ -5446,18 +5262,11 @@ async def test_apply_profile_rolls_back_when_reload_fails(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", fail_set=True,
     )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current), fail_set=True)
 
-    with pytest.raises(RuntimeError, match="reload failed"):
+    with pytest.raises(DspApplyError) as failed:
         await sound_setup._apply_profile(
             SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
             profile_path=tmp_path / "sound_profile.json",
@@ -5465,7 +5274,8 @@ async def test_apply_profile_rolls_back_when_reload_fails(
             camilla_factory=lambda: fake,
         )
 
-    assert fake.set_calls[-1] == str(current)
+    assert failed.value.state.phase == "load"
+    assert fake.set_calls[-1] == fake.current_path
     assert not (tmp_path / "sound_profile.json").exists()
 
 
